@@ -1,11 +1,14 @@
 # Enterprise HR (HRMS) — Program Overview
 
-Munaxa's HR module is being transformed from a two-table staff directory into a complete
+Munaxa's HR module has been transformed from a two-table staff directory into a complete
 enterprise **Human Resources Management System**, fully integrated with the rest of the School OS.
-The program is delivered in verified phases; each phase ships end-to-end (schema → migration → API
-→ RBAC → UI → tests → docs) and only proceeds once every validation gate is green.
+The program was delivered in verified phases; each phase ships end-to-end (schema → migration → API
+→ RBAC → UI → tests → docs) and only proceeded once every validation gate was green.
 
-The pre-implementation audit lives at [`/HR_ARCHITECTURE_AUDIT.md`](../../HR_ARCHITECTURE_AUDIT.md).
+**All ten phases are complete.** The pre-implementation audit lives at
+[`/HR_ARCHITECTURE_AUDIT.md`](../../HR_ARCHITECTURE_AUDIT.md); the final
+[**Implementation Report**](./IMPLEMENTATION_REPORT.md) summarises the whole program with a
+production-readiness checklist.
 
 ## Phase status
 
