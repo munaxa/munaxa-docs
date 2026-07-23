@@ -14,7 +14,7 @@ The pre-implementation audit lives at [`/HR_ARCHITECTURE_AUDIT.md`](../../HR_ARC
 | 1 | Core staff person, employee lifecycle (16 states), organisation engine (departments, positions, managers) | ✅ Done | [phase-1-core-lifecycle-org.md](./phase-1-core-lifecycle-org.md) |
 | 2 | Contracts & documents (versioned, expiry), emergency contacts, dependents, education, certificates, bank | ✅ Done | [phase-2-contracts-documents.md](./phase-2-contracts-documents.md) |
 | 3 | Driver refactor — drivers become Employees; Fleet references `driverId`; `DriverProfile` | ✅ Done | [phase-3-driver-refactor.md](./phase-3-driver-refactor.md) |
-| 4 | Staff leave management (types, balances, multi-level approval, holiday awareness) | ⏳ Planned | — |
+| 4 | Staff leave management (types, balances, multi-level approval, holiday awareness) | ✅ Done | [phase-4-staff-leave.md](./phase-4-staff-leave.md) |
 | 5 | Staff attendance & payroll preparation (overtime, corrections, export) | ⏳ Planned | — |
 | 6 | Performance & training | ⏳ Planned | — |
 | 7 | Asset management | ⏳ Planned | — |
