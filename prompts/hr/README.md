@@ -18,7 +18,7 @@ The pre-implementation audit lives at [`/HR_ARCHITECTURE_AUDIT.md`](../../HR_ARC
 | 5 | Staff attendance & payroll preparation (overtime, corrections, export) | ✅ Done | [phase-5-staff-attendance-payroll.md](./phase-5-staff-attendance-payroll.md) |
 | 6 | Performance & training (cycles, reviews, goals, course catalog, records) | ✅ Done | [phase-6-performance-training.md](./phase-6-performance-training.md) |
 | 7 | Asset management (register, assign/return custody, per-employee assets) | ✅ Done | [phase-7-asset-management.md](./phase-7-asset-management.md) |
-| 8 | Recruitment (vacancies, applicants, interviews, offer→hire) | ⏳ Planned | — |
+| 8 | Recruitment (vacancies, applicants, interviews, offer→hire) | ✅ Done | [phase-8-recruitment.md](./phase-8-recruitment.md) |
 | 9 | Self-service & manager portals | ⏳ Planned | — |
 | 10 | HR dashboard, reporting, automation, AI-ready | ⏳ Planned | — |
 
