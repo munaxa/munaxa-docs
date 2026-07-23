@@ -19,7 +19,7 @@ The pre-implementation audit lives at [`/HR_ARCHITECTURE_AUDIT.md`](../../HR_ARC
 | 6 | Performance & training (cycles, reviews, goals, course catalog, records) | ✅ Done | [phase-6-performance-training.md](./phase-6-performance-training.md) |
 | 7 | Asset management (register, assign/return custody, per-employee assets) | ✅ Done | [phase-7-asset-management.md](./phase-7-asset-management.md) |
 | 8 | Recruitment (vacancies, applicants, interviews, offer→hire) | ✅ Done | [phase-8-recruitment.md](./phase-8-recruitment.md) |
-| 9 | Self-service & manager portals | ⏳ Planned | — |
+| 9 | Self-service (ESS) & manager portal — own HR data + direct-report approvals | ✅ Done | [phase-9-self-service-manager.md](./phase-9-self-service-manager.md) |
 | 10 | HR dashboard, reporting, automation, AI-ready | ⏳ Planned | — |
 
 ## Architectural principles
