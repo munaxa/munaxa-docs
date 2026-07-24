@@ -31,36 +31,30 @@ layout system with **light + dark** themes.
 
 ## Logo
 
-![Munaxa logo](./logo.png)
+![Munaxa logo](./horizontal-lockup-light.png)
 
-The Munaxa logo is the **munaxa wordmark** (lowercase name + the square teal dot), supplied as two
-theme variants — the full light+dark lockup framed by a border so the block reads on any surface:
+The Munaxa logo is the teal **M** mark with the **munaxa▪** wordmark, supplied as a family of
+lockups (each keyed to transparent, with a light-theme and a dark-theme — white-text — variant):
 
-- **`logo-light.png`** — for the **light** theme; the square is framed with a **black** border.
-- **`logo-dark.png`** — for the **dark** theme; framed with a **white** border.
+| Variant | File (design-system) | Where to use |
+| --- | --- | --- |
+| **Horizontal lockup** | `horizontal-lockup-{light,dark}.png` | Headers, nav, dashboards, all portals, API docs |
+| **Primary / Stacked** | `primary-logo-{light,dark}.png`, `stacked-logo-{light,dark}.png` | Login, hero, splash, print (invoices, ID cards, letterhead) |
+| **Wordmark** | `wordmark-{light,dark}.png` | Footers, email signature, legal pages |
+| **Symbol (M mark)** | `symbol.png` (single, both themes) | Collapsed rail, loading/empty states, avatars, watermark |
+| **App icon** | `app-icon.png` (teal tile) | Mobile / desktop / PWA launcher |
+| **Favicon** | `favicon.png` (M mark) | Browser tab, tiny UI |
 
-Apps show the matching variant per theme (a `dark:` CSS swap on web, `Theme.brightness` on mobile).
+Apps show the matching theme variant automatically (a `dark:` CSS swap on web, `Theme.brightness`
+on mobile). The symbol/app-icon/favicon are single teal assets that read on both themes.
 
-- **Source of truth:** [`logo-light.png`](./logo-light.png) / [`logo-dark.png`](./logo-dark.png)
-  (RGBA, 2528×1686). `logo.png` mirrors the light variant for the README preview and SEO/`Organization`
-  logo. Apps vendor 640px-wide copies of each (served unoptimized).
-- **App copies (kept in sync with the source):** `apps/admin/public/munaxa-logo.png`,
-  `apps/mobile/assets/munaxa-logo.png`.
-- **Reusable components:** `apps/admin/src/components/logo.tsx` (`<Logo size={…} />`) and
-  `apps/mobile/lib/core/widgets/munaxa_logo.dart` (`MunaxaLogo(height: …)`) — both preserve the
-  intrinsic aspect ratio.
-- **Derived square icons** (generated from `logo.png`, the mark padded onto a square; see
-  `scripts/gen-icons.py`):
-  - **Web favicons** via Next App Router file conventions in `apps/admin/src/app/`:
-    `favicon.ico` (16/32/48/64, transparent), `icon.png` (512, transparent), `apple-icon.png`
-    (180, opaque on ink `#090B0C` — iOS disallows transparency).
-  - **Native app-launcher icons** (mobile): `apps/mobile/assets/icon/ic_launcher.png` (mark on ink)
-    and `ic_launcher_foreground.png` (Android adaptive foreground), wired via the
-    `flutter_launcher_icons` config in `pubspec.yaml`. Generate after platform folders exist with
-    `dart run flutter_launcher_icons`.
-- **Usage:** app-shell rail, login, splash, favicon. Keep the gradient intact (never recolor),
-  scale by **height** so the ratio holds, and don't crop the horns. The mark already carries the
-  brand gradient, so place it on plain surfaces — not on top of `grad-primary`.
+- **Reusable component:** `apps/admin/src/components/logo.tsx` / `munaxademo/src/components/logo.tsx`
+  (`<Logo variant="horizontal|stacked|wordmark|symbol" size={…} />`); landing uses
+  `landing/src/components/site/wordmark.tsx`; mobile uses `munaxa_logo.dart`. All scale by **height**.
+- **Web copies:** each app vendors downscaled PNGs in its `public/` (served `unoptimized` — the
+  Cloudflare/OpenNext optimizer chokes on the full-res art).
+- **Favicons / app icons** are generated from `favicon.png` (M mark → `favicon.ico`, `icon.png`)
+  and `app-icon.png` (tile → `apple-icon.png`, mobile launcher) by `scripts/gen-icons.py`.
 
 ## Tokens
 
