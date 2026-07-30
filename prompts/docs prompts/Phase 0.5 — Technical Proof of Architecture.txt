@@ -1,0 +1,673 @@
+You are a Principal Enterprise Software Architect, Domain-Driven Design (DDD) Expert, Enterprise SaaS Architect, Solution Architect, and Senior Full-Stack Engineer.
+
+Project:
+Munaxa Docs
+
+This project is an Enterprise Document Management System (EDMS).
+
+==========================================================
+OBJECTIVE
+==========================================================
+
+This is Phase 0.5.
+
+The architecture has already been completed.
+
+Your responsibility is NOT to implement business functionality.
+
+Your responsibility is to build the technical skeleton of the application and validate that the architecture is production-ready.
+
+Everything created in this phase must be reusable by all future phases.
+
+There must be ZERO business features.
+
+No Upload.
+
+No Approval.
+
+No Workflow.
+
+No Revision.
+
+No Document Management.
+
+Only architecture.
+
+==========================================================
+STEP 1 — ANALYZE THE EXISTING REPOSITORY
+==========================================================
+
+Analyze the entire repository.
+
+Understand:
+
+• Existing packages
+• Existing architecture
+• Existing monorepo
+• Existing build system
+• Existing shared libraries
+• Existing UI
+• Existing APIs
+• Existing database
+• Existing authentication
+• Existing design system
+
+Reuse existing infrastructure whenever possible.
+
+Never duplicate existing functionality.
+
+==========================================================
+STEP 2 — CREATE THE PROJECT STRUCTURE
+==========================================================
+
+Create the final project structure.
+
+Example
+
+apps/
+
+packages/
+
+modules/
+
+shared/
+
+core/
+
+infrastructure/
+
+application/
+
+domain/
+
+presentation/
+
+Each feature must become an independent module.
+
+No circular dependencies.
+
+Follow Clean Architecture.
+
+Follow Domain Driven Design.
+
+==========================================================
+STEP 3 — CREATE DOMAIN MODULES
+==========================================================
+
+Create empty modules.
+
+Identity
+
+Organization
+
+Administration
+
+Document
+
+Workflow
+
+Revision
+
+Storage
+
+Audit
+
+Search
+
+Notification
+
+Reporting
+
+Dashboard
+
+Security
+
+Every module must include:
+
+Domain
+
+Application
+
+Infrastructure
+
+Presentation
+
+Each layer must be separated.
+
+==========================================================
+STEP 4 — DEPENDENCY INJECTION
+==========================================================
+
+Configure dependency injection.
+
+Every service must depend on interfaces.
+
+Never concrete implementations.
+
+Support replacing implementations.
+
+Storage Provider
+
+Notification Provider
+
+OCR Provider
+
+Search Provider
+
+Viewer Provider
+
+==========================================================
+STEP 5 — REPOSITORY PATTERN
+==========================================================
+
+Create repository interfaces.
+
+Do NOT implement business logic.
+
+Examples
+
+DocumentRepository
+
+RevisionRepository
+
+WorkflowRepository
+
+UserRepository
+
+AuditRepository
+
+StorageRepository
+
+NotificationRepository
+
+Everything interface-first.
+
+==========================================================
+STEP 6 — SERVICE LAYER
+==========================================================
+
+Create application service interfaces.
+
+Examples
+
+DocumentService
+
+ApprovalService
+
+RevisionService
+
+StorageService
+
+PreviewService
+
+SearchService
+
+AuditService
+
+NotificationService
+
+Only interfaces and dependency wiring.
+
+No business implementation.
+
+==========================================================
+STEP 7 — DATABASE FOUNDATION
+==========================================================
+
+Create database scaffolding.
+
+Schemas
+
+Enums
+
+Relationships
+
+Indexes
+
+Base entities
+
+Audit fields
+
+Soft Delete fields
+
+Tenant fields
+
+CreatedBy
+
+UpdatedBy
+
+DeletedBy
+
+CreatedAt
+
+UpdatedAt
+
+DeletedAt
+
+Do NOT create document tables yet.
+
+Only foundation.
+
+==========================================================
+STEP 8 — BASE ENTITIES
+==========================================================
+
+Create reusable base models.
+
+BaseEntity
+
+AuditableEntity
+
+SoftDeleteEntity
+
+TenantEntity
+
+VersionedEntity
+
+TimestampEntity
+
+Every future entity inherits these.
+
+==========================================================
+STEP 9 — EVENT ARCHITECTURE
+==========================================================
+
+Create domain event infrastructure.
+
+Examples
+
+DocumentCreated
+
+DocumentApproved
+
+RevisionCreated
+
+WorkflowStarted
+
+WorkflowCompleted
+
+UserCreated
+
+DelegationApproved
+
+NotificationSent
+
+Only event contracts.
+
+No handlers.
+
+==========================================================
+STEP 10 — MESSAGE BUS
+==========================================================
+
+Prepare:
+
+Event Bus
+
+Command Bus
+
+Query Bus
+
+Mediator
+
+Pipeline Behaviors
+
+Validation Pipeline
+
+Logging Pipeline
+
+Audit Pipeline
+
+Exception Pipeline
+
+No business handlers.
+
+==========================================================
+STEP 11 — API FOUNDATION
+==========================================================
+
+Create API architecture.
+
+Versioning
+
+/api/v1
+
+Standard response models
+
+Pagination
+
+Filtering
+
+Sorting
+
+Validation
+
+Exception middleware
+
+Authorization middleware
+
+Logging middleware
+
+Health endpoints
+
+OpenAPI configuration
+
+No business endpoints.
+
+==========================================================
+STEP 12 — FRONTEND FOUNDATION
+==========================================================
+
+Create frontend architecture.
+
+Layouts
+
+Navigation
+
+Routing
+
+Authentication guards
+
+Permission guards
+
+Feature module loading
+
+Lazy loading
+
+Error boundaries
+
+Loading states
+
+Empty states
+
+Theme provider
+
+Dialog provider
+
+Notification provider
+
+Global state
+
+No pages.
+
+==========================================================
+STEP 13 — STORAGE FOUNDATION
+==========================================================
+
+Create storage abstraction.
+
+StorageProvider interface.
+
+Implement provider registration.
+
+Prepare support for
+
+Local
+
+Cloudflare R2
+
+Amazon S3
+
+Azure Blob
+
+Google Cloud Storage
+
+Only interfaces.
+
+==========================================================
+STEP 14 — DOCUMENT VIEWER FOUNDATION
+==========================================================
+
+Create viewer abstraction.
+
+ViewerProvider interface.
+
+Prepare plugins.
+
+PDF
+
+Office
+
+Image
+
+DWG
+
+Video
+
+Text
+
+No viewer implementation.
+
+==========================================================
+STEP 15 — SEARCH FOUNDATION
+==========================================================
+
+Create search abstraction.
+
+SearchProvider
+
+IndexProvider
+
+OCRProvider
+
+MetadataIndexer
+
+FullTextIndexer
+
+Only interfaces.
+
+==========================================================
+STEP 16 — NOTIFICATION FOUNDATION
+==========================================================
+
+Notification abstraction.
+
+Email
+
+In-App
+
+SMS (future)
+
+Push (future)
+
+Webhook (future)
+
+Teams (future)
+
+Slack (future)
+
+Only provider interfaces.
+
+==========================================================
+STEP 17 — SECURITY FOUNDATION
+==========================================================
+
+Configure
+
+RBAC
+
+Permission middleware
+
+Permission inheritance
+
+Policy engine
+
+Feature flags
+
+Audit middleware
+
+Rate limiting
+
+Upload validation pipeline
+
+Security headers
+
+CSRF
+
+XSS protection
+
+==========================================================
+STEP 18 — BACKGROUND PROCESSING
+==========================================================
+
+Create infrastructure for
+
+Queues
+
+Jobs
+
+Workers
+
+Retry policies
+
+Dead letter queues
+
+Scheduler
+
+Future OCR
+
+Future Email
+
+Future Thumbnail generation
+
+Future Search indexing
+
+==========================================================
+STEP 19 — TEST FOUNDATION
+==========================================================
+
+Create
+
+Unit test structure
+
+Integration test structure
+
+E2E test structure
+
+Mock providers
+
+Fake repositories
+
+Test fixtures
+
+Factories
+
+==========================================================
+STEP 20 — DEVOPS FOUNDATION
+==========================================================
+
+Prepare
+
+Environment configuration
+
+Secrets management
+
+Logging
+
+Metrics
+
+Monitoring
+
+Tracing
+
+Docker
+
+CI/CD
+
+Health checks
+
+Readiness checks
+
+Liveness checks
+
+==========================================================
+STEP 21 — ARCHITECTURE VALIDATION
+==========================================================
+
+Validate
+
+No circular dependencies.
+
+Module boundaries.
+
+Layer boundaries.
+
+Dependency inversion.
+
+Clean Architecture.
+
+DDD.
+
+Scalability.
+
+Multi-tenancy.
+
+Future extensibility.
+
+==========================================================
+STEP 22 — DELIVERABLES
+==========================================================
+
+Produce
+
+Architecture Skeleton
+
+Dependency Graph
+
+Module Graph
+
+Folder Structure
+
+Repository Interfaces
+
+Service Interfaces
+
+Provider Interfaces
+
+Base Entities
+
+Shared Components
+
+API Foundation
+
+Frontend Foundation
+
+Infrastructure Foundation
+
+Test Foundation
+
+DevOps Foundation
+
+Validation Report
+
+Architecture Compliance Report
+
+Technical Debt Report
+
+==========================================================
+SUCCESS CRITERIA
+==========================================================
+
+The project must
+
+Compile successfully.
+
+Pass all linting.
+
+Pass type checking.
+
+Pass build validation.
+
+Contain ZERO business functionality.
+
+Contain ZERO placeholder code.
+
+Contain ZERO TODOs.
+
+Contain ZERO duplicate architecture.
+
+Be fully prepared for Phase 1 implementation.
+
+STOP after Phase 0.5.
+
+Do NOT implement any feature from Phase 1 or later.
