@@ -160,7 +160,6 @@ Index: [school/docs/ux/README.md](../school/docs/ux/README.md).
 | Demo | [munaxademo/README.md](../school/munaxademo/README.md) · [architecture](../school/munaxademo/docs/architecture.md) · [deployment](../school/munaxademo/docs/deployment.md) · [security](../school/munaxademo/docs/security.md) |
 | Mobile | [apps/mobile/README.md](../school/apps/mobile/README.md) |
 | Platform docs site | The Platform Storybook, deployed to Cloudflare — every public component with live dark-mode, RTL and a11y controls |
-| Orbix Studio | [orbix-studio/README.md](../school/orbix-studio/README.md) |
 | Prisma | [prisma/README.md](../school/prisma/README.md) |
 | PDF Arabic rendering | [apps/api/src/documents/pdf/ARABIC_RENDERING.md](../school/apps/api/src/documents/pdf/ARABIC_RENDERING.md) |
 
