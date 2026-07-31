@@ -29,6 +29,9 @@ and it is not linked from here, it either does not exist or it is misfiled — s
 │   ├── phases/                         delivery history, phase by phase
 │   ├── ops/  security/  integrations/  running it, securing it, connecting it
 │   └── archive/                        dated point-in-time reports (historical)
+├── edms/docs/                          Munaxa Docs (EDMS) — architecture only
+│   ├── architecture/                   the binding Phase 0 blueprint (+ adr/)
+│   └── reports/                        dated Phase 0 findings (historical)
 └── work/README.md                   reserved product root
 ```
 
@@ -173,7 +176,24 @@ compliance sweeps, progress snapshots.
 why a decision was made. Several describe structures that no longer exist. Do not follow them; do
 not edit them.
 
-## 8. Work
+## 8. Munaxa Docs — the EDMS
+
+The Enterprise Document Management System. **Phase 0 only: the architecture is designed, no code
+exists.** Product root: [`edms/`](../edms/README.md) — named `edms/` because `docs/` is this index
+([ADR-0001](../edms/docs/architecture/adr/0001-product-root-placement.md)).
+
+Full index: [edms/docs/README.md](../edms/docs/README.md).
+
+| Area | Documents |
+| --- | --- |
+| **Architecture (binding)** | [index](../edms/docs/architecture/README.md) — system, monorepo, backend, domain model, ERD, database, lifecycle, workflow, permissions, numbering, revisions, storage, search, audit, preview, API, frontend, security, notifications, performance, deployment (00–20) |
+| **Decisions** | [adr/](../edms/docs/architecture/adr/) — 11 ADRs, immutable |
+| **Phase 0 reports** | [repository analysis](../edms/docs/reports/repository-analysis.md) · [technical debt](../edms/docs/reports/technical-debt.md) · [risk assessment](../edms/docs/reports/risk-assessment.md) · [development recommendations](../edms/docs/reports/development-recommendations.md) |
+
+> **Naming caution.** `school/apps/api/src/documents` is School's PDF *generation* module and has
+> nothing to do with this product. Munaxa Docs never imports it, or anything else from School.
+
+## 9. Work
 
 [work/README.md](../work/README.md) — the reserved product root. Nothing is implemented.
 It documents what the platform already provides and the steps to start.
