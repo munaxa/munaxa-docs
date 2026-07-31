@@ -33,18 +33,19 @@ with an identity, a number, a lifecycle, an owner and an audit history.
 ## What already exists for you
 
 Munaxa Docs is a peer product of School and Work. It consumes the shared platform and copies
-nothing from School — [products must never import another product](../PLATFORM_ENGINEERING_STANDARDS.md#4-dependency-rules).
+nothing from School — [products must never import another product](./ARCHITECTURE.md).
 
 | You need | Where it comes from |
 | --- | --- |
-| Components, layouts, app shell | `@axa/platform` |
-| Design tokens | `@axa/platform/tokens` |
-| Icons | `@axa/platform/icons` |
-| Theme registry | `@axa/platform/themes` |
-| The Docs theme | `@import '@axa/platform/css/themes/docs';` |
+| Components, layouts, app shell | `@munaxa/ui` |
+| Design tokens | `@munaxa/tokens` |
+| Icons | `@munaxa/icons` |
+| Theme registry | `@munaxa/theme` |
+| The Docs theme | `@import '@munaxa/theme/css/docs';` |
 
-The Docs palette is already authored — [`platform/themes/docs/`](../platform/themes/docs). Starting
-this product requires no platform change.
+The Docs palette is already authored inside
+[munaxa-platform](https://github.com/tam2om/munaxa-platform). Starting this product requires no
+platform change — and no colour written here.
 
 ## Planned shape (Phase 0.5)
 

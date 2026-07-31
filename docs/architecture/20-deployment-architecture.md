@@ -81,7 +81,7 @@ graph LR
 ```
 
 Every gate is blocking. A failing test is never skipped to go green
-([rulebook §10](../../../PLATFORM_ENGINEERING_STANDARDS.md#10-tests)).
+([rulebook §10](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#10-tests)).
 
 ### Migrations
 

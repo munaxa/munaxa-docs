@@ -27,7 +27,7 @@ lint-staged, shared ESLint and TypeScript configs in `tooling/`. Root scripts (`
 `platform`, `school/apps/api`, `school/apps/admin`, `school/munaxademo`, `school/landing`,
 `school/packages/*`.
 
-### The platform (`@axa/platform`) — frozen, and directly reusable
+### The platform (`@munaxa/ui`) — frozen, and directly reusable
 
 Tokens, typography, themes, icons, and a large UI layer: `ui/components` (including `data-grid`,
 `files`, `flow`, `forms`, `feedback`, `navigation`, `date`, `board`), `ui/layouts`, `ui/patterns`,
@@ -76,7 +76,7 @@ direct-to-storage upload is a proven path in this repository.
 
 | Capability | Decision | Why |
 | --- | --- | --- |
-| UI components, tokens, icons, theme, shell | **Reuse** `@axa/platform` | Repository law; the `docs` theme exists |
+| UI components, tokens, icons, theme, shell | **Reuse** `@munaxa/ui` | Repository law; the `docs` theme exists |
 | Workspace tooling (pnpm, turbo, ESLint, TS configs, prettier, husky) | **Reuse** | Register the new packages, change nothing else |
 | Local dev stack shape (Postgres, Redis, S3, mail) | **Reuse the pattern**, add product-specific compose fragments | Same shape, own services |
 | Tenant isolation, API conventions, permission-catalogue shape, ADR practice | **Copy the pattern, write the code** | Products may never import one another |
@@ -109,11 +109,11 @@ first for the repository, and each is designed in the architecture set according
 
 | Risk | Guard |
 | --- | --- |
-| Writing a dropzone, file manager, data grid or approval-flow component | They exist in `@axa/platform` — §2 lists the paths |
+| Writing a dropzone, file manager, data grid or approval-flow component | They exist in `@munaxa/ui` — §2 lists the paths |
 | Copying `@school/domain`'s permission constants | Different catalogue; write the EDMS one, same *shape* |
 | Copying School's tenancy code file-by-file | Prohibited as an import; re-implement from the documented design |
 | A second theme or palette for "documents" | `platform/themes/docs/` is authoritative |
-| A second toast, dialog, table or button | Always wrong ([rulebook §6](../../../PLATFORM_ENGINEERING_STANDARDS.md#6-reuse-and-duplication)) |
+| A second toast, dialog, table or button | Always wrong ([rulebook §6](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#6-reuse-and-duplication)) |
 
 ## 7. Searches performed
 

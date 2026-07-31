@@ -23,7 +23,7 @@ discovered by a customer.
 3. Delivery is therefore **at-least-once**; every consumer is **idempotent**, keyed on a
    deterministic job key.
 4. Event payloads are **versioned and additive**; a shipped payload shape is never changed
-   ([rulebook §12](../../../../PLATFORM_ENGINEERING_STANDARDS.md#12-backward-compatibility)).
+   ([rulebook §12](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#12-backward-compatibility)).
 5. Events are **facts in the past tense** (`DocumentApproved`, `RevisionCheckedIn`), never commands.
 6. Processed rows are deleted after 7 days; the audit trail, not the outbox, is the permanent
    record.

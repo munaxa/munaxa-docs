@@ -69,7 +69,7 @@ value of Phase 0.5.
 | **Every consumer is idempotent** | Delivery is at-least-once, always |
 | **A new index names the query it serves, in the migration comment** | Indexes outlive the memory of why they exist |
 | **Update the affected architecture document in the same commit**, and add an ADR when a real alternative was rejected | Documentation that lags is documentation that lies |
-| **No placeholder, no TODO, no dead code** | [Rulebook §8](../../../PLATFORM_ENGINEERING_STANDARDS.md#8-code-quality-rules) |
+| **No placeholder, no TODO, no dead code** | [Rulebook §8](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#8-code-quality-rules) |
 
 ## 5. Testing strategy
 
@@ -83,7 +83,7 @@ value of Phase 0.5.
 | Non-functional | Load scenarios in `edms/infra/loadtest/`, measured per phase against [19](../architecture/19-performance-and-scalability.md) §1 | Regressions are caught in the phase that caused them |
 
 Never delete or skip a failing test to go green. A failing test is information
-([rulebook §10](../../../PLATFORM_ENGINEERING_STANDARDS.md#10-tests)).
+([rulebook §10](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#10-tests)).
 
 ## 6. For AI agents
 
@@ -91,11 +91,11 @@ Never delete or skip a failing test to go green. A failing test is information
    the document for the area you are touching, then the code.
 2. **Never invent a permission.** If it is not in `@edms/domain`, add it there first, and add it to
    the matrix in [08](../architecture/08-permission-model.md) in the same commit.
-3. **Never write a UI primitive.** Compose from `@axa/platform`.
+3. **Never write a UI primitive.** Compose from `@munaxa/ui`.
 4. **Never bypass a guard, validator or lint rule** to make something pass.
 5. Ask before choosing between two readings of an instruction that would produce materially
    different work; do not choose silently
-   ([rulebook §1](../../../PLATFORM_ENGINEERING_STANDARDS.md#1-the-five-laws), law 5).
+   ([rulebook §1](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#1-the-five-laws), law 5).
 6. Report honestly: what was verified, what was not, and what remains.
 
 ## 7. Anti-patterns specific to this domain

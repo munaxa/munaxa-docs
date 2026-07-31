@@ -24,7 +24,7 @@ isolation guard → Prisma client extension → PostgreSQL RLS policies on a res
 A single-organisation on-premise install is the same code with one tenant.
 
 The **pattern** is taken from School; **no code is shared or imported** — products may never import
-one another ([rulebook §4](../../../../PLATFORM_ENGINEERING_STANDARDS.md#4-dependency-rules)).
+one another ([rulebook §4](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#4-dependency-rules)).
 
 ## Alternatives considered
 

@@ -155,4 +155,4 @@ Adding an optional field or a new endpoint is safe. Changing a field's meaning, 
 narrowing an enum consumers may receive, or changing an error code is **breaking** and requires a
 new version. Deprecation is announced in OpenAPI (`deprecated: true` plus the replacement) and kept
 for one release cycle
-([rulebook §12](../../../PLATFORM_ENGINEERING_STANDARDS.md#12-backward-compatibility)).
+([rulebook §12](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#12-backward-compatibility)).

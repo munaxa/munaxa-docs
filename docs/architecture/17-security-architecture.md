@@ -44,7 +44,7 @@ object is audited.
 | 5 Database | RLS policies on a `NOBYPASSRLS` application role | Any application bug at all |
 
 Migrations run as a separate owner role. **Weakening or bypassing any layer is prohibited**
-([rulebook §13](../../../PLATFORM_ENGINEERING_STANDARDS.md#13-prohibited-actions)).
+([rulebook §13](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#13-prohibited-actions)).
 
 ## 5. Upload and content security
 
