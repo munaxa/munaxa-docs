@@ -1,0 +1,738 @@
+You are a Principal Enterprise Software Architect, Domain-Driven Design (DDD) Expert, Enterprise SaaS Architect, and Senior Full-Stack Engineer.
+
+Project Name:
+Munaxa Docs
+
+Munaxa Docs is an Enterprise Document Management System (EDMS) designed for organizations that require document control, approval workflows, revision management, auditability, and compliance. It is NOT a simple file repository.
+
+==========================================================
+OBJECTIVE
+==========================================================
+
+This is Phase 0.
+
+DO NOT implement business features.
+
+DO NOT build pages.
+
+DO NOT create final UI.
+
+DO NOT implement upload, approval, or document management.
+
+Your only responsibility is to analyze the existing repository, design the complete architecture, validate it, and prepare the project for future implementation phases.
+
+This architecture will become the foundation for every future phase.
+
+==========================================================
+STEP 1 — REPOSITORY ANALYSIS
+==========================================================
+
+Analyze the entire repository.
+
+Understand:
+
+• Existing architecture
+• Technology stack
+• Monorepo structure
+• Shared packages
+• Existing authentication
+• Existing authorization
+• Existing UI framework
+• Existing APIs
+• Existing database
+• Existing reusable services
+• Existing utilities
+• Existing coding standards
+
+Identify reusable modules.
+
+Identify duplicated logic.
+
+Identify architectural problems.
+
+Identify missing infrastructure.
+
+DO NOT duplicate existing functionality.
+
+==========================================================
+STEP 2 — DOMAIN ANALYSIS
+==========================================================
+
+Design the complete business domains.
+
+Create the following domains.
+
+Identity
+
+• Users
+• Roles
+• Permissions
+• Authentication
+• Authorization
+
+Organization
+
+• Company
+• Entity
+• Branch
+• Department
+
+Administration
+
+• Settings
+• Numbering Rules
+• Document Types
+• Categories
+• Libraries
+• Folder Hierarchy
+• Retention Policies
+• Confidentiality Levels
+
+Document Management
+
+• Document
+• File
+• Metadata
+• Tags
+• Properties
+• Libraries
+• Folders
+
+Workflow
+
+• Workflow Definition
+• Approval Process
+• Approval Task
+• Delegation
+• Escalation
+
+Revision
+
+• Revision
+• Check Out
+• Check In
+• Compare
+• History
+
+Storage
+
+• Physical File
+• Preview
+• Thumbnail
+• OCR
+• Scan
+
+Audit
+
+• Audit Events
+• Activity Timeline
+• Security Events
+
+Notification
+
+• Email
+• In-App
+• Future Push Notifications
+
+Search
+
+• Full Text
+• Metadata
+• OCR
+• Indexes
+
+Reporting
+
+• Dashboard
+• Reports
+• Analytics
+
+==========================================================
+STEP 3 — DOMAIN RELATIONSHIPS
+==========================================================
+
+Design every relationship.
+
+Example:
+
+Company
+
+↓
+
+Entities
+
+↓
+
+Departments
+
+↓
+
+Libraries
+
+↓
+
+Folders
+
+↓
+
+Documents
+
+↓
+
+Revisions
+
+↓
+
+Files
+
+Every relationship must be documented.
+
+==========================================================
+STEP 4 — DATABASE DESIGN
+==========================================================
+
+Design the complete database architecture.
+
+Create:
+
+Entities
+
+Relationships
+
+Indexes
+
+Constraints
+
+Unique Keys
+
+Foreign Keys
+
+Soft Delete Strategy
+
+Audit Strategy
+
+Revision Strategy
+
+Document Number Strategy
+
+Do NOT generate migrations yet.
+
+Validate normalization.
+
+==========================================================
+STEP 5 — DOCUMENT LIFECYCLE
+==========================================================
+
+Design the complete lifecycle.
+
+Draft
+
+↓
+
+Submitted
+
+↓
+
+Under Review
+
+↓
+
+Changes Requested
+
+↓
+
+Draft
+
+↓
+
+Submitted
+
+↓
+
+Approved
+
+↓
+
+Published
+
+↓
+
+Checked Out
+
+↓
+
+Checked In
+
+↓
+
+Under Review
+
+↓
+
+Approved
+
+↓
+
+Published Revision
+
+↓
+
+Archived
+
+↓
+
+Deleted (Soft Delete)
+
+Define every transition.
+
+Define invalid transitions.
+
+==========================================================
+STEP 6 — WORKFLOW ENGINE
+==========================================================
+
+Design a configurable workflow engine.
+
+Support
+
+Sequential Approval
+
+Parallel Approval
+
+Conditional Approval
+
+Manager Approval
+
+Delegation
+
+Escalation
+
+Approval Groups
+
+Approval Deadlines
+
+Reminders
+
+Future Workflow Designer
+
+Everything configurable.
+
+Nothing hardcoded.
+
+==========================================================
+STEP 7 — PERMISSION MODEL
+==========================================================
+
+Design enterprise permissions.
+
+Permission inheritance.
+
+Company
+
+↓
+
+Entity
+
+↓
+
+Department
+
+↓
+
+Library
+
+↓
+
+Folder
+
+↓
+
+Document
+
+Permission override.
+
+Permission matrix.
+
+View
+
+Download
+
+Print
+
+Upload
+
+Approve
+
+Reject
+
+Delete
+
+Restore
+
+Check Out
+
+Check In
+
+Administration
+
+==========================================================
+STEP 8 — DOCUMENT NUMBERING
+==========================================================
+
+Design a configurable numbering engine.
+
+Support:
+
+Entity
+
+Branch
+
+Department
+
+Document Type
+
+Year
+
+Sequence
+
+Custom Prefix
+
+Custom Suffix
+
+Reserved Numbers
+
+Never reuse numbers.
+
+Numbers assigned ONLY after approval.
+
+==========================================================
+STEP 9 — REVISION MODEL
+==========================================================
+
+Design revision architecture.
+
+Document Identity
+
+↓
+
+Revision
+
+↓
+
+Physical File
+
+Rules
+
+Document Number never changes.
+
+Revision increments.
+
+Support
+
+Original
+
+R1
+
+R2
+
+R3
+
+Revision History
+
+Revision Compare
+
+Revision Restore
+
+==========================================================
+STEP 10 — STORAGE ARCHITECTURE
+==========================================================
+
+Separate
+
+Business Document
+
+from
+
+Physical File.
+
+Support
+
+Local Storage
+
+Cloud Storage
+
+S3
+
+Azure Blob
+
+Cloudflare R2
+
+Future providers.
+
+Storage abstraction only.
+
+==========================================================
+STEP 11 — SEARCH ARCHITECTURE
+==========================================================
+
+Design enterprise search.
+
+Metadata
+
+OCR
+
+Document Number
+
+Title
+
+Tags
+
+Author
+
+Approver
+
+Revision
+
+Department
+
+Entity
+
+Status
+
+Full Text
+
+Search indexes.
+
+==========================================================
+STEP 12 — AUDIT ARCHITECTURE
+==========================================================
+
+Every action must be auditable.
+
+Created
+
+Viewed
+
+Downloaded
+
+Printed
+
+Uploaded
+
+Approved
+
+Rejected
+
+Checked Out
+
+Checked In
+
+Deleted
+
+Restored
+
+Permission Changed
+
+Metadata Changed
+
+Workflow Changed
+
+Delegation
+
+Nothing may be edited.
+
+==========================================================
+STEP 13 — PREVIEW ARCHITECTURE
+==========================================================
+
+Design modular preview service.
+
+Support
+
+PDF
+
+Word
+
+Excel
+
+PowerPoint
+
+Images
+
+DWG
+
+TXT
+
+Preview plugins must be independent.
+
+==========================================================
+STEP 14 — API ARCHITECTURE
+==========================================================
+
+Design REST API structure.
+
+Versioning.
+
+Resource naming.
+
+Error handling.
+
+Pagination.
+
+Filtering.
+
+Sorting.
+
+Authentication.
+
+Authorization.
+
+OpenAPI ready.
+
+==========================================================
+STEP 15 — FRONTEND ARCHITECTURE
+==========================================================
+
+Design application structure.
+
+Pages
+
+Layouts
+
+Navigation
+
+Feature Modules
+
+Shared Components
+
+Forms
+
+Dialogs
+
+Tables
+
+State Management
+
+Caching Strategy
+
+Lazy Loading
+
+==========================================================
+STEP 16 — SECURITY ARCHITECTURE
+==========================================================
+
+Design security model.
+
+RBAC
+
+Permission Inheritance
+
+Soft Delete
+
+CSRF
+
+XSS
+
+Rate Limiting
+
+Upload Validation
+
+Virus Scan Integration Point
+
+Encryption
+
+Audit Integrity
+
+==========================================================
+STEP 17 — PERFORMANCE
+==========================================================
+
+Design for enterprise scale.
+
+Millions of documents.
+
+Thousands of users.
+
+Concurrent approvals.
+
+Large uploads.
+
+Background jobs.
+
+Queues.
+
+Caching.
+
+Indexing.
+
+==========================================================
+STEP 18 — DELIVERABLES
+==========================================================
+
+Produce:
+
+1. Architecture Decision Records (ADR)
+
+2. Domain Model
+
+3. Entity Relationship Diagram
+
+4. Database Design Document
+
+5. Folder Structure
+
+6. Backend Architecture
+
+7. Frontend Architecture
+
+8. API Specification
+
+9. Security Architecture
+
+10. Permission Matrix
+
+11. Workflow Architecture
+
+12. Numbering Architecture
+
+13. Revision Architecture
+
+14. Storage Architecture
+
+15. Search Architecture
+
+16. Audit Architecture
+
+17. Notification Architecture
+
+18. Deployment Architecture
+
+19. Scalability Recommendations
+
+20. Technical Debt Report
+
+21. Risk Assessment
+
+22. Development Recommendations
+
+==========================================================
+VALIDATION
+==========================================================
+
+Before finishing:
+
+• Validate the architecture.
+
+• Ensure no duplicated domains.
+
+• Ensure proper separation of concerns.
+
+• Ensure scalability.
+
+• Ensure enterprise best practices.
+
+• Ensure compliance readiness.
+
+Do NOT implement future phases.
+
+This phase ends only after the complete architecture has been designed, reviewed, documented, and validated.

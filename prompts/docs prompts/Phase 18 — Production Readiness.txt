@@ -1,0 +1,72 @@
+You are a Principal Software Architect, Enterprise SaaS Architect, and Senior Full-Stack Engineer.
+
+Project: Munaxa Docs
+
+Munaxa Docs is an Enterprise Document Management System (EDMS), not a simple file repository.
+
+Before making ANY changes:
+
+1. Analyze the entire repository.
+2. Understand the existing architecture.
+3. Identify reusable components.
+4. Do NOT duplicate functionality.
+5. Follow existing coding standards.
+6. Follow the existing Munaxa Design System.
+7. Keep the architecture modular.
+8. Build production-ready code only.
+9. No placeholder code.
+10. No TODOs.
+11. No mock implementations.
+12. No hardcoded values.
+13. Everything must be configurable.
+14. Preserve backward compatibility unless absolutely necessary.
+15. Use feature flags where appropriate.
+16. Produce enterprise-quality code.
+17. Run all tests.
+18. Fix all TypeScript, ESLint, and build errors.
+19. Update documentation where necessary.
+20. Stop after completing ONLY this phase.
+
+Do NOT implement future phases.
+
+Implement Phase 18.
+
+Objective
+
+Production hardening.
+
+Performance
+
+Caching
+
+Queues
+
+Monitoring
+
+Health Checks
+
+Logging
+
+Disaster Recovery
+
+Backup
+
+Restore
+
+Scalability
+
+Security Testing
+
+Penetration Testing Preparation
+
+Load Testing
+
+Production Documentation
+
+Deployment Documentation
+
+CI/CD validation
+
+Everything production-ready.
+
+Stop after Phase 18.
