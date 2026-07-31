@@ -58,6 +58,7 @@ rulebook governs.
 | 18 | [Notification Architecture](./18-notification-architecture.md) | Email, in-app, digests |
 | 19 | [Performance & Scalability](./19-performance-and-scalability.md) | Enterprise scale targets |
 | 20 | [Deployment Architecture](./20-deployment-architecture.md) | Environments, CI/CD, backup, DR |
+| 21 | [SaaS Commercial Architecture](./21-saas-commercial-architecture.md) | Plans, entitlements, metering, provisioning, operator console |
 
 ## Related
 

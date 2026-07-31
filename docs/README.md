@@ -42,6 +42,7 @@ Every later phase conforms to these or supersedes them with an ADR. Index:
 | 18 | [Notification Architecture](./architecture/18-notification-architecture.md) | Email, in-app, digests, future push |
 | 19 | [Performance & Scalability](./architecture/19-performance-and-scalability.md) | Millions of documents, thousands of users |
 | 20 | [Deployment Architecture](./architecture/20-deployment-architecture.md) | Environments, topology, CI/CD, backup and DR |
+| 21 | [SaaS Commercial Architecture](./architecture/21-saas-commercial-architecture.md) | Plans, entitlements, metering, provisioning, operator console |
 
 ### Decision records
 
@@ -60,6 +61,8 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0009](./architecture/adr/0009-append-only-hash-chained-audit.md) | Audit is append-only and hash-chained |
 | [0010](./architecture/adr/0010-soft-delete-and-retention.md) | Soft delete everywhere, purge only by retention policy |
 | [0011](./architecture/adr/0011-transactional-outbox-for-async-work.md) | Async work is dispatched through a transactional outbox |
+| [0012](./architecture/adr/0012-entitlements-as-data-enforced-centrally.md) | Plans and entitlements are data, enforced centrally, separate from permissions |
+| [0013](./architecture/adr/0013-operator-console-as-separate-surface.md) | Cross-tenant operations live in a separate, fully audited console |
 
 ## 2. Phase 0 reports
 
