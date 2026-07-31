@@ -2,13 +2,17 @@
 
 Product root for **Munaxa Docs**, the Enterprise Document Management System (EDMS).
 
-**Nothing is implemented here yet.** Phase 0 designed the architecture; this folder currently holds
-that design only. Phase 0.5 builds the technical skeleton against it.
+**Nothing is implemented here yet.** Phase 0 designed the architecture; this repository
+currently holds that design only. Phase 0.5 builds the technical skeleton against it.
 
-> **Why `edms/` and not `docs/`?** The repository's documentation index already owns
-> [`docs/`](../docs/README.md). See
-> [ADR-0001](./docs/architecture/adr/0001-product-root-placement.md) — this is the one Phase 0
-> decision worth confirming before Phase 0.5 creates code under it.
+This is now an **independent repository**. It owns its own API, apps, database, migrations,
+infrastructure and CI, and depends on no other product — see
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) for the rules that bind it.
+
+> **On ADR-0001.** That ADR chose `edms/` over `docs/` to avoid colliding with the old
+> monorepo's documentation index. The separation settles the question: this repository *is*
+> the product, its architecture lives at [`docs/`](./docs/README.md), and the Phase
+> specifications live at [`prompts/`](./prompts). The ADR is kept for the record.
 
 ## What this product is
 
@@ -21,7 +25,7 @@ with an identity, a number, a lifecycle, an owner and an audit history.
 
 | Read | For |
 | --- | --- |
-| [`../PLATFORM_ENGINEERING_STANDARDS.md`](../PLATFORM_ENGINEERING_STANDARDS.md) | **Mandatory.** How work is done in this repository |
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | **Mandatory.** The dependency rules and what this repo may not own |
 | [`docs/README.md`](./docs/README.md) | The Munaxa Docs documentation index |
 | [`docs/architecture/README.md`](./docs/architecture/README.md) | The binding Phase 0 blueprint |
 | [`docs/reports/repository-analysis.md`](./docs/reports/repository-analysis.md) | What already exists and must be reused |

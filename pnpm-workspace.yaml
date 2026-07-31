@@ -1,0 +1,9 @@
+# Munaxa Docs — an independent product workspace.
+#
+# Everything here is Munaxa Docs's own: its API, admin, mobile, domain packages, Prisma
+# schema and infrastructure. The shared design system is NOT a workspace member — it is
+# resolved from the registry as @munaxa/*, exactly as in every other product repository.
+# Nothing in this repo may depend on another product.
+packages:
+  - 'apps/*'
+  - 'packages/*'
