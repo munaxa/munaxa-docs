@@ -186,8 +186,8 @@ Full index: [edms/docs/README.md](../edms/docs/README.md).
 
 | Area | Documents |
 | --- | --- |
-| **Architecture (binding)** | [index](../edms/docs/architecture/README.md) — system, monorepo, backend, domain model, ERD, database, lifecycle, workflow, permissions, numbering, revisions, storage, search, audit, preview, API, frontend, security, notifications, performance, deployment (00–20) |
-| **Decisions** | [adr/](../edms/docs/architecture/adr/) — 11 ADRs, immutable |
+| **Architecture (binding)** | [index](../edms/docs/architecture/README.md) — system, monorepo, backend, domain model, ERD, database, lifecycle, workflow, permissions, numbering, revisions, storage, search, audit, preview, API, frontend, security, notifications, performance, deployment, SaaS commercial (00–21) |
+| **Decisions** | [adr/](../edms/docs/architecture/adr/) — 13 ADRs, immutable |
 | **Phase 0 reports** | [repository analysis](../edms/docs/reports/repository-analysis.md) · [technical debt](../edms/docs/reports/technical-debt.md) · [risk assessment](../edms/docs/reports/risk-assessment.md) · [development recommendations](../edms/docs/reports/development-recommendations.md) |
 
 > **Naming caution.** `school/apps/api/src/documents` is School's PDF *generation* module and has
