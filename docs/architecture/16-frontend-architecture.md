@@ -5,11 +5,11 @@
 
 ## 1. Stack and non-negotiables
 
-Next.js 15 (App Router), React 19, TypeScript, Tailwind v4, `@axa/platform` with the `docs` theme.
+Next.js 15 (App Router), React 19, TypeScript, Tailwind v4, `@munaxa/ui` with the `docs` theme.
 
 | Rule | Source |
 | --- | --- |
-| Every component comes from `@axa/platform` or this product's `features/` — never a second button, card, table or dialog | [Rulebook §6–7](../../../PLATFORM_ENGINEERING_STANDARDS.md#6-reuse-and-duplication) |
+| Every component comes from `@munaxa/ui` or this product's `features/` — never a second button, card, table or dialog | [Rulebook §6–7](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#6-reuse-and-duplication) |
 | No hardcoded colour, spacing, radius, shadow or z-index — semantic token classes only | Rulebook §7 |
 | Logical properties only (`ps-`, `me-`, `text-start`) — the product ships EN + AR with full RTL | Rulebook §7 |
 | WCAG 2.2 AA at merge time | `platform/architecture/accessibility.md` |
@@ -20,7 +20,7 @@ Next.js 15 (App Router), React 19, TypeScript, Tailwind v4, `@axa/platform` with
 ```css
 /* app/globals.css */
 @import 'tailwindcss';
-@import '@axa/platform/css/themes/docs';
+@import '@munaxa/theme/css/docs';
 @source '../../../../platform/ui';
 ```
 
@@ -55,7 +55,7 @@ workspace**: identity and actions stay fixed while tabs change, so a user never 
 
 ```text
 features/<feature>/
-├── components/      presentational, composed from @axa/platform
+├── components/      presentational, composed from @munaxa/ui
 ├── hooks/           data hooks wrapping the typed client
 ├── queries/         query keys, fetchers, cache configuration
 ├── schemas/         zod schemas re-exported from @edms/contracts
@@ -65,7 +65,7 @@ features/<feature>/
 Features: `documents`, `revisions`, `approvals`, `libraries`, `permissions`, `search`, `audit`,
 `admin-*`, `reports`, `notifications`. A feature imports the platform, `@edms/*` packages and its
 own files — **never another feature's internals**. Shared cross-feature pieces move to `features/shared/`
-only on the third consumer ([rule of three](../../../PLATFORM_ENGINEERING_STANDARDS.md#6-reuse-and-duplication)).
+only on the third consumer ([rule of three](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#6-reuse-and-duplication)).
 
 ## 4. Data and state
 

@@ -1,0 +1,12 @@
+node_modules
+dist
+build
+.next
+.turbo
+coverage
+pnpm-lock.yaml
+school/apps/mobile
+landing
+munaxalanding.bak
+*.md
+storybook-static/

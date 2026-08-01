@@ -4,8 +4,9 @@
 **Audience:** everyone building or reviewing Munaxa Docs, human or AI.
 
 This product's documents live here. Repository-wide rules live in
-[`PLATFORM_ENGINEERING_STANDARDS.md`](../../PLATFORM_ENGINEERING_STANDARDS.md); the repository-wide
-index is [`docs/README.md`](../../docs/README.md). Where they disagree, the rulebook governs.
+[`PLATFORM_ENGINEERING_STANDARDS.md`](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md); it lives in the
+corporate repository and governs all five. This file is Munaxa Docs' own documentation index.
+Where they disagree, the rulebook governs.
 
 ```text
 edms/docs/
@@ -78,5 +79,5 @@ Point-in-time evidence produced during Phase 0. **Historical, never edited after
 ## Maintaining this index
 
 Adding a document means adding a row here in the same commit, and a row in the repository index
-[`docs/README.md`](../../docs/README.md) if it matters outside this product. A document not linked
+this index if it matters outside a single document. A document not linked
 from an index is invisible.

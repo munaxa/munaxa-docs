@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '10.33.0'
+
+jobs:
+  node:
+    name: Lint · Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      # The shared design system is published from munaxa-platform to GitHub Packages.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  boundaries:
+    name: Product isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # The dependency rules are one-directional: this product may depend on the platform
+      # and on nothing else in the ecosystem. Catching a stray cross-product import here is
+      # far cheaper than untangling it after it ships.
+      - name: No cross-product dependencies
+        run: |
+          set -euo pipefail
+          FORBIDDEN='@(school|work|docs|corporate)/'
+          if grep -rEn "from '@${FORBIDDEN}" --include=*.ts --include=*.tsx . \
+               --exclude-dir=node_modules --exclude-dir=.git \
+             | grep -v "@docs/"; then
+            echo "::error::This repository imports another product. Shared code belongs in munaxa-platform."
+            exit 1
+          fi
+          echo "No cross-product imports."

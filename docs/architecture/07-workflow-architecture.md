@@ -171,7 +171,7 @@ definition, and every auto-approval is audited as such.
 ## 7. Administration and future designer
 
 The engine takes definitions as data, so the future graphical workflow designer
-([Phase 16](../../../docs/README.md)) is a **UI over the same JSON** — no engine change. What the
+([Phase 16](../../prompts)) is a **UI over the same JSON** — no engine change. What the
 designer must respect is already enforced by the version validator:
 
 - A definition version is validated on publish: stages ordered and contiguous, every resolver

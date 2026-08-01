@@ -9,7 +9,7 @@
 
 Nothing here is implementation code. It is design, diagrams and strategy. Phases 0.5 → 18 conform
 to it, or supersede a decision with an [ADR](./adr/). Where this set and
-[`PLATFORM_ENGINEERING_STANDARDS.md`](../../../PLATFORM_ENGINEERING_STANDARDS.md) disagree, the
+[`PLATFORM_ENGINEERING_STANDARDS.md`](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md) disagree, the
 rulebook governs.
 
 ## The ten decisions that shape everything else
@@ -63,7 +63,7 @@ rulebook governs.
 ## Related
 
 - [Phase 0 reports](../reports/) — repository analysis, technical debt, risk, recommendations.
-- [Engineering standards](../../../PLATFORM_ENGINEERING_STANDARDS.md) — the mandatory rulebook.
-- [Shared platform](../../../platform/README.md) — the UI layer this product consumes.
-- [School architecture](../../../school/docs/architecture/README.md) — a **reference for patterns
+- [Engineering standards](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md) — the mandatory rulebook.
+- [Shared platform](https://github.com/tam2om/munaxa-platform) — the UI layer this product consumes.
+- [School architecture](https://github.com/tam2om/munaxa-school/blob/main/docs/architecture/README.md) — a **reference for patterns
   only**. Munaxa Docs never imports School code.

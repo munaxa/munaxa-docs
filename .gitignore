@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# OpenNext / Cloudflare Workers
+.open-next/
+.wrangler/
+.dev.vars
+# Root wrangler.jsonc is generated at deploy time by scripts/cf-emit-root-wrangler.mjs
+# (per-app configs live in <app>/wrangler.jsonc). Never commit the generated root one.
+/wrangler.jsonc
+
+# Turborepo
+.turbo/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Prisma
+school/prisma/*.db
+school/prisma/migrations/dev.db*
+
+# Testing
+coverage/
+
+# Storybook build output
+storybook-static/
+*.storybook.log
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Flutter / Dart
+school/apps/mobile/.dart_tool/
+school/apps/mobile/.flutter-plugins
+school/apps/mobile/.flutter-plugins-dependencies
+school/apps/mobile/build/
+school/apps/mobile/.pub-cache/
+school/apps/mobile/.pub/
+school/apps/mobile/ios/Pods/
+school/apps/mobile/**/GeneratedPluginRegistrant.*
+school/apps/mobile/android/.gradle/
+school/apps/mobile/android/local.properties
+school/apps/mobile/*.iml
+
+# Sentry
+.sentryclirc

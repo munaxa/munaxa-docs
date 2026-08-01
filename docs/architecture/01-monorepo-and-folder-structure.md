@@ -5,25 +5,27 @@
 
 ## 1. Position in the repository
 
-Munaxa Docs is a **peer product** of School and Work. It sits under its own root and consumes the
-shared platform through `workspace:*`.
+Munaxa Docs is a **peer product** of School and Work. Each is its own repository, and each
+consumes the shared platform from the registry as a versioned dependency.
 
 ```text
-/
-├── platform/     @axa/platform — shared, frozen, product-agnostic
-├── school/       Munaxa School
-├── work/         Munaxa Work (reserved)
-├── edms/         Munaxa Docs   ← this product
-└── tooling/      @axa/config-eslint, @axa/config-typescript
+                    munaxa-platform          @munaxa/* — shared, frozen, product-agnostic
+                           │
+        ┌──────────┬───────┴───────┬──────────┐
+        ▼          ▼               ▼          ▼
+     munaxa   munaxa-school   munaxa-work  munaxa-docs   ← this product
 ```
 
-The dependency law is absolute: **Munaxa Docs may import `@axa/platform` and its own packages, and
-nothing else in the repository.** No `@school/*` import, ever — not a type, not a helper, not a
-permission constant. Where School solved the same problem well, the *pattern* is copied by reading
-it; the *code* is written fresh here.
+The dependency law is absolute: **Munaxa Docs may import `@munaxa/*` and its own packages, and
+nothing else in the ecosystem.** No `@school/*` import, ever — not a type, not a helper, not a
+permission constant. Repository separation now makes that structurally impossible rather than
+merely forbidden, and CI's `boundaries` job fails the build on any attempt. Where School solved
+the same problem well, the *pattern* is copied by reading it; the *code* is written fresh here.
 
-Root name: `edms/`, not `docs/`, because `docs/` is the repository documentation index —
-[ADR-0001](./adr/0001-product-root-placement.md).
+> **Historical note.** This document was written when all products shared one monorepo and Docs
+> lived at `edms/`. That product root is now this repository's root; [ADR-0001's](./adr/0001-product-root-placement.md)
+> `edms/` vs `docs/` question is moot, since there is no longer a sibling documentation index to
+> collide with. The dependency rules below are unchanged — the separation strengthens them.
 
 ## 2. Product layout
 
@@ -47,7 +49,7 @@ edms/
 ```
 
 Registering the product (Phase 0.5) means adding `edms/apps/*` and `edms/packages/*` to
-[`pnpm-workspace.yaml`](../../../pnpm-workspace.yaml), adding project references to the root
+[`pnpm-workspace.yaml`](../../pnpm-workspace.yaml), adding project references to the root
 `tsconfig.json`, and letting turbo pick the tasks up from each package's `package.json`. No root
 script becomes School-specific or Docs-specific: `pnpm build`, `pnpm lint`, `pnpm typecheck`,
 `pnpm test` continue to mean "everything".
@@ -160,7 +162,7 @@ edms/apps/web/src/
 └── styles/globals.css          imports the platform `docs` theme
 ```
 
-Rules: no app-local re-export barrel over `@axa/platform`; every user-visible string comes from
+Rules: no app-local re-export barrel over `@munaxa/ui`; every user-visible string comes from
 `@edms/i18n`; every screen is assembled from platform components plus this product's domain
 components. Detail: [16](./16-frontend-architecture.md).
 

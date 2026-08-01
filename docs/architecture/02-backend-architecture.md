@@ -205,7 +205,7 @@ Consequences that every module must respect:
 
 - **Handlers are idempotent.** Delivery is at-least-once; every job carries a deterministic key.
 - **Event payloads are versioned and additive.** A shipped payload shape never changes
-  ([rulebook §12](../../../PLATFORM_ENGINEERING_STANDARDS.md#12-backward-compatibility)).
+  ([rulebook §12](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#12-backward-compatibility)).
 - **An event is a fact, in the past tense**: `DocumentApproved`, `RevisionCheckedIn`,
   `NumberAssigned`, `RetentionDue`. Never a command.
 

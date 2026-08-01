@@ -1,0 +1,5 @@
+{
+  "//": "Root tsconfig for editor/IDE resolution. Apps & packages extend @munaxa/config-typescript.",
+  "files": [],
+  "references": []
+}

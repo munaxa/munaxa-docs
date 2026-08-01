@@ -87,7 +87,7 @@ graph TB
 
 | Container | Technology | Responsibility |
 | --- | --- | --- |
-| `@edms/web` | Next.js 15 (App Router), React 19, Tailwind v4, `@axa/platform` | The document workspace. Server components for reads, route handlers for session cookies |
+| `@edms/web` | Next.js 15 (App Router), React 19, Tailwind v4, `@munaxa/ui` | The document workspace. Server components for reads, route handlers for session cookies |
 | `@edms/api` | NestJS 11, Prisma 6, PostgreSQL | Every business rule, every permission decision, every audit write |
 | `@edms/worker` | NestJS standalone + BullMQ | Preview rendering, OCR, index projection, retention purge, escalation timers, notification delivery |
 | PostgreSQL 16 | Managed Postgres | Single source of truth. Tenant-scoped rows, RLS backstop, `tsvector` search index |
@@ -127,7 +127,7 @@ sequenceDiagram
 | PostgreSQL for records **and** first-generation search | One store to back up, one consistency model; `tsvector` + GIN carries the first millions of documents | A search cluster on day one — added later behind the port ([ADR-0008](./adr/0008-postgres-first-search.md)) |
 | Object storage for bytes | Cheap, durable, presignable, lifecycle-tiered | Bytes in Postgres — kills backup and replication |
 | Redis + BullMQ | Delayed jobs give approval deadlines, reminders and escalation for free | Cron polling — imprecise and unscalable |
-| Reuse `@axa/platform` for all UI | Repository law; the `docs` theme is already authored | A product-local component library |
+| Reuse `@munaxa/ui` for all UI | Repository law; the `docs` theme is already authored | A product-local component library |
 
 ## 6. Non-functional targets
 
