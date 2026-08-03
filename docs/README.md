@@ -78,6 +78,7 @@ Point-in-time evidence. **Historical, never edited afterwards** — superseded, 
 | Document | Purpose |
 | --- | --- |
 | [Architecture compliance report](./reports/phase-0.5-architecture-compliance-report.md) | The formal gate before Phase 1: what was built, what holds, what is owed, and the verdict |
+| [Architecture gate verification](./reports/phase-0.5-architecture-gate-verification.md) | Independent re-audit of that report — every falsifiable claim re-derived from the repository |
 | [Technical debt](./reports/phase-0.5-technical-debt.md) | Every boundary the skeleton leaves owing, with an owner and a trigger |
 
 ### Phase 0 — the architecture
