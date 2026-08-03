@@ -5,7 +5,8 @@
 
 ## 1. Shape: a modular monolith
 
-One deployable API process, one database, many strictly separated modules. A single user action —
+One deployable API process, one database **per tenant** ([ADR-0015](./adr/0015-database-per-tenant.md)),
+many strictly separated modules. A single user action —
 approve a document, assign its number, freeze its revision, write its audit event, enqueue its
 notification — is one database transaction. That property is worth more than independent
 deployability at this scale, and it is the reason microservices are rejected for now.
@@ -221,7 +222,8 @@ CORS → Helmet → rate limit → body/multipart limits → correlation id
 
 The tenant context is request-scoped `AsyncLocalStorage`, never a parameter threaded by hand, and
 the Prisma client extension reads it to scope every query and stamp every write — with PostgreSQL
-RLS as the backstop ([ADR-0002](./adr/0002-multi-tenant-isolation-model.md)).
+RLS as the backstop, inside a database that holds only this tenant's rows
+([ADR-0015](./adr/0015-database-per-tenant.md)).
 
 ## 8. Workers
 

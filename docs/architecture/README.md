@@ -29,7 +29,9 @@ rulebook governs.
    ([05](./05-database-design.md), [ADR-0010](./adr/0010-soft-delete-and-retention.md)).
 8. **Storage, search, OCR, preview and notification are ports.** The provider behind each is
    replaceable without touching a use case ([02](./02-backend-architecture.md)).
-9. **Tenant isolation is enforced in four layers plus RLS** ([ADR-0002](./adr/0002-multi-tenant-isolation-model.md), [17](./17-security-architecture.md)).
+9. **Every tenant has its own database, storage location and search index**, resolved through a
+   registry — with the row-level layers and RLS retained inside each one
+   ([ADR-0015](./adr/0015-database-per-tenant.md), [17](./17-security-architecture.md)).
 10. **Async work is dispatched from a transactional outbox**, so a committed change is never lost
     and never emitted twice ([ADR-0011](./adr/0011-transactional-outbox-for-async-work.md)).
 

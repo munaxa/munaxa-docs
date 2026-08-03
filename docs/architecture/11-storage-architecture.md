@@ -48,15 +48,27 @@ port's vocabulary is deliberately provider-neutral: no `Bucket`, no `ContainerCl
 ## 3. Content addressing and deduplication
 
 ```text
-storage_key = <tenantId>/<sha256[0:2]>/<sha256[2:4]>/<sha256>
+storage_key  = <sha256[0:2]>/<sha256[2:4]>/<sha256>     what a use case names
+object key   = <tenant prefix>/<storage_key>            what the provider is given
 ```
+
+The tenant prefix is **not part of the key a use case builds**, and that is the whole of the storage
+isolation ([ADR-0015](./adr/0015-database-per-tenant.md)). A `StorageKey` is a string, so nothing in the
+type system would stop a use case from addressing another tenant's bytes — so the prefix is added by the
+port itself, from the tenant's placement, and checked on every answer coming back. A key that already
+carries a prefix, or that contains `..`, is refused rather than silently re-prefixed.
+
+That also means a stored `storage_key` does not have to be rewritten if a tenant moves container: the
+prefix says where the bytes live, not what the blob is.
 
 - The key is derived from the content hash, so **identical content is stored once per tenant**
   (`uq (tenant_id, checksum_sha256)`), and revisions or documents that share bytes share a blob.
 - Blobs are **never overwritten**. A changed file is different content and therefore a different
   key — which is what makes "the approved bytes are still the approved bytes" provable.
 - **Dedupe never crosses tenants**, even for identical content. Cross-tenant dedupe would let one
-  tenant's storage costs and existence signals leak into another's.
+  tenant's storage costs and existence signals leak into another's — and under ADR-0015 it is not
+  merely forbidden but unreachable: the port scopes both ends of a copy, so a shared blob would have to
+  be addressed with a key the port refuses.
 - `ref_count` on `file_object` tracks references; it is maintained transactionally with revision
   writes, and reconciled by a periodic sweeper that reports (never silently fixes) drift.
 

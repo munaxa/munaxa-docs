@@ -83,23 +83,32 @@ import from monopolising a pool.
 graph LR
     A["Stage 1<br/>1 API · 1 worker · 1 DB"] --> B["Stage 2<br/>N API · N workers<br/>read replica for search + reports"]
     B --> C["Stage 3<br/>external search engine<br/>separate preview cluster"]
-    C --> D["Stage 4<br/>tenant sharding by database<br/>or extraction of a hot module"]
+    C --> D["Stage 4<br/>tenant databases across clusters<br/>or extraction of a hot module"]
 ```
+
+Stage 4's database half **already happened**, in Phase 2.5: every tenant has its own database
+([ADR-0015](./adr/0015-database-per-tenant.md)). What remains of it is spreading those databases across
+more than one cluster, which is a change to the catalogue rather than to the code — a tenant's entry
+names its own connection string, so moving one is an edit and a restore.
 
 | Stage | Trigger | Change |
 | --- | --- | --- |
 | 1 → 2 | CPU > 60% sustained, or p95 drifting | Horizontal API scale (stateless), replica for read-heavy reporting and search |
 | 2 → 3 | Search p95 > 800 ms or index lag > 60 s | `OpenSearchAdapter` behind `SearchPort` ([ADR-0008](./adr/0008-postgres-first-search.md)); preview workers to their own cluster |
-| 3 → 4 | One tenant's write volume dominates, or a module's profile diverges sharply | Route the largest tenants to their own database (the tenant id is already on every row and every job), or extract the preview/OCR module — the module boundaries were drawn to make this mechanical |
+| 3 → 4 | One cluster's write volume dominates, or a module's profile diverges sharply | Move the busiest tenants' databases to another cluster — one catalogue entry each — or extract the preview/OCR module, whose boundaries were drawn to make it mechanical |
 
-Nothing in stages 3–4 is built now. The architecture is arranged so each is a contained change, and
-that is the whole of the anticipation.
+Stage 3 is not built. Stage 4's per-tenant database is, and it brought its own limit with it: each
+tenant client owns a connection pool, so a process holds at most `DATABASE_MAX_TENANT_CLIENTS × DATABASE_POOL_SIZE`
+connections and evicts the least recently used beyond that. A deployment with hundreds of tenants needs
+a connection pooler in front of PostgreSQL before it needs anything else on this list.
 
 ## 7. Known limits and their first symptom
 
 | Limit | Symptom | Response |
 | --- | --- | --- |
 | Postgres FTS at ~5M documents per tenant | Search p95 climbing, GIN maintenance cost | Stage 3 |
+| Connections, at roughly `max_connections / DATABASE_POOL_SIZE` live tenants per process | Reconnect churn in the logs as clients are evicted; `too many clients` under burst | A connection pooler (PgBouncer, transaction mode — the tenant setting is transaction-local, so it is safe behind one) |
+| Migration wall-clock, linear in tenants | A release taking a maintenance window rather than a deploy step | Batch by cluster; a long backfill is a job, not a migration |
 | Folder with > 100k direct children | Listing and unique-name checks slow | Encourage sub-foldering; virtualised UI already handles it; add a covering index |
 | One number sequence at extreme concurrency | Lock wait on `number_sequence` | The row lock is microseconds; if it ever shows, shard the sequence by adding a segment to the reset scope |
 | Very large ACL subtrees on re-permission | Index re-projection backlog | Batch and coalesce; the subtree is re-projected asynchronously and reads re-check at open time |

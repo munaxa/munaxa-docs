@@ -1,8 +1,17 @@
 # ADR-0002 — Shared database, row-level tenant isolation, RLS backstop
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0015](./0015-database-per-tenant.md)
 - **Date:** 2026-07-31
 - **Phase:** 0
+
+> **Superseded in Phase 2.5.** Every tenant now has its own database, storage location and search
+> index. The reasoning below is left exactly as it was written — including the "database per tenant"
+> alternative it deliberately kept in reserve, which is the option ADR-0015 exercised.
+>
+> What survives unchanged: `tenant_id` on every row, the five enforcement layers, and the
+> `NOBYPASSRLS` application role. They are no longer the *only* boundary between two customers, and
+> they still apply inside every tenant's own database — which is what an on-premise installation
+> serving two companies from one PostgreSQL relies on entirely.
 
 ## Context
 

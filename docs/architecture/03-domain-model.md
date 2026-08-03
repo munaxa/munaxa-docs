@@ -192,6 +192,6 @@ Value objects: `DocumentId`, `DocumentNumber`, `DocumentStatus`, `MetadataValue`
 6. Every read and every write is **permission-checked on the server**
    ([08](./08-permission-model.md)).
 7. Every record carries a `tenantId` and is invisible across tenants
-   ([ADR-0002](./adr/0002-multi-tenant-isolation-model.md)).
+   ([ADR-0015](./adr/0015-database-per-tenant.md)).
 8. **No business behaviour is hardcoded** where a tenant could reasonably need it different: types,
    fields, numbers, workflows, retention, confidentiality are all configuration.
