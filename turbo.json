@@ -5,18 +5,18 @@
   "globalEnv": ["NODE_ENV", "SENTRY_DSN", "NEXT_PUBLIC_POSTHOG_KEY"],
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "prisma:generate", "typegen"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "lint": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "prisma:generate", "typegen"]
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "prisma:generate", "typegen"]
     },
     "validate": {},
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "prisma:generate", "typegen"],
       "outputs": ["coverage/**"]
     },
     "build-storybook": {
@@ -29,6 +29,9 @@
     },
     "prisma:generate": {
       "cache": false
+    },
+    "typegen": {
+      "outputs": [".next/types/**"]
     }
   },
   "globalPassThroughEnv": ["NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"]

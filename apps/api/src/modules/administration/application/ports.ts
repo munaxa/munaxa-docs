@@ -72,7 +72,15 @@ export interface ConfidentialityLevelRepository {
 
 export interface TenantSettingsRepository {
   get<TValue>(key: string): Promise<TValue | null>;
+  /** Rejects a key outside the catalogue: a value nothing can read back is only clutter. */
   set<TValue>(key: string, value: TValue): Promise<void>;
+  /**
+   * The whole stored bag, unresolved.
+   *
+   * Settings are always read together — one read serves a request, whatever it asks for — so
+   * the reader resolves this against the catalogue once and caches the result.
+   */
+  readAll(): Promise<Readonly<Record<string, unknown>>>;
 }
 
 export const ADMINISTRATION_SERVICE = Symbol('AdministrationService');

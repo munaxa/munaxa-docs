@@ -3,6 +3,7 @@ import type {
   DelegationId,
   PermissionKey,
   RoleId,
+  TenantId,
   UserId,
   UserStatusKey,
 } from '@edms/domain';
@@ -69,11 +70,135 @@ export interface DelegationRepository {
   save(delegation: DelegationRecord): Promise<void>;
 }
 
+/**
+ * A stored refresh token, as the rotation logic needs to see it.
+ *
+ * `usedAt` and the family's `revokedAt` are both carried because they mean different things:
+ * a used token is evidence of replay, a revoked family is a session that is already over.
+ */
+export interface RefreshTokenRecord {
+  readonly id: AnyId;
+  readonly familyId: AnyId;
+  readonly userId: UserId;
+  readonly expiresAt: Date;
+  readonly usedAt: Date | null;
+  readonly familyRevokedAt: Date | null;
+}
+
 export interface SessionRepository {
+  /** Opens a session family. One sign-in, one family, however many rotations follow. */
+  createFamily(family: {
+    readonly id: AnyId;
+    readonly userId: UserId;
+    readonly ipAddress: string | null;
+    readonly userAgent: string | null;
+  }): Promise<void>;
+  /** Records an issued refresh token. Only the hash is stored — never the token itself. */
+  issueToken(token: {
+    readonly id: AnyId;
+    readonly familyId: AnyId;
+    readonly tokenHash: string;
+    readonly expiresAt: Date;
+  }): Promise<void>;
   /** Refresh tokens are stored hashed; reuse of a rotated token kills the whole family. */
-  findFamilyByTokenHash(tokenHash: string): Promise<{ familyId: AnyId; userId: UserId } | null>;
+  findByTokenHash(tokenHash: string): Promise<RefreshTokenRecord | null>;
+  /**
+   * Marks a token exchanged. Returns false when it was already marked, which is the signal
+   * that this is a replay — the caller revokes the family rather than issuing a new pair.
+   */
+  markUsed(tokenId: AnyId, at: Date): Promise<boolean>;
   revokeFamily(familyId: AnyId, reason: string): Promise<void>;
   revokeAllForUser(userId: UserId, reason: string): Promise<void>;
+}
+
+/**
+ * Everything sign-in needs about a user, in one read.
+ *
+ * Separate from `UserRecord` because it carries the password hash, which must not travel on
+ * the type that administrative screens use — the narrower the audience for a credential, the
+ * fewer places it can be logged from.
+ */
+export interface UserCredentialRecord {
+  readonly id: UserId;
+  readonly email: string;
+  readonly displayName: string;
+  readonly status: UserStatusKey;
+  readonly passwordHash: string | null;
+  readonly mfaEnrolled: boolean;
+  readonly permissionVersion: number;
+  readonly roleIds: readonly RoleId[];
+  readonly roleKeys: readonly string[];
+  readonly permissions: readonly PermissionKey[];
+}
+
+export const CREDENTIAL_REPOSITORY = Symbol('CredentialRepository');
+
+/**
+ * Credential reads and writes, kept apart from `UserRepository` on purpose: this is the only
+ * interface in the module that can see a password hash.
+ */
+export interface CredentialRepository {
+  /** Case-insensitive, live rows only. Null for unknown, deleted, or wrong-tenant. */
+  findByEmail(email: string): Promise<UserCredentialRecord | null>;
+  findById(id: UserId): Promise<UserCredentialRecord | null>;
+  updatePasswordHash(id: UserId, encodedHash: string, at: Date): Promise<void>;
+  recordSignIn(id: UserId, at: Date): Promise<void>;
+}
+
+export const PROVISIONING_REPOSITORY = Symbol('ProvisioningRepository');
+
+/**
+ * The writes that bootstrap a tenant.
+ *
+ * Separate from the repositories above because it is the only one that runs *before* a tenant
+ * exists, and because narrowing it is what keeps a bootstrap path from quietly becoming a
+ * second way to create users.
+ */
+export interface ProvisioningRepository {
+  slugExists(slug: string): Promise<boolean>;
+  /** Written outside any tenant context — the context is keyed on what this creates. */
+  createTenant(tenant: { id: TenantId; slug: string; name: string }): Promise<void>;
+  createAdminRole(role: {
+    id: RoleId;
+    key: string;
+    name: string;
+    permissions: readonly PermissionKey[];
+  }): Promise<void>;
+  createAdminUser(user: {
+    id: UserId;
+    roleId: RoleId;
+    email: string;
+    emailNormalized: string;
+    displayName: string;
+    passwordHash: string;
+  }): Promise<void>;
+}
+
+export const USER_DIRECTORY = Symbol('UserDirectory');
+
+/** Enough to address a person. Deliberately not enough to do anything else with them. */
+export interface UserContact {
+  readonly userId: UserId;
+  readonly email: string;
+  readonly displayName: string;
+}
+
+/**
+ * How other modules look up who to write to.
+ *
+ * Narrower than `UserService` on purpose: Notification needs an address and a name, and giving
+ * it the full user surface would let it grow a dependency on things that are none of its
+ * business. This is the whole of the contract, and it is the only way out of this module —
+ * nobody reads Identity's tables (`docs/architecture/02-backend-architecture.md` §3).
+ *
+ * There is no locale here. A person's language is tenant configuration today, resolved through
+ * `SETTINGS_READER`; when users get their own preference it is added here and every caller
+ * keeps working.
+ */
+export interface UserDirectory {
+  contactFor(userId: UserId): Promise<UserContact | null>;
+  /** Live users only, in one query — a notification to twenty people is not twenty round trips. */
+  contactsFor(userIds: readonly UserId[]): Promise<readonly UserContact[]>;
 }
 
 export const USER_SERVICE = Symbol('UserService');

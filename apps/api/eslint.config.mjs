@@ -104,4 +104,16 @@ export default [
       ],
     },
   },
+  {
+    files: ['src/**/*.spec.ts'],
+    rules: {
+      /**
+       * `unbound-method` fires on every `expect(double.method).toHaveBeenCalled()`, because it
+       * cannot tell a reference that will be invoked from one that is only being inspected.
+       * The assertion never calls the method, so there is no `this` to lose. Disabled for
+       * tests only — the rule keeps its teeth everywhere it can catch a real defect.
+       */
+      '@typescript-eslint/unbound-method': 'off',
+    },
+  },
 ];

@@ -13,6 +13,17 @@ import type { EnqueuedJob, JobOptions, QueueDepth, QueuePort } from '../ports/qu
 /** Time that only moves when a test moves it — which is how deadline and retention rules
  *  become assertions instead of waits. */
 export class FakeClock implements ClockPort {
+  /**
+   * Monotonic, fractional, and deliberately nowhere near an epoch.
+   *
+   * It used to return `current.getTime()`, which made `timestamp()` look like wall-clock
+   * milliseconds when the real adapter returns `performance.now()`. Three defects hid behind
+   * that — two identifiers generated from a duration, and a health field reporting milliseconds
+   * since process start as an epoch — and every one of them passed the suite. A double that is
+   * more convenient than the real thing is a double that tests something else.
+   */
+  private monotonic = 1_234.5;
+
   constructor(private current: Date = new Date('2026-01-01T00:00:00.000Z')) {}
 
   now(): Date {
@@ -20,15 +31,16 @@ export class FakeClock implements ClockPort {
   }
 
   timestamp(): number {
-    return this.current.getTime();
+    return this.monotonic;
   }
 
   elapsedMs(since: number): number {
-    return Math.max(0, this.current.getTime() - since);
+    return Math.max(0, Math.round(this.monotonic - since));
   }
 
   advanceBy(milliseconds: number): void {
     this.current = new Date(this.current.getTime() + milliseconds);
+    this.monotonic += milliseconds;
   }
 
   set(at: Date): void {

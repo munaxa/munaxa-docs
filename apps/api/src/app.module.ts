@@ -22,6 +22,7 @@ import { AuditModule as AuditDomainModule } from './modules/audit/audit.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DocumentModule } from './modules/document/document.module';
 import { IdentityModule } from './modules/identity/identity.module';
+import { JwtTokenService } from './modules/identity/infrastructure/jwt.token-service';
 import { LibraryModule } from './modules/library/library.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { OrganizationModule } from './modules/organization/organization.module';
@@ -57,7 +58,9 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     LoggerModule,
     PrismaModule,
     TenancyModule,
-    AuthModule,
+    // Identity ships a real verifier, so the port no longer resolves to the one that rejects
+    // everything. This is the only place that may import both `core/` and a module.
+    AuthModule.withVerifier(JwtTokenService),
     AuthorizationModule,
     AuditModule,
     OutboxModule,

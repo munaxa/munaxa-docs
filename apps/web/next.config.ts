@@ -8,8 +8,10 @@ import type { NextConfig } from 'next';
  * and no inline script means an injected `<script>` cannot run
  * (`docs/architecture/17-security-architecture.md` §6).
  *
- * The API is reached over CORS with a bearer token; only the rotating refresh cookie is set
- * by this app's route handlers, and it is `httpOnly`, `Secure`, `SameSite=Lax`.
+ * The API is reached from this application's *server*, never from the browser: it returns both
+ * tokens in a JSON body and this app writes them into `httpOnly`, `Secure`, `SameSite=Lax`
+ * cookies. No token is ever readable by script in the page, which is the property the script
+ * policy above exists to protect.
  */
 const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
@@ -29,13 +31,12 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   transpilePackages: ['@munaxa/ui', '@munaxa/platform', '@munaxa/icons'],
-  // Typed routes are switched on by the phase that adds the first screens. Enabling them now
-  // would only be satisfiable by writing placeholder pages for `/login` and every other
-  // destination the shell already knows about, and a placeholder screen is worse than an
-  // honest 404: it looks finished. Recorded in docs/reports/phase-0.5-technical-debt.md.
-  experimental: {
-    typedRoutes: false,
-  },
+  // On now that the screens the shell links to actually exist. It was deferred through Phase
+  // 0.5 because enabling it then would have been satisfiable only by writing placeholder pages
+  // for `/login` and every other destination, and a placeholder screen is worse than an honest
+  // 404: it looks finished. A link to a route that does not exist is now a build error, which
+  // is what closes technical debt #3 and risk R6 together.
+  typedRoutes: true,
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },

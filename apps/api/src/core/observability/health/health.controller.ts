@@ -41,6 +41,8 @@ export class HealthController {
   @ApiOperation({ summary: 'Dependency detail behind readiness.' })
   async detail(): Promise<HealthReport & { checkedAtEpoch: number }> {
     const report = await this.health.report();
-    return { ...report, checkedAtEpoch: this.clock.timestamp() };
+    // `now()`, not `timestamp()`: the latter is monotonic and counts from an arbitrary
+    // origin, so it was reporting milliseconds since this process started as an epoch.
+    return { ...report, checkedAtEpoch: this.clock.now().getTime() };
   }
 }

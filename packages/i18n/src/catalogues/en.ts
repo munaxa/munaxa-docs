@@ -27,6 +27,27 @@ export const en = {
     signOut: 'Sign out',
     sessionExpired: 'Your session has expired. Sign in again to continue.',
     forbidden: 'You do not have permission to do this.',
+    signInHeading: 'Sign in',
+    signInSubheading: 'Use your work account to continue.',
+    emailLabel: 'Email address',
+    passwordLabel: 'Password',
+    organisationLabel: 'Organisation',
+    organisationHint: 'The short name of your organisation, as it appears in your address.',
+    signingIn: 'Signing in…',
+    // One message for every reason, matching the API. Telling somebody which half of the pair
+    // was wrong tells an attacker the same thing.
+    signInRejected: 'Those credentials were not accepted.',
+    signInUnavailable: 'Sign-in is unavailable right now. Try again in a moment.',
+  },
+  nav: {
+    main: 'Main',
+    menu: 'Navigation',
+    skipToContent: 'Skip to content',
+    home: 'Home',
+    account: 'Account',
+    appearance: 'Appearance',
+    lightMode: 'Light',
+    darkMode: 'Dark',
   },
   error: {
     VALIDATION_FAILED: 'Some of the details are not valid.',

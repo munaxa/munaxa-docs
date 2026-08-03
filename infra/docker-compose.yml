@@ -21,9 +21,11 @@ services:
       - '5433:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # Roles and RLS are applied before anything connects, so a developer's database has the
-      # same isolation posture as production from the first query.
-      - ./sql:/docker-entrypoint-initdb.d:ro
+      # Roles and privileges are applied before anything connects. Only ./sql/provision may
+      # be mounted here: the entrypoint runs before the first migration, so anything that
+      # references a table would abort. Row-level security and audit immutability live in
+      # ./sql/post-migrate and are applied by `pnpm db:post-migrate` after migrations.
+      - ./sql/provision:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U edms_owner -d edms']
       interval: 5s

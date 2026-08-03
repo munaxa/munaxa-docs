@@ -88,6 +88,11 @@ model Tenant {
   auditEvents AuditEvent[]
   outbox      OutboxMessage[]
   idempotency IdempotencyKey[]
+  users       User[]
+  roles       Role[]
+  sessions    SessionFamily[]
+  notificationTemplates NotificationTemplate[]
+  notifications         NotificationMessage[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -105,6 +110,14 @@ model Tenant {
 model AuditEvent {
   id           String           @id @db.Uuid
   tenantId     String           @map("tenant_id") @db.Uuid
+  /// Per-tenant, monotonic and **gap-free** (`13-audit-architecture.md` §3).
+  ///
+  /// The hash chain proves that no record was altered, but on its own it cannot prove that
+  /// none was removed from the end: truncate the last k events and what remains still chains
+  /// perfectly. A contiguous sequence is what makes a hole visible, and it is why this is
+  /// allocated as `max + 1` under a per-tenant advisory lock rather than from a PostgreSQL
+  /// sequence — those gap on rollback, and a gap is indistinguishable from a deletion.
+  sequence     BigInt
   occurredAt   DateTime         @map("occurred_at") @db.Timestamptz(6)
   /// Null when the system acted alone — a retention purge, a scheduled verification.
   actorId      String?          @map("actor_id") @db.Uuid
@@ -137,6 +150,9 @@ model AuditEvent {
   @@index([tenantId, occurredAt], map: "ix_audit_occurred")
   /// Ties an event back to the request that produced it, across API, worker and logs.
   @@index([correlationId], map: "ix_audit_correlation")
+  /// The chain's order, and the constraint that makes a duplicate sequence impossible even if
+  /// two writers somehow bypass the advisory lock.
+  @@unique([tenantId, sequence], map: "uq_audit_tenant_sequence")
   @@map("audit_event")
 }
 
@@ -198,4 +214,314 @@ model IdempotencyKey {
   @@unique([tenantId, key], map: "uq_idempotency_tenant_key")
   @@index([expiresAt], map: "ix_idempotency_expiry")
   @@map("idempotency_key")
+}
+
+// ---------------------------------------------------------------------------------------
+// Identity — Phase 1.
+//
+// Users, roles, the role→permission matrix and refresh-token sessions. Object-level reach
+// (which folder, which library) is not here: it is resolved per request against the scope
+// tree by the ACL resolver, so revoking access takes effect on the next call rather than at
+// the next token refresh (`docs/architecture/08-permission-model.md` §3).
+// ---------------------------------------------------------------------------------------
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+
+  @@map("user_status")
+}
+
+/// How a stored password was derived. Recorded per row so the parameters can be raised
+/// without invalidating every existing credential: a user whose row names an older algorithm
+/// is transparently re-hashed on their next successful sign-in.
+enum PasswordAlgorithm {
+  SCRYPT
+
+  @@map("password_algorithm")
+}
+
+/// A person who can sign in.
+///
+/// `emailNormalized` is the lookup key and the uniqueness key; `email` preserves what the
+/// user typed. The unique index is partial on `deleted_at IS NULL`, so deleting a user frees
+/// their address for re-invitation — the general rule for soft-deletable data.
+model User {
+  id                String     @id @db.Uuid
+  tenantId          String     @map("tenant_id") @db.Uuid
+  email             String
+  /// Lower-cased and trimmed. Never shown; only matched against.
+  emailNormalized   String     @map("email_normalized")
+  displayName       String     @map("display_name")
+  status            UserStatus @default(INVITED)
+  /// Null for an invited user who has not yet set one, and for a user who authenticates
+  /// through a federated issuer. Absence is never a reason to allow a sign-in.
+  passwordHash      String?    @map("password_hash")
+  passwordAlgorithm PasswordAlgorithm? @map("password_algorithm")
+  passwordUpdatedAt DateTime?  @map("password_updated_at") @db.Timestamptz(6)
+  mfaEnrolled       Boolean    @default(false) @map("mfa_enrolled")
+  /// Bumped whenever this user's roles or permissions change. An access token carrying an
+  /// older value is refused, so a revoked role takes effect within one request rather than
+  /// at the end of the token's lifetime.
+  permissionVersion Int        @default(1) @map("permission_version")
+  lastLoginAt       DateTime?  @map("last_login_at") @db.Timestamptz(6)
+  createdAt         DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?    @map("created_by") @db.Uuid
+  updatedAt         DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy         String?    @map("updated_by") @db.Uuid
+  deletedAt         DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  deletedBy         String?    @map("deleted_by") @db.Uuid
+  /// Optimistic locking. Two administrators editing the same user do not silently overwrite.
+  version           Int        @default(1)
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  roles    UserRole[]
+  sessions SessionFamily[]
+  notificationPreferences NotificationPreference[]
+  notifications           NotificationMessage[]
+
+  @@index([tenantId, emailNormalized], map: "ix_user_email")
+  @@index([tenantId, status], map: "ix_user_status")
+  @@map("user")
+}
+
+/// A named bundle of permissions.
+///
+/// The eight `SystemRole` keys are seeded into every tenant and cannot be renamed or deleted,
+/// because the product refers to them by key. Their *permissions* are tenant data and may be
+/// edited — a tenant whose approvers must also publish should not need a release.
+model Role {
+  id          String  @id @db.Uuid
+  tenantId    String  @map("tenant_id") @db.Uuid
+  key         String
+  name        String
+  description String?
+  /// Seeded by the product. Blocks deletion and renaming of the key, not of the permissions.
+  isSystem    Boolean @default(false) @map("is_system")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+  version     Int       @default(1)
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@index([tenantId], map: "ix_role_tenant")
+  @@map("role")
+}
+
+/// One permission granted to one role.
+///
+/// A row per grant rather than an array column, so revoking a single permission is a delete
+/// and the matrix is queryable — "which roles can approve" is a question the product asks.
+/// `permission` is validated against the catalogue in `@edms/domain` before it is written;
+/// the database deliberately does not carry an enum of them, because adding a permission
+/// would then require a migration in lockstep with the code that uses it.
+model RolePermission {
+  tenantId   String @map("tenant_id") @db.Uuid
+  roleId     String @map("role_id") @db.Uuid
+  permission String
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permission])
+  @@index([tenantId, permission], map: "ix_role_permission_lookup")
+  @@map("role_permission")
+}
+
+/// A role held by a user.
+model UserRole {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  roleId     String   @map("role_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz(6)
+  assignedBy String?  @map("assigned_by") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@index([tenantId, roleId], map: "ix_user_role_by_role")
+  @@map("user_role")
+}
+
+/// One sign-in, and the chain of refresh tokens it issued.
+///
+/// The family is the unit of revocation. Refresh tokens rotate: each use issues a successor
+/// and marks its predecessor used. Presenting an already-used token means the token was
+/// stolen — either the thief or the legitimate holder is replaying it, and there is no way to
+/// tell which — so the whole family is revoked and both parties must sign in again
+/// (`docs/architecture/17-security-architecture.md` §2).
+model SessionFamily {
+  id           String    @id @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Set when the family is revoked: by sign-out, by password change, or by token reuse.
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedReason String?  @map("revoked_reason")
+  ipAddress    String?   @map("ip_address")
+  userAgent    String?   @map("user_agent")
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokens RefreshToken[]
+
+  @@index([tenantId, userId], map: "ix_session_family_user")
+  @@map("session_family")
+}
+
+/// A single refresh token, stored only as a hash.
+///
+/// The plaintext exists in the client's cookie and nowhere else: a database disclosure must
+/// not hand over live sessions. Lookup is by hash, which is why the hash is unique.
+model RefreshToken {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  familyId    String    @map("family_id") @db.Uuid
+  tokenHash   String    @map("token_hash") @db.Char(64)
+  issuedAt    DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
+  /// Set the moment the token is exchanged. A second exchange is reuse, and kills the family.
+  usedAt      DateTime? @map("used_at") @db.Timestamptz(6)
+
+  family SessionFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenHash], map: "uq_refresh_token_hash")
+  @@index([familyId], map: "ix_refresh_token_family")
+  @@index([expiresAt], map: "ix_refresh_token_expiry")
+  @@map("refresh_token")
+}
+
+// ---------------------------------------------------------------------------------------
+// Notification — Phase 1.
+//
+// The framework: what was sent, to whom, on which channel, and what each person asked for.
+// Templates ship with the product (`modules/notification/domain/default-templates.ts`); rows
+// here are tenant *overrides*, so a tenant that has customised nothing still gets correct,
+// translated notifications (`docs/architecture/18-notification-architecture.md` §6).
+// ---------------------------------------------------------------------------------------
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+  SMS
+  PUSH
+  WEBHOOK
+
+  @@map("notification_channel")
+}
+
+enum DeliveryState {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  SUPPRESSED
+
+  @@map("delivery_state")
+}
+
+enum DigestFrequency {
+  IMMEDIATE
+  HOURLY
+  DAILY
+  WEEKLY
+
+  @@map("digest_frequency")
+}
+
+/// A tenant's override of a shipped template.
+///
+/// Absence means "use the product's". That is why there is no seeding step: an empty table is
+/// a fully working tenant, and a row exists only where somebody deliberately changed something.
+model NotificationTemplate {
+  id        String              @id @db.Uuid
+  tenantId  String              @map("tenant_id") @db.Uuid
+  /// The notification type key, e.g. `security.session.revoked`.
+  typeKey   String              @map("type_key")
+  channel   NotificationChannel
+  locale    String
+  subject   String
+  bodyText  String              @map("body_text")
+  /// Null for channels with no HTML — in-app, SMS.
+  bodyHtml  String?             @map("body_html")
+  createdAt DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?             @map("created_by") @db.Uuid
+  updatedAt DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?             @map("updated_by") @db.Uuid
+  version   Int                 @default(1)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, typeKey, channel, locale], map: "uq_notification_template")
+  @@map("notification_template")
+}
+
+/// What one person asked to receive, and how often.
+///
+/// A missing row means "no opinion", never "off": the type's own defaults apply, and a
+/// mandatory type is delivered regardless (§5).
+model NotificationPreference {
+  tenantId String                @map("tenant_id") @db.Uuid
+  userId   String                @map("user_id") @db.Uuid
+  typeKey  String                @map("type_key")
+  channels NotificationChannel[]
+  digest   DigestFrequency       @default(IMMEDIATE)
+  updatedAt DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, typeKey])
+  @@index([tenantId, typeKey], map: "ix_notification_preference_type")
+  @@map("notification_preference")
+}
+
+/// One notification, to one person, on one channel.
+///
+/// The rendered subject and body are stored rather than re-rendered at delivery: what was sent
+/// is a fact, and a template edited afterwards must not change what the record says was sent.
+///
+/// In-app delivery *is* this row — there is no adapter, which is why a mail provider outage
+/// never affects it (§7).
+model NotificationMessage {
+  id             String              @id @db.Uuid
+  tenantId       String              @map("tenant_id") @db.Uuid
+  recipientId    String              @map("recipient_id") @db.Uuid
+  typeKey        String              @map("type_key")
+  channel        NotificationChannel
+  locale         String
+  /// The channel address this went to, captured when the message was created.
+  ///
+  /// Stored rather than looked up at delivery: what was sent, and where, is a fact. A person
+  /// who changes their email afterwards must not retroactively change the record of what was
+  /// already sent to the old one.
+  address        String
+  subject        String
+  bodyText       String              @map("body_text")
+  bodyHtml       String?             @map("body_html")
+  state          DeliveryState       @default(QUEUED)
+  attempts       Int                 @default(0)
+  /// Deterministic per (event, recipient, channel). A second delivery attempt for the same
+  /// key is a no-op rather than a duplicate in somebody's inbox (§7).
+  idempotencyKey String              @map("idempotency_key")
+  failureReason  String?             @map("failure_reason")
+  sentAt         DateTime?           @map("sent_at") @db.Timestamptz(6)
+  readAt         DateTime?           @map("read_at") @db.Timestamptz(6)
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  recipient User   @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, idempotencyKey], map: "uq_notification_idempotency")
+  /// The inbox query: one person's unread, newest first.
+  @@index([tenantId, recipientId, readAt, createdAt(sort: Desc)], map: "ix_notification_inbox")
+  /// The dispatcher's claim query.
+  @@index([tenantId, state, createdAt], map: "ix_notification_pending")
+  @@map("notification_message")
 }
