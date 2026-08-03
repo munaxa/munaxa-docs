@@ -29,6 +29,17 @@ const APP_URL = process.env['DATABASE_URL'] ?? '';
 const ACME = asId<TenantId>(uuidv7());
 const GLOBEX = asId<TenantId>(uuidv7());
 
+// Unique per run, so the suite can be run repeatedly against the same database without a
+// manual truncate between attempts. A test that needs the world cleaned up first is a test
+// people stop running.
+//
+// From the *tail* of the identifier, not the head: a UUID v7 begins with the millisecond
+// timestamp, so its leading hex digits are shared by every identifier minted in the same
+// ~65-second window — two runs a minute apart would collide on the slug.
+const suffix = (id: string): string => id.replaceAll('-', '').slice(-12);
+const ACME_SLUG = `acme-${suffix(ACME)}`;
+const GLOBEX_SLUG = `globex-${suffix(GLOBEX)}`;
+
 const config = {
   env: 'test',
   auth: {
@@ -79,7 +90,7 @@ const service = new DefaultAuthenticationService(
 );
 
 const context = {
-  tenantSlug: 'acme',
+  tenantSlug: ACME_SLUG,
   ipAddress: '198.51.100.7',
   userAgent: 'integration',
   correlationId: 'integration-1',
@@ -98,9 +109,11 @@ beforeAll(async () => {
   const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
   const passwordHash = await hasher.hash('correct horse battery staple');
 
-  for (const [tenantId, slug] of [
-    [ACME, 'acme'],
-    [GLOBEX, 'globex'],
+  // The slug is unique per run; the address is not, and does not need to be — uniqueness on
+  // users is per tenant, and each run creates new tenants.
+  for (const [tenantId, slug, email] of [
+    [ACME, ACME_SLUG, 'ada@acme.test'],
+    [GLOBEX, GLOBEX_SLUG, 'ada@globex.test'],
   ] as const) {
     // `tenant` has no policy, so it is inserted outside any tenant context.
     await owner.tenant.create({
@@ -127,8 +140,8 @@ beforeAll(async () => {
         data: {
           id: uuidv7(),
           tenantId,
-          email: `ada@${slug}.test`,
-          emailNormalized: `ada@${slug}.test`,
+          email,
+          emailNormalized: email,
           displayName: 'Ada',
           status: 'ACTIVE',
           passwordHash,
@@ -166,7 +179,7 @@ describe('authentication against PostgreSQL', () => {
     await expect(
       service.signIn({
         ...context,
-        tenantSlug: 'globex',
+        tenantSlug: GLOBEX_SLUG,
         email: 'ada@acme.test',
         password: 'correct horse battery staple',
       }),

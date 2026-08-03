@@ -9,6 +9,7 @@ export * from './ids';
 export * from './permissions';
 export * from './roles';
 export * from './scope';
+export * from './settings';
 export * from './base-entity';
 export * from './errors';
 export * from './events/domain-event';
