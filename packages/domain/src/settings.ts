@@ -19,6 +19,25 @@ export interface SettingDefinition<TValue> {
   readonly defaultValue: TValue;
   /** What this controls, in the words an administration screen would use. */
   readonly description: string;
+  /**
+   * Which control renders it, so a screen needs no per-key mapping of its own.
+   *
+   * Stated rather than inferred from `typeof defaultValue`: a string setting with a fixed set of
+   * values and one without are the same JavaScript type and different controls, and a screen that
+   * guessed would offer free text where only two values are legal.
+   */
+  readonly kind: 'string' | 'integer' | 'boolean' | 'choice';
+  /**
+   * The values a `choice` setting accepts.
+   *
+   * Declared here rather than left inside `parse`'s closure, because a form has to validate against
+   * the same set the API does. The alternative is restating it in the screen — a second source of
+   * truth for what is legal — or interrogating the parser, which is worse: it makes the bounds
+   * discoverable only by guessing at them.
+   */
+  readonly allowed?: readonly string[];
+  /** The range an `integer` setting accepts, for the same reason. */
+  readonly bounds?: { readonly min: number; readonly max: number };
   /** Narrows an untrusted stored value. `null` means "not usable — take the default". */
   parse(raw: unknown): TValue | null;
 }
@@ -39,6 +58,8 @@ function stringSetting<const TKey extends string>(
     key,
     defaultValue,
     description,
+    kind: allowed ? 'choice' : 'string',
+    ...(allowed && { allowed }),
     parse(raw) {
       if (typeof raw !== 'string') {
         return null;
@@ -62,6 +83,8 @@ function integerSetting<const TKey extends string>(
     key,
     defaultValue,
     description,
+    kind: 'integer',
+    bounds,
     parse(raw) {
       if (typeof raw !== 'number' || !Number.isInteger(raw)) {
         return null;
@@ -82,6 +105,7 @@ function booleanSetting<const TKey extends string>(
     key,
     defaultValue,
     description,
+    kind: 'boolean',
     parse(raw) {
       return typeof raw === 'boolean' ? raw : null;
     },

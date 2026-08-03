@@ -57,6 +57,32 @@ export class PrismaTenantSettingsRepository implements TenantSettingsRepository 
     );
   }
 
+  /**
+   * Drops one key, leaving the rest of the bag untouched.
+   *
+   * `#-` removes a top-level key from a `jsonb` value, and it is used for the same reason `jsonb_set`
+   * is on the way in: two administrators changing different settings at once must not overwrite each
+   * other, which a read-modify-write of the whole bag would do silently.
+   */
+  async remove(key: string): Promise<void> {
+    if (!isSettingKey(key)) {
+      throw new Error(`'${key}' is not a setting this product defines.`);
+    }
+    const { tenantId } = requireContext();
+    const client = currentTransaction() ?? this.prisma;
+
+    await client.$executeRawUnsafe(
+      `UPDATE "tenant"
+          SET "settings" = coalesce("settings", '{}'::jsonb) #- $2::text[],
+              "updated_at" = now()
+        WHERE "id" = $1::uuid`,
+      tenantId,
+      // A path array, so a key containing a dot is one key rather than a nested object — the same
+      // reasoning as `set`.
+      [key],
+    );
+  }
+
   /** The whole stored bag, unresolved. Callers resolve it against the catalogue. */
   async readAll(): Promise<Readonly<Record<string, unknown>>> {
     const { tenantId } = requireContext();

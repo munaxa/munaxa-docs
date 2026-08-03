@@ -1,9 +1,25 @@
 import { Global, Module } from '@nestjs/common';
 
 import { SETTINGS_READER } from '../../core/settings/settings.port';
+import {
+  CONFIGURATION_REPOSITORY,
+  CONFIGURATION_SERVICE,
+  NUMBERING_ADMIN_SERVICE,
+  SETTINGS_ADMIN_SERVICE,
+} from './application/administration.ports';
+import { ConfigurationService } from './application/configuration.service';
+import { NumberingAdminService } from './application/numbering-admin.service';
+import { SettingsAdminService } from './application/settings-admin.service';
 import { TENANT_SETTINGS_REPOSITORY } from './application/ports';
 import { CachedSettingsReader } from './infrastructure/cached-settings.reader';
+import { PrismaConfigurationRepository } from './infrastructure/prisma-configuration.repository';
 import { PrismaTenantSettingsRepository } from './infrastructure/prisma-tenant-settings.repository';
+import {
+  ConfigurationController,
+  NumberingAdminController,
+  RetentionAdminController,
+  SettingsAdminController,
+} from './presentation/administration.controller';
 
 /**
  * Administration — How is this tenant configured?
@@ -22,15 +38,30 @@ import { PrismaTenantSettingsRepository } from './infrastructure/prisma-tenant-s
  * They are a different question from settings: a flag hides unfinished work, an entitlement
  * expresses what a customer bought, and a setting is what the customer chose.
  *
- * Phase 1 implements the settings read path. The administration surface over it — creating and
- * editing configuration, with soft delete, restore, search and pagination — is Phase 2, which
- * owns that capability.
+ * Phase 1 implemented the settings read path. Phase 2 adds everything else this module owns: document
+ * types, categories, metadata fields, confidentiality levels, retention policies and numbering rules,
+ * plus the write path over settings themselves — each with soft delete, restore, search, paging and
+ * filtering.
+ *
+ * Only the settings **read** port is exported. The administration services are this module's own, and
+ * a module that could reach `ConfigurationService` could delete a confidentiality level while
+ * resolving a document's handling rules against it.
  */
 @Global()
 @Module({
+  controllers: [
+    ConfigurationController,
+    RetentionAdminController,
+    NumberingAdminController,
+    SettingsAdminController,
+  ],
   providers: [
     { provide: TENANT_SETTINGS_REPOSITORY, useClass: PrismaTenantSettingsRepository },
     { provide: SETTINGS_READER, useClass: CachedSettingsReader },
+    { provide: CONFIGURATION_REPOSITORY, useClass: PrismaConfigurationRepository },
+    { provide: CONFIGURATION_SERVICE, useClass: ConfigurationService },
+    { provide: NUMBERING_ADMIN_SERVICE, useClass: NumberingAdminService },
+    { provide: SETTINGS_ADMIN_SERVICE, useClass: SettingsAdminService },
   ],
   exports: [SETTINGS_READER, TENANT_SETTINGS_REPOSITORY],
 })

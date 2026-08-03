@@ -38,6 +38,7 @@ describe('CachedSettingsReader', () => {
     repository = {
       get: vi.fn(),
       set: vi.fn(),
+      remove: vi.fn(),
       readAll: vi.fn().mockResolvedValue({}),
     };
     cache = new FakeCache();
