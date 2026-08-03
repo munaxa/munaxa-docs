@@ -8,13 +8,14 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { realWriteStack } from '../../../testing/real-collaborators';
 import { ScopeAdminService } from '../application/scope-admin.service';
 import { OrganizationNodeKind } from '../domain/node-kind';
 import { PrismaScopeAdminRepository } from '../infrastructure/prisma-scope-admin.repository';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * The scope tree's writes, against a real PostgreSQL.
@@ -52,7 +53,7 @@ const clock = {
   elapsedMs: () => 0,
 };
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 // The real audit writer and the real outbox writer, composed as the container composes them: half
 // of what this suite asserts is that they commit *with* the change, and a double cannot be wrong
@@ -137,7 +138,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner.$disconnect();
-  await prisma.$disconnect();
+  await prisma.disconnectAll();
 });
 
 describe('creating a node', () => {

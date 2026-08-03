@@ -18,6 +18,7 @@ import { AUDIT_WRITER, type AuditWriter } from '../../../core/audit/audit-writer
 import { DuplicateError, ValidationError } from '../../../core/errors/application-errors';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
+import { TENANT_REGISTRY, type TenantRegistry } from '../../../core/tenancy/tenant-registry.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { PASSWORD_HASHER, type PasswordHasher } from './authentication.ports';
 import { checkPassword } from '../domain/password-policy';
@@ -79,6 +80,7 @@ export class ProvisioningService {
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
+    @Inject(TENANT_REGISTRY) private readonly registry: TenantRegistry,
   ) {}
 
   async provision(command: ProvisionTenantCommand): Promise<ProvisionedTenant> {
@@ -99,10 +101,16 @@ export class ProvisioningService {
       throw new ValidationError(`That password is not acceptable: ${rejections.join(', ')}.`);
     }
 
-    if (await this.repository.slugExists(slug)) {
-      // Named explicitly, unlike a sign-in failure: this is an operator provisioning a tenant,
-      // not an anonymous caller probing for which organisations exist.
-      throw new DuplicateError('organisation', 'slug');
+    // The tenant must already be *placed* — its database, storage and index configured — because
+    // provisioning writes into that database and there is no other one to fall back on. This is the
+    // order ADR-0015 imposes: an operator adds the tenant to the catalogue, migrates its database,
+    // then provisions it. Discovering the gap here, by name, is the whole point of checking.
+    const placement = await this.registry.bySlug(slug);
+    if (!placement) {
+      throw new ValidationError(
+        `'${slug}' is not in this deployment's tenant catalogue, so it has no database to be ` +
+          'provisioned into. Add it to the catalogue and migrate its database first.',
+      );
     }
 
     // The scope-tree root needs a code, and the organisation's short name is the best guess
@@ -111,17 +119,15 @@ export class ProvisioningService {
     // an administrator renames it in Phase 2.
     const code = deriveCode(slug, DEFAULT_ROOT_CODE);
 
-    const tenantId = asId<TenantId>(uuidv7(this.clock.now().getTime()));
+    // From the registry, never generated. The identifier is what routes every request to this
+    // database, so it is configuration an operator holds before provisioning runs — and it has to be
+    // the same value on a re-run against a database that already has rows carrying it.
+    const tenantId = asId<TenantId>(placement.id);
     const companyId = asId<AnyId>(uuidv7(this.clock.now().getTime()));
     const entityId = asId<AnyId>(uuidv7(this.clock.now().getTime()));
     const roleId = asId<RoleId>(uuidv7(this.clock.now().getTime()));
     const adminUserId = asId<UserId>(uuidv7(this.clock.now().getTime()));
     const passwordHash = await this.passwords.hash(command.adminPassword);
-
-    // The tenant row is written first and outside the tenant context, because the context is
-    // keyed on an identifier that does not exist until this succeeds. `tenant` is the one table
-    // with no row-level security policy, which is exactly what makes that possible.
-    await this.repository.createTenant({ id: tenantId, slug, name: command.name.trim() });
 
     const context: RequestContext = {
       tenantId,
@@ -138,6 +144,16 @@ export class ProvisioningService {
 
     return runWithContext(context, () =>
       this.unitOfWork.run(async () => {
+        // Checked inside the transaction, against this tenant's own database. A second provisioning
+        // run would otherwise write a second set of seeded roles beside the first.
+        if (await this.repository.alreadyProvisioned(tenantId)) {
+          // Named explicitly, unlike a sign-in failure: this is an operator provisioning a tenant,
+          // not an anonymous caller probing for which organisations exist.
+          throw new DuplicateError('organisation', 'slug');
+        }
+
+        await this.repository.createTenant({ id: tenantId, slug, name: command.name.trim() });
+
         await this.repository.createRootScope({
           companyId,
           entityId,

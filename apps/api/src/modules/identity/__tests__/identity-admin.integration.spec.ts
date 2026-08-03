@@ -8,7 +8,7 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { realWriteStack } from '../../../testing/real-collaborators';
@@ -18,6 +18,7 @@ import { PrismaIdentityAdminRepository } from '../infrastructure/prisma-identity
 import { PrismaProvisioningRepository } from '../infrastructure/prisma-provisioning.repository';
 import { ProvisioningService } from '../application/provisioning.service';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * Administering people and access, against a real PostgreSQL.
@@ -43,19 +44,24 @@ const logger = {
 const FIXED_NOW = new Date('2026-06-01T09:00:00.000Z');
 const clock = { now: () => new Date(FIXED_NOW), timestamp: () => 0, elapsedMs: () => 0 };
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const { stamps, writer, audit } = realWriteStack(clock, unitOfWork);
 const passwords = new ScryptPasswordHasher();
 const repository = new PrismaIdentityAdminRepository(stamps);
 const users = new UserAdminService(repository, passwords, writer);
 const roles = new RoleAdminService(repository, writer);
+/** The placement this suite provisions into — declared, because the identifier is configuration now. */
+const PROVISION_SLUG = `identity-admin-${String(Date.now())}`;
+const PROVISION_TENANT = uuidv7();
+
 const provisioning = new ProvisioningService(
-  new PrismaProvisioningRepository(prisma),
+  new PrismaProvisioningRepository(),
   passwords,
   clock,
   unitOfWork,
   audit,
+  everyTenantRegistry(APP_URL, { [PROVISION_SLUG]: PROVISION_TENANT }),
 );
 
 const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
@@ -91,7 +97,7 @@ beforeAll(async () => {
 
   // Provisioned rather than hand-seeded, so the eight roles exist exactly as they do in production.
   const provisioned = await provisioning.provision({
-    slug: `identity-admin-${Date.now()}`,
+    slug: PROVISION_SLUG,
     name: 'Identity Admin Test',
     adminEmail: 'root@identity-admin.test',
     adminPassword: STRONG_PASSWORD,
@@ -109,7 +115,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner.$disconnect();
-  await prisma.$disconnect();
+  await prisma.disconnectAll();
 });
 
 async function aUser(name: string): Promise<{ id: string; version: number }> {

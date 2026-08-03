@@ -8,17 +8,18 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { DefaultAuthenticationService } from '../application/authentication.service';
 import { JwtTokenService } from '../infrastructure/jwt.token-service';
 import { PrismaCredentialRepository } from '../infrastructure/prisma-credential.repository';
 import { PrismaSessionRepository } from '../infrastructure/prisma-session.repository';
-import { PrismaTenantDirectory } from '../infrastructure/prisma-tenant.directory';
+import { RegistryTenantDirectory } from '../infrastructure/registry-tenant.directory';
 import { RandomRefreshTokenFactory } from '../infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
 import type { AuditWriter } from '../../../core/audit/audit-writer.port';
 import { FakeClock } from '../../../testing/fake-ports';
+import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 // Both roles are needed and they are not interchangeable: seeding is DDL-adjacent and runs as
 // the owner, while the code under test must run as the application role so that row-level
@@ -62,7 +63,7 @@ const logger = {
 const clock = new FakeClock(new Date());
 const hasher = new ScryptPasswordHasher();
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 
 /**
@@ -79,7 +80,7 @@ const auditWriter: AuditWriter = {
 const service = new DefaultAuthenticationService(
   new PrismaCredentialRepository(),
   new PrismaSessionRepository(clock),
-  new PrismaTenantDirectory(prisma),
+  new RegistryTenantDirectory(everyTenantRegistry(APP_URL, { [ACME_SLUG]: ACME })),
   hasher,
   new JwtTokenService(config, clock),
   new RandomRefreshTokenFactory(config),

@@ -8,12 +8,13 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { DefaultOrganizationService } from '../application/organization.service';
 import { pathFor } from '../domain/scope-tree';
 import { PrismaScopeRepository } from '../infrastructure/prisma-scope.repository';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * What the scope tree does is only half in TypeScript. The other half is row-level security,
@@ -43,7 +44,7 @@ const logger = {
   debug: () => {},
 } as unknown as Logger;
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const service = new DefaultOrganizationService(new PrismaScopeRepository());
 const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });

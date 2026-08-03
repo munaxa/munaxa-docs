@@ -10,12 +10,13 @@ import type { AuditActor } from '../../../core/audit/audit-writer.port';
 import { GENESIS_HASH, verifyChain } from '../../../core/audit/hash-chain';
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { FakeClock } from '../../../testing/fake-ports';
 import { ChainedAuditWriter } from '../infrastructure/chained-audit.writer';
 import { PrismaAuditRepository } from '../infrastructure/prisma-audit.repository';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * The audit chain's properties are database properties: ordering under concurrency, what a
@@ -42,7 +43,7 @@ const logger = {
 } as unknown as Logger;
 
 const clock = new FakeClock(new Date('2026-01-01T00:00:00Z'));
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const repository = new PrismaAuditRepository();
 const writer = new ChainedAuditWriter(repository, clock, new PrismaUnitOfWork(prisma));
 

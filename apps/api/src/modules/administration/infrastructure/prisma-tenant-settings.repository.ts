@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { isSettingKey } from '@edms/domain';
 
-import { PrismaService } from '../../../core/prisma/prisma.service';
+import { TenantDatabase, type PrismaTransaction } from '../../../core/prisma/tenant-database';
 import { currentTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import type { TenantSettingsRepository } from '../application/ports';
@@ -21,7 +21,7 @@ import type { TenantSettingsRepository } from '../application/ports';
  */
 @Injectable()
 export class PrismaTenantSettingsRepository implements TenantSettingsRepository {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(@Inject(TenantDatabase) private readonly databases: TenantDatabase) {}
 
   async get<TValue>(key: string): Promise<TValue | null> {
     const stored = await this.readAll();
@@ -43,7 +43,7 @@ export class PrismaTenantSettingsRepository implements TenantSettingsRepository 
       throw new Error(`'${key}' is not a setting this product defines.`);
     }
     const { tenantId } = requireContext();
-    const client = currentTransaction() ?? this.prisma;
+    const client = await this.client();
 
     await client.$executeRawUnsafe(
       `UPDATE "tenant"
@@ -69,7 +69,7 @@ export class PrismaTenantSettingsRepository implements TenantSettingsRepository 
       throw new Error(`'${key}' is not a setting this product defines.`);
     }
     const { tenantId } = requireContext();
-    const client = currentTransaction() ?? this.prisma;
+    const client = await this.client();
 
     await client.$executeRawUnsafe(
       `UPDATE "tenant"
@@ -86,7 +86,7 @@ export class PrismaTenantSettingsRepository implements TenantSettingsRepository 
   /** The whole stored bag, unresolved. Callers resolve it against the catalogue. */
   async readAll(): Promise<Readonly<Record<string, unknown>>> {
     const { tenantId } = requireContext();
-    const client = currentTransaction() ?? this.prisma;
+    const client = await this.client();
 
     const row = await client.tenant.findUnique({
       where: { id: tenantId },
@@ -98,5 +98,25 @@ export class PrismaTenantSettingsRepository implements TenantSettingsRepository 
       return {};
     }
     return settings;
+  }
+
+  /**
+   * The ambient transaction if there is one, otherwise the tenant's own client.
+   *
+   * The fallback matters because settings are read outside a use case — by the cached reader, warming
+   * an entry — and it resolves the *tenant's* database rather than a single shared one. That is the
+   * only change ADR-0015 makes to this file: the statement, the `jsonb_set` and the explicit tenant
+   * filter are all unchanged.
+   *
+   * The filter stays even though the database now holds one tenant's rows. `tenant` is the one table
+   * with no row-level security policy — it has no `tenant_id` to key one on — so nothing underneath
+   * would catch its absence, and an installation with two tenants in one database is a supported
+   * shape rather than a hypothetical one.
+   */
+  private async client(): Promise<
+    PrismaTransaction | Awaited<ReturnType<TenantDatabase['clientFor']>>
+  > {
+    const ambient = currentTransaction();
+    return ambient ?? this.databases.clientFor(requireContext().tenantId);
   }
 }

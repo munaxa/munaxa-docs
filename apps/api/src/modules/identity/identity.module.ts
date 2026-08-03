@@ -27,7 +27,7 @@ import { PrismaCredentialRepository } from './infrastructure/prisma-credential.r
 import { PrismaIdentityAdminRepository } from './infrastructure/prisma-identity-admin.repository';
 import { PrismaProvisioningRepository } from './infrastructure/prisma-provisioning.repository';
 import { PrismaSessionRepository } from './infrastructure/prisma-session.repository';
-import { PrismaTenantDirectory } from './infrastructure/prisma-tenant.directory';
+import { RegistryTenantDirectory } from './infrastructure/registry-tenant.directory';
 import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
 import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
@@ -60,7 +60,7 @@ import { RoleAdminController, UserAdminController } from './presentation/identit
     { provide: AUTHENTICATION_SERVICE, useClass: DefaultAuthenticationService },
     { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
     { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
-    { provide: TENANT_DIRECTORY, useClass: PrismaTenantDirectory },
+    { provide: TENANT_DIRECTORY, useClass: RegistryTenantDirectory },
     { provide: USER_DIRECTORY, useClass: PrismaUserDirectory },
     { provide: PROVISIONING_REPOSITORY, useClass: PrismaProvisioningRepository },
     ProvisioningService,

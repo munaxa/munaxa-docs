@@ -8,12 +8,13 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { realOrganizationService, realWriteStack } from '../../../testing/real-collaborators';
 import { LibraryAdminService } from '../application/library-admin.service';
 import { PrismaLibraryAdminRepository } from '../infrastructure/prisma-library-admin.repository';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * Libraries and folders, against a real PostgreSQL.
@@ -38,7 +39,7 @@ const logger = {
 const FIXED_NOW = new Date('2026-09-01T08:00:00.000Z');
 const clock = { now: () => new Date(FIXED_NOW), timestamp: () => 0, elapsedMs: () => 0 };
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const { stamps, outbox, writer } = realWriteStack(clock, unitOfWork);
 // The real read side of the scope tree: resolving a library's owner node is a call to Organisation's
@@ -127,7 +128,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner.$disconnect();
-  await prisma.$disconnect();
+  await prisma.disconnectAll();
 });
 
 async function aLibrary(): Promise<{ id: string; version: number; rootFolderId: string }> {

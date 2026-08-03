@@ -9,7 +9,7 @@ import { AppModule } from '../app.module';
 import { ACL_RESOLVER, type AclResolver } from '../core/authorization';
 import { TOKEN_VERIFIER, type TokenVerifier } from '../core/auth';
 import { APP_CONFIG, type AppConfig } from '../core/config';
-import { PrismaService } from '../core/prisma';
+import { TenantDatabase } from '../core/prisma';
 import { CLOCK_PORT, STORAGE_PORT, type ClockPort, type StoragePort } from '../ports';
 import { RedisCacheAdapter } from '../infrastructure/cache/redis-cache.adapter';
 import { JwtTokenService } from '../modules/identity/infrastructure/jwt.token-service';
@@ -31,6 +31,10 @@ describe('application composition', () => {
     process.env.DATABASE_URL = 'postgresql://app:local@localhost:5432/edms';
     process.env.REDIS_URL = 'redis://localhost:6379';
     process.env.JWT_ACCESS_SECRET = 'a'.repeat(32);
+    // The single-tenant shape, which is what an on-premise installation runs and the cheapest thing
+    // to compose against: one placement, derived from this environment, no catalogue to parse.
+    process.env.TENANT_ID = '019489f0-0000-7000-8000-00000000000c';
+    process.env.TENANT_SLUG = 'composition';
   });
 
   afterEach(() => {
@@ -40,8 +44,14 @@ describe('application composition', () => {
 
   async function compile() {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(PrismaService)
-      .useValue({ $connect: vi.fn(), $disconnect: vi.fn(), ping: vi.fn() })
+      .overrideProvider(TenantDatabase)
+      .useValue({
+        clientFor: vi.fn(),
+        withTenant: vi.fn(),
+        ping: vi.fn(),
+        placements: vi.fn(() => Promise.resolve([])),
+        disconnectAll: vi.fn(),
+      })
       .overrideProvider(RedisCacheAdapter)
       .useValue({ get: vi.fn(), set: vi.fn(), delete: vi.fn() })
       .compile();

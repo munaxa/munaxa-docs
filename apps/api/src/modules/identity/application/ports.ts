@@ -155,8 +155,15 @@ export const PROVISIONING_REPOSITORY = Symbol('ProvisioningRepository');
  * second way to create users.
  */
 export interface ProvisioningRepository {
-  slugExists(slug: string): Promise<boolean>;
-  /** Written outside any tenant context — the context is keyed on what this creates. */
+  /**
+   * Whether this tenant's database already holds its tenant row.
+   *
+   * Replaces the slug-uniqueness check Phase 1 had. Uniqueness is now the registry's, checked at boot
+   * across the whole catalogue; what is left to ask here is whether *this* database has already been
+   * provisioned — a question only its own database can answer
+   * (`docs/architecture/adr/0015-database-per-tenant.md`).
+   */
+  alreadyProvisioned(tenantId: TenantId): Promise<boolean>;
   createTenant(tenant: { id: TenantId; slug: string; name: string }): Promise<void>;
   /**
    * The root of the scope tree.

@@ -16,13 +16,14 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { realWriteStack } from '../../../testing/real-collaborators';
 import { WorkflowAdminService } from '../application/workflow-admin.service';
 import type { DefinitionShape } from '../domain/version-validator';
 import { PrismaWorkflowAdminRepository } from '../infrastructure/prisma-workflow-admin.repository';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * Workflow definitions, against a real PostgreSQL.
@@ -47,7 +48,7 @@ const logger = {
 const FIXED_NOW = new Date('2026-10-01T09:00:00.000Z');
 const clock = { now: () => new Date(FIXED_NOW), timestamp: () => 0, elapsedMs: () => 0 };
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const { stamps, writer } = realWriteStack(clock, unitOfWork);
 const repository = new PrismaWorkflowAdminRepository(stamps);
@@ -108,7 +109,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner.$disconnect();
-  await prisma.$disconnect();
+  await prisma.disconnectAll();
 });
 
 async function aDefinition(): Promise<{ id: string; recordVersion: number; versionId: string }> {

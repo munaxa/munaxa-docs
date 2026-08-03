@@ -8,18 +8,28 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { FakeClock } from '../../../testing/fake-ports';
 import type { AuditWriter } from '../../../core/audit/audit-writer.port';
 import { ProvisioningService } from '../application/provisioning.service';
 import { PrismaProvisioningRepository } from '../infrastructure/prisma-provisioning.repository';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 const OWNER_URL = process.env['DATABASE_MIGRATION_URL'] ?? '';
 const APP_URL = process.env['DATABASE_URL'] ?? '';
 
 const slug = `boot-${uuidv7().replaceAll('-', '').slice(-12)}`;
+/**
+ * The tenant's identifier, declared here rather than returned by provisioning.
+ *
+ * That inversion is the change ADR-0015 makes to this bootstrap: the identifier is what routes every
+ * later request to this tenant's database, so it is configuration an operator holds *before*
+ * provisioning runs — and a re-run against a database that already carries it has to use the same
+ * value, or it would seed a second organisation beside the first.
+ */
+const TENANT_ID = uuidv7();
 const PASSWORD = 'correct horse battery staple';
 
 const config = { env: 'test', database: { url: APP_URL, poolSize: 5 } } as unknown as AppConfig;
@@ -30,7 +40,7 @@ const logger = {
   debug: () => {},
 } as unknown as Logger;
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 
 /**
@@ -48,11 +58,15 @@ const audit: AuditWriter = {
 };
 
 const service = new ProvisioningService(
-  new PrismaProvisioningRepository(prisma),
+  new PrismaProvisioningRepository(),
   new ScryptPasswordHasher(),
   new FakeClock(new Date('2026-01-01T00:00:00Z')),
   unitOfWork,
   audit,
+  // The registry, because the tenant identifier is now configuration rather than something
+  // provisioning invents: it is what routes every later request to this database, so an operator holds
+  // it before the bootstrap runs.
+  everyTenantRegistry(APP_URL, { [slug]: TENANT_ID }),
 );
 
 function command(overrides: Record<string, string> = {}) {
