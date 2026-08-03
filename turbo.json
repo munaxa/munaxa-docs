@@ -5,18 +5,18 @@
   "globalEnv": ["NODE_ENV", "SENTRY_DSN", "NEXT_PUBLIC_POSTHOG_KEY"],
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "prisma:generate"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "lint": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "prisma:generate"]
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "prisma:generate"]
     },
     "validate": {},
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "prisma:generate"],
       "outputs": ["coverage/**"]
     },
     "build-storybook": {
