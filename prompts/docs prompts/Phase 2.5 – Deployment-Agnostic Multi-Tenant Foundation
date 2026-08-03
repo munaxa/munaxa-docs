@@ -1,0 +1,17 @@
+Before continuing with Phase 3, refactor the existing codebase to support the architecture described below.
+
+This is not a new feature phase. It is an architectural refactor that prepares the platform for all future development.
+
+The work completed in Phases 1 and 2 must remain intact. Do not rewrite or remove completed functionality. Instead, adapt the existing implementation so it supports:
+
+* A single codebase
+* One isolated database per company (tenant)
+* One isolated storage per company
+* One isolated search index per company
+* Cloud and on-premises deployments from the same codebase
+* Configuration-driven infrastructure
+* Complete separation between business logic and infrastructure
+
+After this foundation is complete, all remaining phases of the roadmap (starting with Phase 3) must be implemented on top of this architecture. Any implementation that conflicts with this architecture should be refactored now rather than deferred.
+
+The goal is that no future phase requires architectural changes to support multi-tenancy, cloud deployment, or on-premises deployment.
