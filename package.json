@@ -18,12 +18,17 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "docker:up": "docker compose up -d",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy"
   },
   "devDependencies": {
     "@munaxa/config-eslint": "^1.0.0",
     "@munaxa/config-typescript": "^1.0.0",
+    "@prisma/client": "^6.19.3",
     "prettier": "^3.4.2",
+    "prisma": "^6.19.3",
     "turbo": "^2.3.3",
     "typescript": "^5.7.3"
   },
@@ -37,5 +42,8 @@
       "sharp",
       "unrs-resolver"
     ]
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
   }
 }

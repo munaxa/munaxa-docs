@@ -2,8 +2,14 @@
 
 Product root for **Munaxa Docs**, the Enterprise Document Management System (EDMS).
 
-**Nothing is implemented here yet.** Phase 0 designed the architecture; this repository
-currently holds that design only. Phase 0.5 builds the technical skeleton against it.
+**Phase 0.5 is complete: the technical skeleton exists and there are no business features.**
+Phase 0 designed the architecture; Phase 0.5 built the structure that implements it — apps,
+packages, layers, ports, dependency injection, the message pipeline, the API and frontend
+foundations, the database foundation and the test and DevOps foundations. No upload, no
+approval, no workflow, no revision, no document. Phase 1 starts from here.
+
+Read the gate before starting: [Phase 0.5 architecture compliance report](./docs/reports/phase-0.5-architecture-compliance-report.md)
+and the [technical debt it records](./docs/reports/phase-0.5-technical-debt.md).
 
 This is now an **independent repository**. It owns its own API, apps, database, migrations,
 infrastructure and CI, and depends on no other product — see
@@ -47,22 +53,35 @@ The Docs palette is already authored inside
 [munaxa-platform](https://github.com/tam2om/munaxa-platform). Starting this product requires no
 platform change — and no colour written here.
 
-## Planned shape (Phase 0.5)
+## Shape
 
 ```text
-edms/
+munaxa-docs/
 ├── apps/
 │   ├── api/          @edms/api      NestJS 11 — modular monolith, Clean Architecture
 │   ├── web/          @edms/web      Next.js 15 App Router — the document workspace
 │   └── worker/       @edms/worker   background jobs: preview, OCR, index, retention, escalation
 ├── packages/
-│   ├── domain/       @edms/domain   permissions, roles, enums, pure rules — no I/O
+│   ├── domain/       @edms/domain    permissions, roles, enums, pure rules — no I/O
 │   ├── contracts/    @edms/contracts shared request/response schemas
-│   ├── i18n/         @edms/i18n     EN + AR catalogues
-│   └── utils/        @edms/utils    pure helpers
-├── prisma/           schema, migrations, seed
-├── infra/            compose fragments, storage and search bootstrap
-└── docs/             this design set
+│   ├── i18n/         @edms/i18n      EN + AR catalogues
+│   └── utils/        @edms/utils     pure helpers
+├── prisma/           schema.prisma — tenant, audit, outbox, idempotency
+├── infra/            compose stack, database roles, RLS, audit immutability
+└── docs/             the design set
+```
+
+The API's fifteen modules all share one shape; the map is
+[`apps/api/src/modules/README.md`](./apps/api/src/modules/README.md).
+
+## Running it
+
+```bash
+pnpm install                      # needs a read:packages token for @munaxa/* (see .npmrc)
+pnpm docker:up                    # Postgres, Redis, MinIO — roles and RLS applied at first start
+cp .env.example .env              # then fill in JWT_ACCESS_SECRET
+pnpm prisma:generate
+pnpm build && pnpm test
 ```
 
 Full reasoning: [`docs/architecture/01-monorepo-and-folder-structure.md`](./docs/architecture/01-monorepo-and-folder-structure.md).

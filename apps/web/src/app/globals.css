@@ -1,0 +1,12 @@
+@import 'tailwindcss';
+@import '@munaxa/theme/css/docs';
+@source '../../node_modules/@munaxa/platform/dist';
+
+/*
+ * Branding is configuration, not code.
+ *
+ * The only visual difference between this product and its siblings is the theme imported
+ * above. Nothing in this repository may hardcode a colour, a font, a radius or a shadow —
+ * retuning the Docs palette happens in munaxa-platform and reaches this product with no
+ * change here (ARCHITECTURE.md).
+ */

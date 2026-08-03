@@ -1,0 +1,66 @@
+# The local development stack.
+#
+# It exists so that "works on my machine" means the same thing for everyone: the same
+# PostgreSQL major version as production, Redis for queues and cache, and MinIO standing in
+# for object storage so the S3 adapter is exercised locally rather than mocked.
+#
+# Nothing here is production configuration. Credentials are development-only by design and
+# the file is committed for exactly that reason — a real secret in this file would be a
+# prohibited action (docs/architecture/17-security-architecture.md §10).
+
+name: munaxa-docs
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: edms
+      POSTGRES_USER: edms_owner
+      POSTGRES_PASSWORD: local-development-only
+    ports:
+      - '5433:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Roles and RLS are applied before anything connects, so a developer's database has the
+      # same isolation posture as production from the first query.
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U edms_owner -d edms']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6380:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  storage:
+    image: minio/minio:latest
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: edms-local
+      MINIO_ROOT_PASSWORD: local-development-only
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - storage-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:
+  storage-data:
