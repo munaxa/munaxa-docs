@@ -7,7 +7,9 @@ import { CLOCK_PORT } from '../ports/clock.port';
 import { NOTIFICATION_PORT } from '../ports/notification.port';
 import { OCR_PORT } from '../ports/ocr.port';
 import { PREVIEW_PORT } from '../ports/preview.port';
+import { SEARCH_PORT } from '../ports/search.port';
 import { STORAGE_PORT, type StoragePort } from '../ports/storage.port';
+import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-registry.port';
 import { RedisCacheAdapter } from './cache/redis-cache.adapter';
 import { SystemClockAdapter } from './clock/system-clock.adapter';
 import {
@@ -15,8 +17,11 @@ import {
   UnconfiguredNotificationAdapter,
   UnconfiguredOcrAdapter,
   UnconfiguredPreviewAdapter,
+  UnconfiguredSearchAdapter,
   UnconfiguredStorageAdapter,
 } from './providers/unconfigured.adapters';
+import { PLACED_SEARCH_PORT, TenantScopedSearch } from './tenancy/tenant-scoped-search';
+import { TenantScopedStorage } from './tenancy/tenant-scoped-storage';
 
 /**
  * The composition root for external capabilities.
@@ -29,6 +34,11 @@ import {
  * Redis — and binds every other port to the adapter that fails naming the environment
  * variable that would configure it. A vendor adapter arrives with the phase that needs it:
  * writing it means adding a class and one case below, and touching nothing else.
+ *
+ * **Phase 2.5 wraps storage and search in their tenant scoping here**, and that placement is the point.
+ * A vendor adapter written in a later phase is bound *underneath* the wrapper, so it inherits isolation
+ * it never had to implement — and cannot opt out of, because nothing above this file can reach it
+ * directly ([ADR-0015](../../../../docs/architecture/adr/0015-database-per-tenant.md)).
  */
 function storageAdapterFor(config: AppConfig): StoragePort {
   switch (config.storage.driver) {
@@ -49,10 +59,15 @@ function storageAdapterFor(config: AppConfig): StoragePort {
     { provide: CLOCK_PORT, useExisting: SystemClockAdapter },
     { provide: CACHE_PORT, useExisting: RedisCacheAdapter },
     {
+      // The vendor adapter, chosen by configuration, then wrapped so every key it is given carries the
+      // tenant's prefix and every key it answers with is checked against it.
       provide: STORAGE_PORT,
-      useFactory: (config: AppConfig): StoragePort => storageAdapterFor(config),
-      inject: [APP_CONFIG],
+      useFactory: (config: AppConfig, registry: TenantRegistry): StoragePort =>
+        new TenantScopedStorage(storageAdapterFor(config), registry),
+      inject: [APP_CONFIG, TENANT_REGISTRY],
     },
+    { provide: PLACED_SEARCH_PORT, useClass: UnconfiguredSearchAdapter },
+    { provide: SEARCH_PORT, useClass: TenantScopedSearch },
     { provide: OCR_PORT, useClass: UnconfiguredOcrAdapter },
     { provide: NOTIFICATION_PORT, useClass: UnconfiguredNotificationAdapter },
     { provide: ANTIVIRUS_PORT, useClass: UnconfiguredAntivirusAdapter },
@@ -62,6 +77,7 @@ function storageAdapterFor(config: AppConfig): StoragePort {
     CLOCK_PORT,
     CACHE_PORT,
     STORAGE_PORT,
+    SEARCH_PORT,
     OCR_PORT,
     NOTIFICATION_PORT,
     ANTIVIRUS_PORT,

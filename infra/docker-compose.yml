@@ -21,11 +21,12 @@ services:
       - '5433:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # Roles and privileges are applied before anything connects. Only ./sql/provision may
-      # be mounted here: the entrypoint runs before the first migration, so anything that
-      # references a table would abort. Row-level security and audit immutability live in
-      # ./sql/post-migrate and are applied by `pnpm db:post-migrate` after migrations.
-      - ./sql/provision:/docker-entrypoint-initdb.d:ro
+      # The cluster's roles, applied before anything connects. Only ./sql/cluster belongs here: the
+      # entrypoint runs once per cluster, and everything else is scoped narrower. A database's grants
+      # and its tenant function are ./sql/database, applied per tenant database by
+      # `scripts/migrate-tenants.mjs`; row-level security and audit immutability are
+      # ./sql/post-migrate, applied after every migration, because they reference tables.
+      - ./sql/cluster:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U edms_owner -d edms']
       interval: 5s

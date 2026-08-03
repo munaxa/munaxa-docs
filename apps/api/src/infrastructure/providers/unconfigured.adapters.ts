@@ -11,6 +11,8 @@ import type {
 } from '../../ports/notification.port';
 import type { OcrPort, OcrRequest, OcrResult } from '../../ports/ocr.port';
 import type { PreviewPort, RenderRequest, RenderResult } from '../../ports/preview.port';
+import type { SearchQuery, SearchResults, SearchSubject } from '../../ports/search.port';
+import type { PlacedSearchPort } from '../tenancy/tenant-scoped-search';
 import type {
   BlobMetadata,
   DownloadOptions,
@@ -113,6 +115,24 @@ export class UnconfiguredPreviewAdapter implements PreviewPort {
 
   render(_request: RenderRequest): Promise<RenderResult> {
     return Promise.reject(new ProviderNotConfiguredError('Preview rendering', 'PREVIEW_DRIVER'));
+  }
+}
+
+/**
+ * Search, until the phase that builds it.
+ *
+ * Bound rather than left unbound, and the difference matters: an unbound port is a container that fails
+ * to resolve at boot, which reads as a broken deployment. A bound one that refuses is a deployment that
+ * works and tells you, when something searches, that no engine is configured.
+ *
+ * It implements `PlacedSearchPort` rather than `SearchPort`, so it sits underneath the tenant scoping
+ * like every real adapter will — the isolation layer is exercised in every environment rather than only
+ * once an engine exists.
+ */
+@Injectable()
+export class UnconfiguredSearchAdapter implements PlacedSearchPort {
+  query(_index: string, _subject: SearchSubject, _query: SearchQuery): Promise<SearchResults> {
+    return Promise.reject(new ProviderNotConfiguredError('Search', 'SEARCH_DRIVER'));
   }
 }
 
