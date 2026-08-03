@@ -5,6 +5,8 @@ import { PrismaOutboxWriter } from '../core/outbox/prisma-outbox.writer';
 import type { UnitOfWork } from '../core/prisma/unit-of-work';
 import { ChainedAuditWriter } from '../modules/audit/infrastructure/chained-audit.writer';
 import { PrismaAuditRepository } from '../modules/audit/infrastructure/prisma-audit.repository';
+import { DefaultOrganizationService } from '../modules/organization/application/organization.service';
+import { PrismaScopeRepository } from '../modules/organization/infrastructure/prisma-scope.repository';
 
 /**
  * Real collaborators, wired the way the container wires them.
@@ -60,4 +62,16 @@ export function realWriteStack(
     outbox: new PrismaOutboxWriter(stamps),
     writer: new AdministeredWriter(unitOfWork, audit, stamps),
   };
+}
+
+/**
+ * The organisation module's read side, over the real scope tree.
+ *
+ * Anything that owns a scope — a library, a numbering rule, a permission grant — asks this service
+ * whether the node it was handed exists and what kind of node it is. A double would answer from the
+ * same belief as the code under test, so it could not catch the case that matters: a caller naming a
+ * node of the wrong kind, or one belonging to another tenant.
+ */
+export function realOrganizationService(): DefaultOrganizationService {
+  return new DefaultOrganizationService(new PrismaScopeRepository());
 }
