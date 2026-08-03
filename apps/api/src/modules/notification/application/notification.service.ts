@@ -158,7 +158,7 @@ export class DefaultNotificationService {
       return null;
     }
 
-    const id = asId<NotificationMessageId>(uuidv7(this.clock.timestamp()));
+    const id = asId<NotificationMessageId>(uuidv7(this.clock.now().getTime()));
     await this.messages.create({
       id,
       recipientId: contact.userId,

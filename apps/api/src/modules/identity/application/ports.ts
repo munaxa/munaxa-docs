@@ -3,6 +3,7 @@ import type {
   DelegationId,
   PermissionKey,
   RoleId,
+  TenantId,
   UserId,
   UserStatusKey,
 } from '@edms/domain';
@@ -142,6 +143,35 @@ export interface CredentialRepository {
   findById(id: UserId): Promise<UserCredentialRecord | null>;
   updatePasswordHash(id: UserId, encodedHash: string, at: Date): Promise<void>;
   recordSignIn(id: UserId, at: Date): Promise<void>;
+}
+
+export const PROVISIONING_REPOSITORY = Symbol('ProvisioningRepository');
+
+/**
+ * The writes that bootstrap a tenant.
+ *
+ * Separate from the repositories above because it is the only one that runs *before* a tenant
+ * exists, and because narrowing it is what keeps a bootstrap path from quietly becoming a
+ * second way to create users.
+ */
+export interface ProvisioningRepository {
+  slugExists(slug: string): Promise<boolean>;
+  /** Written outside any tenant context — the context is keyed on what this creates. */
+  createTenant(tenant: { id: TenantId; slug: string; name: string }): Promise<void>;
+  createAdminRole(role: {
+    id: RoleId;
+    key: string;
+    name: string;
+    permissions: readonly PermissionKey[];
+  }): Promise<void>;
+  createAdminUser(user: {
+    id: UserId;
+    roleId: RoleId;
+    email: string;
+    emailNormalized: string;
+    displayName: string;
+    passwordHash: string;
+  }): Promise<void>;
 }
 
 export const USER_DIRECTORY = Symbol('UserDirectory');

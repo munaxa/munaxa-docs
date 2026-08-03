@@ -89,6 +89,26 @@ The unit suite's `UnitOfWork` double models commit and rollback rather than simp
 work. That is deliberate: the double that ignored transactions is what let the revocation bug
 through.
 
+## Provisioning
+
+`pnpm --filter @edms/api provision` creates a tenant, a `TENANT_ADMIN` role holding every
+permission, and one administrator who can sign in.
+
+This is **not** administration. Creating, editing and deleting users and roles is Phase 2, and
+nothing here grows into it: one operation, once per tenant, refusing to run twice. It exists for
+the chicken-and-egg problem underneath every access-controlled system — the first account cannot
+be created by somebody signed in, because nobody is.
+
+| Decision | Why |
+| --- | --- |
+| An application context, not a script with its own Prisma client | It runs the real service, hasher, validation and audit writer. A provisioning path that reimplemented any of them would be a second way to create a user, and the second way is the one that skips a rule |
+| No HTTP endpoint | "Create an organisation with a full-permission administrator" must not be a request anybody can send |
+| Credentials from the environment, never arguments | A password on a command line is in the shell history, in `ps` output, and in whatever collects both |
+| One transaction | A tenant with no administrator, or a role nobody holds, is a workspace nobody can enter and nobody can fix |
+| The password policy applies | Unlike sign-in, this is a password being *set* — which is exactly what the policy governs |
+
+The role is ordinary data afterwards. Phase 2 edits it like any other.
+
 ## Still to build
 
 User and role administration, delegation, MFA enrolment, and the events listed above — none of

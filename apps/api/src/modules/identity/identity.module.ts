@@ -8,9 +8,16 @@ import {
   TENANT_DIRECTORY,
 } from './application/authentication.ports';
 import { DefaultAuthenticationService } from './application/authentication.service';
-import { CREDENTIAL_REPOSITORY, SESSION_REPOSITORY, USER_DIRECTORY } from './application/ports';
+import {
+  CREDENTIAL_REPOSITORY,
+  PROVISIONING_REPOSITORY,
+  SESSION_REPOSITORY,
+  USER_DIRECTORY,
+} from './application/ports';
+import { ProvisioningService } from './application/provisioning.service';
 import { JwtTokenService } from './infrastructure/jwt.token-service';
 import { PrismaCredentialRepository } from './infrastructure/prisma-credential.repository';
+import { PrismaProvisioningRepository } from './infrastructure/prisma-provisioning.repository';
 import { PrismaSessionRepository } from './infrastructure/prisma-session.repository';
 import { PrismaTenantDirectory } from './infrastructure/prisma-tenant.directory';
 import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
@@ -41,6 +48,8 @@ import { AuthController } from './presentation/auth.controller';
     { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
     { provide: TENANT_DIRECTORY, useClass: PrismaTenantDirectory },
     { provide: USER_DIRECTORY, useClass: PrismaUserDirectory },
+    { provide: PROVISIONING_REPOSITORY, useClass: PrismaProvisioningRepository },
+    ProvisioningService,
     { provide: PASSWORD_HASHER, useClass: ScryptPasswordHasher },
     { provide: REFRESH_TOKEN_FACTORY, useClass: RandomRefreshTokenFactory },
     // The issuer and the verifier are one class: they share the secret, the algorithm and the
@@ -48,6 +57,12 @@ import { AuthController } from './presentation/auth.controller';
     JwtTokenService,
     { provide: ACCESS_TOKEN_ISSUER, useExisting: JwtTokenService },
   ],
-  exports: [AUTHENTICATION_SERVICE, PASSWORD_HASHER, CREDENTIAL_REPOSITORY, USER_DIRECTORY],
+  exports: [
+    AUTHENTICATION_SERVICE,
+    PASSWORD_HASHER,
+    CREDENTIAL_REPOSITORY,
+    USER_DIRECTORY,
+    ProvisioningService,
+  ],
 })
 export class IdentityModule {}

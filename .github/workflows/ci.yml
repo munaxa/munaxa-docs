@@ -6,6 +6,19 @@ on:
     paths-ignore:
       - '**/*.md'
       - 'LICENSE'
+  # Also on the branch itself, before a pull request exists.
+  #
+  # Without this, nothing had ever run the install path: the workflow fired only on pull
+  # requests, so a lockfile that could not install sat undetected from Phase 0.5 until somebody
+  # tried it by hand. Feedback that arrives only at review time is feedback that arrives after
+  # the work.
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
 
 concurrency:
   group: ci-${{ github.ref }}

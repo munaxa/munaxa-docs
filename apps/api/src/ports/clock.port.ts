@@ -8,8 +8,15 @@
 export const CLOCK_PORT = Symbol('ClockPort');
 
 export interface ClockPort {
+  /** Wall-clock time. Everything a person or a record cares about comes from here. */
   now(): Date;
-  /** Monotonic milliseconds, for measuring durations. Never for business dates. */
-  elapsedMs(since: number): number;
+  /**
+   * A **monotonic** reading, in milliseconds, for measuring durations.
+   *
+   * Not an epoch, not an integer, and not comparable to `now()`: it counts from an arbitrary
+   * origin and is fractional. Use it only as a pair of readings subtracted from each other.
+   * Anything that ends up in a record, an identifier or a response wants `now()`.
+   */
   timestamp(): number;
+  elapsedMs(since: number): number;
 }
