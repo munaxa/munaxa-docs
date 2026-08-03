@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import type { PermissionKey, RoleId, TenantId, UserId } from '@edms/domain';
+import type { AnyId, PermissionKey, RoleId, TenantId, UserId } from '@edms/domain';
 
 import { PrismaService } from '../../../core/prisma/prisma.service';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
@@ -27,6 +27,29 @@ export class PrismaProvisioningRepository implements ProvisioningRepository {
   async createTenant(tenant: { id: TenantId; slug: string; name: string }): Promise<void> {
     await this.prisma.tenant.create({
       data: { id: tenant.id, slug: tenant.slug, name: tenant.name, status: 'ACTIVE' },
+    });
+  }
+
+  async createRootScope(scope: {
+    companyId: AnyId;
+    entityId: AnyId;
+    code: string;
+    name: string;
+  }): Promise<void> {
+    const { tenantId } = requireContext();
+    const tx = requireTransaction();
+
+    await tx.company.create({
+      data: { id: scope.companyId, tenantId, code: scope.code, name: scope.name },
+    });
+    await tx.entity.create({
+      data: {
+        id: scope.entityId,
+        tenantId,
+        companyId: scope.companyId,
+        code: scope.code,
+        name: scope.name,
+      },
     });
   }
 

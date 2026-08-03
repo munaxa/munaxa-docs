@@ -51,4 +51,26 @@ describe('loadConfig', () => {
   it('requires the settings that have no safe default', () => {
     expect(() => loadConfig({})).toThrowError(ConfigurationError);
   });
+
+  it('reads an empty variable as unset, not as an empty value', () => {
+    // `.env.example` writes `STORAGE_ENDPOINT=` for an optional value left unfilled, as does
+    // most deployment tooling. Treating that as a value made the file we ship as a starting
+    // point fail to boot on "STORAGE_ENDPOINT: Invalid url".
+    const config = loadConfig({
+      ...baseEnv,
+      STORAGE_ENDPOINT: '',
+      STORAGE_BUCKET: '',
+      STORAGE_REGION: '   ',
+    });
+
+    expect(config.storage.endpoint).toBeNull();
+    expect(config.storage.bucket).toBeNull();
+    expect(config.storage.region).toBeNull();
+  });
+
+  it('still rejects a variable that is present and wrong', () => {
+    expect(() => loadConfig({ ...baseEnv, STORAGE_ENDPOINT: 'not-a-url' })).toThrowError(
+      ConfigurationError,
+    );
+  });
 });
