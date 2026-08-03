@@ -55,12 +55,22 @@ export class RoutePermissionRegistry implements OnApplicationBootstrap {
       if (!instance) {
         continue;
       }
-      const controller = Object.getPrototypeOf(instance) as Type<unknown>;
+      const prototype = Object.getPrototypeOf(instance) as Type<unknown>;
+      /**
+       * Class-level metadata lives on the **constructor**, not on the prototype.
+       *
+       * `@RequirePermission` used as a class decorator calls `SetMetadata` against the class itself,
+       * and `RbacGuard` finds it because `context.getClass()` returns the constructor. Looking it up
+       * on the prototype — as this did — finds nothing, so a controller gated once for all its routes
+       * was reported as if every route were ungated. The prototype is still what method names are
+       * scanned from; only the metadata target was wrong.
+       */
+      const controllerClass = (wrapper.metatype ?? prototype) as Type<unknown>;
       const basePath = wrapper.metatype
         ? (this.reflector.get<string>(PATH_METADATA, wrapper.metatype) ?? '')
         : '';
 
-      for (const methodName of this.scanner.getAllMethodNames(controller)) {
+      for (const methodName of this.scanner.getAllMethodNames(prototype)) {
         const handler = instance[methodName];
         if (typeof handler !== 'function') {
           continue;
@@ -69,13 +79,16 @@ export class RoutePermissionRegistry implements OnApplicationBootstrap {
         if (httpMethod === undefined || !MUTATING_METHODS.has(httpMethod)) {
           continue;
         }
+        // Same two targets, in the same order, as `RbacGuard` uses at runtime. If this pair ever
+        // disagreed with the guard's, the assertion would be checking a different rule from the one
+        // being enforced — which is worse than not asserting at all.
         const permissions = this.reflector.getAllAndOverride<unknown>(REQUIRED_PERMISSIONS, [
           handler,
-          controller,
+          controllerClass,
         ]);
         const publicReason = this.reflector.getAllAndOverride<unknown>(PUBLIC_ROUTE, [
           handler,
-          controller,
+          controllerClass,
         ]);
         if (!permissions && !publicReason) {
           offenders.push(`${wrapper.name}.${methodName} (${basePath})`);

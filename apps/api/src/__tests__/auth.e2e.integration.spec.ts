@@ -224,13 +224,17 @@ describe('authentication over HTTP', () => {
 
   it('records every attempt in the audit trail, successes and failures alike', async () => {
     const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
-    // The tenant context has to be set even for the owner: FORCE ROW LEVEL SECURITY applies to
-    // the table owner too, so a `WHERE tenant_id = …` on a context-less session matches
-    // nothing at all. The predicate is not what scopes this read — the policy is.
+    // The predicate is what scopes this read, and it has to be: `edms_owner` is a superuser —
+    // the bootstrap role here, `POSTGRES_USER` under compose — and a superuser bypasses
+    // row-level security whether or not it is forced. Without `WHERE tenant_id`, this would
+    // read every tenant every suite in the run has created, and the gap-free assertion below
+    // would fail the moment there were two. The context is still set so the read sees what the
+    // application wrote under the same policy.
     const rows = await owner.$transaction(async (tx) => {
       await tx.$executeRawUnsafe("SELECT set_config('app.tenant_id', $1, true)", tenantId);
       return tx.$queryRawUnsafe<{ action: string; sequence: bigint }[]>(
-        'SELECT action, sequence FROM audit_event ORDER BY sequence',
+        'SELECT action, sequence FROM audit_event WHERE tenant_id = $1::uuid ORDER BY sequence',
+        tenantId,
       );
     });
     await owner.$disconnect();

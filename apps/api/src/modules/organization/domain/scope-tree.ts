@@ -1,17 +1,22 @@
 /**
- * The scope tree's rules: how a materialised path is built, read, and kept honest.
+ * The scope tree's rules: what may be a parent, and how deep the tree may go.
  *
- * Pure by construction. Everything here is arithmetic on strings and arrays, which is what
- * lets the invariants below be tested exhaustively without a database — and they are the
- * invariants that decide who can see what, so that matters.
+ * The path *arithmetic* — how a materialised path is built, read and rewritten — is not here. It
+ * moved to [`@edms/domain`](../../../../../../packages/domain/src/tree.ts) when folders and
+ * categories turned out to need the identical answers, for the reason `isUsableCode` lives there:
+ * three implementations of "is A under B" would be three answers to the question that decides who
+ * can see what. The shared names are re-exported at the bottom, so callers inside this module have
+ * one import exactly as they did before.
+ *
+ * What stays here is what is true of *this* tree and no other: the depth ceiling, and the rule
+ * that a department's ancestors belong to its own entity.
  *
  * The tree the ACL resolver walks is TENANT → COMPANY → ENTITY → DEPARTMENT, with departments
  * nesting inside departments (`packages/domain/src/scope.ts`). A branch is a location, not a
  * level: permission does not flow through one.
  */
 
-/** Separates ancestors in a path. A UUID contains no dot, so nothing needs escaping. */
-export const PATH_SEPARATOR = '.';
+import { checkTreePlacement, depthOf } from '@edms/domain';
 
 /**
  * How deep departments may nest.
@@ -27,58 +32,12 @@ export type TreeRejection =
   'TOO_DEEP' | 'PARENT_IS_SELF' | 'PARENT_IS_DESCENDANT' | 'PARENT_IN_ANOTHER_ENTITY';
 
 /**
- * The path of a node, given its parent's path.
- *
- * Ancestors first, the node itself last, so a prefix comparison answers "is A under B" and an
- * ordinary index serves it. A root department's path is just its own identifier.
- */
-export function pathFor(parentPath: string | null, id: string): string {
-  return parentPath ? `${parentPath}${PATH_SEPARATOR}${id}` : id;
-}
-
-/** The identifiers in a path, ancestors first, the node itself last. */
-export function idsInPath(path: string): readonly string[] {
-  return path.split(PATH_SEPARATOR).filter((segment) => segment.length > 0);
-}
-
-/** Ancestors only, nearest last. Empty for a root. */
-export function ancestorIdsOf(path: string): readonly string[] {
-  return idsInPath(path).slice(0, -1);
-}
-
-export function depthOf(path: string): number {
-  return idsInPath(path).length;
-}
-
-/**
- * Whether `candidate` sits at or below `ancestor`.
- *
- * The separator matters: without it, `a.bc` would count as a descendant of `a.b`. Prefix
- * matching on identifiers is only safe when the boundary is checked too.
- */
-export function isAtOrBelow(candidatePath: string, ancestorPath: string): boolean {
-  return (
-    candidatePath === ancestorPath || candidatePath.startsWith(`${ancestorPath}${PATH_SEPARATOR}`)
-  );
-}
-
-/**
- * The `LIKE` pattern matching a node and everything under it.
- *
- * `%` is the only wildcard here and paths are UUIDs and dots, so there is nothing to escape —
- * but the caller must still pass this as a bound parameter, never concatenate it.
- */
-export function subtreePattern(path: string): string {
-  return `${path}${PATH_SEPARATOR}%`;
-}
-
-/**
  * Whether a node may be created or moved under a parent.
  *
- * The two that matter are cycles. A node cannot be its own parent, and it cannot be moved
- * under one of its own descendants — either would produce a path that contains the node twice
- * and a walk that never terminates. Both are cheap to check here and expensive to discover
- * afterwards, because the tree is already corrupt by then.
+ * The cycle and depth checks are the shared ones — a node cannot be its own parent, and it cannot
+ * move under one of its own descendants. The entity check is this tree's own: a department's
+ * ancestors must all belong to the same entity, or the chain the ACL resolver walks would cross a
+ * legal boundary halfway up.
  */
 export function checkPlacement(input: {
   readonly nodeId: string | null;
@@ -88,59 +47,57 @@ export function checkPlacement(input: {
   readonly entityId: string;
   readonly parentEntityId: string | null;
 }): readonly TreeRejection[] {
-  const rejections: TreeRejection[] = [];
+  const rejections: TreeRejection[] = [
+    ...checkTreePlacement({
+      nodeId: input.nodeId,
+      nodePath: input.nodePath,
+      parentId: input.parentId,
+      parentPath: input.parentPath,
+      maximumDepth: MAXIMUM_DEPTH,
+    }),
+  ];
 
   if (input.parentId === null) {
     // A root department: only its own depth is in question, and it is 1.
     return rejections;
   }
 
-  if (input.nodeId !== null && input.parentId === input.nodeId) {
-    rejections.push('PARENT_IS_SELF');
-  }
-
-  if (
-    input.nodePath !== null &&
-    input.parentPath !== null &&
-    isAtOrBelow(input.parentPath, input.nodePath)
-  ) {
-    rejections.push('PARENT_IS_DESCENDANT');
-  }
-
   if (input.parentEntityId !== null && input.parentEntityId !== input.entityId) {
-    // A department's ancestors must all belong to the same entity, or the chain the ACL
-    // resolver walks would cross a legal boundary halfway up.
     rejections.push('PARENT_IN_ANOTHER_ENTITY');
-  }
-
-  if (input.parentPath !== null && depthOf(input.parentPath) + 1 > MAXIMUM_DEPTH) {
-    rejections.push('TOO_DEEP');
   }
 
   return rejections;
 }
 
 /**
- * The paths a subtree takes after its root moves.
+ * Whether a whole subtree still fits under a new parent.
  *
- * Returned rather than applied, so the caller writes them in one statement inside its own
- * transaction: a move that updates half a subtree leaves a tree in which some nodes are
- * unreachable and others are reachable twice.
+ * A move has to measure the deepest leaf, not the node being moved: relocating a three-deep branch
+ * under a department at depth 8 would put its leaves at 11, and `checkPlacement` alone would allow
+ * it — it only ever sees the branch's own new depth.
  */
-export function rewriteSubtree(
-  descendants: readonly { readonly id: string; readonly path: string }[],
-  fromPath: string,
-  toPath: string,
-): readonly { readonly id: string; readonly path: string }[] {
-  return descendants.map((node) => ({
-    id: node.id,
-    path: `${toPath}${node.path.slice(fromPath.length)}`,
-  }));
+export function subtreeFitsUnder(parentPath: string | null, subtreeHeight: number): boolean {
+  return (parentPath === null ? 0 : depthOf(parentPath)) + subtreeHeight <= MAXIMUM_DEPTH;
 }
 
 /**
- * The code rules live in `@edms/domain`, because more than one module needs the same answer —
- * Organisation validates a code on the way in, Numbering renders it on the way out. Re-exported
- * so callers inside this module have one import.
+ * The shared path arithmetic and the code rules, re-exported.
+ *
+ * `isUsableCode` and `normalizeCode` are in `@edms/domain` because Organisation validates a code
+ * on the way in and Numbering renders it on the way out; the tree helpers are there because three
+ * trees share them. Both are re-exported so callers inside this module have one import.
  */
-export { isUsableCode, normalizeCode } from '@edms/domain';
+export {
+  PATH_SEPARATOR,
+  ancestorIdsOf,
+  depthOf,
+  idsInPath,
+  isAtOrBelow,
+  isUsableCode,
+  normalizeCode,
+  pathFor,
+  relativeDepthOf,
+  rewriteSubtree,
+  subtreePattern,
+  subtreePrefix,
+} from '@edms/domain';

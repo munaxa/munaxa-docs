@@ -37,6 +37,27 @@ export interface ScopeRef {
   readonly id: AnyId;
 }
 
+/**
+ * The nodes a library may hang from.
+ *
+ * A library belongs to exactly one organisation node (`03-domain-model.md` §3), and that node
+ * has to be one permission actually flows through — which rules out `BRANCH`, a location rather
+ * than a level, and everything below `DEPARTMENT`, which is where libraries themselves sit.
+ *
+ * `TENANT` is in the list because a tenant-wide library is the ordinary case for a small
+ * customer, and making them invent a company to hold one would be modelling ceremony.
+ */
+export const LIBRARY_OWNER_SCOPES: readonly ScopeTypeKey[] = Object.freeze([
+  ScopeType.TENANT,
+  ScopeType.COMPANY,
+  ScopeType.ENTITY,
+  ScopeType.DEPARTMENT,
+]);
+
+export function isLibraryOwnerScope(type: string): type is ScopeTypeKey {
+  return (LIBRARY_OWNER_SCOPES as readonly string[]).includes(type);
+}
+
 /** The subjects an ACL entry may name. */
 export const AclSubjectType = {
   USER: 'USER',

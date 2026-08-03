@@ -85,18 +85,29 @@ model Tenant {
   updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime?    @map("deleted_at") @db.Timestamptz(6)
 
-  auditEvents AuditEvent[]
-  outbox      OutboxMessage[]
-  idempotency IdempotencyKey[]
-  users       User[]
-  roles       Role[]
-  sessions    SessionFamily[]
+  auditEvents           AuditEvent[]
+  outbox                OutboxMessage[]
+  idempotency           IdempotencyKey[]
+  users                 User[]
+  roles                 Role[]
+  sessions              SessionFamily[]
   notificationTemplates NotificationTemplate[]
   notifications         NotificationMessage[]
   companies             Company[]
   entities              Entity[]
   branches              Branch[]
   departments           Department[]
+  confidentialityLevels ConfidentialityLevel[]
+  retentionPolicies     RetentionPolicy[]
+  numberingRules        NumberingRule[]
+  numberSequences       NumberSequence[]
+  categories            Category[]
+  metadataFields        MetadataField[]
+  documentTypes         DocumentType[]
+  libraries             Library[]
+  folders               Folder[]
+  workflowDefinitions   WorkflowDefinition[]
+  workflowVersions      WorkflowVersion[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -112,8 +123,8 @@ model Tenant {
 /// Audit outlives its subject: it is never soft-deleted, and a purged document leaves its
 /// trail behind. There is deliberately no `deleted_at` on this model.
 model AuditEvent {
-  id           String           @id @db.Uuid
-  tenantId     String           @map("tenant_id") @db.Uuid
+  id            String           @id @db.Uuid
+  tenantId      String           @map("tenant_id") @db.Uuid
   /// Per-tenant, monotonic and **gap-free** (`13-audit-architecture.md` §3).
   ///
   /// The hash chain proves that no record was altered, but on its own it cannot prove that
@@ -121,30 +132,33 @@ model AuditEvent {
   /// perfectly. A contiguous sequence is what makes a hole visible, and it is why this is
   /// allocated as `max + 1` under a per-tenant advisory lock rather than from a PostgreSQL
   /// sequence — those gap on rollback, and a gap is indistinguishable from a deletion.
-  sequence     BigInt
-  occurredAt   DateTime         @map("occurred_at") @db.Timestamptz(6)
+  sequence      BigInt
+  occurredAt    DateTime         @map("occurred_at") @db.Timestamptz(6)
   /// Null when the system acted alone — a retention purge, a scheduled verification.
-  actorId      String?          @map("actor_id") @db.Uuid
+  actorId       String?          @map("actor_id") @db.Uuid
   /// Recorded when the actor was acting under a delegation. Both people are in the trail.
-  onBehalfOfId String?          @map("on_behalf_of_id") @db.Uuid
-  channel      ActorChannel
-  action       String
-  subjectType  AuditSubjectType @map("subject_type")
-  subjectId    String           @map("subject_id") @db.Uuid
-  outcome      AuditOutcome
+  onBehalfOfId  String?          @map("on_behalf_of_id") @db.Uuid
+  channel       ActorChannel
+  action        String
+  subjectType   AuditSubjectType @map("subject_type")
+  subjectId     String           @map("subject_id") @db.Uuid
+  outcome       AuditOutcome
   /// Minimised: enough to reconstruct what happened, never a document's content and never a
   /// personal identifier that is not already in the subject.
-  payload      Json             @default("{}")
+  payload       Json             @default("{}")
   /// Required where a confidentiality level or policy demands a stated reason for access.
-  reason       String?
-  correlationId String          @map("correlation_id")
-  ipAddress    String?          @map("ip_address")
-  userAgent    String?          @map("user_agent")
-  hash         String           @db.Char(64)
-  previousHash String           @map("previous_hash") @db.Char(64)
+  reason        String?
+  correlationId String           @map("correlation_id")
+  ipAddress     String?          @map("ip_address")
+  userAgent     String?          @map("user_agent")
+  hash          String           @db.Char(64)
+  previousHash  String           @map("previous_hash") @db.Char(64)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
+  /// The chain's order, and the constraint that makes a duplicate sequence impossible even if
+  /// two writers somehow bypass the advisory lock.
+  @@unique([tenantId, sequence], map: "uq_audit_tenant_sequence")
   /// The document timeline and the subject-scoped audit tab.
   @@index([tenantId, subjectType, subjectId, occurredAt(sort: Desc)], map: "ix_audit_subject")
   /// "What did this person do", for an investigation.
@@ -154,9 +168,6 @@ model AuditEvent {
   @@index([tenantId, occurredAt], map: "ix_audit_occurred")
   /// Ties an event back to the request that produced it, across API, worker and logs.
   @@index([correlationId], map: "ix_audit_correlation")
-  /// The chain's order, and the constraint that makes a duplicate sequence impossible even if
-  /// two writers somehow bypass the advisory lock.
-  @@unique([tenantId, sequence], map: "uq_audit_tenant_sequence")
   @@map("audit_event")
 }
 
@@ -199,19 +210,19 @@ model OutboxMessage {
 /// exotic. Keyed by `(tenant_id, key)`: one tenant's key can never replay into another's
 /// (`docs/architecture/15-api-architecture.md` §2).
 model IdempotencyKey {
-  id           String   @id @db.Uuid
-  tenantId     String   @map("tenant_id") @db.Uuid
-  key          String
+  id            String   @id @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  key           String
   /// Method and path, so the same key on a different endpoint is a client bug, not a replay.
-  requestPath  String   @map("request_path")
-  requestMethod String  @map("request_method")
+  requestPath   String   @map("request_path")
+  requestMethod String   @map("request_method")
   /// Fingerprint of the request body; a reused key with different content is rejected rather
   /// than answered with someone else's result.
-  requestHash  String   @map("request_hash") @db.Char(64)
-  statusCode   Int      @map("status_code")
-  responseBody Json     @map("response_body")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  expiresAt    DateTime @map("expires_at") @db.Timestamptz(6)
+  requestHash   String   @map("request_hash") @db.Char(64)
+  statusCode    Int      @map("status_code")
+  responseBody  Json     @map("response_body")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt     DateTime @map("expires_at") @db.Timestamptz(6)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -252,36 +263,36 @@ enum PasswordAlgorithm {
 /// user typed. The unique index is partial on `deleted_at IS NULL`, so deleting a user frees
 /// their address for re-invitation — the general rule for soft-deletable data.
 model User {
-  id                String     @id @db.Uuid
-  tenantId          String     @map("tenant_id") @db.Uuid
+  id                String             @id @db.Uuid
+  tenantId          String             @map("tenant_id") @db.Uuid
   email             String
   /// Lower-cased and trimmed. Never shown; only matched against.
-  emailNormalized   String     @map("email_normalized")
-  displayName       String     @map("display_name")
-  status            UserStatus @default(INVITED)
+  emailNormalized   String             @map("email_normalized")
+  displayName       String             @map("display_name")
+  status            UserStatus         @default(INVITED)
   /// Null for an invited user who has not yet set one, and for a user who authenticates
   /// through a federated issuer. Absence is never a reason to allow a sign-in.
-  passwordHash      String?    @map("password_hash")
+  passwordHash      String?            @map("password_hash")
   passwordAlgorithm PasswordAlgorithm? @map("password_algorithm")
-  passwordUpdatedAt DateTime?  @map("password_updated_at") @db.Timestamptz(6)
-  mfaEnrolled       Boolean    @default(false) @map("mfa_enrolled")
+  passwordUpdatedAt DateTime?          @map("password_updated_at") @db.Timestamptz(6)
+  mfaEnrolled       Boolean            @default(false) @map("mfa_enrolled")
   /// Bumped whenever this user's roles or permissions change. An access token carrying an
   /// older value is refused, so a revoked role takes effect within one request rather than
   /// at the end of the token's lifetime.
-  permissionVersion Int        @default(1) @map("permission_version")
-  lastLoginAt       DateTime?  @map("last_login_at") @db.Timestamptz(6)
-  createdAt         DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy         String?    @map("created_by") @db.Uuid
-  updatedAt         DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy         String?    @map("updated_by") @db.Uuid
-  deletedAt         DateTime?  @map("deleted_at") @db.Timestamptz(6)
-  deletedBy         String?    @map("deleted_by") @db.Uuid
+  permissionVersion Int                @default(1) @map("permission_version")
+  lastLoginAt       DateTime?          @map("last_login_at") @db.Timestamptz(6)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?            @map("created_by") @db.Uuid
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy         String?            @map("updated_by") @db.Uuid
+  deletedAt         DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  deletedBy         String?            @map("deleted_by") @db.Uuid
   /// Optimistic locking. Two administrators editing the same user do not silently overwrite.
-  version           Int        @default(1)
+  version           Int                @default(1)
 
-  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  roles    UserRole[]
-  sessions SessionFamily[]
+  tenant                  Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  roles                   UserRole[]
+  sessions                SessionFamily[]
   notificationPreferences NotificationPreference[]
   notifications           NotificationMessage[]
   departments             UserDepartment[]
@@ -297,13 +308,13 @@ model User {
 /// because the product refers to them by key. Their *permissions* are tenant data and may be
 /// edited — a tenant whose approvers must also publish should not need a release.
 model Role {
-  id          String  @id @db.Uuid
-  tenantId    String  @map("tenant_id") @db.Uuid
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
   key         String
   name        String
   description String?
   /// Seeded by the product. Blocks deletion and renaming of the key, not of the permissions.
-  isSystem    Boolean @default(false) @map("is_system")
+  isSystem    Boolean   @default(false) @map("is_system")
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   createdBy   String?   @map("created_by") @db.Uuid
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -363,15 +374,15 @@ model UserRole {
 /// tell which — so the whole family is revoked and both parties must sign in again
 /// (`docs/architecture/17-security-architecture.md` §2).
 model SessionFamily {
-  id           String    @id @db.Uuid
-  tenantId     String    @map("tenant_id") @db.Uuid
-  userId       String    @map("user_id") @db.Uuid
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id            String    @id @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   /// Set when the family is revoked: by sign-out, by password change, or by token reuse.
-  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(6)
-  revokedReason String?  @map("revoked_reason")
-  ipAddress    String?   @map("ip_address")
-  userAgent    String?   @map("user_agent")
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedReason String?   @map("revoked_reason")
+  ipAddress     String?   @map("ip_address")
+  userAgent     String?   @map("user_agent")
 
   tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -386,14 +397,14 @@ model SessionFamily {
 /// The plaintext exists in the client's cookie and nowhere else: a database disclosure must
 /// not hand over live sessions. Lookup is by hash, which is why the hash is unique.
 model RefreshToken {
-  id          String    @id @db.Uuid
-  tenantId    String    @map("tenant_id") @db.Uuid
-  familyId    String    @map("family_id") @db.Uuid
-  tokenHash   String    @map("token_hash") @db.Char(64)
-  issuedAt    DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
-  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
+  id        String    @id @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  familyId  String    @map("family_id") @db.Uuid
+  tokenHash String    @map("token_hash") @db.Char(64)
+  issuedAt  DateTime  @default(now()) @map("issued_at") @db.Timestamptz(6)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
   /// Set the moment the token is exchanged. A second exchange is reuse, and kills the family.
-  usedAt      DateTime? @map("used_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
 
   family SessionFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
 
@@ -473,12 +484,12 @@ model NotificationTemplate {
 /// A missing row means "no opinion", never "off": the type's own defaults apply, and a
 /// mandatory type is delivered regardless (§5).
 model NotificationPreference {
-  tenantId String                @map("tenant_id") @db.Uuid
-  userId   String                @map("user_id") @db.Uuid
-  typeKey  String                @map("type_key")
-  channels NotificationChannel[]
-  digest   DigestFrequency       @default(IMMEDIATE)
-  updatedAt DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenantId  String                @map("tenant_id") @db.Uuid
+  userId    String                @map("user_id") @db.Uuid
+  typeKey   String                @map("type_key")
+  channels  NotificationChannel[]
+  digest    DigestFrequency       @default(IMMEDIATE)
+  updatedAt DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -672,4 +683,500 @@ model UserDepartment {
   @@id([userId, departmentId])
   @@index([tenantId, departmentId], map: "ix_user_department_by_department")
   @@map("user_department")
+}
+
+// ---------------------------------------------------------------------------------------
+// Administration — Phase 2.
+//
+// The configuration a tenant edits instead of waiting for a release: what a document *is*
+// (type, category, fields), how sensitive it is, how it is numbered, how long it is kept, and
+// who must agree to it (`docs/architecture/03-domain-model.md` §3).
+//
+// Two shapes recur, and both are load-bearing rather than stylistic:
+//
+//   Every code and key is unique per tenant through a **partial** index on `lower(...)` — so a
+//   code freed by a soft delete is reusable, and "QA" and "qa" are one code to the database as
+//   well as to the person who typed it. Prisma cannot express either, so they live in the
+//   migration alongside the ones Phase 1 declared the same way.
+//
+//   Every reference between configuration rows is `onDelete: Restrict`. Configuration is
+//   soft-deleted, so a cascade would never fire on the ordinary path and would be a silent
+//   data-loss path on the extraordinary one. What stops a delete is the application checking
+//   for dependents and saying which; the constraint is there for the case where it did not.
+// ---------------------------------------------------------------------------------------
+
+enum RevisionLabelStyle {
+  NUMERIC
+  ALPHABETIC
+  MAJOR_MINOR
+
+  @@map("revision_label_style")
+}
+
+enum MetadataDataType {
+  TEXT
+  LONG_TEXT
+  NUMBER
+  DATE
+  BOOLEAN
+  SELECT
+  MULTI_SELECT
+  USER
+  DEPARTMENT
+
+  @@map("metadata_data_type")
+}
+
+enum RetentionTrigger {
+  ON_PUBLISH
+  ON_SUPERSEDE
+  ON_ARCHIVE
+  ON_DELETE
+
+  @@map("retention_trigger")
+}
+
+enum Disposition {
+  REVIEW
+  ARCHIVE
+  PURGE
+  RETAIN_FOREVER
+
+  @@map("disposition")
+}
+
+/// What a number sequence restarts on. A rule carries a set of these, not one.
+enum SequenceResetScope {
+  NEVER
+  YEARLY
+  MONTHLY
+  PER_COMPANY
+  PER_ENTITY
+  PER_BRANCH
+  PER_DEPARTMENT
+  PER_DOCUMENT_TYPE
+  PER_CATEGORY
+
+  @@map("sequence_reset_scope")
+}
+
+/// The organisation nodes a library may hang from. Deliberately not `BRANCH`: a branch is a
+/// location, and permission does not flow through one.
+enum LibraryOwnerScope {
+  TENANT
+  COMPANY
+  ENTITY
+  DEPARTMENT
+
+  @@map("library_owner_scope")
+}
+
+enum WorkflowVersionState {
+  DRAFT
+  PUBLISHED
+  DEPRECATED
+
+  @@map("workflow_version_state")
+}
+
+/// An ordered sensitivity level and its handling rules.
+///
+/// `rank` is the level's identity to the product rather than decoration: workflow conditions
+/// compare it, audit-on-read is triggered by it, and "more sensitive than" has to be a total
+/// order for those questions to have an answer — hence unique per tenant.
+///
+/// Every flag here **subtracts only**. A level may forbid download to somebody who holds
+/// `document:download`; it can never grant it to somebody who does not
+/// (`08-permission-model.md` §4).
+model ConfidentialityLevel {
+  id            String    @id @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  code          String
+  name          String
+  description   String?
+  rank          Int       @db.SmallInt
+  allowDownload Boolean   @default(true) @map("allow_download")
+  allowPrint    Boolean   @default(true) @map("allow_print")
+  watermark     Boolean   @default(false)
+  /// Forces a stated reason, recorded in the audit trail, even for a permitted read.
+  requireReason Boolean   @default(false) @map("require_reason")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?   @map("created_by") @db.Uuid
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?   @map("updated_by") @db.Uuid
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy     String?   @map("deleted_by") @db.Uuid
+  version       Int       @default(1)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  documentTypes DocumentType[]
+
+  @@index([tenantId, rank], map: "ix_confidentiality_rank")
+  @@map("confidentiality_level")
+}
+
+/// How long a record is kept after an event, and what happens then.
+model RetentionPolicy {
+  id             String           @id @db.Uuid
+  tenantId       String           @map("tenant_id") @db.Uuid
+  code           String
+  name           String
+  description    String?
+  trigger        RetentionTrigger
+  /// Whole months, because that is how record-keeping regimes are written. Zero only for
+  /// `RETAIN_FOREVER`, which the application refuses to pair with a period.
+  periodMonths   Int              @map("period_months")
+  disposition    Disposition
+  /// A person must confirm before the disposition runs. Required for irreversible ones.
+  reviewRequired Boolean          @default(false) @map("review_required")
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?          @map("created_by") @db.Uuid
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?          @map("updated_by") @db.Uuid
+  deletedAt      DateTime?        @map("deleted_at") @db.Timestamptz(6)
+  deletedBy      String?          @map("deleted_by") @db.Uuid
+  version        Int              @default(1)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  documentTypes DocumentType[]
+
+  @@index([tenantId], map: "ix_retention_policy_tenant")
+  @@map("retention_policy")
+}
+
+/// The document-number recipe (`09-numbering-architecture.md` §1).
+///
+/// `segments` is the one `jsonb` column here that earns it: the shape is an ordered list of
+/// discriminated variants a tenant composes, and modelling it as rows would buy a join per
+/// number rendered and indexing nobody queries. It is validated against
+/// `@edms/contracts` before it is written, and read back through the same schema.
+///
+/// `resetScope` is a native array of the enum rather than `jsonb`, because it *is* a closed set
+/// and the sequence's scope key is built from it — a value outside the enum would produce a key
+/// nothing can reproduce.
+model NumberingRule {
+  id              String               @id @db.Uuid
+  tenantId        String               @map("tenant_id") @db.Uuid
+  key             String
+  name            String
+  description     String?
+  separator       String               @default("-")
+  segments        Json
+  resetScope      SequenceResetScope[] @map("reset_scope")
+  reserveOnSubmit Boolean              @default(true) @map("reserve_on_submit")
+  /// Gapless mode: the number is drawn only at approval, so no reservation can be voided.
+  strictGapless   Boolean              @default(false) @map("strict_gapless")
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?              @map("created_by") @db.Uuid
+  updatedAt       DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy       String?              @map("updated_by") @db.Uuid
+  deletedAt       DateTime?            @map("deleted_at") @db.Timestamptz(6)
+  deletedBy       String?              @map("deleted_by") @db.Uuid
+  version         Int                  @default(1)
+
+  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  sequences     NumberSequence[]
+  documentTypes DocumentType[]
+
+  @@index([tenantId], map: "ix_numbering_rule_tenant")
+  @@map("numbering_rule")
+}
+
+/// One counter, for one rule, in one reset scope.
+///
+/// Phase 2 creates and lists these; drawing from one is Phase 5's, and the shape is here now
+/// because it is what makes a rule's padding immutable: a rule with a live sequence has already
+/// issued numbers, and widening the padding would give one of them a second written form.
+///
+/// `nextValue` starts at 1 and is claimed under a row lock held for microseconds. It is never
+/// decremented — not after a rollback, not after a rejection.
+model NumberSequence {
+  id              String   @id @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  numberingRuleId String   @map("numbering_rule_id") @db.Uuid
+  /// The resolved reset scope, e.g. `ENTITY:JO|TYPE:PROC|YEAR:2026`. Built by the application
+  /// from the rule's `resetScope`, so two documents in one series compute the same key.
+  scopeKey        String   @map("scope_key")
+  nextValue       BigInt   @default(1) @map("next_value")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  rule   NumberingRule @relation(fields: [numberingRuleId], references: [id], onDelete: Restrict)
+
+  /// Not partial on `deleted_at`: a sequence is never soft-deleted, because a counter that came
+  /// back from the recycle bin would re-issue numbers it had already given out.
+  @@unique([tenantId, numberingRuleId, scopeKey], map: "uq_number_sequence_scope")
+  @@map("number_sequence")
+}
+
+/// Business classification, hierarchical and cutting across folders.
+///
+/// `path` materialises the ancestry for the same reason `department.path` does, and is written
+/// only by the application, for the whole subtree, inside the transaction that moves a node
+/// (ADR-0014).
+model Category {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  /// Null for a top-level category.
+  parentId    String?   @map("parent_id") @db.Uuid
+  code        String
+  name        String
+  description String?
+  /// Dot-separated ancestor identifiers, this category last. Never written by hand.
+  path        String
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+  version     Int       @default(1)
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children Category[] @relation("CategoryTree")
+
+  @@index([tenantId, parentId], map: "ix_category_parent")
+  @@index([tenantId, path], map: "ix_category_path")
+  @@map("category")
+}
+
+/// A tenant-defined field a document type may require.
+///
+/// `options` and `validation` are `jsonb` because their shape depends on `dataType` — a closed
+/// shape per type, validated by `@edms/contracts` on the way in, never free-form. `dataType`
+/// itself is immutable once the field exists: the value columns a document stores are typed, so
+/// a `TEXT` value has nowhere to go in a `NUMBER` field.
+model MetadataField {
+  id           String           @id @db.Uuid
+  tenantId     String           @map("tenant_id") @db.Uuid
+  key          String
+  name         String
+  description  String?
+  dataType     MetadataDataType @map("data_type")
+  options      Json             @default("[]")
+  validation   Json             @default("{}")
+  isSearchable Boolean          @default(true) @map("is_searchable")
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy    String?          @map("created_by") @db.Uuid
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy    String?          @map("updated_by") @db.Uuid
+  deletedAt    DateTime?        @map("deleted_at") @db.Timestamptz(6)
+  deletedBy    String?          @map("deleted_by") @db.Uuid
+  version      Int              @default(1)
+
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  documentTypes TypeMetadataField[]
+
+  @@index([tenantId], map: "ix_metadata_field_tenant")
+  @@map("metadata_field")
+}
+
+/// The policy pack for a document: which fields, which approval, which number, how long kept.
+///
+/// Every reference is to configuration rather than a copy of it, and a document freezes what it
+/// needs at creation. That is the split that lets a type be edited without rewriting history:
+/// changes apply to documents created afterwards, and documents that already exist keep the
+/// policy they were created under.
+model DocumentType {
+  id                       String             @id @db.Uuid
+  tenantId                 String             @map("tenant_id") @db.Uuid
+  code                     String
+  name                     String
+  description              String?
+  numberingRuleId          String             @map("numbering_rule_id") @db.Uuid
+  /// Null means no approval is required — legitimate for a reference type.
+  workflowDefinitionId     String?            @map("workflow_definition_id") @db.Uuid
+  retentionPolicyId        String?            @map("retention_policy_id") @db.Uuid
+  defaultConfidentialityId String             @map("default_confidentiality_id") @db.Uuid
+  revisionLabelStyle       RevisionLabelStyle @default(NUMERIC) @map("revision_label_style")
+  /// An inactive type stays attached to existing documents and cannot be chosen for new ones.
+  isActive                 Boolean            @default(true) @map("is_active")
+  createdAt                DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy                String?            @map("created_by") @db.Uuid
+  updatedAt                DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy                String?            @map("updated_by") @db.Uuid
+  deletedAt                DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  deletedBy                String?            @map("deleted_by") @db.Uuid
+  version                  Int                @default(1)
+
+  tenant             Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  numberingRule      NumberingRule        @relation(fields: [numberingRuleId], references: [id], onDelete: Restrict)
+  workflowDefinition WorkflowDefinition?  @relation(fields: [workflowDefinitionId], references: [id], onDelete: Restrict)
+  retentionPolicy    RetentionPolicy?     @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
+  confidentiality    ConfidentialityLevel @relation(fields: [defaultConfidentialityId], references: [id], onDelete: Restrict)
+  fields             TypeMetadataField[]
+
+  @@index([tenantId, isActive], map: "ix_document_type_active")
+  @@index([tenantId, workflowDefinitionId], map: "ix_document_type_workflow")
+  @@map("document_type")
+}
+
+/// A field attached to a type, with the facts the field itself does not carry.
+///
+/// A join row rather than an array column on either side, so "which types require this field"
+/// is an indexed query — which is what a delete has to ask before it refuses.
+model TypeMetadataField {
+  tenantId        String  @map("tenant_id") @db.Uuid
+  documentTypeId  String  @map("document_type_id") @db.Uuid
+  metadataFieldId String  @map("metadata_field_id") @db.Uuid
+  isRequired      Boolean @default(false) @map("is_required")
+  sortOrder       Int     @default(0) @map("sort_order")
+  /// Pre-filled on a new document. Stored as text and parsed against the field's own type.
+  defaultValue    String? @map("default_value")
+
+  documentType DocumentType  @relation(fields: [documentTypeId], references: [id], onDelete: Cascade)
+  field        MetadataField @relation(fields: [metadataFieldId], references: [id], onDelete: Restrict)
+
+  @@id([documentTypeId, metadataFieldId])
+  @@index([tenantId, metadataFieldId], map: "ix_type_field_by_field")
+  @@map("type_metadata_field")
+}
+
+/// Where documents live, and the tree ACLs are granted on.
+///
+/// A library belongs to exactly one organisation node, and the pair `(owner_scope_type,
+/// owner_scope_id)` says which. It is polymorphic rather than four nullable foreign keys because
+/// the alternative is a check constraint counting non-nulls across four columns, and every query
+/// then has to coalesce them. The referential integrity a foreign key would give is enforced by
+/// the application resolving the node before it writes — and the node types are exactly those
+/// the scope chain already walks, so an unresolvable one is a bug the ACL resolver would hit too.
+///
+/// `owner_scope_id` is null for `TENANT`, and only for `TENANT`: the tenant is implicit, taken
+/// from the token, and naming it in a body is what the isolation guard rejects.
+model Library {
+  id             String            @id @db.Uuid
+  tenantId       String            @map("tenant_id") @db.Uuid
+  code           String
+  name           String
+  description    String?
+  ownerScopeType LibraryOwnerScope @map("owner_scope_type")
+  ownerScopeId   String?           @map("owner_scope_id") @db.Uuid
+  /// The folder created with the library. Nullable in the schema and never null in practice:
+  /// the folder cannot exist before the library it points at, so both are written in one
+  /// transaction and this is set in it. A library without one is a failed transaction, and the
+  /// repository refuses to map one rather than returning a library nothing can be filed in.
+  rootFolderId   String?           @unique(map: "uq_library_root_folder") @map("root_folder_id") @db.Uuid
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?           @map("created_by") @db.Uuid
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?           @map("updated_by") @db.Uuid
+  deletedAt      DateTime?         @map("deleted_at") @db.Timestamptz(6)
+  deletedBy      String?           @map("deleted_by") @db.Uuid
+  version        Int               @default(1)
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  rootFolder Folder?  @relation("LibraryRoot", fields: [rootFolderId], references: [id], onDelete: Restrict)
+  folders    Folder[] @relation("FolderLibrary")
+
+  @@index([tenantId, ownerScopeType, ownerScopeId], map: "ix_library_owner")
+  @@map("library")
+}
+
+/// A folder inside a library.
+///
+/// The tree the ACL resolver walks below a library, materialised the same way departments are.
+/// `depth` is stored rather than derived from `path` on every read: the ceiling is checked on
+/// every create and move, and counting separators in a string to enforce a limit is the kind of
+/// arithmetic that is cheap once and measurable at a thousand folders.
+model Folder {
+  id              String    @id @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  libraryId       String    @map("library_id") @db.Uuid
+  /// Null for the library's root folder, and only for it.
+  parentId        String?   @map("parent_id") @db.Uuid
+  name            String
+  description     String?
+  /// Dot-separated ancestor identifiers, this folder last.
+  path            String
+  depth           Int       @default(1)
+  /// False stops the ACL walk here. Administrative permissions are exempt, or a user could
+  /// hide a subtree from the administrators accountable for it (`08-permission-model.md` §3).
+  inheritAcl      Boolean   @default(true) @map("inherit_acl")
+  /// The root cannot be moved, renamed away or deleted; it is the library's own anchor.
+  isRoot          Boolean   @default(false) @map("is_root")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?   @map("created_by") @db.Uuid
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy       String?   @map("updated_by") @db.Uuid
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy       String?   @map("deleted_by") @db.Uuid
+  /// Which cascade removed this row.
+  ///
+  /// Deleting a folder soft-deletes its subtree, and restoring must bring back exactly what that
+  /// delete took — not everything currently deleted under the node, which would resurrect rows
+  /// somebody deleted individually and deliberately beforehand (`05-database-design.md` §4).
+  deleteCascadeId String?   @map("delete_cascade_id") @db.Uuid
+  version         Int       @default(1)
+
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  library       Library   @relation("FolderLibrary", fields: [libraryId], references: [id], onDelete: Restrict)
+  parent        Folder?   @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children      Folder[]  @relation("FolderTree")
+  rootOfLibrary Library[] @relation("LibraryRoot")
+
+  @@index([tenantId, libraryId, parentId], map: "ix_folder_parent")
+  @@index([tenantId, path], map: "ix_folder_path")
+  @@index([tenantId, deleteCascadeId], map: "ix_folder_cascade")
+  @@map("folder")
+}
+
+/// A named approval process. Identity only: the rules live in its versions.
+model WorkflowDefinition {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  key         String
+  name        String
+  description String?
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+  version     Int       @default(1)
+
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  versions      WorkflowVersion[]
+  documentTypes DocumentType[]
+
+  @@index([tenantId, isActive], map: "ix_workflow_definition_active")
+  @@map("workflow_definition")
+}
+
+/// One version of a definition — the thing an approval actually binds to.
+///
+/// **A published version is immutable.** Not by convention: an instance binds to a version, and
+/// editing one would change the rules of an approval already running, which
+/// `07-workflow-architecture.md` §1 calls the single most important property of the engine.
+/// Editing a live workflow therefore means publishing a new version, and retiring one means
+/// `DEPRECATED` — which stops new instances and leaves running ones alone.
+///
+/// There is no `deleted_at`. A version is retired, never removed, because instances keep their
+/// version forever and a soft-deleted version would be one a running approval could not read.
+model WorkflowVersion {
+  id           String               @id @db.Uuid
+  tenantId     String               @map("tenant_id") @db.Uuid
+  definitionId String               @map("definition_id") @db.Uuid
+  /// Monotonic per definition, allocated as `max + 1` in the transaction that creates it.
+  version      Int
+  state        WorkflowVersionState @default(DRAFT)
+  /// Stages, participants, conditions and completion policy — validated against
+  /// `@edms/contracts` before it is written, and re-validated on publish.
+  definition   Json
+  publishedAt  DateTime?            @map("published_at") @db.Timestamptz(6)
+  publishedBy  String?              @map("published_by") @db.Uuid
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy    String?              @map("created_by") @db.Uuid
+  updatedAt    DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy    String?              @map("updated_by") @db.Uuid
+
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  definitionRecord WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+
+  @@unique([definitionId, version], map: "uq_workflow_version_number")
+  @@index([tenantId, definitionId, state], map: "ix_workflow_version_state")
+  @@map("workflow_version")
 }
