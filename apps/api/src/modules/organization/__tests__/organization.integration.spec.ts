@@ -125,13 +125,24 @@ async function seed(tenantId: TenantId, slug: string): Promise<Fixture> {
       data: { id: ids.companyId, tenantId, code: 'HQ', name: 'Head Office' },
     });
     await tx.entity.create({
-      data: { id: ids.entityId, tenantId, companyId: ids.companyId, code: 'OPS', name: 'Operations' },
+      data: {
+        id: ids.entityId,
+        tenantId,
+        companyId: ids.companyId,
+        code: 'OPS',
+        name: 'Operations',
+      },
     });
     await tx.branch.create({
       data: { id: ids.branchId, tenantId, entityId: ids.entityId, code: 'MAIN', name: 'Main Site' },
     });
 
-    const department = (id: string, parentId: string | null, parentPath: string | null, code: string) =>
+    const department = (
+      id: string,
+      parentId: string | null,
+      parentPath: string | null,
+      code: string,
+    ) =>
       tx.department.create({
         data: {
           id,
@@ -264,7 +275,9 @@ describe('subtree membership', () => {
   it('reaches everything under a department, including the node itself', async () => {
     const { quality, documentation, records } = fixture(ACME);
 
-    const reached = await asTenant(ACME, () => service.departmentsReachedBy([asId<AnyId>(quality)]));
+    const reached = await asTenant(ACME, () =>
+      service.departmentsReachedBy([asId<AnyId>(quality)]),
+    );
 
     // Membership in "Quality" is membership in what sits under it — otherwise an ACL granted on
     // a parent department would not reach the people the org chart says are in it.
@@ -276,7 +289,9 @@ describe('subtree membership', () => {
   it('does not reach a sibling', async () => {
     const { quality, finance } = fixture(ACME);
 
-    const reached = await asTenant(ACME, () => service.departmentsReachedBy([asId<AnyId>(quality)]));
+    const reached = await asTenant(ACME, () =>
+      service.departmentsReachedBy([asId<AnyId>(quality)]),
+    );
 
     expect(reached.map((node) => node.id)).not.toContain(finance);
   });
@@ -301,7 +316,9 @@ describe('subtree membership', () => {
       }),
     );
 
-    const reached = await asTenant(ACME, () => service.departmentsReachedBy([asId<AnyId>(quality)]));
+    const reached = await asTenant(ACME, () =>
+      service.departmentsReachedBy([asId<AnyId>(quality)]),
+    );
 
     expect(reached.map((node) => node.id)).not.toContain(impostor);
   });
@@ -392,7 +409,14 @@ describe('the constraints the database holds', () => {
     await expect(
       asOwner(ACME, (tx) =>
         tx.department.create({
-          data: { id: second, tenantId: ACME, entityId, code: 'TEMP', name: 'Reused', path: second },
+          data: {
+            id: second,
+            tenantId: ACME,
+            entityId,
+            code: 'TEMP',
+            name: 'Reused',
+            path: second,
+          },
         }),
       ),
     ).resolves.toMatchObject({ code: 'TEMP' });
@@ -437,7 +461,9 @@ describe('the constraints the database holds', () => {
       ),
     ).resolves.toBeDefined();
 
-    const memberships = await asOwner(ACME, (tx) => tx.userDepartment.findMany({ where: { userId } }));
+    const memberships = await asOwner(ACME, (tx) =>
+      tx.userDepartment.findMany({ where: { userId } }),
+    );
     expect(memberships).toHaveLength(2);
     expect(memberships.filter((row) => row.isPrimary)).toHaveLength(1);
   });

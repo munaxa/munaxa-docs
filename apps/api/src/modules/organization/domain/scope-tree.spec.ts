@@ -66,7 +66,12 @@ describe('containment', () => {
 });
 
 describe('placement', () => {
-  const base = { nodeId: C, nodePath: `${A}.${C}`, entityId: 'entity-1', parentEntityId: 'entity-1' };
+  const base = {
+    nodeId: C,
+    nodePath: `${A}.${C}`,
+    entityId: 'entity-1',
+    parentEntityId: 'entity-1',
+  };
 
   it('accepts a root, which has no parent to check', () => {
     expect(
@@ -87,9 +92,9 @@ describe('placement', () => {
   it('refuses a move under its own descendant', () => {
     // The cycle case. Allowing it produces a path containing the node twice and a walk that
     // never terminates — corrupt the moment it commits, and expensive to discover later.
-    expect(
-      checkPlacement({ ...base, parentId: B, parentPath: `${A}.${C}.${B}` }),
-    ).toContain('PARENT_IS_DESCENDANT');
+    expect(checkPlacement({ ...base, parentId: B, parentPath: `${A}.${C}.${B}` })).toContain(
+      'PARENT_IS_DESCENDANT',
+    );
   });
 
   it('refuses a parent in another entity', () => {
@@ -119,7 +124,9 @@ describe('placement', () => {
       parentEntityId: 'entity-2',
     });
 
-    expect(rejections).toEqual(expect.arrayContaining(['PARENT_IS_SELF', 'PARENT_IN_ANOTHER_ENTITY']));
+    expect(rejections).toEqual(
+      expect.arrayContaining(['PARENT_IS_SELF', 'PARENT_IN_ANOTHER_ENTITY']),
+    );
   });
 });
 

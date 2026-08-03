@@ -24,10 +24,7 @@ export const PATH_SEPARATOR = '.';
 export const MAXIMUM_DEPTH = 10;
 
 export type TreeRejection =
-  | 'TOO_DEEP'
-  | 'PARENT_IS_SELF'
-  | 'PARENT_IS_DESCENDANT'
-  | 'PARENT_IN_ANOTHER_ENTITY';
+  'TOO_DEEP' | 'PARENT_IS_SELF' | 'PARENT_IS_DESCENDANT' | 'PARENT_IN_ANOTHER_ENTITY';
 
 /**
  * The path of a node, given its parent's path.
@@ -61,8 +58,7 @@ export function depthOf(path: string): number {
  */
 export function isAtOrBelow(candidatePath: string, ancestorPath: string): boolean {
   return (
-    candidatePath === ancestorPath ||
-    candidatePath.startsWith(`${ancestorPath}${PATH_SEPARATOR}`)
+    candidatePath === ancestorPath || candidatePath.startsWith(`${ancestorPath}${PATH_SEPARATOR}`)
   );
 }
 
@@ -103,7 +99,11 @@ export function checkPlacement(input: {
     rejections.push('PARENT_IS_SELF');
   }
 
-  if (input.nodePath !== null && input.parentPath !== null && isAtOrBelow(input.parentPath, input.nodePath)) {
+  if (
+    input.nodePath !== null &&
+    input.parentPath !== null &&
+    isAtOrBelow(input.parentPath, input.nodePath)
+  ) {
     rejections.push('PARENT_IS_DESCENDANT');
   }
 

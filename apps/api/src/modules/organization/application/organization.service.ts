@@ -4,11 +4,7 @@ import { type AnyId, type ScopeTypeKey, ScopeType, asId } from '@edms/domain';
 
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { ancestorIdsOf } from '../domain/scope-tree';
-import {
-  SCOPE_REPOSITORY,
-  type ScopeNodeRecord,
-  type ScopeRepository,
-} from './scope.ports';
+import { SCOPE_REPOSITORY, type ScopeNodeRecord, type ScopeRepository } from './scope.ports';
 
 /**
  * The scope tree, as everything above it needs to see it.
