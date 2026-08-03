@@ -1,13 +1,26 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type AnyId, type TenantId, asId } from '@edms/domain';
+import {
+  type AnyId,
+  type TenantId,
+  type UserId,
+  AuditOutcome,
+  AuditSubjectType,
+  asId,
+} from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
+import {
+  AUDIT_WRITER,
+  type AuditActor,
+  type AuditWriter,
+} from '../../../core/audit/audit-writer.port';
 import { UnauthenticatedError } from '../../../core/errors/application-errors';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
+import { SecurityAudit } from '../domain/audit-actions';
 import { canSignIn, normalizeEmail } from '../domain/user';
 import {
   ACCESS_TOKEN_ISSUER,
@@ -69,20 +82,20 @@ export class DefaultAuthenticationService implements AuthenticationService {
     @Inject(REFRESH_TOKEN_FACTORY) private readonly refreshTokens: RefreshTokenFactory,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
+    @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(LOGGER) private readonly logger: Logger,
   ) {}
 
   async signIn(command: SignInCommand): Promise<AuthenticationResult> {
-    return this.withinTenant(command, REJECTED, async (tenantId) => {
+    // As in `refresh`, the transaction below decides but does not throw. A failed sign-in is
+    // exactly the event an attacker would prefer to leave no trace of, and throwing here would
+    // roll its audit record back along with everything else.
+    const outcome = await this.withinTenant(command, REJECTED, async (tenantId) => {
       const credential = await this.credentials.findByEmail(normalizeEmail(command.email));
       const accepted = await this.verifyCredential(credential, command.password);
 
       if (!accepted || !credential) {
-        this.logger.warn('Sign-in rejected', {
-          reason: this.rejectionReason(credential),
-          correlationId: command.correlationId,
-        });
-        throw new UnauthenticatedError(REJECTED);
+        return { kind: 'rejected', reason: this.rejectionReason(credential) } as const;
       }
 
       const now = this.clock.now();
@@ -107,8 +120,49 @@ export class DefaultAuthenticationService implements AuthenticationService {
         ipAddress: command.ipAddress,
         userAgent: command.userAgent,
       });
-      return this.mintPair(credential, familyId, tenantId, now);
+
+      // Inside the transaction, so the session and the record that it was opened commit
+      // together. A session that exists without a trail is the thing audit is for.
+      await this.audit.write(this.actor(tenantId, command, credential.id), {
+        action: SecurityAudit.LOGIN_SUCCEEDED,
+        subjectType: AuditSubjectType.SESSION,
+        subjectId: familyId,
+        outcome: AuditOutcome.SUCCESS,
+        payload: { userId: credential.id },
+      });
+
+      return {
+        kind: 'issued',
+        result: await this.mintPair(credential, familyId, tenantId, now),
+      } as const;
     });
+
+    if (outcome.kind === 'issued') {
+      return outcome.result;
+    }
+
+    this.logger.warn('Sign-in rejected', {
+      reason: outcome.reason,
+      correlationId: command.correlationId,
+    });
+
+    // A second, committing transaction. The attempt is recorded whether or not it succeeded,
+    // and only then does the request fail.
+    await this.withinTenant(command, REJECTED, async (tenantId) => {
+      await this.audit.write(this.actor(tenantId, command, null), {
+        action: SecurityAudit.LOGIN_FAILED,
+        // The subject is the attempt, not a user: for an unknown address there is no user to
+        // name, and inventing one would put a fiction in the evidence.
+        subjectType: AuditSubjectType.SESSION,
+        subjectId: asId<AnyId>(uuidv7(this.clock.now().getTime())),
+        outcome: AuditOutcome.DENIED,
+        // The reason code, never the address that was tried: the trail says what happened
+        // without becoming a list of who does and does not hold an account.
+        payload: { reason: outcome.reason },
+      });
+    });
+
+    throw new UnauthenticatedError(REJECTED);
   }
 
   async refresh(refreshToken: string, context: SessionContext): Promise<AuthenticationResult> {
@@ -156,8 +210,15 @@ export class DefaultAuthenticationService implements AuthenticationService {
 
     if (outcome.kind === 'revoke') {
       // A second, committing transaction. Only now is it safe to fail the request.
-      await this.withinTenant(context, SESSION_OVER, async () => {
+      await this.withinTenant(context, SESSION_OVER, async (tenantId) => {
         await this.sessions.revokeFamily(outcome.familyId, outcome.reason);
+        await this.audit.write(this.actor(tenantId, context, null), {
+          action: SecurityAudit.SESSION_REVOKED,
+          subjectType: AuditSubjectType.SESSION,
+          subjectId: outcome.familyId,
+          outcome: AuditOutcome.DENIED,
+          payload: { reason: outcome.reason },
+        });
       });
       this.logger.warn('Refresh refused; session family revoked', {
         familyId: outcome.familyId,
@@ -170,12 +231,19 @@ export class DefaultAuthenticationService implements AuthenticationService {
   }
 
   async signOut(refreshToken: string, context: SessionContext): Promise<void> {
-    await this.withinTenant(context, SESSION_OVER, async () => {
+    await this.withinTenant(context, SESSION_OVER, async (tenantId) => {
       const presented = await this.sessions.findByTokenHash(this.refreshTokens.hash(refreshToken));
       // Unknown or already revoked is success: sign-out is idempotent, and reporting "no such
       // session" would tell an attacker which stolen tokens are still live.
       if (presented && !presented.familyRevokedAt) {
         await this.sessions.revokeFamily(presented.familyId, 'SIGNED_OUT');
+        await this.audit.write(this.actor(tenantId, context, presented.userId), {
+          action: SecurityAudit.SESSION_REVOKED,
+          subjectType: AuditSubjectType.SESSION,
+          subjectId: presented.familyId,
+          outcome: AuditOutcome.SUCCESS,
+          payload: { reason: 'SIGNED_OUT' },
+        });
       }
     });
   }
@@ -214,6 +282,24 @@ export class DefaultAuthenticationService implements AuthenticationService {
     };
 
     return runWithContext(requestContext, () => this.unitOfWork.run(() => work(tenantId)));
+  }
+
+  /**
+   * Who the audit trail records as having acted.
+   *
+   * The channel is `API` because that is what this surface is; a browser reaching it through
+   * the web client is still an API call, and pretending otherwise would put a guess in the
+   * evidence.
+   */
+  private actor(tenantId: TenantId, context: SessionContext, userId: UserId | null): AuditActor {
+    return {
+      tenantId,
+      userId,
+      channel: 'API',
+      correlationId: context.correlationId,
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+    };
   }
 
   /** Verifies the presented password, spending the same work whether or not the user exists. */

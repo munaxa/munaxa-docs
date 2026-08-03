@@ -1,4 +1,9 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
+
+import { AUDIT_WRITER } from '../../core/audit/audit-writer.port';
+import { AUDIT_REPOSITORY } from './application/ports';
+import { ChainedAuditWriter } from './infrastructure/chained-audit.writer';
+import { PrismaAuditRepository } from './infrastructure/prisma-audit.repository';
 
 /**
  * Audit — What happened, when, by whom — provably?
@@ -6,12 +11,22 @@ import { Module } from '@nestjs/common';
  * **Owns:** AuditEvent, the hash chain, evidence export
  * **Depends on:** — (written by every module through the audit port)
  *
- * `AUDIT_WRITER` — it owns the chain, so it owns the only way to append to it.
+ * `AUDIT_WRITER` — it owns the chain, so it owns the only way to append to it. The port is
+ * declared in `core/` because every module writes to it; the binding is here because only
+ * this module knows how the chain is maintained. Global, for the same reason: audit is a
+ * cross-cutting obligation, not a dependency a module should have to remember to import.
  *
- * Phase 0.5 establishes this module's contracts: the repository and service interfaces in
- * `application/`, and the event contracts in `domain/events.ts`. The entities, use cases,
- * Prisma repositories and controllers that satisfy them are built by the phase that owns
- * this capability — see `README.md` in this folder.
+ * Phase 1 implements the write path — the chain, the per-tenant sequence, and the advisory
+ * lock that keeps both single-threaded per tenant. Reading the trail, verifying it on a
+ * schedule and exporting evidence bundles belong to Phase 9, which owns that capability; the
+ * `AuditService` interface in `application/ports.ts` is deliberately still unbound.
  */
-@Module({})
+@Global()
+@Module({
+  providers: [
+    { provide: AUDIT_REPOSITORY, useClass: PrismaAuditRepository },
+    { provide: AUDIT_WRITER, useClass: ChainedAuditWriter },
+  ],
+  exports: [AUDIT_WRITER, AUDIT_REPOSITORY],
+})
 export class AuditModule {}

@@ -11,6 +11,7 @@ import {
   asId,
 } from '@edms/domain';
 
+import type { AuditActor, AuditEntry, AuditWriter } from '../../../core/audit/audit-writer.port';
 import type { Logger } from '../../../core/observability/logger';
 import type { UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { FakeClock } from '../../../testing/fake-ports';
@@ -77,10 +78,13 @@ describe('DefaultAuthenticationService', () => {
   let service: DefaultAuthenticationService;
   let revoked: { familyId: AnyId; reason: string }[];
   let issuedFor: AccessTokenRequest[];
+  let audited: { action: string; outcome: string }[];
+  let audit: AuditWriter;
 
   beforeEach(() => {
     revoked = [];
     issuedFor = [];
+    audited = [];
     clock = new FakeClock(new Date('2026-01-01T00:00:00Z'));
 
     credentials = {
@@ -127,6 +131,19 @@ describe('DefaultAuthenticationService', () => {
       hash: vi.fn((token: string) => `hashed:${token}`),
     };
 
+    // Audit entries are recorded through the same rollback-aware boundary as revocations, so a
+    // trail written inside a transaction that then throws is discarded here too.
+    audit = {
+      write: (_actor: AuditActor, entry: AuditEntry) => {
+        audited.push({ action: entry.action, outcome: entry.outcome });
+        return Promise.resolve();
+      },
+      writeStandalone: (_actor: AuditActor, entry: AuditEntry) => {
+        audited.push({ action: entry.action, outcome: entry.outcome });
+        return Promise.resolve();
+      },
+    };
+
     // A unit of work that actually models rollback.
     //
     // A double that simply calls the work would pass while the real database threw the writes
@@ -136,11 +153,13 @@ describe('DefaultAuthenticationService', () => {
     // against PostgreSQL. Modelling commit and rollback here is what keeps it caught.
     const unitOfWork: UnitOfWork = {
       run: async (work) => {
-        const committed = revoked.length;
+        const committedRevocations = revoked.length;
+        const committedAudit = audited.length;
         try {
           return await work();
         } catch (error) {
-          revoked.length = committed;
+          revoked.length = committedRevocations;
+          audited.length = committedAudit;
           throw error;
         }
       },
@@ -161,6 +180,7 @@ describe('DefaultAuthenticationService', () => {
       refreshTokens,
       clock,
       unitOfWork,
+      audit,
       logger,
     );
   });
@@ -287,6 +307,66 @@ describe('DefaultAuthenticationService', () => {
       await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
 
       expect(revoked).toEqual([{ familyId: FAMILY, reason: 'USER_NOT_ELIGIBLE' }]);
+    });
+  });
+
+  describe('audit', () => {
+    it('records a successful sign-in', async () => {
+      await service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' });
+
+      expect(audited).toEqual([{ action: 'LOGIN_SUCCEEDED', outcome: 'SUCCESS' }]);
+    });
+
+    it('records a failed sign-in, and the record survives the rejection', async () => {
+      vi.mocked(passwords.verify).mockResolvedValue(false);
+
+      await expect(
+        service.signIn({ ...context, email: 'ada@acme.test', password: 'nope' }),
+      ).rejects.toThrowError();
+
+      // The whole point: the request failed, and the attempt is still on the record. Written
+      // inside the transaction that then threw, this array would be empty.
+      expect(audited).toEqual([{ action: 'LOGIN_FAILED', outcome: 'DENIED' }]);
+    });
+
+    it('records an attempt against an address that does not exist', async () => {
+      vi.mocked(credentials.findByEmail).mockResolvedValue(null);
+
+      await expect(
+        service.signIn({ ...context, email: 'ghost@acme.test', password: 'pw' }),
+      ).rejects.toThrowError();
+
+      expect(audited).toEqual([{ action: 'LOGIN_FAILED', outcome: 'DENIED' }]);
+    });
+
+    it('records the revocation when a refresh token is replayed', async () => {
+      vi.mocked(sessions.findByTokenHash).mockResolvedValue({
+        id: asId<AnyId>('01900000-0000-7000-8000-0000000000a1'),
+        familyId: FAMILY,
+        userId: USER,
+        expiresAt: new Date('2026-02-01T00:00:00Z'),
+        usedAt: new Date('2026-01-01T00:00:00Z'),
+        familyRevokedAt: null,
+      });
+
+      await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
+
+      expect(audited).toEqual([{ action: 'SESSION_REVOKED', outcome: 'DENIED' }]);
+    });
+
+    it('records a sign-out', async () => {
+      vi.mocked(sessions.findByTokenHash).mockResolvedValue({
+        id: asId<AnyId>('01900000-0000-7000-8000-0000000000a1'),
+        familyId: FAMILY,
+        userId: USER,
+        expiresAt: new Date('2026-02-01T00:00:00Z'),
+        usedAt: null,
+        familyRevokedAt: null,
+      });
+
+      await service.signOut('refresh-plain', context);
+
+      expect(audited).toEqual([{ action: 'SESSION_REVOKED', outcome: 'SUCCESS' }]);
     });
   });
 

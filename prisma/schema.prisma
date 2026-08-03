@@ -108,6 +108,14 @@ model Tenant {
 model AuditEvent {
   id           String           @id @db.Uuid
   tenantId     String           @map("tenant_id") @db.Uuid
+  /// Per-tenant, monotonic and **gap-free** (`13-audit-architecture.md` §3).
+  ///
+  /// The hash chain proves that no record was altered, but on its own it cannot prove that
+  /// none was removed from the end: truncate the last k events and what remains still chains
+  /// perfectly. A contiguous sequence is what makes a hole visible, and it is why this is
+  /// allocated as `max + 1` under a per-tenant advisory lock rather than from a PostgreSQL
+  /// sequence — those gap on rollback, and a gap is indistinguishable from a deletion.
+  sequence     BigInt
   occurredAt   DateTime         @map("occurred_at") @db.Timestamptz(6)
   /// Null when the system acted alone — a retention purge, a scheduled verification.
   actorId      String?          @map("actor_id") @db.Uuid
@@ -140,6 +148,9 @@ model AuditEvent {
   @@index([tenantId, occurredAt], map: "ix_audit_occurred")
   /// Ties an event back to the request that produced it, across API, worker and logs.
   @@index([correlationId], map: "ix_audit_correlation")
+  /// The chain's order, and the constraint that makes a duplicate sequence impossible even if
+  /// two writers somehow bypass the advisory lock.
+  @@unique([tenantId, sequence], map: "uq_audit_tenant_sequence")
   @@map("audit_event")
 }
 

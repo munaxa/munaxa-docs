@@ -17,6 +17,7 @@ import { PrismaSessionRepository } from '../infrastructure/prisma-session.reposi
 import { PrismaTenantDirectory } from '../infrastructure/prisma-tenant.directory';
 import { RandomRefreshTokenFactory } from '../infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import type { AuditWriter } from '../../../core/audit/audit-writer.port';
 import { FakeClock } from '../../../testing/fake-ports';
 
 // Both roles are needed and they are not interchangeable: seeding is DDL-adjacent and runs as
@@ -51,6 +52,19 @@ const clock = new FakeClock(new Date());
 const hasher = new ScryptPasswordHasher();
 
 const prisma = new PrismaService(config, logger);
+const unitOfWork = new PrismaUnitOfWork(prisma);
+
+/**
+ * Audit is recorded, not exercised, here.
+ *
+ * The real writer belongs to the Audit module and reaching into it would cross a boundary the
+ * architecture forbids — and lint enforces. What the chain does under concurrency, rollback
+ * and tampering is its own module's integration suite; this one is about authentication.
+ */
+const auditWriter: AuditWriter = {
+  write: () => Promise.resolve(),
+  writeStandalone: () => Promise.resolve(),
+};
 const service = new DefaultAuthenticationService(
   new PrismaCredentialRepository(),
   new PrismaSessionRepository(clock),
@@ -59,7 +73,8 @@ const service = new DefaultAuthenticationService(
   new JwtTokenService(config, clock),
   new RandomRefreshTokenFactory(config),
   clock,
-  new PrismaUnitOfWork(prisma),
+  unitOfWork,
+  auditWriter,
   logger,
 );
 
