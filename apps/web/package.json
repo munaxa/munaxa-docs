@@ -2,10 +2,11 @@
   "name": "@edms/web",
   "version": "0.1.0",
   "private": true,
-  "description": "Munaxa Docs web workspace — Next.js 15 App Router, consuming the shared platform with the docs theme.",
+  "description": "Munaxa Docs web workspace \u2014 Next.js 15 App Router, consuming the shared platform with the docs theme.",
   "license": "UNLICENSED",
   "scripts": {
     "build": "next build",
+    "typegen": "next typegen",
     "dev": "next dev --port 3000",
     "start": "next start",
     "lint": "eslint .",
