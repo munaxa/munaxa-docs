@@ -49,6 +49,7 @@ export const ar: Catalogue = {
   admin: {
     title: 'الإدارة',
     subtitle: 'كيف تمّت تهيئة هذه المؤسسة.',
+    sectionNav: 'أقسام الإدارة',
     sections: {
       organization: 'الهيكل المؤسسي',
       people: 'الأشخاص والصلاحيات',
@@ -72,6 +73,21 @@ export const ar: Catalogue = {
       confirmDeleteHint: 'سيُزال من القوائم التي تستخدمه، ويمكن استعادته من سلة المحذوفات.',
       confirmRestore: 'استعادة {name}؟',
       confirmRestoreHint: 'سيصبح متاحًا مرة أخرى في كل موضع كان مستخدمًا فيه.',
+      createTitle: 'إضافة {name}',
+      editTitle: 'تعديل {name}',
+    },
+    grid: {
+      sortedAscending: 'مُرتَّب تصاعديًا',
+      sortedDescending: 'مُرتَّب تنازليًا',
+      notSorted: 'غير مُرتَّب',
+      resizeColumn: 'تغيير عرض {name}',
+      selectAll: 'تحديد كل الصفوف',
+      selectRow: 'تحديد {name}',
+      rowCount: '{count} صفًا',
+      pagination: 'الصفحات',
+      previousPage: 'السابق',
+      nextPage: 'التالي',
+      page: 'صفحة',
     },
     list: {
       search: 'بحث',
@@ -91,6 +107,10 @@ export const ar: Catalogue = {
       count: '{count} من {total}',
       loading: 'جارٍ التحميل…',
       recycleBin: 'سلة المحذوفات',
+      filterAny: 'الكل',
+      inUseByTypes: 'مستخدم في {count} من أنواع المستندات. عدّلها أولًا.',
+      inUseByChildren: 'يحتوي على {count} من العناصر.',
+      needsPrerequisite: 'أضف {name} واحدًا على الأقل قبل ذلك.',
     },
     fields: {
       code: 'الرمز',
@@ -132,11 +152,13 @@ export const ar: Catalogue = {
       title: 'الفروع',
       description: 'موقع جغرافي. يظهر رمزه في أرقام الوثائق، لكن الصلاحيات لا تمرّ عبره.',
       one: 'فرع',
+      entityFixed: 'لا يمكن تغيير الكيان بعد إنشاء الفرع.',
     },
     departments: {
       title: 'الأقسام',
       description: 'الوحدات الوظيفية التي تُمنح عليها الصلاحيات. يمكن أن تتفرّع الأقسام.',
       one: 'قسم',
+      entityFixed: 'لا يمكن تغيير الكيان بعد إنشاء القسم.',
       members: 'الأعضاء',
       children: 'الأقسام الفرعية',
       moveTitle: 'نقل {name}',
@@ -183,6 +205,8 @@ export const ar: Catalogue = {
         'تُعاد مراجعة كل من يحمل هذا الدور عند طلبه التالي، لا عند تسجيل دخوله التالي.',
       grantAll: 'منح الكل',
       revokeAll: 'سحب الكل',
+      cannotDeleteSystem: 'لا يمكن حذف دور مدمج.',
+      inUseByMembers: 'يحمل هذا الدور {count} من الأشخاص. أزِله عنهم أولًا.',
     },
     permissions: {
       title: 'الصلاحيات',

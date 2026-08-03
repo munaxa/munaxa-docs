@@ -3,6 +3,8 @@ import type { Route } from 'next';
 import { Permission, type PermissionKey } from '@edms/domain';
 import type { MessageKey } from '@edms/i18n';
 
+import { ADMIN_PERMISSIONS } from './admin/sections';
+
 /**
  * The workspace's navigation, resolved on the server.
  *
@@ -28,19 +30,38 @@ export interface NavigationDestination {
   readonly labelKey: MessageKey;
   /** Null for a destination every authenticated caller may reach. */
   readonly permission: PermissionKey | null;
+  /**
+   * Reached by holding *any* of these, rather than one named permission.
+   *
+   * Administration is the case this exists for. It is not one capability but sixteen screens behind
+   * six permissions, and an administrator who may only manage users must still find their way in.
+   * Requiring a single permission would either hide the whole section from them or gate it on the
+   * loosest one, and the loosest one is `settings:manage`.
+   */
+  readonly anyOf?: readonly PermissionKey[];
 }
 
 const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
   { id: 'home', href: '/', labelKey: 'nav.home', permission: null },
+  {
+    id: 'admin',
+    href: '/admin',
+    labelKey: 'nav.admin',
+    permission: null,
+    anyOf: ADMIN_PERMISSIONS,
+  },
 ]);
 
 export function destinationsFor(
   permissions: readonly PermissionKey[],
 ): readonly NavigationDestination[] {
   const held = new Set<PermissionKey>(permissions);
-  return DESTINATIONS.filter(
-    (destination) => destination.permission === null || held.has(destination.permission),
-  );
+  return DESTINATIONS.filter((destination) => {
+    if (destination.anyOf !== undefined) {
+      return destination.anyOf.some((permission) => held.has(permission));
+    }
+    return destination.permission === null || held.has(destination.permission);
+  });
 }
 
 /** Re-exported so a later phase adding a row does not have to reach for the catalogue too. */

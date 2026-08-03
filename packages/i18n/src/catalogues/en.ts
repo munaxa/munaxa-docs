@@ -60,6 +60,8 @@ export const en = {
   admin: {
     title: 'Administration',
     subtitle: 'How this organisation is configured.',
+    /** The label on the section list inside Administration, for a screen reader. */
+    sectionNav: 'Administration sections',
     sections: {
       organization: 'Organisation',
       people: 'People and access',
@@ -86,6 +88,27 @@ export const en = {
         'It is removed from the lists that use it and can be restored from the recycle bin.',
       confirmRestore: 'Restore {name}?',
       confirmRestoreHint: 'It becomes available again wherever it was used before.',
+      createTitle: 'Add {name}',
+      editTitle: 'Edit {name}',
+    },
+    /**
+     * The data grid's own vocabulary.
+     *
+     * Passed in rather than left to the component's defaults: those defaults are English, and an
+     * Arabic screen with an English "Search" placeholder is a screen that was never translated.
+     */
+    grid: {
+      sortedAscending: 'Sorted, smallest first',
+      sortedDescending: 'Sorted, largest first',
+      notSorted: 'Not sorted',
+      resizeColumn: 'Resize {name}',
+      selectAll: 'Select all rows',
+      selectRow: 'Select {name}',
+      rowCount: '{count} rows',
+      pagination: 'Pages',
+      previousPage: 'Previous',
+      nextPage: 'Next',
+      page: 'Page',
     },
     list: {
       search: 'Search',
@@ -107,6 +130,16 @@ export const en = {
       // Named for what the reader is looking at, not for the mechanism: nobody thinks of it as
       // "rows where deleted_at is not null".
       recycleBin: 'Recycle bin',
+      filterAny: 'Any',
+      /** Why a row's delete action is unavailable, rather than an action that fails when used. */
+      inUseByTypes: 'Used by {count} document type(s). Change those first.',
+      inUseByChildren: 'It has {count} item(s) inside it.',
+      /**
+       * Shown where a resource cannot exist until another one does — an entity needs a company, a
+       * document type needs a numbering rule and a confidentiality level. Stated up front, rather
+       * than as an empty picker in a form that cannot be submitted.
+       */
+      needsPrerequisite: 'Add at least one {name} before this.',
     },
     fields: {
       code: 'Code',
@@ -149,11 +182,13 @@ export const en = {
       description:
         'A location. Its code appears in document numbers, but permission does not flow through it.',
       one: 'branch',
+      entityFixed: 'The entity cannot be changed after a branch is created.',
     },
     departments: {
       title: 'Departments',
       description: 'The functional units permission is granted on. Departments may nest.',
       one: 'department',
+      entityFixed: 'The entity cannot be changed after a department is created.',
       members: 'Members',
       children: 'Sub-departments',
       moveTitle: 'Move {name}',
@@ -203,6 +238,8 @@ export const en = {
         'Everyone holding this role is re-evaluated on their next request, not at their next sign-in.',
       grantAll: 'Grant all',
       revokeAll: 'Revoke all',
+      cannotDeleteSystem: 'A built-in role cannot be removed.',
+      inUseByMembers: '{count} person/people hold this role. Remove it from them first.',
     },
     permissions: {
       title: 'Permissions',
