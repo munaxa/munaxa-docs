@@ -54,17 +54,28 @@ the platform, and retuning it there updates this product with no change here.
 munaxa-docs/
 ├── apps/
 │   ├── api/        # the product API
-│   ├── admin/      # the product's web client
-│   └── mobile/     # the product's mobile client
+│   ├── web/        # the product's web client — the document workspace
+│   └── worker/     # background jobs
 ├── packages/       # domain, contracts, utils, i18n — this product's own
 ├── prisma/         # this product's schema and migrations, shared with no one
-└── infra/          # database roles, load tests
+└── infra/          # compose stack, database roles, RLS
 ```
+
+> A mobile client is named in the Phase 0 design and is not built: no phase before 17 needs
+> one, and an empty app would only be a directory to maintain.
 
 ## Status
 
-The architecture is designed and the phase specifications are written (see `docs/` and
-`prompts/`); no application code has been written yet. This repository was separated out of
-the AXA monorepo carrying all of that and its history; the workspace, task graph, lint and
-TypeScript configuration, registry auth and CI above are real and run today, so the first app
-added here is checked from its first commit.
+The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
+and **Phase 0.5 has built the technical skeleton against them**: three applications, four
+packages, fifteen domain modules with enforced layer boundaries, ports for every external
+capability, the message pipeline, the API and frontend foundations, the database foundation
+with row-level security, and the test and DevOps foundations. There are no business features.
+
+The rules above are enforced rather than described: layer and module boundaries are lint rules
+in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
+
+What Phase 0.5 leaves owing is recorded in
+[`docs/reports/phase-0.5-technical-debt.md`](./docs/reports/phase-0.5-technical-debt.md); the
+gate itself is
+[`docs/reports/phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

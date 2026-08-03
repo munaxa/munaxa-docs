@@ -1,0 +1,36 @@
+{
+  "name": "@edms/worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Munaxa Docs background workers — preview, OCR, index projection, retention, escalation, notification delivery.",
+  "license": "UNLICENSED",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "start": "node dist/main.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@edms/domain": "workspace:*",
+    "@edms/utils": "workspace:*",
+    "@nestjs/common": "^11.0.6",
+    "@nestjs/core": "^11.0.6",
+    "bullmq": "^5.34.10",
+    "ioredis": "^5.4.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@munaxa/config-eslint": "^1.0.0",
+    "@munaxa/config-typescript": "^1.0.0",
+    "@swc/core": "^1.10.9",
+    "@types/node": "^22.10.7",
+    "eslint": "^9.18.0",
+    "typescript": "^5.7.3",
+    "unplugin-swc": "^1.5.1",
+    "vitest": "^3.0.5"
+  }
+}

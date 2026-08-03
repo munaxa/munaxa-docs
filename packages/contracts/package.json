@@ -1,0 +1,31 @@
+{
+  "name": "@edms/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Request/response schemas shared by the Munaxa Docs API and its clients. One definition, both sides.",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@edms/domain": "workspace:*",
+    "@edms/utils": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@munaxa/config-eslint": "^1.0.0",
+    "@munaxa/config-typescript": "^1.0.0",
+    "eslint": "^9.18.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -9,11 +9,15 @@ corporate repository and governs all five. This file is Munaxa Docs' own documen
 Where they disagree, the rulebook governs.
 
 ```text
-edms/docs/
+docs/
 ├── README.md            THIS INDEX
-├── architecture/        the binding Phase 0 blueprint (00–20) + adr/
-└── reports/             point-in-time Phase 0 findings — evidence, not guidance
+├── architecture/        the binding Phase 0 blueprint (00–21) + adr/
+└── reports/             point-in-time findings — evidence, not guidance
 ```
+
+The code the architecture describes now exists as a skeleton. Its map is
+[`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
+its own contract — what it owns, what it depends on, which core port it binds.
 
 ## 1. Architecture — the binding blueprint
 
@@ -65,14 +69,23 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0012](./architecture/adr/0012-entitlements-as-data-enforced-centrally.md) | Plans and entitlements are data, enforced centrally, separate from permissions |
 | [0013](./architecture/adr/0013-operator-console-as-separate-surface.md) | Cross-tenant operations live in a separate, fully audited console |
 
-## 2. Phase 0 reports
+## 2. Reports
 
-Point-in-time evidence produced during Phase 0. **Historical, never edited afterwards.**
+Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 0.5 — the technical skeleton
+
+| Document | Purpose |
+| --- | --- |
+| [Architecture compliance report](./reports/phase-0.5-architecture-compliance-report.md) | The formal gate before Phase 1: what was built, what holds, what is owed, and the verdict |
+| [Technical debt](./reports/phase-0.5-technical-debt.md) | Every boundary the skeleton leaves owing, with an owner and a trigger |
+
+### Phase 0 — the architecture
 
 | Document | Purpose |
 | --- | --- |
 | [Repository analysis](./reports/repository-analysis.md) | What exists in this repository, what Munaxa Docs reuses, what it must not duplicate |
-| [Technical debt report](./reports/technical-debt.md) | Defects and drift found during the analysis, with owners |
+| [Technical debt report](./reports/technical-debt.md) | Defects and drift found during the Phase 0 analysis, with owners |
 | [Risk assessment](./reports/risk-assessment.md) | What can go wrong, likelihood, impact, mitigation |
 | [Development recommendations](./reports/development-recommendations.md) | How to build phases 0.5 → 18 without repeating known mistakes |
 
