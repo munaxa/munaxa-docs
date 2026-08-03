@@ -5,7 +5,7 @@ import {
   type RoleId,
   type TenantId,
   type UserId,
-  ALL_PERMISSIONS,
+  ALL_SYSTEM_ROLES,
   AuditOutcome,
   AuditSubjectType,
   SystemRole,
@@ -21,6 +21,11 @@ import { type RequestContext, runWithContext } from '../../../core/tenancy/tenan
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { PASSWORD_HASHER, type PasswordHasher } from './authentication.ports';
 import { checkPassword } from '../domain/password-policy';
+import {
+  DEFAULT_ROLE_DESCRIPTIONS,
+  DEFAULT_ROLE_NAMES,
+  DEFAULT_ROLE_PERMISSIONS,
+} from '../domain/role-seed';
 import { isPlausibleEmail, normalizeEmail } from '../domain/user';
 import { PROVISIONING_REPOSITORY, type ProvisioningRepository } from './ports';
 
@@ -47,14 +52,17 @@ export interface ProvisionedTenant {
 }
 
 /**
- * Bootstrapping a tenant: the organisation, an administrator role, and one person who can
- * sign in.
+ * Bootstrapping a tenant: the organisation, the eight seeded roles, and one person who can sign in.
  *
- * **This is not administration.** Creating, editing and deleting users and roles is Phase 2,
- * and nothing here grows into it: there is one operation, it runs once per tenant, and it
- * refuses to run twice. What it exists for is the chicken-and-egg problem underneath every
- * access-controlled system — the first account cannot be created by someone signed in, because
- * nobody is.
+ * **This is not administration.** Creating, editing and deleting users and roles is Phase 2's, and
+ * nothing here grows into it: there is one operation, it runs once per tenant, and it refuses to run
+ * twice. What it exists for is the chicken-and-egg problem underneath every access-controlled system
+ * — the first account cannot be created by someone signed in, because nobody is.
+ *
+ * Phase 2 changed one thing here: it seeds all eight roles from `08-permission-model.md` §6 rather
+ * than only the administrator's. The administrator is still the only role anybody *holds*; the others
+ * exist so that an administrator's first act — making a colleague an author — is a role assignment
+ * rather than a matrix-design exercise.
  *
  * Everything is one transaction. A half-provisioned tenant — an organisation with no
  * administrator, or a role with nobody holding it — is a workspace nobody can enter and nobody
@@ -137,15 +145,26 @@ export class ProvisioningService {
           name: command.name.trim(),
         });
 
-        await this.repository.createAdminRole({
-          id: roleId,
-          key: SystemRole.TENANT_ADMIN,
-          name: 'Tenant administrator',
-          // Every permission the product defines. A first administrator who cannot grant
-          // themselves what they need is a tenant that needs a database console to finish
-          // setting up. The role is ordinary data afterwards — Phase 2 edits it like any other.
-          permissions: ALL_PERMISSIONS,
-        });
+        // All eight seeded roles, with the permissions `08-permission-model.md` §6 marks `✓` for
+        // each. The administrator's is the only one the first user is given; the rest exist so that
+        // making somebody an author is one click rather than a matrix-design exercise.
+        //
+        // Note what the administrator does *not* get: `document:approve` and `document:reject`.
+        // Approval authority comes from being assigned a task, never from seniority, and an
+        // administrator who needs to approve is assigned or delegated the task — with the audit trail
+        // saying so (§6, first deliberate row).
+        await this.repository.createSystemRoles(
+          ALL_SYSTEM_ROLES.map((key) => ({
+            id:
+              key === SystemRole.TENANT_ADMIN
+                ? roleId
+                : asId<RoleId>(uuidv7(this.clock.now().getTime())),
+            key,
+            name: DEFAULT_ROLE_NAMES[key],
+            description: DEFAULT_ROLE_DESCRIPTIONS[key],
+            permissions: DEFAULT_ROLE_PERMISSIONS[key],
+          })),
+        );
 
         await this.repository.createAdminUser({
           id: adminUserId,

@@ -53,25 +53,37 @@ export class PrismaProvisioningRepository implements ProvisioningRepository {
     });
   }
 
-  async createAdminRole(role: {
-    id: RoleId;
-    key: string;
-    name: string;
-    permissions: readonly PermissionKey[];
-  }): Promise<void> {
+  async createSystemRoles(
+    roles: readonly {
+      id: RoleId;
+      key: string;
+      name: string;
+      description: string;
+      permissions: readonly PermissionKey[];
+    }[],
+  ): Promise<void> {
     const { tenantId } = requireContext();
-    await requireTransaction().role.create({
-      data: {
+    const tx = requireTransaction();
+
+    // `isSystem` on all of them: the product refers to these eight by key, so the keys are fixed and
+    // the rows cannot be deleted. Their names and permissions are editable like any other role's.
+    await tx.role.createMany({
+      data: roles.map((role) => ({
         id: role.id,
         tenantId,
         key: role.key,
         name: role.name,
+        description: role.description,
         isSystem: true,
-        permissions: {
-          create: role.permissions.map((permission) => ({ tenantId, permission })),
-        },
-      },
+      })),
     });
+
+    const grants = roles.flatMap((role) =>
+      role.permissions.map((permission) => ({ tenantId, roleId: role.id, permission })),
+    );
+    if (grants.length > 0) {
+      await tx.rolePermission.createMany({ data: grants });
+    }
   }
 
   async createAdminUser(user: {

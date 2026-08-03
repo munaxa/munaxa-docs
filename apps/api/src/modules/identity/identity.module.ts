@@ -15,8 +15,16 @@ import {
   USER_DIRECTORY,
 } from './application/ports';
 import { ProvisioningService } from './application/provisioning.service';
+import {
+  IDENTITY_ADMIN_REPOSITORY,
+  ROLE_ADMIN_SERVICE,
+  USER_ADMIN_SERVICE,
+} from './application/administration.ports';
+import { RoleAdminService } from './application/role-admin.service';
+import { UserAdminService } from './application/user-admin.service';
 import { JwtTokenService } from './infrastructure/jwt.token-service';
 import { PrismaCredentialRepository } from './infrastructure/prisma-credential.repository';
+import { PrismaIdentityAdminRepository } from './infrastructure/prisma-identity-admin.repository';
 import { PrismaProvisioningRepository } from './infrastructure/prisma-provisioning.repository';
 import { PrismaSessionRepository } from './infrastructure/prisma-session.repository';
 import { PrismaTenantDirectory } from './infrastructure/prisma-tenant.directory';
@@ -24,6 +32,7 @@ import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
 import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
 import { AuthController } from './presentation/auth.controller';
+import { RoleAdminController, UserAdminController } from './presentation/identity-admin.controller';
 
 /**
  * Identity — Who is this person, and what may they do anywhere?
@@ -36,12 +45,17 @@ import { AuthController } from './presentation/auth.controller';
  * `JwtTokenService` to `AuthModule.withVerifier()`: `core/` may not import a module, so the
  * one place that may import both is where they are joined.
  *
- * Phase 1 implements authentication: sign-in, refresh with rotation and reuse detection, and
- * sign-out. User and role administration follow in this module; delegation and MFA arrive
- * with the phases that own them — see `README.md` in this folder.
+ * Phase 1 implemented authentication: sign-in, refresh with rotation and reuse detection, and
+ * sign-out. Phase 2 adds the administration of people and access — users, roles, the permission
+ * matrix and the eight seeded roles — behind `user:manage` and `role:manage`. Delegation and MFA
+ * arrive with the phases that own them; see `README.md` in this folder.
+ *
+ * The administration services are **not exported**. Nothing outside this module has any business
+ * creating a user or editing a role, and `USER_DIRECTORY` remains the whole of what other modules
+ * may know about a person: an address and a name.
  */
 @Module({
-  controllers: [AuthController],
+  controllers: [AuthController, UserAdminController, RoleAdminController],
   providers: [
     { provide: AUTHENTICATION_SERVICE, useClass: DefaultAuthenticationService },
     { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
@@ -50,6 +64,9 @@ import { AuthController } from './presentation/auth.controller';
     { provide: USER_DIRECTORY, useClass: PrismaUserDirectory },
     { provide: PROVISIONING_REPOSITORY, useClass: PrismaProvisioningRepository },
     ProvisioningService,
+    { provide: IDENTITY_ADMIN_REPOSITORY, useClass: PrismaIdentityAdminRepository },
+    { provide: USER_ADMIN_SERVICE, useClass: UserAdminService },
+    { provide: ROLE_ADMIN_SERVICE, useClass: RoleAdminService },
     { provide: PASSWORD_HASHER, useClass: ScryptPasswordHasher },
     { provide: REFRESH_TOKEN_FACTORY, useClass: RandomRefreshTokenFactory },
     // The issuer and the verifier are one class: they share the secret, the algorithm and the

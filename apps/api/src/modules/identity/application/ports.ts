@@ -171,12 +171,24 @@ export interface ProvisioningRepository {
     readonly code: string;
     readonly name: string;
   }): Promise<void>;
-  createAdminRole(role: {
-    id: RoleId;
-    key: string;
-    name: string;
-    permissions: readonly PermissionKey[];
-  }): Promise<void>;
+  /**
+   * The eight roles every tenant starts with, and their seeded permissions.
+   *
+   * All eight rather than only the administrator's, because a tenant with one role is a tenant that
+   * cannot delegate anything: an administrator's first act is to make somebody an author, and having
+   * to create the role first turns "add a colleague" into a matrix-design exercise. The seeds come
+   * from `08-permission-model.md` §6 via `domain/role-seed.ts`, and they are ordinary tenant data
+   * the moment they are written.
+   */
+  createSystemRoles(
+    roles: readonly {
+      readonly id: RoleId;
+      readonly key: string;
+      readonly name: string;
+      readonly description: string;
+      readonly permissions: readonly PermissionKey[];
+    }[],
+  ): Promise<void>;
   createAdminUser(user: {
     id: UserId;
     roleId: RoleId;
