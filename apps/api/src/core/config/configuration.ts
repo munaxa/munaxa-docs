@@ -146,7 +146,13 @@ export class ConfigurationError extends Error {
 }
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = configSchema.safeParse(source);
+  // An empty variable means "not set", not "set to the empty string". Both `.env.example` and
+  // most deployment tooling write `FOO=` for an optional value left unfilled, and without this
+  // the file we ship as a starting point refuses to boot on `STORAGE_ENDPOINT: Invalid url`.
+  const provided = Object.fromEntries(
+    Object.entries(source).filter(([, value]) => value !== undefined && value.trim() !== ''),
+  );
+  const parsed = configSchema.safeParse(provided);
   if (!parsed.success) {
     // The message names the variables, never their values: an invalid secret must not be
     // echoed into a log line by the very error that rejected it.

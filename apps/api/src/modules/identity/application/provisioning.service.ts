@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
+  type AnyId,
   type RoleId,
   type TenantId,
   type UserId,
@@ -9,6 +10,7 @@ import {
   AuditSubjectType,
   SystemRole,
   asId,
+  deriveCode,
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
@@ -22,6 +24,12 @@ import { checkPassword } from '../domain/password-policy';
 import { isPlausibleEmail, normalizeEmail } from '../domain/user';
 import { PROVISIONING_REPOSITORY, type ProvisioningRepository } from './ports';
 
+/**
+ * What the scope-tree root is coded when the organisation's short name yields nothing usable.
+ * "Head Office" — the name it is given alongside it.
+ */
+const DEFAULT_ROOT_CODE = 'HQ';
+
 export interface ProvisionTenantCommand {
   readonly slug: string;
   readonly name: string;
@@ -34,6 +42,8 @@ export interface ProvisionedTenant {
   readonly tenantId: TenantId;
   readonly roleId: RoleId;
   readonly adminUserId: UserId;
+  readonly companyId: AnyId;
+  readonly entityId: AnyId;
 }
 
 /**
@@ -87,7 +97,15 @@ export class ProvisioningService {
       throw new DuplicateError('organisation', 'slug');
     }
 
+    // The scope-tree root needs a code, and the organisation's short name is the best guess
+    // available at provisioning time. Only a guess, though: a slug may be long and descriptive
+    // where a code is printed on documents, so it is derived rather than required to fit — and
+    // an administrator renames it in Phase 2.
+    const code = deriveCode(slug, DEFAULT_ROOT_CODE);
+
     const tenantId = asId<TenantId>(uuidv7(this.clock.now().getTime()));
+    const companyId = asId<AnyId>(uuidv7(this.clock.now().getTime()));
+    const entityId = asId<AnyId>(uuidv7(this.clock.now().getTime()));
     const roleId = asId<RoleId>(uuidv7(this.clock.now().getTime()));
     const adminUserId = asId<UserId>(uuidv7(this.clock.now().getTime()));
     const passwordHash = await this.passwords.hash(command.adminPassword);
@@ -112,6 +130,13 @@ export class ProvisioningService {
 
     return runWithContext(context, () =>
       this.unitOfWork.run(async () => {
+        await this.repository.createRootScope({
+          companyId,
+          entityId,
+          code,
+          name: command.name.trim(),
+        });
+
         await this.repository.createAdminRole({
           id: roleId,
           key: SystemRole.TENANT_ADMIN,
@@ -147,11 +172,11 @@ export class ProvisioningService {
             outcome: AuditOutcome.SUCCESS,
             // The identifiers, not the credential. The trail says a tenant was created and who
             // its first administrator is; it never says what their password was.
-            payload: { slug, adminUserId, roleId },
+            payload: { slug, adminUserId, roleId, companyId, entityId },
           },
         );
 
-        return { tenantId, roleId, adminUserId };
+        return { tenantId, roleId, adminUserId, companyId, entityId };
       }),
     );
   }

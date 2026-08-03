@@ -158,6 +158,19 @@ export interface ProvisioningRepository {
   slugExists(slug: string): Promise<boolean>;
   /** Written outside any tenant context — the context is keyed on what this creates. */
   createTenant(tenant: { id: TenantId; slug: string; name: string }): Promise<void>;
+  /**
+   * The root of the scope tree.
+   *
+   * A tenant with no company has nowhere to put a department, and the ACL chain has nothing
+   * between the tenant and a library. Both are created here so the tree is usable from the
+   * first sign-in; they are ordinary configuration afterwards, renamed and extended in Phase 2.
+   */
+  createRootScope(scope: {
+    readonly companyId: AnyId;
+    readonly entityId: AnyId;
+    readonly code: string;
+    readonly name: string;
+  }): Promise<void>;
   createAdminRole(role: {
     id: RoleId;
     key: string;
