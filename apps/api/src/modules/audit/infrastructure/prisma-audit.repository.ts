@@ -93,6 +93,23 @@ export class PrismaAuditRepository implements AuditRepository {
     return toPage(rows.map(toRecord), total, page);
   }
 
+  async listForActor(actorId: UserId, page: PageRequest): Promise<Page<AuditEventRecord>> {
+    const tx = requireTransaction();
+    const where = { tenantId: requireContext().tenantId, actorId };
+
+    const total = await tx.auditEvent.count({ where });
+    if (total === 0) {
+      return toPage([], 0, page);
+    }
+    const rows = await tx.auditEvent.findMany({
+      where,
+      orderBy: [{ occurredAt: 'desc' }, { sequence: 'desc' }],
+      skip: skipFor(page),
+      take: page.pageSize,
+    });
+    return toPage(rows.map(toRecord), total, page);
+  }
+
   async listForVerification(from: Date, to: Date): Promise<readonly AuditEventRecord[]> {
     const rows = await requireTransaction().auditEvent.findMany({
       where: { tenantId: requireContext().tenantId, occurredAt: { gte: from, lte: to } },

@@ -8,11 +8,12 @@ import {
   TENANT_DIRECTORY,
 } from './application/authentication.ports';
 import { DefaultAuthenticationService } from './application/authentication.service';
-import { CREDENTIAL_REPOSITORY, SESSION_REPOSITORY } from './application/ports';
+import { CREDENTIAL_REPOSITORY, SESSION_REPOSITORY, USER_DIRECTORY } from './application/ports';
 import { JwtTokenService } from './infrastructure/jwt.token-service';
 import { PrismaCredentialRepository } from './infrastructure/prisma-credential.repository';
 import { PrismaSessionRepository } from './infrastructure/prisma-session.repository';
 import { PrismaTenantDirectory } from './infrastructure/prisma-tenant.directory';
+import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
 import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
 import { AuthController } from './presentation/auth.controller';
@@ -39,6 +40,7 @@ import { AuthController } from './presentation/auth.controller';
     { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
     { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
     { provide: TENANT_DIRECTORY, useClass: PrismaTenantDirectory },
+    { provide: USER_DIRECTORY, useClass: PrismaUserDirectory },
     { provide: PASSWORD_HASHER, useClass: ScryptPasswordHasher },
     { provide: REFRESH_TOKEN_FACTORY, useClass: RandomRefreshTokenFactory },
     // The issuer and the verifier are one class: they share the secret, the algorithm and the
@@ -46,6 +48,6 @@ import { AuthController } from './presentation/auth.controller';
     JwtTokenService,
     { provide: ACCESS_TOKEN_ISSUER, useExisting: JwtTokenService },
   ],
-  exports: [AUTHENTICATION_SERVICE, PASSWORD_HASHER, CREDENTIAL_REPOSITORY],
+  exports: [AUTHENTICATION_SERVICE, PASSWORD_HASHER, CREDENTIAL_REPOSITORY, USER_DIRECTORY],
 })
 export class IdentityModule {}

@@ -1,7 +1,9 @@
 import { Global, Module } from '@nestjs/common';
 
+import { ACTIVITY_READER } from '../../core/activity/activity.port';
 import { AUDIT_WRITER } from '../../core/audit/audit-writer.port';
 import { AUDIT_REPOSITORY } from './application/ports';
+import { AuditActivityReader } from './infrastructure/audit-activity.reader';
 import { ChainedAuditWriter } from './infrastructure/chained-audit.writer';
 import { PrismaAuditRepository } from './infrastructure/prisma-audit.repository';
 
@@ -26,7 +28,9 @@ import { PrismaAuditRepository } from './infrastructure/prisma-audit.repository'
   providers: [
     { provide: AUDIT_REPOSITORY, useClass: PrismaAuditRepository },
     { provide: AUDIT_WRITER, useClass: ChainedAuditWriter },
+    // Activity is a view of the trail, not a second log — see core/activity/activity.port.ts.
+    { provide: ACTIVITY_READER, useClass: AuditActivityReader },
   ],
-  exports: [AUDIT_WRITER, AUDIT_REPOSITORY],
+  exports: [AUDIT_WRITER, AUDIT_REPOSITORY, ACTIVITY_READER],
 })
 export class AuditModule {}

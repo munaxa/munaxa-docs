@@ -63,6 +63,8 @@ export interface AuditRepository {
    */
   lockAndReadTail(): Promise<ChainTail>;
   listForSubject(subjectId: AnyId, page: PageRequest): Promise<Page<AuditEventRecord>>;
+  /** "What did this person do" — an investigation, and the activity feed. */
+  listForActor(actorId: UserId, page: PageRequest): Promise<Page<AuditEventRecord>>;
   /** Ordered by sequence, so verification sees the chain in the order it was written. */
   listForVerification(from: Date, to: Date): Promise<readonly AuditEventRecord[]>;
 }

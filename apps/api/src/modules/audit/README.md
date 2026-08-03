@@ -90,6 +90,20 @@ nothing, so a tampering `UPDATE` matches zero rows and the trigger never even fi
 twelve concurrent writers, per-tenant chain isolation, refusal of update and delete for the
 owner role, and the refusal to write outside a transaction.
 
+## Activity is a view of this, not a second log
+
+`ACTIVITY_READER` is bound here, over the same rows. There is deliberately no `activity` table.
+
+Two records of what happened can disagree, and when they do it is the pair shown to users and
+the pair shown to auditors that disagrees — the worst possible place for a discrepancy in a
+product whose selling point is evidence. So the trail is the record and activity is a *view* of
+it: the hash, the previous hash and the sequence dropped because they mean nothing on a screen,
+the payload dropped because it is minimised for investigators rather than written for readers.
+
+The constraint that follows is worth stating plainly: **an activity feed can never show
+something the audit trail does not contain.** A feature that wants to surface an event writes
+an audit event — and then it is evidence too.
+
 ## Still to build
 
 Reading the trail, the scheduled verification job with signed checkpoints, and evidence export

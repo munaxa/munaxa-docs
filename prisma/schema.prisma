@@ -91,6 +91,8 @@ model Tenant {
   users       User[]
   roles       Role[]
   sessions    SessionFamily[]
+  notificationTemplates NotificationTemplate[]
+  notifications         NotificationMessage[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -276,6 +278,8 @@ model User {
   tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   roles    UserRole[]
   sessions SessionFamily[]
+  notificationPreferences NotificationPreference[]
+  notifications           NotificationMessage[]
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -392,4 +396,132 @@ model RefreshToken {
   @@index([familyId], map: "ix_refresh_token_family")
   @@index([expiresAt], map: "ix_refresh_token_expiry")
   @@map("refresh_token")
+}
+
+// ---------------------------------------------------------------------------------------
+// Notification — Phase 1.
+//
+// The framework: what was sent, to whom, on which channel, and what each person asked for.
+// Templates ship with the product (`modules/notification/domain/default-templates.ts`); rows
+// here are tenant *overrides*, so a tenant that has customised nothing still gets correct,
+// translated notifications (`docs/architecture/18-notification-architecture.md` §6).
+// ---------------------------------------------------------------------------------------
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+  SMS
+  PUSH
+  WEBHOOK
+
+  @@map("notification_channel")
+}
+
+enum DeliveryState {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  SUPPRESSED
+
+  @@map("delivery_state")
+}
+
+enum DigestFrequency {
+  IMMEDIATE
+  HOURLY
+  DAILY
+  WEEKLY
+
+  @@map("digest_frequency")
+}
+
+/// A tenant's override of a shipped template.
+///
+/// Absence means "use the product's". That is why there is no seeding step: an empty table is
+/// a fully working tenant, and a row exists only where somebody deliberately changed something.
+model NotificationTemplate {
+  id        String              @id @db.Uuid
+  tenantId  String              @map("tenant_id") @db.Uuid
+  /// The notification type key, e.g. `security.session.revoked`.
+  typeKey   String              @map("type_key")
+  channel   NotificationChannel
+  locale    String
+  subject   String
+  bodyText  String              @map("body_text")
+  /// Null for channels with no HTML — in-app, SMS.
+  bodyHtml  String?             @map("body_html")
+  createdAt DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?             @map("created_by") @db.Uuid
+  updatedAt DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?             @map("updated_by") @db.Uuid
+  version   Int                 @default(1)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, typeKey, channel, locale], map: "uq_notification_template")
+  @@map("notification_template")
+}
+
+/// What one person asked to receive, and how often.
+///
+/// A missing row means "no opinion", never "off": the type's own defaults apply, and a
+/// mandatory type is delivered regardless (§5).
+model NotificationPreference {
+  tenantId String                @map("tenant_id") @db.Uuid
+  userId   String                @map("user_id") @db.Uuid
+  typeKey  String                @map("type_key")
+  channels NotificationChannel[]
+  digest   DigestFrequency       @default(IMMEDIATE)
+  updatedAt DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, typeKey])
+  @@index([tenantId, typeKey], map: "ix_notification_preference_type")
+  @@map("notification_preference")
+}
+
+/// One notification, to one person, on one channel.
+///
+/// The rendered subject and body are stored rather than re-rendered at delivery: what was sent
+/// is a fact, and a template edited afterwards must not change what the record says was sent.
+///
+/// In-app delivery *is* this row — there is no adapter, which is why a mail provider outage
+/// never affects it (§7).
+model NotificationMessage {
+  id             String              @id @db.Uuid
+  tenantId       String              @map("tenant_id") @db.Uuid
+  recipientId    String              @map("recipient_id") @db.Uuid
+  typeKey        String              @map("type_key")
+  channel        NotificationChannel
+  locale         String
+  /// The channel address this went to, captured when the message was created.
+  ///
+  /// Stored rather than looked up at delivery: what was sent, and where, is a fact. A person
+  /// who changes their email afterwards must not retroactively change the record of what was
+  /// already sent to the old one.
+  address        String
+  subject        String
+  bodyText       String              @map("body_text")
+  bodyHtml       String?             @map("body_html")
+  state          DeliveryState       @default(QUEUED)
+  attempts       Int                 @default(0)
+  /// Deterministic per (event, recipient, channel). A second delivery attempt for the same
+  /// key is a no-op rather than a duplicate in somebody's inbox (§7).
+  idempotencyKey String              @map("idempotency_key")
+  failureReason  String?             @map("failure_reason")
+  sentAt         DateTime?           @map("sent_at") @db.Timestamptz(6)
+  readAt         DateTime?           @map("read_at") @db.Timestamptz(6)
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  recipient User   @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, idempotencyKey], map: "uq_notification_idempotency")
+  /// The inbox query: one person's unread, newest first.
+  @@index([tenantId, recipientId, readAt, createdAt(sort: Desc)], map: "ix_notification_inbox")
+  /// The dispatcher's claim query.
+  @@index([tenantId, state, createdAt], map: "ix_notification_pending")
+  @@map("notification_message")
 }

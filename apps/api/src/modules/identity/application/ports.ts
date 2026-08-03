@@ -144,6 +144,33 @@ export interface CredentialRepository {
   recordSignIn(id: UserId, at: Date): Promise<void>;
 }
 
+export const USER_DIRECTORY = Symbol('UserDirectory');
+
+/** Enough to address a person. Deliberately not enough to do anything else with them. */
+export interface UserContact {
+  readonly userId: UserId;
+  readonly email: string;
+  readonly displayName: string;
+}
+
+/**
+ * How other modules look up who to write to.
+ *
+ * Narrower than `UserService` on purpose: Notification needs an address and a name, and giving
+ * it the full user surface would let it grow a dependency on things that are none of its
+ * business. This is the whole of the contract, and it is the only way out of this module —
+ * nobody reads Identity's tables (`docs/architecture/02-backend-architecture.md` §3).
+ *
+ * There is no locale here. A person's language is tenant configuration today, resolved through
+ * `SETTINGS_READER`; when users get their own preference it is added here and every caller
+ * keeps working.
+ */
+export interface UserDirectory {
+  contactFor(userId: UserId): Promise<UserContact | null>;
+  /** Live users only, in one query — a notification to twenty people is not twenty round trips. */
+  contactsFor(userIds: readonly UserId[]): Promise<readonly UserContact[]>;
+}
+
 export const USER_SERVICE = Symbol('UserService');
 export const DELEGATION_SERVICE = Symbol('DelegationService');
 
