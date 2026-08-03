@@ -20,8 +20,9 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy"
+    "prisma:migrate": "prisma migrate dev && pnpm db:post-migrate",
+    "prisma:deploy": "prisma migrate deploy && pnpm db:post-migrate",
+    "db:post-migrate": "node scripts/apply-post-migrate.mjs"
   },
   "devDependencies": {
     "@munaxa/config-eslint": "^1.0.0",
