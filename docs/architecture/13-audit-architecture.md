@@ -20,14 +20,31 @@
 | --- | --- |
 | Document | `CREATED`, `VIEWED`, `DOWNLOADED`, `PRINTED`, `METADATA_CHANGED`, `MOVED`, `LINKED`, `ARCHIVED`, `REINSTATED`, `DELETED`, `RESTORED`, `PURGED` |
 | Revision | `UPLOADED`, `CHECKED_OUT`, `CHECKED_IN`, `CHECKOUT_CANCELLED`, `CHECKOUT_FORCED`, `PUBLISHED`, `SUPERSEDED`, `RESTORED_FROM` |
-| Workflow | `SUBMITTED`, `STAGE_ACTIVATED`, `APPROVED`, `REJECTED`, `CHANGES_REQUESTED`, `TASK_REASSIGNED`, `ESCALATED`, `AUTO_APPROVED`, `WITHDRAWN`, `WORKFLOW_PUBLISHED` |
+| Workflow | `SUBMITTED`, `STAGE_ACTIVATED`, `APPROVED`, `REJECTED`, `CHANGES_REQUESTED`, `TASK_REASSIGNED`, `ESCALATED`, `AUTO_APPROVED`, `WITHDRAWN`, `WORKFLOW_PUBLISHED`, `WORKFLOW_CHANGED` |
 | Numbering | `NUMBER_RESERVED`, `NUMBER_ASSIGNED`, `NUMBER_VOIDED`, `RULE_CHANGED` |
 | Permission | `ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN`, `ROLE_ASSIGNED`, `ROLE_PERMISSION_CHANGED`, `ACCESS_DENIED` |
 | Delegation | `DELEGATION_CREATED`, `DELEGATION_USED`, `DELEGATION_REVOKED`, `DELEGATION_EXPIRED` |
 | Retention | `SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED` |
 | Security | `LOGIN_SUCCEEDED`, `LOGIN_FAILED`, `MFA_ENROLLED`, `MFA_FAILED`, `PASSWORD_CHANGED`, `SESSION_REVOKED`, `SIGNED_URL_ISSUED`, `SCAN_INFECTED`, `INTEGRITY_MISMATCH` |
-| Administration | `SETTING_CHANGED`, `TYPE_CHANGED`, `FIELD_CHANGED`, `POLICY_CHANGED`, `USER_CREATED`, `USER_DISABLED`, `ORG_CHANGED` |
+| Administration | `SETTING_CHANGED`, `TYPE_CHANGED`, `FIELD_CHANGED`, `POLICY_CHANGED`, `USER_CREATED`, `USER_CHANGED`, `USER_DISABLED`, `ORG_CHANGED`, `LIBRARY_CHANGED`, `FOLDER_CHANGED` |
 | Export | `AUDIT_EXPORTED`, `REPORT_EXPORTED`, `BULK_DOWNLOAD` |
+
+The catalogue names **one action per area**, not one per resource and verb. A company, an entity, a
+branch and a department all write `ORG_CHANGED`; a library created, renamed, deleted or restored writes
+`LIBRARY_CHANGED`. What actually happened is in the record: `before`, `after`, and an `operation` of
+`CREATED`, `UPDATED`, `MOVED`, `DELETED` or `RESTORED`. The alternative — `COMPANY_CREATED`,
+`COMPANY_RENAMED`, `DEPARTMENT_MOVED` and thirty more — is thirty strings every compliance report has to
+learn in order to say what six and a payload already say.
+
+Three names are exceptions, and each earns it by being the answer to a question asked on its own.
+`RULE_CHANGED` is separate from `POLICY_CHANGED` because a numbering rule decides the identifiers
+printed on documents, and "when did this series change shape" stands alone. `WORKFLOW_PUBLISHED` is
+separate from `WORKFLOW_CHANGED` because publishing is the moment a version becomes immutable and starts
+binding approvals — "which rules was this document approved under, and when did they take effect".
+`USER_CHANGED` is separate from `USER_CREATED` and `USER_DISABLED` because an account being created,
+having its sign-in address changed, and being disabled are three different questions, and answering the
+middle one by filtering the payloads of the first would make it the only question in the trail that
+needs a payload filter.
 
 `VIEWED` and `DOWNLOADED` matter for controlled documents — "who has read the current procedure" is
 a compliance question — so read auditing is on by default for documents above a configurable

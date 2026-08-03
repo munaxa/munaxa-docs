@@ -78,12 +78,59 @@ is not, which is why the isolation case is covered by an integration test rather
 rides on `administration.settings-changed` once the outbox dispatcher exists (R5); until then
 the five-minute TTL bounds how long another process can hold a stale value.
 
+## Phase 2 — the configuration a document type is assembled from
+
+`CONFIGURATION_SERVICE` (behind `settings:manage`), `NUMBERING_ADMIN_SERVICE` (`numbering:manage`) and
+the retention endpoints (`retention:manage`) own six resources with the full administered lifecycle:
+confidentiality levels, retention policies, categories, metadata fields, document types and numbering
+rules.
+
+Their **order** is part of the design. A document type *requires* a numbering rule and a default
+confidentiality level, so those two are set up first; a retention policy, an approval workflow and any
+number of metadata fields are optional. Anything a live document type depends on cannot be deleted, and
+the refusal carries the count rather than being an action that fails when used.
+
+### Numbering
+
+`domain/numbering.ts` is the pure formatter and validator. `checkRule` refuses a rule with no sequence
+segment or more than one, more than one optional segment, an optional segment with no separator to drop
+with it, and a yearly reset with no year in the number. Each of those describes a rule that can produce
+the same number twice, which is the one thing a document number may never do.
+
+`formatNumber` drops an optional empty segment *together with its separator*, and leaves a visible gap
+(`JO--007`) for a required empty one — because a silently-closed gap makes two different documents
+render identically.
+
+Padding cannot change while a rule has a live series: widening it would give one number two written
+forms (`0042` and `00042`), which is the same defect as reusing one. The API refuses the change and a
+new rule is created instead.
+
+The preview endpoint is a `POST` that claims nothing. The builder renders a sample from an *unsaved*
+rule, so there is nothing to `GET`, and drawing a real number to show a preview would burn one.
+
+### Metadata fields
+
+A field's `dataType` cannot change once the field exists. The value columns are typed, so a `TEXT`
+value has nowhere to go in a `NUMBER` field, and every stored value would become either wrong or
+unreadable. A field of the wrong type is deleted and replaced while it is unused.
+
+`metadataValidationSchema` is a closed, `.strict()` shape rather than free-form `jsonb`: validation a
+tenant writes runs against every document they create, and "whatever they typed" is not something the
+product can promise to evaluate the same way twice. `pattern` is the one escape hatch, bounded and
+compiled at save time so an invalid expression is a 422 rather than a runtime failure years later.
+
+### Confidentiality
+
+Ranks are unique per tenant, because rank *is* the level's identity to the product: conditions compare
+it, audit-on-read is triggered by it, and "more sensitive than" only has an answer if the order is
+total. Every handling rule subtracts — a level may forbid download to somebody who holds
+`document:download`, and none of them can grant it to somebody who does not.
+
 ## Still to build
 
 `POLICY_EVALUATOR` and `FEATURE_FLAGS` are still unbound. They answer a different question from
 settings: a flag hides unfinished work, an entitlement expresses what a customer bought, and a
 setting is what the customer chose.
 
-Everything else this module owns — document types, categories, metadata fields, numbering
-rules, retention policies, confidentiality levels, and the administration surface over settings
-themselves — is Phase 2, which owns that capability.
+Approval groups — `ParticipantKind.GROUP` names one by key — have no administration surface yet. A
+workflow can reference one; nothing creates one.

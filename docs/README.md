@@ -15,7 +15,8 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes now exists as a skeleton. Its map is
+The code the architecture describes exists through Phase 2 — the platform foundation and the whole of
+Administration. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -73,6 +74,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 2 — administration
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 2 — Administration](./reports/phase-2-administration.md) | What the Administration phase built, the decisions worth carrying forward, and every limit it left deliberately in place |
 
 ### Phase 0.5 — the technical skeleton
 

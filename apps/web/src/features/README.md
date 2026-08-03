@@ -2,12 +2,17 @@
 
 ```text
 features/<feature>/
-├── components/   presentational, composed from @munaxa/ui
-├── hooks/        data hooks wrapping the typed client
-├── queries/      query keys, fetchers, cache configuration
-├── schemas/      zod schemas re-exported from @edms/contracts
-└── index.ts      the feature's public surface
+├── <resource>-screen.tsx   the screen, a client component composed from @munaxa/ui
+├── <sub>-editor.tsx        a controlled sub-editor the screen owns — segments, stages, a matrix
+├── actions.ts              'use server' — the writes, one per endpoint
+└── index.ts                the feature's public surface, where it has consumers
 ```
+
+The shape a feature takes follows how it gets its data. A feature whose reads happen in **server
+components** — every administration feature — has no `hooks/` or `queries/`: there is no client-side
+query to key or cache, because the page fetched the rows before the screen rendered. A later feature
+that genuinely polls or subscribes will grow those directories, and the two shapes coexisting is
+correct rather than untidy.
 
 A feature imports the platform, the `@edms/*` packages and its own files — **never another
 feature's internals**, which `eslint.config.mjs` enforces. A shared piece moves to
@@ -15,9 +20,43 @@ feature's internals**, which `eslint.config.mjs` enforces. A shared piece moves 
 abstraction shaped by two accidents.
 
 Planned features, one per capability the workspace exposes: `documents`, `revisions`,
-`approvals`, `libraries`, `permissions`, `search`, `audit`, `reports`, `notifications` and
-the `admin-*` set. Each arrives with the phase that builds its screens
-([16-frontend-architecture.md](../../../../docs/architecture/16-frontend-architecture.md) §3).
+`approvals`, `search`, `audit`, `reports` and `notifications`. Each arrives with the phase that builds
+its screens ([16-frontend-architecture.md](../../../../docs/architecture/16-frontend-architecture.md)
+§3).
+
+## Built: the administration set
+
+| Feature | Screens |
+| --- | --- |
+| `admin-shared` | The machinery the others compose: the list, the form dialogue, the field set |
+| `admin-organization` | Companies, entities, branches, departments |
+| `admin-identity` | Users, roles, the permission catalogue |
+| `admin-configuration` | Confidentiality levels, metadata fields, categories, document types, retention policies, numbering rules, tenant settings |
+| `admin-libraries` | Libraries and their folder trees |
+| `admin-workflows` | Workflow definitions and their versions |
+
+`admin-shared` is the `features/shared/` of the README's rule, and it earned the place: every export
+in it has between four and eighteen consumers. Three shapes are genuinely repeated —
+`ResourceList` (toolbar, grid, row menu, the delete and restore confirmations), `FormDialog` over a
+real `<form>`, and the field set that wires each control to a label and a `name`.
+
+**Forms are deliberately not shared.** A company's form is two fields and a workflow's is a stage
+editor; a component that tried to describe both would either constrain the second or become a form
+framework. Each screen composes its own dialogue and hands the create and edit affordances to
+`ResourceList` as callbacks.
+
+## How a screen is put together
+
+Reads happen in **server components**, writes in **server actions**, and there is no browser-side
+API client at all — the access token lives in an `httpOnly` cookie and adding one would mean handing
+it to a script ([17-security-architecture.md](../../../../docs/architecture/17-security-architecture.md)
+§2). A page fetches; a screen renders. That split is what makes the URL the source of truth for which
+rows are shown, and what makes the first paint the right page rather than an empty grid that fills in.
+
+A server action is an HTTP endpoint, so each one parses its input against the same
+`@edms/contracts` schema the API uses. The API validates again; that is not redundant. This one is
+what lets a form name the wrong field before a request is made, and the API's is what protects the
+data.
 
 Two rules hold for every one of them:
 
