@@ -12,6 +12,7 @@ import { APP_CONFIG, type AppConfig } from '../core/config';
 import { PrismaService } from '../core/prisma';
 import { CLOCK_PORT, STORAGE_PORT, type ClockPort, type StoragePort } from '../ports';
 import { RedisCacheAdapter } from '../infrastructure/cache/redis-cache.adapter';
+import { JwtTokenService } from '../modules/identity/infrastructure/jwt.token-service';
 import { aTenantId, aUserId } from '../testing/factories';
 
 /**
@@ -75,9 +76,14 @@ describe('application composition', () => {
     await moduleRef.close();
   });
 
-  it('rejects every token until an issuer is configured', async () => {
+  it('binds the real token verifier now that Identity ships one', async () => {
     const moduleRef = await compile();
     const verifier = moduleRef.get<TokenVerifier>(TOKEN_VERIFIER);
+
+    // Phase 1 replaced NoIssuerTokenVerifier. Asserting the class rather than only that a
+    // token is rejected is the point: a garbage string is refused by both, so "it rejected"
+    // would keep passing even if the binding silently reverted to the deny-everything default.
+    expect(verifier).toBeInstanceOf(JwtTokenService);
     await expect(verifier.verify('anything')).rejects.toThrowError();
     await moduleRef.close();
   });

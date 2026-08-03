@@ -1,17 +1,51 @@
 import { Module } from '@nestjs/common';
 
+import {
+  ACCESS_TOKEN_ISSUER,
+  AUTHENTICATION_SERVICE,
+  PASSWORD_HASHER,
+  REFRESH_TOKEN_FACTORY,
+  TENANT_DIRECTORY,
+} from './application/authentication.ports';
+import { DefaultAuthenticationService } from './application/authentication.service';
+import { CREDENTIAL_REPOSITORY, SESSION_REPOSITORY } from './application/ports';
+import { JwtTokenService } from './infrastructure/jwt.token-service';
+import { PrismaCredentialRepository } from './infrastructure/prisma-credential.repository';
+import { PrismaSessionRepository } from './infrastructure/prisma-session.repository';
+import { PrismaTenantDirectory } from './infrastructure/prisma-tenant.directory';
+import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
+import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
+import { AuthController } from './presentation/auth.controller';
+
 /**
  * Identity — Who is this person, and what may they do anywhere?
  *
  * **Owns:** User, Role, RolePermission, UserRole, sessions, MFA enrolment, Delegation
  * **Depends on:** — (nothing; every other module depends on it)
  *
- * `TOKEN_VERIFIER` — it owns sessions and signing keys, so core declares the port and this module supplies it.
+ * `TOKEN_VERIFIER` — it owns sessions and signing keys, so core declares the port and this
+ * module supplies it. The binding itself is made by the composition root, which passes
+ * `JwtTokenService` to `AuthModule.withVerifier()`: `core/` may not import a module, so the
+ * one place that may import both is where they are joined.
  *
- * Phase 0.5 establishes this module's contracts: the repository and service interfaces in
- * `application/`, and the event contracts in `domain/events.ts`. The entities, use cases,
- * Prisma repositories and controllers that satisfy them are built by the phase that owns
- * this capability — see `README.md` in this folder.
+ * Phase 1 implements authentication: sign-in, refresh with rotation and reuse detection, and
+ * sign-out. User and role administration follow in this module; delegation and MFA arrive
+ * with the phases that own them — see `README.md` in this folder.
  */
-@Module({})
+@Module({
+  controllers: [AuthController],
+  providers: [
+    { provide: AUTHENTICATION_SERVICE, useClass: DefaultAuthenticationService },
+    { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
+    { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
+    { provide: TENANT_DIRECTORY, useClass: PrismaTenantDirectory },
+    { provide: PASSWORD_HASHER, useClass: ScryptPasswordHasher },
+    { provide: REFRESH_TOKEN_FACTORY, useClass: RandomRefreshTokenFactory },
+    // The issuer and the verifier are one class: they share the secret, the algorithm and the
+    // claim shape, and splitting them is how a signer and a checker drift apart.
+    JwtTokenService,
+    { provide: ACCESS_TOKEN_ISSUER, useExisting: JwtTokenService },
+  ],
+  exports: [AUTHENTICATION_SERVICE, PASSWORD_HASHER, CREDENTIAL_REPOSITORY],
+})
 export class IdentityModule {}

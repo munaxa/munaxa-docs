@@ -69,11 +69,79 @@ export interface DelegationRepository {
   save(delegation: DelegationRecord): Promise<void>;
 }
 
+/**
+ * A stored refresh token, as the rotation logic needs to see it.
+ *
+ * `usedAt` and the family's `revokedAt` are both carried because they mean different things:
+ * a used token is evidence of replay, a revoked family is a session that is already over.
+ */
+export interface RefreshTokenRecord {
+  readonly id: AnyId;
+  readonly familyId: AnyId;
+  readonly userId: UserId;
+  readonly expiresAt: Date;
+  readonly usedAt: Date | null;
+  readonly familyRevokedAt: Date | null;
+}
+
 export interface SessionRepository {
+  /** Opens a session family. One sign-in, one family, however many rotations follow. */
+  createFamily(family: {
+    readonly id: AnyId;
+    readonly userId: UserId;
+    readonly ipAddress: string | null;
+    readonly userAgent: string | null;
+  }): Promise<void>;
+  /** Records an issued refresh token. Only the hash is stored — never the token itself. */
+  issueToken(token: {
+    readonly id: AnyId;
+    readonly familyId: AnyId;
+    readonly tokenHash: string;
+    readonly expiresAt: Date;
+  }): Promise<void>;
   /** Refresh tokens are stored hashed; reuse of a rotated token kills the whole family. */
-  findFamilyByTokenHash(tokenHash: string): Promise<{ familyId: AnyId; userId: UserId } | null>;
+  findByTokenHash(tokenHash: string): Promise<RefreshTokenRecord | null>;
+  /**
+   * Marks a token exchanged. Returns false when it was already marked, which is the signal
+   * that this is a replay — the caller revokes the family rather than issuing a new pair.
+   */
+  markUsed(tokenId: AnyId, at: Date): Promise<boolean>;
   revokeFamily(familyId: AnyId, reason: string): Promise<void>;
   revokeAllForUser(userId: UserId, reason: string): Promise<void>;
+}
+
+/**
+ * Everything sign-in needs about a user, in one read.
+ *
+ * Separate from `UserRecord` because it carries the password hash, which must not travel on
+ * the type that administrative screens use — the narrower the audience for a credential, the
+ * fewer places it can be logged from.
+ */
+export interface UserCredentialRecord {
+  readonly id: UserId;
+  readonly email: string;
+  readonly displayName: string;
+  readonly status: UserStatusKey;
+  readonly passwordHash: string | null;
+  readonly mfaEnrolled: boolean;
+  readonly permissionVersion: number;
+  readonly roleIds: readonly RoleId[];
+  readonly roleKeys: readonly string[];
+  readonly permissions: readonly PermissionKey[];
+}
+
+export const CREDENTIAL_REPOSITORY = Symbol('CredentialRepository');
+
+/**
+ * Credential reads and writes, kept apart from `UserRepository` on purpose: this is the only
+ * interface in the module that can see a password hash.
+ */
+export interface CredentialRepository {
+  /** Case-insensitive, live rows only. Null for unknown, deleted, or wrong-tenant. */
+  findByEmail(email: string): Promise<UserCredentialRecord | null>;
+  findById(id: UserId): Promise<UserCredentialRecord | null>;
+  updatePasswordHash(id: UserId, encodedHash: string, at: Date): Promise<void>;
+  recordSignIn(id: UserId, at: Date): Promise<void>;
 }
 
 export const USER_SERVICE = Symbol('UserService');

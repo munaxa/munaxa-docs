@@ -2,7 +2,7 @@
   "name": "@edms/api",
   "version": "0.1.0",
   "private": true,
-  "description": "Munaxa Docs API — NestJS modular monolith. Every business rule, every permission decision, every audit write.",
+  "description": "Munaxa Docs API \u2014 NestJS modular monolith. Every business rule, every permission decision, every audit write.",
   "license": "UNLICENSED",
   "main": "dist/main.js",
   "scripts": {
@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "typecheck": "pnpm prisma:generate && tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "prisma:generate": "prisma generate --schema ../../prisma/schema.prisma"
   },
   "dependencies": {
