@@ -86,6 +86,15 @@ Stated plainly, because these are the things an operator will meet.
 
 ## 6. Defects found while doing it
 
+**`edms_app` could not authenticate against the local stack.** `cluster/01-roles.sql` creates it with
+`LOGIN` and no password — right for production, where the credential is issued outside this repository
+— and the official PostgreSQL image defaults to `scram-sha-256`, under which a role with no stored
+verifier is rejected. So the `DATABASE_URL` in `.env.example` failed at its first query with
+`password authentication failed for user "edms_app"`. Nothing had caught it because nothing in CI had
+ever connected as the application role. `cluster/02-app-credentials.sh` assigns the password from
+`EDMS_APP_PASSWORD` when the variable is set and does nothing when it is not, so compose supplies one
+and production stays unchanged.
+
 **The provisioning SQL mixed two scopes and hardcoded the database name.** `GRANT CONNECT ON DATABASE
 edms` is right for exactly one database, and `current_tenant_id()` is per database while `CREATE ROLE`
 is per cluster. Under a single database nothing exposed this. The second tenant database migrated
@@ -106,7 +115,7 @@ of thing a review does not catch.
 | `pnpm typecheck` | Clean across all seven packages |
 | `pnpm lint` | Clean |
 | `pnpm test` | 223 API tests (up from 188 — the registry, the placement resolver and the storage scoping), plus the shared packages and 21 web tests |
-| `pnpm test:integration` | 13 files / 189 tests against real PostgreSQL, including six against **two** databases |
+| `pnpm test:integration` | 13 files / 189 tests against real PostgreSQL, including six against **two** databases — now a blocking CI gate, bootstrapped by the same runner an operator uses |
 | `pnpm build` | Clean, API and web |
 | `pnpm prisma:deploy` | Verified in both shapes: one database from the environment, and two from a catalogue |
 
@@ -116,6 +125,12 @@ choosing "HQ" is the ordinary case — and the sharpest check is Acme's context 
 against a database that has never held Rival's row. It **skips rather than passes** when
 `SECOND_DATABASE_URL` is absent: a test that quietly ran both tenants against one database would assert
 nothing and say it had.
+
+It is a CI gate as of this phase. It was not at first, and that is worth recording as its own finding:
+the suite had never run anywhere but a developer's machine, so every claim about tenant isolation, the
+audit hash chain, cascade restores and workflow immutability was verified exactly where it is least
+likely to be verified again. Adding the job is what surfaced the `edms_app` credential defect above —
+CI had to connect as the application role, and nothing ever had.
 
 Every other integration suite still runs both tenants through **one** database, and that is deliberate
 rather than left over. It is the layer underneath this one — a tenant column and an RLS policy keeping

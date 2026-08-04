@@ -5,7 +5,8 @@ breaks all of them.
 
 ```text
 sql/
-├── cluster/        once per cluster — the roles. Mounted at the container entrypoint
+├── cluster/        once per cluster — the roles, and the local password for edms_app.
+│                   Mounted at the container entrypoint
 ├── database/       once per tenant database — its grants and its tenant function
 └── post-migrate/   after every migration — row-level security and audit immutability
 ```
@@ -17,7 +18,7 @@ database per company, so the middle and last directories run **N times** and the
 
 | # | Step | Scope | Runs as | When |
 | --- | --- | --- | --- | --- |
-| 1 | `cluster/*.sql` | cluster | superuser / bootstrap | Once. Docker Compose mounts it into `/docker-entrypoint-initdb.d` |
+| 1 | `cluster/*` | cluster | superuser / bootstrap | Once. Docker Compose mounts it into `/docker-entrypoint-initdb.d`, which applies it in filename order |
 | 2 | `database/*.sql` | database | `edms_owner` | Once per tenant database, before its first migration |
 | 3 | `prisma migrate deploy` | database | `edms_owner` | Every deploy, per tenant |
 | 4 | `post-migrate/*.sql` | database | `edms_owner` | Every deploy, per tenant, immediately after step 3 |
@@ -30,6 +31,27 @@ stopped on.
 Skipping step 4 is not harmless — `post-migrate/01-tenant-isolation.sql` raises if any
 tenant-scoped table lacks a row-level security policy, so a deploy that forgets it fails loudly
 rather than shipping a table without isolation.
+
+## Why `edms_app` has no password here
+
+`01-roles.sql` creates it with `LOGIN` and no password, which is right for production: the credential
+is issued by whatever the deployment uses for credentials, and a password committed to this
+repository would be a prohibited action
+([17](../../docs/architecture/17-security-architecture.md) §10).
+
+It is wrong for a local cluster, though, and silently so. The official image defaults to
+`scram-sha-256`, and a role with no stored verifier cannot authenticate under it — so the
+`DATABASE_URL` in `.env.example`, which connects as `edms_app` with a password, failed at the first
+query with `password authentication failed for user "edms_app"`. Nothing caught it because nothing in
+CI had ever connected as the application role.
+
+`02-app-credentials.sh` closes that: it assigns the password in `EDMS_APP_PASSWORD` if the variable
+is set, and does nothing if it is not. Compose sets it beside the `POSTGRES_PASSWORD` it already
+declares; production leaves it unset. A shell script rather than SQL because the entrypoint runs
+`.sql` files through psql with no variables passed, so SQL cannot read the environment.
+
+The entrypoint only applies this directory when it initialises a **new** data directory. An existing
+volume needs the script run by hand, or `docker compose down -v` first.
 
 ## Why roles are separate from grants
 
