@@ -22,8 +22,9 @@ import { sharedDatabase } from '../../../testing/tenant-database';
  * nothing else — none of which a repository double can be wrong about, because a double is
  * written from the same belief as the code it stands in for.
  *
- * These run against a real PostgreSQL (`pnpm test:integration`) and are excluded from CI, which
- * has no database.
+ * These run against a real PostgreSQL (`pnpm test:integration`), separately from `pnpm test`
+ * because they need one: in CI that is the `integration` job, which brings up a cluster and
+ * migrates two tenant databases before running them.
  */
 
 const OWNER_URL = process.env['DATABASE_MIGRATION_URL'] ?? '';

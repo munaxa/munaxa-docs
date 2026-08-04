@@ -95,6 +95,14 @@ ever connected as the application role. `cluster/02-app-credentials.sh` assigns 
 `EDMS_APP_PASSWORD` when the variable is set and does nothing when it is not, so compose supplies one
 and production stays unchanged.
 
+**The integration suite could not be run from a clean checkout.** `test:integration` was a package
+script only, and every suite imports `@edms/domain`, `@edms/contracts`, `@edms/utils` and
+`@edms/i18n` by their entry points — which are built output. On a developer's machine `dist/` is
+always there from the last `pnpm build`, so the script appeared to work; on a fresh checkout all
+thirteen files fail to collect with `Failed to resolve entry for package "@edms/domain"`. It is now
+a turbo task with the same `^build` dependency as `test`, plus a root `pnpm test:integration` — which
+the documentation had been telling people to run for two phases without it existing.
+
 **The provisioning SQL mixed two scopes and hardcoded the database name.** `GRANT CONNECT ON DATABASE
 edms` is right for exactly one database, and `current_tenant_id()` is per database while `CREATE ROLE`
 is per cluster. Under a single database nothing exposed this. The second tenant database migrated

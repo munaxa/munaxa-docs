@@ -180,8 +180,12 @@ jobs:
             "tenants":[{"id":"019489f0-0000-7000-8000-0000000000a1","slug":"acme"},
             {"id":"019489f0-0000-7000-8000-0000000000b2","slug":"rival"}]}
 
+      # Through turbo rather than straight into the package, because the suites import the
+      # workspace packages by their published entry points and those are built output. Running the
+      # package script directly resolves `@edms/domain` to a `dist` that does not exist on a fresh
+      # checkout — which is exactly how this job failed the first time it ran.
       - name: Integration tests
-        run: pnpm --filter @edms/api test:integration
+        run: pnpm test:integration
 
   boundaries:
     name: Product isolation
