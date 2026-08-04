@@ -124,13 +124,40 @@ Rules for anyone touching it:
 - Every executed transition writes an `AuditEvent` carrying `from`, `to`, actor, reason and the
   workflow instance if any.
 
-## Phase 3 — everything is `DRAFT`
+## Phase 4 — the machine runs
 
-Phase 3 creates documents and nothing moves them out of `DRAFT`: submission, approval, publication
-and check-out are Phases 4 and 6. The transition table above is the target, and the guard that
-enforces it is Phase 4's.
+Phase 3 created documents and nothing moved them out of `DRAFT`. Phase 4 is what performs the
+transitions, and the table is now code: `apps/api/src/modules/document/domain/lifecycle.ts` holds
+`LEGAL_TRANSITIONS` exactly as §3 states it, and `isLegalTransition` is consulted on every move. §5's
+first rule holds — the table is the only source of truth, and there is no `if (status === …)` in a
+service.
 
-One piece of it is written now and never fires. `refuseWhenFrozen` refuses an edit to a document in
-`SUBMITTED`, `UNDER_REVIEW`, `APPROVED`, `PUBLISHED`, `SUPERSEDED` or `ARCHIVED`, because content is
-frozen from the moment a document is handed to a workflow — and an edit path built without the check
-is an edit path somebody has to remember to add one to.
+`refuseWhenFrozen`, written in Phase 3 against statuses nothing could reach, now fires. Its set moved
+into `lifecycle.ts` with the table it belongs to.
+
+**Two tables, and the second is the honest part.** `LEGAL_TRANSITIONS` is the design above, including
+the rows owned by Phases 5, 6, 9 and 10. `IMPLEMENTED_TRANSITIONS` is what the product can perform
+today, and it is what `GET /documents/{id}/workflow` reports in `availableTransitions`. §5 says the
+UI renders exactly what the API offers; offering a transition nothing implements would make a client
+draw a button that returns a 404.
+
+| Transition | Performed by |
+| --- | --- |
+| `DRAFT → SUBMITTED → UNDER_REVIEW` | Submission, in one transaction: the instance, its stages and the first stage's tasks are created together |
+| `UNDER_REVIEW → CHANGES_REQUESTED` | An approver's decision. The instance ends with reason `RETURNED` |
+| `UNDER_REVIEW → REJECTED` | An approver's decision, per the stage's `onReject` |
+| `UNDER_REVIEW → APPROVED` | The final stage completing. The number seam is called and left unbound — see below |
+| `SUBMITTED`/`UNDER_REVIEW` `→ DRAFT` | Withdrawal by the author before anybody decided, or an administrative cancellation |
+
+`SUBMITTED` is a state a document passes *through* rather than rests in: the first stage activates
+inside the same transaction, because a document left `SUBMITTED` with no tasks would be waiting for a
+process that had already been asked to start.
+
+**`APPROVED` does not yet assign a number.** [ADR-0004](./adr/0004-numbering-assigned-at-approval.md)
+assigns one at approval and [07 §8](./07-workflow-architecture.md) forbids assigning one earlier; the
+allocator itself is Phase 5. The engine calls `DOCUMENT_NUMBER_ALLOCATOR` at completion, the port is
+unbound, and the instance records `numberAssigned: false`. A document that is approved and unnumbered
+is the honest state of a product without numbering.
+
+Publication, check-out, archival and purge are still not performed. `APPROVED → PUBLISHED` needs the
+effective-date policy and the "exactly one published revision" rule, which is Phase 6's territory.

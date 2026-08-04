@@ -132,5 +132,31 @@ total. Every handling rule subtracts — a level may forbid download to somebody
 settings: a flag hides unfinished work, an entitlement expresses what a customer bought, and a
 setting is what the customer chose.
 
-Approval groups — `ParticipantKind.GROUP` names one by key — have no administration surface yet. A
-workflow can reference one; nothing creates one.
+## Approval routing — Phase 4
+
+Two things the workflow engine reads that this module did not have, and both were built rather than
+deferred because in each case the missing piece would have made the product *wrong* rather than
+merely incomplete.
+
+**Approval groups.** `ParticipantKind.GROUP` names one by key, and until Phase 4 nothing created one
+— which the Phase 2 report flagged. A group is a **routing list, not a permission**: adding somebody
+makes them a candidate for a stage that names the group and grants them nothing. That is why it is
+its own table rather than a role with no permissions, and it is why deleting one a published workflow
+routes to is refused. The count that refuses it is a `jsonb_path_exists` over the stored definitions,
+so a key that merely appears in a stage's *name* does not block anything.
+
+**Working calendars.** [07 §6](../../../../../docs/architecture/07-workflow-architecture.md) says
+Administration owns the weekend pattern and holiday list a deadline is counted against, and
+`WORKING_DAYS` is the *default* every stage deadline is authored with. A seam would have meant every
+deadline in the product silently counting Saturdays, with nothing to say so. Exactly one calendar per
+tenant is the default, enforced by a partial unique index as well as by the service: a tenant with
+two defaults has none, and the arithmetic would depend on which row a query returned first.
+
+The arithmetic itself lives in `@edms/domain`, not here, because it has two callers that must agree —
+the engine computes the deadline it will enforce, and this module's preview endpoint tells a workflow
+author what that deadline will be. A second implementation of "three working days" is a screen that
+promises Tuesday and an engine that escalates on Monday.
+
+Both are behind `workflow:manage` rather than `settings:manage`. The person who authors approval
+workflows maintains the groups they route to and the calendar their deadlines are counted against,
+and that is a narrower key than "can configure the tenant".

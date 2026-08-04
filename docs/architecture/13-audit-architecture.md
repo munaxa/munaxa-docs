@@ -171,3 +171,46 @@ is exactly where a failure would hide.
 **What is deliberately not audited: favourites.** Whether somebody bookmarked a document is a fact
 about a menu, not about a controlled record. One hash-chained, immutable, retention-governed row per
 click on a star would dilute the trail with the one kind of event that can never matter.
+
+## Phase 4 — the actions the approval engine writes
+
+The catalogue's convention is one action per *area* with the operation in the payload, and the
+Workflow group is where that convention is deliberately not followed. Everything Phase 2 wrote was
+somebody *configuring* approvals; everything below is somebody *deciding*, and "who approved this
+document and when" is asked more often than any other question this product answers. It must not
+have to filter a stream that also contains every workflow rename.
+
+| Action | Subject | Written when |
+| --- | --- | --- |
+| `SUBMITTED` | `DOCUMENT` | A document was handed to its workflow. Records the **version** it bound to, not merely the definition |
+| `STAGE_ACTIVATED` | `WORKFLOW` | Tasks exist for a stage's approvers |
+| `APPROVED` | `TASK` | An approver agreed |
+| `REJECTED` | `TASK` | An approver refused. The comment is required and is in the payload |
+| `CHANGES_REQUESTED` | `TASK` | An approver sent it back to its author |
+| `ESCALATED` | `WORKFLOW` | A deadline passed and the task went to somebody else |
+| `AUTO_APPROVED` | `WORKFLOW` | The engine decided under a stage marked non-controlling |
+| `WITHDRAWN` | `WORKFLOW` | An approval ended without a decision |
+| `WORKFLOW_PAUSED` | `WORKFLOW` | Timers stopped, or started again |
+| `TIMER_FIRED` | `WORKFLOW` | A deadline or reminder arrived, whatever effect it had |
+| `ROUTING_CHANGED` | `CONFIGURATION` | An approval group or a working calendar changed |
+
+Four of these are worth justifying.
+
+**A decision event carries the revision it was taken on.** "Prove what was approved" resolves
+instance → revision → file → checksum, and putting the revision in the payload means the answer does
+not depend on a join whose result a later revision would change.
+
+**`SUBMITTED` records the workflow version, not the definition.** A definition identifier alone would
+answer "which rules was this approved under" with whatever the definition says today, which is the
+one thing versioning exists to prevent.
+
+**Both identities travel on every decision.** `decidedBy` and `onBehalfOf` are in the payload before
+delegation exists, so the trail answers "who decided" and "for whom" without a migration when it does.
+
+**`AUTO_APPROVED` is its own action rather than an `APPROVED` with a flag.** An approval nobody made
+is the one entry in this trail an auditor will want to find by searching for it, and a flag inside a
+payload is not something anybody searches for.
+
+**`TIMER_FIRED` is written even when nothing changed.** A `NOTIFY_ONLY` deadline changes no state, and
+a trail that recorded only the firings which caused one could not distinguish a stage nobody chased
+from one the engine never noticed.

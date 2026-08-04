@@ -99,12 +99,36 @@ a blob, reference it, dereference it and link to it — it cannot create an uplo
 delete a blob, because a document use case able to delete a blob is one able to delete another
 document's content.
 
+## The lifecycle — Phase 4
+
+`domain/lifecycle.ts` is the transition table from
+[`06-document-lifecycle.md`](../../../../../docs/architecture/06-document-lifecycle.md) §5, and it is
+**the only source of truth**: there is no `if (status === 'PUBLISHED')` anywhere in this module, and
+an inline status check is a check that disagrees with the table the first time somebody adds a state.
+
+Two tables rather than one, and the second is the honest part. `LEGAL_TRANSITIONS` is the design and
+includes rows owned by Phases 5, 6, 9 and 10. `IMPLEMENTED_TRANSITIONS` is what the product can
+actually perform today, and it is what `GET /documents/{id}/workflow` reports — because §5's rule is
+that the UI renders exactly the transitions the API offers, and offering one that nothing performs
+would make a client draw a button that returns a 404.
+
+`refuseWhenFrozen` was written in Phase 3 against statuses nothing could reach. Phase 4 is what makes
+it fire, and the set moved here with the table it belongs to: "the bytes under review must be the
+bytes approved" is a row of §4, not a rule of this service. `CHANGES_REQUESTED` is deliberately
+absent from it — an approver asking for changes is asking the author to make them.
+
+Workflow reads this module through `approvalContext`, which assembles the flat, pre-approved fact map
+a stage condition is evaluated against. The assembly is here rather than in the engine because that
+is the security-relevant half: §2 requires that no tenant-authored expression reaches an evaluator
+that can touch I/O, so the facts are gathered *before* evaluation by code that knows what it is
+fetching, into a `Map` whose keys a tenant does not choose.
+
 ## Deliberate limits
 
 | Limit | Why | Unblocked by |
 | --- | --- | --- |
 | No `capabilities` on a response | Object-level permission resolution is the ACL resolver's, and it is unbound. Inventing the object would be the client rendering affordances from a decision nothing made | The ACL phase |
 | No document number | Reserved at submission, assigned at approval ([ADR-0004](../../../../../docs/architecture/adr/0004-numbering-assigned-at-approval.md)) | Phase 5 |
-| Every document is `DRAFT` | The transition table and its guards are Phase 4's. `refuseWhenFrozen` is written now and never fires, because an edit path built without the check is one somebody has to remember to add | Phase 4 |
+| No revision beyond the first | Check-out, check-in, compare and restore are Phase 6's | Phase 6 |
 | Declassification is refused outright | Reducing a document's confidentiality is a decision with its own procedure. Allowing it here would make it an ordinary edit any document editor can perform | The phase that gives it one |
 | No tags, links or check-out lock | Named in this module's own contract and not needed to file a document | Phases 6 and 16 |

@@ -190,3 +190,43 @@ designer must respect is already enforced by the version validator:
 | Let a delegate exceed the delegator's authority | Privilege escalation |
 | Assign a document number before the final stage completes | Numbers would be burned on rejected documents ([09](./09-numbering-architecture.md)) |
 | Decide a task twice | Duplicate approvals corrupt the quorum count |
+
+## 9. Phase 4 — what was built, and the two decisions §6 and §2 left open
+
+The engine exists. Submission, approval, rejection, return for modification, comments, sequential and
+parallel routing, conditional stages, due dates, reminders, escalation, the approval timeline and the
+task inbox are all built and asserted against a real database.
+
+**Timers are rows as well as jobs.** §3's "BullMQ delayed jobs, not polling" is satisfied, and
+`workflow_timer` holds what each job is *for* — because a queue alone cannot say which timers belong
+to a stage, what one had left when the instance paused, or whether a reminder has already fired.
+`fire_at` on resume is `now + remaining_ms`, never re-derived from the definition's duration, which
+is §6's rule made unrepresentable to get wrong: a check constraint pairs `PAUSED` with a remainder.
+
+**The working-day calendar was built, not deferred.** §6 says Administration owns it and
+Administration did not have one, while `WORKING_DAYS` is the *default* every stage deadline is
+authored with — so a seam would have meant every deadline in the product silently counting Saturdays.
+`working_calendar` and `working_calendar_holiday` are Administration's, behind `workflow:manage`, per
+entity with one tenant-wide default. The arithmetic lives in `@edms/domain` because the engine and
+the authoring screen's preview must give the same answer. What it does **not** model is working
+*hours*: the calendar knows which days are worked, not which hours of them, so `PT8H` is eight real
+hours that do not elapse at a weekend rather than one working day.
+
+**Approval groups were built for the same reason.** `GROUP` is one of the seven resolver kinds in §2
+and had no surface behind it, and a resolver that cannot resolve fails a submission loudly — so
+shipping the engine without it would have shipped a definition kind nobody could use.
+
+**Delegation is not built** and §4 is untouched. What Phase 4 guaranteed is that it stays buildable:
+`approval_task` carries `decided_by_id` and `on_behalf_of_id`, the audit payload reads both, and the
+single check that phase relaxes — "the task belongs to you" — is in one place in the engine.
+
+**Numbering is not built.** The engine calls `DOCUMENT_NUMBER_ALLOCATOR` at completion, the port is
+left unbound, and an approval completes with `numberAssigned: false`. That is §8's rule kept and
+[ADR-0004](./adr/0004-numbering-assigned-at-approval.md)'s seam defined without half-building a
+sequence.
+
+One property is worth recording because it was a defect the design did not name. Two approvers
+deciding at the same instant run in two transactions, and under `READ COMMITTED` neither sees the
+other's decision — so a two-person quorum could be met while the stage stayed pending forever. Every
+write path now takes a row lock on the instance first, which serialises decisions on one approval and
+leaves decisions on different approvals concurrent.
