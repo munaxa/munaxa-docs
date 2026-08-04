@@ -63,6 +63,13 @@ import {
     { provide: NUMBERING_ADMIN_SERVICE, useClass: NumberingAdminService },
     { provide: SETTINGS_ADMIN_SERVICE, useClass: SettingsAdminService },
   ],
-  exports: [SETTINGS_READER, TENANT_SETTINGS_REPOSITORY],
+  exports: [
+    SETTINGS_READER,
+    TENANT_SETTINGS_REPOSITORY,
+    // Phase 3: a document is assembled from a document type, a category and a confidentiality
+    // level, and Document asks about all three through this service rather than by reading the
+    // rows behind it.
+    CONFIGURATION_SERVICE,
+  ],
 })
 export class AdministrationModule {}

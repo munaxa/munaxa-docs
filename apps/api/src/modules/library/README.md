@@ -31,6 +31,22 @@ react to its **events** — never through its repositories or its Prisma models.
 | `library.folder-moved` | Ancestry changed; inherited permissions and search ACL fingerprints change with it. |
 | `library.acl-changed` | Invalidates the permission cache and re-fingerprints affected index entries. |
 
+## Phase 3 — documents live in it now
+
+Phase 2 built the place. Phase 3 fills it, and two things about this module changed as a result.
+
+`LIBRARY_ADMIN_SERVICE` is **exported**, because Document resolves a folder through it before every
+create and every move. That is a call to this module's application service, which is the only legal
+direction — never into `folder`, which is the tree the ACL resolver walks and therefore the one
+table a second reader would be a second opinion about who can see what.
+
+`library.folder-moved` now carries a real `documentCount`. It was zero through Phase 2 because
+nothing could be in a folder.
+
+What has **not** changed: a folder delete still refuses nothing on account of its contents, because
+ACLs do not exist yet and a folder with documents in it is not yet a folder with permissions on it.
+That check belongs with the phase that makes the consequence real.
+
 ## Phase 2 status
 
 **The place exists; nothing lives in it yet.** No document upload in Phase 2 — what this phase builds

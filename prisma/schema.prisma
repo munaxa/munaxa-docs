@@ -108,6 +108,11 @@ model Tenant {
   folders               Folder[]
   workflowDefinitions   WorkflowDefinition[]
   workflowVersions      WorkflowVersion[]
+  fileObjects           FileObject[]
+  uploadSessions        UploadSession[]
+  documents             Document[]
+  documentRevisions     DocumentRevision[]
+  previewArtifacts      PreviewArtifact[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -296,6 +301,8 @@ model User {
   notificationPreferences NotificationPreference[]
   notifications           NotificationMessage[]
   departments             UserDepartment[]
+  favorites               DocumentFavorite[]
+  documentViews           DocumentView[]
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -810,6 +817,7 @@ model ConfidentialityLevel {
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   documentTypes DocumentType[]
+  documents     Document[]
 
   @@index([tenantId, rank], map: "ix_confidentiality_rank")
   @@map("confidentiality_level")
@@ -839,6 +847,7 @@ model RetentionPolicy {
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   documentTypes DocumentType[]
+  documents     Document[]
 
   @@index([tenantId], map: "ix_retention_policy_tenant")
   @@map("retention_policy")
@@ -933,9 +942,10 @@ model Category {
   deletedBy   String?   @map("deleted_by") @db.Uuid
   version     Int       @default(1)
 
-  tenant   Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children Category[] @relation("CategoryTree")
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children  Category[] @relation("CategoryTree")
+  documents Document[]
 
   @@index([tenantId, parentId], map: "ix_category_parent")
   @@index([tenantId, path], map: "ix_category_path")
@@ -966,8 +976,9 @@ model MetadataField {
   deletedBy    String?          @map("deleted_by") @db.Uuid
   version      Int              @default(1)
 
-  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  documentTypes TypeMetadataField[]
+  tenant         Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  documentTypes  TypeMetadataField[]
+  documentValues DocumentMetadataValue[]
 
   @@index([tenantId], map: "ix_metadata_field_tenant")
   @@map("metadata_field")
@@ -1007,6 +1018,7 @@ model DocumentType {
   retentionPolicy    RetentionPolicy?     @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
   confidentiality    ConfidentialityLevel @relation(fields: [defaultConfidentialityId], references: [id], onDelete: Restrict)
   fields             TypeMetadataField[]
+  documents          Document[]
 
   @@index([tenantId, isActive], map: "ix_document_type_active")
   @@index([tenantId, workflowDefinitionId], map: "ix_document_type_workflow")
@@ -1110,11 +1122,12 @@ model Folder {
   deleteCascadeId String?   @map("delete_cascade_id") @db.Uuid
   version         Int       @default(1)
 
-  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  library       Library   @relation("FolderLibrary", fields: [libraryId], references: [id], onDelete: Restrict)
-  parent        Folder?   @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children      Folder[]  @relation("FolderTree")
-  rootOfLibrary Library[] @relation("LibraryRoot")
+  tenant        Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  library       Library    @relation("FolderLibrary", fields: [libraryId], references: [id], onDelete: Restrict)
+  parent        Folder?    @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children      Folder[]   @relation("FolderTree")
+  rootOfLibrary Library[]  @relation("LibraryRoot")
+  documents     Document[]
 
   @@index([tenantId, libraryId, parentId], map: "ix_folder_parent")
   @@index([tenantId, path], map: "ix_folder_path")
@@ -1179,4 +1192,431 @@ model WorkflowVersion {
   @@unique([definitionId, version], map: "uq_workflow_version_number")
   @@index([tenantId, definitionId, state], map: "ix_workflow_version_state")
   @@map("workflow_version")
+}
+
+// ---------------------------------------------------------------------------------------
+// Phase 3 — the document library.
+//
+//   The first phase whose tables hold a customer's own content rather than their
+//   configuration, and the split at the heart of it is ADR-0003: a document's *identity*, the
+//   *revision* an approver approved, and the *bytes* are three records with three lifetimes.
+//   Collapsing any two of them is the model every document system regrets.
+//
+//   File metadata and business metadata are likewise separate, and deliberately so. What a
+//   file *is* — its digest, its size, its type, its scan verdict — belongs to `file_object`
+//   and is a fact about bytes. What a document *means* — its type, its category, its
+//   confidentiality, the tenant's own fields — belongs to `document` and
+//   `document_metadata_value` and is a fact about the business. A file replaced at the next
+//   revision changes every fact in the first group and none in the second.
+//
+//   Every reference to configuration is `onDelete: Restrict`: a document type in use cannot be
+//   removed, and the application says so with a count rather than failing at the constraint.
+// ---------------------------------------------------------------------------------------
+
+/// A blob is unreachable until it is CLEAN. Enforced in the use case *and* by a check
+/// constraint, in every environment holding real data (`17-security-architecture.md` §5).
+enum ScanStatus {
+  PENDING
+  CLEAN
+  INFECTED
+  FAILED
+  SKIPPED
+
+  @@map("scan_status")
+}
+
+enum UploadSessionState {
+  OPEN
+  COMPLETED
+  EXPIRED
+  ABORTED
+
+  @@map("upload_session_state")
+}
+
+enum DocumentStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  CHANGES_REQUESTED
+  REJECTED
+  APPROVED
+  PUBLISHED
+  CHECKED_OUT
+  SUPERSEDED
+  ARCHIVED
+  EXPIRED
+  DELETED
+  PURGED
+
+  @@map("document_status")
+}
+
+enum RevisionStatus {
+  DRAFT
+  IN_APPROVAL
+  PUBLISHED
+  SUPERSEDED
+
+  @@map("revision_status")
+}
+
+/// How the content arrived. Provenance, not behaviour: nothing branches on it, and an auditor
+/// asking "was this captured from paper or authored on a machine" has an answer either way.
+enum DocumentOrigin {
+  UPLOAD
+  SCAN
+
+  @@map("document_origin")
+}
+
+enum PreviewArtifactKind {
+  PAGE_IMAGE
+  THUMBNAIL
+  PDF
+  TEXT
+
+  @@map("preview_artifact_kind")
+}
+
+/// Stored bytes, and everything true about them independently of what they mean.
+///
+/// Immutable after creation and identified by content: the storage key is derived from the
+/// SHA-256, so identical content within a tenant is one blob with a reference count
+/// ([ADR-0007](../docs/architecture/adr/0007-storage-port-and-content-addressing.md)).
+/// `uq (tenant_id, checksum_sha256)` is what makes that true rather than merely intended.
+///
+/// **Dedupe never crosses tenants**, and under ADR-0015 it cannot: the storage port scopes every
+/// key with the tenant's prefix, so a shared blob would have to be addressed with a key the port
+/// refuses. Two customers holding the same standard form is two objects, and the storage saved by
+/// sharing one is not worth a reference count spanning a trust boundary.
+///
+/// `derived` marks a preview, thumbnail or OCR output. They are disposable — regenerable from the
+/// original — so they are excluded from quota accounting and purged with their source.
+model FileObject {
+  id             String     @id @db.Uuid
+  tenantId       String     @map("tenant_id") @db.Uuid
+  /// Lower-case hex. The key is derived from it, so the two can never disagree.
+  checksumSha256 String     @map("checksum_sha256") @db.Char(64)
+  sizeBytes      BigInt     @map("size_bytes")
+  /// The *sniffed* type, never the declared one. A declaration that disagreed with the bytes
+  /// was refused before this row existed (`17-security-architecture.md` §5).
+  mimeType       String     @map("mime_type")
+  /// What a use case names. Without the tenant prefix: the prefix says where the bytes live, not
+  /// what the blob is, so a tenant moving container does not rewrite every row here.
+  storageKey     String     @map("storage_key")
+  /// Which driver wrote it. Recorded per blob so a copy-through provider migration keeps both
+  /// readable throughout (`11-storage-architecture.md` §8).
+  storageDriver  String     @map("storage_driver")
+  scanStatus     ScanStatus @default(PENDING) @map("scan_status")
+  /// The signature name when infected; null otherwise.
+  scanThreat     String?    @map("scan_threat")
+  scanner        String?
+  scannedAt      DateTime?  @map("scanned_at") @db.Timestamptz(6)
+  /// References from revisions and preview artefacts. Maintained transactionally with the write
+  /// that creates or removes a reference, and reconciled by a sweeper that reports drift rather
+  /// than silently fixing it.
+  refCount       Int        @default(0) @map("ref_count")
+  derived        Boolean    @default(false)
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?    @map("created_by") @db.Uuid
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?    @map("updated_by") @db.Uuid
+  deletedAt      DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  deletedBy      String?    @map("deleted_by") @db.Uuid
+
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  revisions DocumentRevision[]
+  previews  PreviewArtifact[]
+  uploads   UploadSession[]
+
+  /// Content addressing, as a constraint. Not partial on `deleted_at`: a blob that came back from
+  /// a soft delete must be *the same blob*, and a second row for the same digest would be a second
+  /// reference count for one object.
+  @@unique([tenantId, checksumSha256], map: "uq_file_object_checksum")
+  @@unique([tenantId, storageKey], map: "uq_file_object_key")
+  /// The retention sweeper's only query: unreferenced blobs, oldest first.
+  @@index([tenantId, refCount], map: "ix_file_object_refcount")
+  @@index([tenantId, scanStatus], map: "ix_file_object_scan")
+  @@map("file_object")
+}
+
+/// One upload in flight.
+///
+/// It exists because the API issues a target and then hears nothing until the client says it is
+/// done: without a row there is no record that a key was promised to anybody, so an abandoned
+/// upload would leave a blob nothing references and nothing knows to sweep
+/// (`11-storage-architecture.md` §8).
+///
+/// It carries what the *client claimed* — filename, declared type, size — which is exactly why
+/// those are not on `file_object`. They are a claim until the store's own answer confirms them at
+/// completion, and keeping the claim separate from the fact is what lets a mismatch be detected
+/// rather than overwritten.
+model UploadSession {
+  id                String             @id @db.Uuid
+  tenantId          String             @map("tenant_id") @db.Uuid
+  /// As the client named it. Sanitised, never trusted: the stored key comes from the digest.
+  filename          String
+  declaredMimeType  String             @map("declared_mime_type")
+  declaredSizeBytes BigInt             @map("declared_size_bytes")
+  /// Where the bytes are being written. Unprefixed, like every stored key.
+  targetKey         String             @map("target_key")
+  state             UploadSessionState @default(OPEN)
+  /// The driver's handle for a resumable transfer; null for a single PUT.
+  multipartUploadId String?            @map("multipart_upload_id")
+  /// Set at completion. The session is the audit trail of how this blob arrived.
+  fileObjectId      String?            @map("file_object_id") @db.Uuid
+  expiresAt         DateTime           @map("expires_at") @db.Timestamptz(6)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?            @map("created_by") @db.Uuid
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy         String?            @map("updated_by") @db.Uuid
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  fileObject FileObject? @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+
+  /// The sweeper's query: open sessions past their expiry.
+  @@index([tenantId, state, expiresAt], map: "ix_upload_session_expiry")
+  @@map("upload_session")
+}
+
+/// The controlled record. The product's root aggregate.
+///
+/// Its identity never changes: not when it is revised, not when it moves folder, not when it is
+/// archived, and not when it is deleted — the number stays reserved forever precisely so it can
+/// never be re-issued (`03-domain-model.md` §3).
+///
+/// The **frozen policy** columns are the reason a document type can be edited without rewriting
+/// history. A document copies what it needs at creation — its confidentiality level, its retention
+/// policy — and keeps it. Editing the type afterwards applies to documents created later and to
+/// nothing that already exists.
+///
+/// `document_number` is null through Phase 3 and stays null until approval: numbers are reserved at
+/// submission and assigned at approval, which is Phase 5's
+/// ([ADR-0004](../docs/architecture/adr/0004-numbering-assigned-at-approval.md)).
+model Document {
+  id                String         @id @db.Uuid
+  tenantId          String         @map("tenant_id") @db.Uuid
+  /// Where it lives. Moving it changes the ACL chain it resolves through, which is why the move
+  /// is its own permission and its own audited operation.
+  folderId          String         @map("folder_id") @db.Uuid
+  documentTypeId    String         @map("document_type_id") @db.Uuid
+  categoryId        String?        @map("category_id") @db.Uuid
+  /// Frozen from the type at creation, and overridable upward by anyone who may. Never inherited
+  /// live from the type: raising a type's default must not silently declassify existing documents.
+  confidentialityId String         @map("confidentiality_id") @db.Uuid
+  /// Frozen from the type at creation. Null when the type names no retention policy.
+  retentionPolicyId String?        @map("retention_policy_id") @db.Uuid
+  title             String
+  description       String?
+  status            DocumentStatus @default(DRAFT)
+  origin            DocumentOrigin @default(UPLOAD)
+  /// Assigned once, at approval, and never reused — even after deletion. Null until then.
+  documentNumber    String?        @map("document_number")
+  ownerUserId       String         @map("owner_user_id") @db.Uuid
+  /// The effective revision. Null until one is published, which is Phase 4's work.
+  currentRevisionId String?        @unique(map: "uq_document_current_revision") @map("current_revision_id") @db.Uuid
+  /// The newest revision, published or not. Set by Phase 3 the moment the first one exists.
+  latestRevisionId  String?        @map("latest_revision_id") @db.Uuid
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?        @map("created_by") @db.Uuid
+  updatedAt         DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy         String?        @map("updated_by") @db.Uuid
+  deletedAt         DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  deletedBy         String?        @map("deleted_by") @db.Uuid
+  version           Int            @default(1)
+
+  tenant          Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  folder          Folder                  @relation(fields: [folderId], references: [id], onDelete: Restrict)
+  documentType    DocumentType            @relation(fields: [documentTypeId], references: [id], onDelete: Restrict)
+  category        Category?               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  confidentiality ConfidentialityLevel    @relation(fields: [confidentialityId], references: [id], onDelete: Restrict)
+  retentionPolicy RetentionPolicy?        @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
+  currentRevision DocumentRevision?       @relation("DocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
+  revisions       DocumentRevision[]      @relation("RevisionDocument")
+  metadataValues  DocumentMetadataValue[]
+  favorites       DocumentFavorite[]
+  views           DocumentView[]
+
+  /// Deliberately **not** partial on `deleted_at`. A number stays reserved forever, so a deleted
+  /// document still holds its own — which is the one exception to this schema's rule that a
+  /// deleted row never blocks a new one.
+  @@unique([tenantId, documentNumber], map: "uq_document_number")
+  /// The folder browser's query: what is in this folder, newest first.
+  @@index([tenantId, folderId, deletedAt, updatedAt(sort: Desc)], map: "ix_document_folder")
+  /// "What am I working on" on the dashboard, and the owner filter in the library.
+  @@index([tenantId, ownerUserId, status], map: "ix_document_owner")
+  @@index([tenantId, documentTypeId], map: "ix_document_type")
+  @@index([tenantId, categoryId], map: "ix_document_category")
+  @@index([tenantId, status], map: "ix_document_status")
+  @@map("document")
+}
+
+/// One controlled version of a document, and the bytes it is.
+///
+/// Phase 3 creates revision zero at upload and nothing else: check-out, check-in, compare and
+/// restore are Phase 6's, and publishing is Phase 4's. What is here now is the record that binds a
+/// document to a file, which is what makes "prove what was approved" answerable later — revision →
+/// file → checksum (`10-revision-architecture.md` §1).
+///
+/// The ordinal is the truth and the label is rendered from it, in the style the document's type
+/// chose. A label is a display convention; two documents of different types may show `R1` and `B`
+/// for the same ordinal, and both are correct.
+model DocumentRevision {
+  id           String         @id @db.Uuid
+  tenantId     String         @map("tenant_id") @db.Uuid
+  documentId   String         @map("document_id") @db.Uuid
+  /// Contiguous and strictly increasing per document, from zero.
+  ordinal      Int
+  /// Rendered from the ordinal at creation, in the type's style. Stored rather than derived on
+  /// read, because a type whose style changes must not silently relabel history.
+  label        String
+  status       RevisionStatus @default(DRAFT)
+  fileObjectId String         @map("file_object_id") @db.Uuid
+  /// The filename as uploaded. What a download is named, and what the library shows beside a
+  /// title somebody typed — the two are frequently different and both are wanted.
+  filename     String
+  /// What the author said about this revision. Free text, and not the document's description.
+  changeNote   String?        @map("change_note")
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy    String?        @map("created_by") @db.Uuid
+  updatedAt    DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy    String?        @map("updated_by") @db.Uuid
+  deletedAt    DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  deletedBy    String?        @map("deleted_by") @db.Uuid
+  version      Int            @default(1)
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document   Document          @relation("RevisionDocument", fields: [documentId], references: [id], onDelete: Restrict)
+  fileObject FileObject        @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+  currentOf  Document[]        @relation("DocumentCurrentRevision")
+  previews   PreviewArtifact[]
+
+  /// Not partial: an ordinal is never re-used, so a deleted revision still holds its place. A
+  /// history with a gap and a history with two revision 2s are both unusable as evidence.
+  @@unique([documentId, ordinal], map: "uq_revision_ordinal")
+  @@index([tenantId, documentId, ordinal(sort: Desc)], map: "ix_revision_document")
+  @@index([tenantId, fileObjectId], map: "ix_revision_file")
+  @@map("document_revision")
+}
+
+/// One tenant-defined field's value on one document.
+///
+/// **Typed columns rather than `jsonb`.** The tenant defines which fields exist; the product knows
+/// what a date is. A `jsonb` bag would make "documents expiring this quarter" a scan and a cast,
+/// and would let a `NUMBER` field hold the string a form posted. Exactly one value column is
+/// populated, decided by the field's own `data_type` — which is immutable for precisely this
+/// reason (`05-database-design.md`).
+///
+/// `MULTI_SELECT` is the one field kind whose value is a list, and it gets a text array rather than
+/// a row per option: the options are a closed set the field itself defines, and a join table would
+/// buy nothing but a join.
+model DocumentMetadataValue {
+  tenantId        String    @map("tenant_id") @db.Uuid
+  documentId      String    @map("document_id") @db.Uuid
+  metadataFieldId String    @map("metadata_field_id") @db.Uuid
+  textValue       String?   @map("text_value")
+  numberValue     Decimal?  @map("number_value") @db.Decimal(38, 10)
+  dateValue       DateTime? @map("date_value") @db.Timestamptz(6)
+  booleanValue    Boolean?  @map("boolean_value")
+  /// A user or a department identifier, for the two field kinds that name one.
+  referenceValue  String?   @map("reference_value") @db.Uuid
+  selectValues    String[]  @map("select_values")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?   @map("created_by") @db.Uuid
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy       String?   @map("updated_by") @db.Uuid
+
+  document Document      @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  field    MetadataField @relation(fields: [metadataFieldId], references: [id], onDelete: Restrict)
+
+  @@id([documentId, metadataFieldId])
+  /// "Which documents have this field set to that" — the metadata filter, and what a field's
+  /// deletion has to ask before it refuses.
+  @@index([tenantId, metadataFieldId, textValue], map: "ix_metadata_value_text")
+  @@index([tenantId, metadataFieldId, dateValue], map: "ix_metadata_value_date")
+  @@index([tenantId, metadataFieldId, numberValue], map: "ix_metadata_value_number")
+  @@map("document_metadata_value")
+}
+
+/// A document one person marked.
+///
+/// Per user rather than per tenant, and that is the whole model: a favourite is a private
+/// convenience, not a shared classification. A tenant-wide "important" flag is a metadata field the
+/// administrator defines, and conflating the two would make one person's shortcut everybody's
+/// taxonomy.
+model DocumentFavorite {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  documentId String   @map("document_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, documentId])
+  /// "My favourites, most recently added first."
+  @@index([tenantId, userId, createdAt(sort: Desc)], map: "ix_favorite_user")
+  @@map("document_favorite")
+}
+
+/// When each person last opened each document.
+///
+/// One row per (user, document), updated in place, rather than an append-only log. "Recent
+/// documents" asks *which* documents, not how many times — and a log would grow without bound to
+/// answer a question about at most a screenful of rows.
+///
+/// It is deliberately **not** derived from the audit trail, though the trail records every read.
+/// Audit is evidence: append-only, hash-chained, retained by policy and never pruned to make a
+/// list faster. Serving a convenience feature from it would put a product query on the critical
+/// path of the one table that must stay cheap to write and impossible to rewrite
+/// (`13-audit-architecture.md`).
+model DocumentView {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  documentId String   @map("document_id") @db.Uuid
+  viewedAt   DateTime @map("viewed_at") @db.Timestamptz(6)
+  viewCount  Int      @default(1) @map("view_count")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, documentId])
+  /// The only query this table serves.
+  @@index([tenantId, userId, viewedAt(sort: Desc)], map: "ix_view_user")
+  @@map("document_view")
+}
+
+/// Something rendered from a revision's content.
+///
+/// Phase 3 produces exactly one kind — the upload-time `THUMBNAIL` — and the table is the full
+/// shape because Phase 7 adds page images, a PDF rendition and extracted text without a migration.
+/// Every artefact is disposable: it can be rebuilt from the source blob, so it is content-addressed
+/// like any other file, marked `derived`, excluded from quota and purged with its source
+/// (`14-preview-architecture.md`).
+model PreviewArtifact {
+  id              String              @id @db.Uuid
+  tenantId        String              @map("tenant_id") @db.Uuid
+  revisionId      String              @map("revision_id") @db.Uuid
+  kind            PreviewArtifactKind
+  /// Null for an artefact that is not per page — a thumbnail, the extracted text.
+  page            Int?
+  fileObjectId    String              @map("file_object_id") @db.Uuid
+  /// Which renderer produced it, so an upgrade can invalidate what the old version made.
+  renderer        String
+  rendererVersion String              @map("renderer_version")
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?             @map("created_by") @db.Uuid
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy       String?             @map("updated_by") @db.Uuid
+
+  tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  revision   DocumentRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  fileObject FileObject       @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+
+  /// One artefact per revision, kind and page. A second would be two answers to "what does page
+  /// three look like", and nothing could say which is current.
+  @@unique([revisionId, kind, page], map: "uq_preview_artifact")
+  @@index([tenantId, revisionId], map: "ix_preview_revision")
+  @@map("preview_artifact")
 }

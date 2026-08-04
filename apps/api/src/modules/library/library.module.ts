@@ -39,5 +39,9 @@ import {
     { provide: LIBRARY_ADMIN_REPOSITORY, useClass: PrismaLibraryAdminRepository },
     { provide: LIBRARY_ADMIN_SERVICE, useClass: LibraryAdminService },
   ],
+  // Phase 3: a document sits in a folder, and Document resolves the folder through this service
+  // rather than by reading the tree. The folder tree is the chain the ACL resolver walks, and a
+  // second reader of it would be a second opinion about who can see what.
+  exports: [LIBRARY_ADMIN_SERVICE],
 })
 export class LibraryModule {}

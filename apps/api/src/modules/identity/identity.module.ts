@@ -76,6 +76,9 @@ import { RoleAdminController, UserAdminController } from './presentation/identit
   ],
   exports: [
     AUTHENTICATION_SERVICE,
+    // Phase 3: a metadata field of type USER names somebody, and Document checks that the
+    // somebody exists. Through this service, never by reading Identity's tables.
+    USER_ADMIN_SERVICE,
     PASSWORD_HASHER,
     CREDENTIAL_REPOSITORY,
     USER_DIRECTORY,

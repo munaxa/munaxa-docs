@@ -35,6 +35,22 @@ export interface UploadTarget {
 export interface UploadPart {
   readonly partNumber: number;
   readonly url: string;
+  /**
+   * The driver's handle for the multipart upload, carried back at completion.
+   *
+   * Opaque above the adapter — S3 calls it an upload id, another provider may not have one at all
+   * — which is why it is a string on the part rather than a field on `UploadTarget`: a driver with
+   * no notion of a multipart session simply never sets it, and `completeUpload` sees a single-part
+   * transfer.
+   */
+  readonly uploadId?: string;
+  /**
+   * The entity tag the store returned for this part, supplied by the client at completion.
+   *
+   * The API never sees the bytes, so it cannot compute these. The store checks them itself, and a
+   * wrong one fails the completion rather than assembling an object out of the wrong pieces.
+   */
+  readonly etag?: string;
 }
 
 export interface DownloadOptions {

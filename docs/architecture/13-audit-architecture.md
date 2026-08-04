@@ -141,3 +141,33 @@ still meaningful.
 | Be readable across tenants | Audit is tenant data |
 | Be skipped for administrator actions | Privileged actions are the ones most worth recording |
 | Silently drop on failure | A dropped event is an unnoticed gap in evidence |
+
+## Phase 3 — the actions the document library writes
+
+The catalogue's convention is one action per *area*, with the operation in the payload. Phase 3 adds
+five, and the split between them is the split between questions an investigation asks separately.
+
+| Action | Subject | Written when |
+| --- | --- | --- |
+| `DOCUMENT_CHANGED` | `DOCUMENT` | Created, edited, reclassified, deleted or restored |
+| `DOCUMENT_MOVED` | `DOCUMENT` | Folder changed — and therefore the permission chain did |
+| `DOCUMENT_VIEWED` | `DOCUMENT` | Somebody opened it |
+| `FILE_UPLOADED` | `FILE` | A target was issued, an upload completed, or one was abandoned |
+| `FILE_DOWNLOAD_ISSUED` | `FILE` | A signed download URL was issued |
+
+Two of these are worth justifying.
+
+**`DOCUMENT_VIEWED` is its own action rather than an operation on `DOCUMENT_CHANGED`.** A compliance
+report asking "who has read this" must not have to filter a stream that also contains every rename,
+and reads outnumber writes by orders of magnitude — grouping them would make the common query the
+expensive one. The confidentiality level and its rank are in the payload, because that is what
+decides whether the event had to be written at all.
+
+**`FILE_DOWNLOAD_ISSUED` is written *before* the URL exists.** A signed URL outlives the request that
+produced it and can be redeemed by whoever holds it, so the record of who was handed one is the only
+evidence of how bytes could have left the system. A window in which a URL exists and nothing says so
+is exactly where a failure would hide.
+
+**What is deliberately not audited: favourites.** Whether somebody bookmarked a document is a fact
+about a menu, not about a controlled record. One hash-chained, immutable, retention-governed row per
+click on a star would dilute the trail with the one kind of event that can never matter.

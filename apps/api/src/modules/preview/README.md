@@ -31,7 +31,37 @@ react to its **events** — never through its repositories or its Prisma models.
 | `preview.failed` | Rendering hit a limit or an unsupported format; the reason is operator-visible. |
 | `preview.ocr-completed` | Extracted text is available to the search projection. |
 
-## Phase 0.5 status
+## Phase 3 — the upload-time thumbnail, and only that
 
-Contracts only. `domain/`, `infrastructure/` and `presentation/` are filled in by the phase
-that builds this capability; adding a file to them requires no change to anything above.
+Page images, PDF renditions, extracted text and the viewer that shows them are Phase 7's.
+`RENDERER_REGISTRY` is still unbound, and correctly so: a registry with one entry that is not a
+plugin would be a registry shaped by its single caller.
+
+What Phase 3 builds is the `preview_artifact` table and one producer for it, so a document uploaded
+today has a thumbnail and Phase 7 inherits a schema rather than a migration.
+
+### It never fails a document
+
+That is the whole contract of `DOCUMENT_THUMBNAILER`, which is why the port returns nothing. A
+thumbnail is a decoration that makes a grid legible and carries no information the document does not
+already have; a create rolled back because a preview could not be drawn would lose a document in
+order to protect a picture. Every failure path here ends in a logged warning and a document with no
+thumbnail — which is an ordinary state every client already renders, since a Word document has never
+had one.
+
+### PNG only, and the encoder is written out
+
+The narrowness is deliberate. A PDF's first page, an Office document's cover and a DWG's viewport
+each need a renderer — a PDF engine, a headless office suite, a CAD library — and every one of those
+is a sandboxed subprocess with CPU, memory and time caps. That is a phase's worth of work, and
+building a fraction of it here would mean building the fraction with no sandbox.
+
+`sharp` is the obvious dependency and is deliberately not used: it is a native binding that has to
+build or download per architecture, which is exactly the dependency an air-gapped on-premise
+installer meets badly. A box-filter downscale and a PNG encoder are about two hundred lines of
+arithmetic with no dependency at all — and the decoder refuses a decompression bomb from the header,
+before it allocates anything.
+
+The trade is recorded rather than hidden: **every other raster format has no thumbnail until Phase
+7** brings a renderer that handles it properly. A hand-written JPEG decoder would be the wrong trade
+in the other direction.

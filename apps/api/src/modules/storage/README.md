@@ -32,7 +32,63 @@ react to its **events** — never through its repositories or its Prisma models.
 | `storage.file-quarantined` | Infected content was isolated and an incident raised. |
 | `storage.checksum-mismatch` | Stored bytes no longer match their recorded digest — highest severity. |
 
-## Phase 0.5 status
+## Phase 3 — the port stops refusing
 
-Contracts only. `domain/`, `infrastructure/` and `presentation/` are filled in by the phase
-that builds this capability; adding a file to them requires no change to anything above.
+Phase 0.5 established the contracts and bound `STORAGE_PORT` to an adapter that failed naming the
+variable that would configure it. Phase 3 is where that changes: **two real drivers**, one upload
+path, one download path, and the antivirus gate.
+
+| Driver | For | Built how |
+| --- | --- | --- |
+| `LOCAL` | A single-server on-premise installation | The filesystem, plus two transfer endpoints |
+| `S3` / `R2` | AWS, MinIO, Cloudflare R2, anything S3-compatible | Presigned URLs, SigV4 written out |
+
+Both are bound *underneath* `TenantScopedStorage` in the composition root, so neither contains the
+word "tenant" and neither could opt out of isolation if it wanted to
+([ADR-0015](../../../../../docs/architecture/adr/0015-database-per-tenant.md)).
+
+### Bytes never pass through the API
+
+The one rule everything here is shaped by. Upload and download are presigned and go
+browser-to-store directly, so a 2 GB drawing never occupies an application process
+([11-storage-architecture.md §4](../../../../../docs/architecture/11-storage-architecture.md)).
+
+`LOCAL` is the interesting case, because a filesystem has nothing in front of it that understands a
+presigned URL. It gets two endpoints of its own — `PUT` and `GET` on `/storage/local` — which do
+nothing but stream, and which are authorised by a **signed capability** rather than by a session:
+one object, one method, one expiry, signed with the deployment's own key. They are `@Public` for
+exactly the reason an object store's presigned URLs need no session, and the token is the credential.
+
+### Nothing is stored to find out it is refused
+
+The type, the size and the content sniff all run **before** a target is issued. The declared type is
+checked against the *bytes*, never the extension, so a renamed executable is refused before it costs
+anybody a transfer (`17-security-architecture.md` §5).
+
+### The store's answer is the fact; the client's claim is a claim
+
+Bytes land on a **staging key** and move to their content key at completion. The final key *is* the
+digest, and the digest is not known until the bytes arrive — writing to the content key on the
+client's word would let a client that computes its checksum wrongly overwrite the blob that
+legitimately holds that digest, and every integrity check afterwards would report tampering on a
+document nobody touched.
+
+Size and digest are read back at completion and compared with what was announced. A mismatch is
+refused and the bytes removed.
+
+### The gate has no permissive default
+
+With `AV_DRIVER=NONE` the port refuses, the service catches the refusal, and the verdict is
+`SKIPPED` — which is **not** `CLEAN` and therefore not attachable. A development environment can
+upload; nothing can pretend the gate ran. The rule is enforced again by a database trigger
+(`infra/sql/post-migrate/03-content-gate.sql`), because the use case is not the only thing that ever
+writes these rows.
+
+### Deliberate limits
+
+| Limit | Why | Unblocked by |
+| --- | --- | --- |
+| Scanning is synchronous | The outbox dispatcher does not exist yet, so there is nothing to feed a worker. A blob left `PENDING` forever would be one nothing can ever attach | R5 |
+| No Azure Blob or GCS adapter | Neither has a customer. Adding one is a class and a `case` in the composition root, which is the claim the port makes | The phase that needs one |
+| Multipart completion trusts the client's entity tags | The API never sees the bytes, so it cannot compute them. The store checks them itself and a wrong one fails the completion | Nothing — this is correct |
+| No quota accounting | Entitlements are Phase 21's, and a quota with nothing to read is a constant | `POLICY_EVALUATOR` |

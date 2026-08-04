@@ -36,6 +36,20 @@ export const RevisionStatus = {
 
 export type RevisionStatusKey = (typeof RevisionStatus)[keyof typeof RevisionStatus];
 
+/**
+ * How the content arrived.
+ *
+ * Provenance rather than behaviour: nothing in the product branches on it. It exists because an
+ * auditor asking "was this captured from paper or authored on a machine" is asking a real question
+ * about a controlled record, and the answer is not recoverable afterwards from anything else.
+ */
+export const DocumentOrigin = {
+  UPLOAD: 'UPLOAD',
+  SCAN: 'SCAN',
+} as const;
+
+export type DocumentOriginKey = (typeof DocumentOrigin)[keyof typeof DocumentOrigin];
+
 /** How a document relates to another (`document_link.link_type`). */
 export const DocumentLinkType = {
   REFERENCES: 'REFERENCES',

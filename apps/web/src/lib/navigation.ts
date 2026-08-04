@@ -44,6 +44,14 @@ export interface NavigationDestination {
 const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
   { id: 'home', href: '/', labelKey: 'nav.home', permission: null },
   {
+    // Phase 3. The row exists now because the screen does: a menu item leading to a page that is
+    // not there is worse than an absent one.
+    id: 'documents',
+    href: '/documents' as Route,
+    labelKey: 'nav.documents',
+    permission: Permission.DOCUMENT_VIEW,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',

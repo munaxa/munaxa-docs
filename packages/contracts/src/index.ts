@@ -6,6 +6,11 @@
  * adds `admin/` — every administered resource, its create and update bodies, its list query and
  * its representation.
  *
+ * Phase 3 adds `documents/` — the upload handshake and the document library. The one shape worth
+ * noticing there is the split between a document's *file* and its *metadata*: what the bytes are
+ * and what the document means are two objects on the wire because they are two facts with two
+ * lifetimes.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -28,3 +33,5 @@ export * from './admin/numbering';
 export * from './admin/library';
 export * from './admin/workflow';
 export * from './admin/settings';
+export * from './documents/upload';
+export * from './documents/document';

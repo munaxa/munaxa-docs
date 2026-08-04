@@ -89,6 +89,35 @@ export const configSchema = z
     STORAGE_ENDPOINT: z.string().url().optional(),
     STORAGE_SIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(3_600).default(300),
     STORAGE_MAX_UPLOAD_BYTES: z.coerce.number().int().min(1).default(2_147_483_648),
+    /**
+     * The object store's credentials.
+     *
+     * Optional in the schema and required by the driver, which is not the same as optional: an S3
+     * deployment on an instance role legitimately supplies neither, and one on a static key pair
+     * supplies both. Supplying exactly one is the misconfiguration worth catching, and it is
+     * caught below rather than at the first upload.
+     */
+    STORAGE_ACCESS_KEY_ID: z.string().optional(),
+    STORAGE_SECRET_ACCESS_KEY: z.string().optional(),
+    STORAGE_SESSION_TOKEN: z.string().optional(),
+    /**
+     * Whether the bucket is addressed as a path segment rather than as a subdomain.
+     *
+     * MinIO and most S3-compatible stores need it; AWS deprecated it and Cloudflare R2 never had
+     * it. It is a property of the endpoint rather than of the code, which is why it is a variable
+     * and not a driver.
+     */
+    STORAGE_FORCE_PATH_STYLE: booleanFromEnv.default(false),
+    /** Where the `LOCAL` driver keeps its files. Each tenant's prefix is a directory inside it. */
+    STORAGE_LOCAL_ROOT: z.string().default('./.storage'),
+    /**
+     * The base URL browsers should use to reach the API's own transfer endpoints.
+     *
+     * The `LOCAL` driver has no presigning service in front of it, so the API issues its own
+     * signed URLs against itself. They have to be absolute and reachable from a browser, which the
+     * API cannot infer from the socket it is listening on when it sits behind a reverse proxy.
+     */
+    STORAGE_PUBLIC_URL: z.string().url().optional(),
 
     SEARCH_DRIVER: z.enum(['POSTGRES', 'OPENSEARCH']).default('POSTGRES'),
     OCR_DRIVER: z.enum(['NONE', 'TESSERACT', 'HOSTED']).default('NONE'),
@@ -155,6 +184,49 @@ export const configSchema = z
       }
     }
 
+    // --- Storage, in every environment ---------------------------------------------------
+    //
+    // These were production-only until Phase 3, and they were wrong to be. They describe what a
+    // *driver* needs in order to work at all, not what production demands of a deployment — an S3
+    // driver with no bucket cannot address an object in staging either, and the failure it
+    // produces there is a 500 on the first upload rather than a refusal to start. A development
+    // environment that silently ignores half its storage configuration is a development
+    // environment that proves nothing about the deployment it stands in for, which is the same
+    // reasoning that put tenancy validation outside this block.
+    if (config.STORAGE_DRIVER !== 'NONE' && config.STORAGE_DRIVER !== 'LOCAL') {
+      if (!config.STORAGE_BUCKET) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['STORAGE_BUCKET'],
+          message: 'A remote storage driver requires STORAGE_BUCKET.',
+        });
+      }
+      // One half of a key pair is never a working configuration, and it is the shape a partly
+      // filled `.env` takes. Neither is legitimate — an instance role supplies its own — so it is
+      // the mismatch that is refused, not the absence.
+      const keyId = config.STORAGE_ACCESS_KEY_ID !== undefined;
+      const secret = config.STORAGE_SECRET_ACCESS_KEY !== undefined;
+      if (keyId !== secret) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [keyId ? 'STORAGE_SECRET_ACCESS_KEY' : 'STORAGE_ACCESS_KEY_ID'],
+          message: 'Give both halves of the storage key pair, or neither.',
+        });
+      }
+    }
+    if (config.DEPLOYMENT_PROFILE === 'CLOUD' && config.STORAGE_DRIVER === 'LOCAL') {
+      // A filesystem is the right storage for one server and the wrong storage for a fleet: it is
+      // not shared between instances, so a document uploaded through one is missing from the next.
+      // Checked outside the production block for the same reason as the rest: a cloud staging
+      // environment on a local filesystem is a staging environment that cannot reproduce its own
+      // production defects.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['STORAGE_DRIVER'],
+        message: 'The cloud profile requires object storage, not a local filesystem.',
+      });
+    }
+
     if (config.NODE_ENV !== 'production') {
       return;
     }
@@ -173,22 +245,6 @@ export const configSchema = z
           message: `${key} must name a real provider in production.`,
         });
       }
-    }
-    if (config.STORAGE_DRIVER !== 'LOCAL' && !config.STORAGE_BUCKET) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['STORAGE_BUCKET'],
-        message: 'A remote storage driver requires STORAGE_BUCKET.',
-      });
-    }
-    if (config.DEPLOYMENT_PROFILE === 'CLOUD' && config.STORAGE_DRIVER === 'LOCAL') {
-      // A filesystem is the right storage for one server and the wrong storage for a fleet: it is
-      // not shared between instances, so a document uploaded through one is missing from the next.
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['STORAGE_DRIVER'],
-        message: 'The cloud profile requires object storage, not a local filesystem.',
-      });
     }
     if (config.OPENAPI_ENABLED) {
       ctx.addIssue({
@@ -242,6 +298,15 @@ export interface AppConfig {
     readonly endpoint: string | null;
     readonly signedUrlTtlSeconds: number;
     readonly maxUploadBytes: number;
+    /** Null when the deployment supplies credentials some other way — an instance role. */
+    readonly credentials: {
+      readonly accessKeyId: string;
+      readonly secretAccessKey: string;
+      readonly sessionToken: string | null;
+    } | null;
+    readonly forcePathStyle: boolean;
+    readonly localRoot: string;
+    readonly publicUrl: string | null;
   };
   readonly providers: {
     readonly search: RawConfig['SEARCH_DRIVER'];
@@ -330,6 +395,17 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       endpoint: raw.STORAGE_ENDPOINT ?? null,
       signedUrlTtlSeconds: raw.STORAGE_SIGNED_URL_TTL_SECONDS,
       maxUploadBytes: raw.STORAGE_MAX_UPLOAD_BYTES,
+      credentials:
+        raw.STORAGE_ACCESS_KEY_ID !== undefined && raw.STORAGE_SECRET_ACCESS_KEY !== undefined
+          ? {
+              accessKeyId: raw.STORAGE_ACCESS_KEY_ID,
+              secretAccessKey: raw.STORAGE_SECRET_ACCESS_KEY,
+              sessionToken: raw.STORAGE_SESSION_TOKEN ?? null,
+            }
+          : null,
+      forcePathStyle: raw.STORAGE_FORCE_PATH_STYLE,
+      localRoot: raw.STORAGE_LOCAL_ROOT,
+      publicUrl: raw.STORAGE_PUBLIC_URL ?? null,
     },
     providers: {
       search: raw.SEARCH_DRIVER,

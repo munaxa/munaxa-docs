@@ -13,6 +13,7 @@ export * from './tree';
 export * from './settings';
 export * from './base-entity';
 export * from './errors';
+export * from './file-formats';
 export * from './events/domain-event';
 export * from './enums/administration';
 export * from './enums/audit';
