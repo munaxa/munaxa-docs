@@ -53,7 +53,14 @@ export function TextField({
   readonly maxLength?: number | undefined;
   readonly pattern?: string | undefined;
   readonly placeholder?: string | undefined;
-  readonly type?: 'text' | 'email' | 'password';
+  /**
+   * `date` was added by Phase 3, for a tenant-defined metadata field of that type.
+   *
+   * A native date input rather than a picker component: it posts `YYYY-MM-DD`, which is one of the
+   * two spellings the API accepts, and every browser and every mobile keyboard already knows how to
+   * enter one. A JavaScript calendar would be a worse control that also has to be localised.
+   */
+  readonly type?: 'text' | 'email' | 'password' | 'date';
   readonly readOnly?: boolean | undefined;
 }): ReactNode {
   const id = useId();

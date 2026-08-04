@@ -1,0 +1,333 @@
+'use client';
+
+import type { Route } from 'next';
+import { useRouter } from 'next/navigation';
+import { type ReactNode, useState } from 'react';
+
+import { Alert, Badge, Button, Card, formatFileSize, useToast } from '@munaxa/ui';
+
+import type { Document, Folder } from '@edms/contracts';
+import { formatFor } from '@edms/domain';
+
+import { useTranslate } from '../../app/providers';
+import type { ActionResult } from '../../lib/admin/action-result';
+import {
+  type Choice,
+  FormDialog,
+  PickerField,
+  TextAreaField,
+  TextField,
+  nullableText,
+  optionalText,
+  text,
+} from '../admin-shared';
+import { moveDocument, requestDownload, setFavorite, updateDocument } from './actions';
+import { MetadataFields, type MetadataFieldDefinition, readMetadata } from './metadata-fields';
+
+/**
+ * One document: its properties, its business metadata, and what its content is.
+ *
+ * The screen is organised around the split the whole phase is built on. **Properties** are what the
+ * document means — title, classification, category, the tenant's own fields — and they are edited
+ * here. **File** is what the bytes are — format, size, digest, scan verdict — and it is shown and
+ * never edited, because replacing content is creating a revision, which is Phase 6's.
+ *
+ * Presenting them as one form would suggest the digest is something somebody can change, and the
+ * one property a controlled document must have is that its content cannot be edited in place.
+ */
+export function DocumentScreen({
+  document,
+  folders,
+  categories,
+  confidentialityLevels,
+  users,
+  departments,
+  fields,
+  canEdit,
+  canMove,
+  canDownload,
+}: {
+  readonly document: Document;
+  /** Candidate destinations for a move. Within the document's own library. */
+  readonly folders: readonly Folder[];
+  readonly categories: readonly Choice[];
+  readonly confidentialityLevels: readonly Choice[];
+  readonly users: readonly Choice[];
+  readonly departments: readonly Choice[];
+  /** The document type's fields, which decide what the properties form renders. */
+  readonly fields: readonly MetadataFieldDefinition[];
+  readonly canEdit: boolean;
+  readonly canMove: boolean;
+  readonly canDownload: boolean;
+}): ReactNode {
+  const translate = useTranslate();
+  const router = useRouter();
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [moving, setMoving] = useState(false);
+
+  const file = document.latestRevision?.file ?? null;
+  const values = Object.fromEntries(document.metadata.map((entry) => [entry.key, entry.value]));
+
+  const refresh = (): void => {
+    router.refresh();
+  };
+
+  const download = (inline: boolean): void => {
+    void requestDownload(document.id, inline).then((result) => {
+      if (!result.ok) {
+        toast.error(result.detail ?? translate(`error.${result.code}`));
+        return;
+      }
+      window.location.assign(result.value.url);
+    });
+  };
+
+  const saveProperties = async (data: FormData): Promise<ActionResult<unknown>> =>
+    updateDocument(document.id, document.version, {
+      title: text(data, 'title'),
+      description: nullableText(data, 'description'),
+      categoryId: nullableText(data, 'categoryId'),
+      ...(optionalText(data, 'confidentialityId') !== undefined && {
+        confidentialityId: text(data, 'confidentialityId'),
+      }),
+      metadata: readMetadata(data, fields),
+    });
+
+  return (
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm opacity-70">
+            {document.libraryName} · {document.folderName}
+          </p>
+          <h1 className="truncate text-2xl font-semibold">{document.title}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge>{translate(`documents.status.${document.status}`)}</Badge>
+            <Badge tone="muted">{document.documentTypeName}</Badge>
+            <Badge tone="muted">{document.confidentialityName}</Badge>
+            {document.origin === 'SCAN' && (
+              <Badge tone="muted">{translate('documents.origin.SCAN')}</Badge>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              void setFavorite(document.id, !document.isFavorite).then(refresh);
+            }}
+          >
+            {translate(
+              document.isFavorite ? 'documents.actions.unfavorite' : 'documents.actions.favorite',
+            )}
+          </Button>
+          {canDownload && (
+            <Button
+              type="button"
+              disabled={file === null || !file.reachable}
+              onClick={() => {
+                download(false);
+              }}
+            >
+              {translate('documents.actions.download')}
+            </Button>
+          )}
+          {canMove && (
+            <Button type="button" variant="outline" onClick={() => setMoving(true)}>
+              {translate('documents.actions.move')}
+            </Button>
+          )}
+          {canEdit && (
+            <Button type="button" variant="outline" onClick={() => setEditing(true)}>
+              {translate('documents.actions.edit')}
+            </Button>
+          )}
+        </div>
+      </header>
+
+      {file !== null && !file.reachable && (
+        // The document exists and its content is deliberately unreachable. Saying which of the two
+        // is the case is the difference between a system that looks broken and one that is careful.
+        <Alert tone="warning">{translate(`documents.scan.${file.scanStatus}`)}</Alert>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <h2 className="text-lg font-medium">{translate('documents.section.properties')}</h2>
+          <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            <Property label={translate('documents.field.number')} value={document.documentNumber} />
+            <Property label={translate('documents.field.category')} value={document.categoryName} />
+            <Property
+              label={translate('documents.field.description')}
+              value={document.description}
+            />
+            <Property
+              label={translate('documents.field.revision')}
+              value={document.latestRevision?.label ?? null}
+            />
+          </dl>
+
+          {document.metadata.length > 0 && (
+            <>
+              <h3 className="mt-6 text-sm font-medium opacity-70">
+                {translate('documents.section.metadata')}
+              </h3>
+              <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                {document.metadata.map((entry) => (
+                  <Property
+                    key={entry.fieldId}
+                    label={entry.name}
+                    value={renderValue(entry.value)}
+                  />
+                ))}
+              </dl>
+            </>
+          )}
+        </Card>
+
+        <Card>
+          <h2 className="text-lg font-medium">{translate('documents.section.file')}</h2>
+          {file === null ? (
+            <p className="mt-2 opacity-70">{translate('documents.file.none')}</p>
+          ) : (
+            <dl className="mt-3 flex flex-col gap-2">
+              <Property label={translate('documents.file.name')} value={file.filename} />
+              <Property
+                label={translate('documents.file.format')}
+                value={formatFor(file.mimeType)?.label ?? file.mimeType}
+              />
+              <Property
+                label={translate('documents.file.size')}
+                value={formatFileSize(file.sizeBytes)}
+              />
+              <Property
+                label={translate('documents.file.scan')}
+                value={translate(`documents.scanStatus.${file.scanStatus}`)}
+              />
+              {/*
+                The digest, in full. It is what makes "the bytes an approver approved are unchanged"
+                provable rather than promised, and truncating it would make it decorative.
+              */}
+              <Property label={translate('documents.file.checksum')} value={file.checksumSha256} />
+            </dl>
+          )}
+        </Card>
+      </div>
+
+      {editing && (
+        <FormDialog
+          open
+          title={translate('documents.actions.edit')}
+          onClose={() => setEditing(false)}
+          onSubmit={saveProperties}
+          onSaved={refresh}
+        >
+          <TextField
+            name="title"
+            label={translate('documents.field.title')}
+            required
+            defaultValue={document.title}
+          />
+          <TextAreaField
+            name="description"
+            label={translate('documents.field.description')}
+            defaultValue={document.description ?? ''}
+          />
+          <PickerField
+            name="categoryId"
+            label={translate('documents.field.category')}
+            options={categories}
+            defaultValue={document.categoryId ?? ''}
+            clearable
+          />
+          <PickerField
+            name="confidentialityId"
+            label={translate('documents.field.confidentiality')}
+            hint={translate('documents.field.confidentialityRaiseOnly')}
+            options={confidentialityLevels}
+            defaultValue={document.confidentialityId}
+          />
+          <MetadataFields
+            fields={fields}
+            values={values}
+            userChoices={users}
+            departmentChoices={departments}
+          />
+        </FormDialog>
+      )}
+
+      {moving && (
+        <FormDialog
+          open
+          title={translate('documents.actions.move')}
+          // A move changes the folder, and the folder is the chain permissions are inherited along.
+          // Saying so in the dialogue is the only warning anybody gets.
+          description={translate('documents.move.warning')}
+          onClose={() => setMoving(false)}
+          onSubmit={(data) =>
+            moveDocument(document.id, document.version, { folderId: text(data, 'folderId') })
+          }
+          onSaved={refresh}
+        >
+          <PickerField
+            name="folderId"
+            label={translate('documents.field.folder')}
+            required
+            options={folders.map((folder) => ({
+              value: folder.id,
+              label: folder.path === folder.id ? folder.name : `${folder.name}`,
+            }))}
+            defaultValue={document.folderId}
+          />
+        </FormDialog>
+      )}
+
+      <p>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => {
+            router.push(
+              `/documents?libraryId=${document.libraryId}&folderId=${document.folderId}` as Route,
+            );
+          }}
+        >
+          {translate('documents.actions.backToFolder')}
+        </Button>
+      </p>
+    </div>
+  );
+}
+
+function Property({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string | null;
+}): ReactNode {
+  return (
+    <div className="min-w-0">
+      <dt className="text-sm opacity-70">{label}</dt>
+      {/* A dash rather than an empty cell: "not set" and "the server did not say" look identical
+          otherwise, and only the first is an ordinary state. */}
+      <dd className="truncate">{value === null || value === '' ? '—' : value}</dd>
+    </div>
+  );
+}
+
+/** A metadata value as one line. Lists are joined; a boolean is a word, not `true`. */
+function renderValue(value: string | number | boolean | readonly string[] | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return value.length === 0 ? null : value.join(', ');
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'Yes' : 'No';
+  }
+  return String(value);
+}

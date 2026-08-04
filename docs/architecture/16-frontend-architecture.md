@@ -139,3 +139,29 @@ progress bar.
 - Status is never colour alone — icon plus text.
 - EN + AR catalogues, RTL verified per screen, dates and numbers formatted per locale, and Arabic
   document titles rendered with correct bidirectional handling beside Latin document numbers.
+
+## Phase 3 — the document workspace
+
+The first feature outside Administration, and it keeps every rule that section established: reads in
+server components, writes in server actions, no browser-side API client, URL state as the only state.
+
+One thing is genuinely new, and it is the exception the rules always anticipated. **The upload
+transfers bytes from the browser directly to storage**, over a presigned URL — not through a server
+action. That is not a hole in "no browser-side API client": the URL carries no session, names one
+object and expires in minutes, and it is what keeps a 2 GB drawing out of a framework whose request
+bodies are bounded in megabytes. The token stays in its `httpOnly` cookie; what leaves the server is
+a capability for one object.
+
+The transfer itself uses `XMLHttpRequest` rather than `fetch`, for the one reason `XMLHttpRequest`
+is still the right tool: `fetch` has no upload progress, and a 2 GB upload with no progress bar is
+the outcome on a real fraction of machines.
+
+**Reuse rather than fork.** The library's list is `ResourceList` from `admin-shared`, unchanged: a
+document list is searched, sorted, paged, soft-deleted, restored and has a recycle bin, which is
+exactly what that component is. The metadata form is composed from the same field set, with one
+addition — `TextField` grew a `date` type — so a tenant-configured `SELECT` behaves like a
+hand-written one.
+
+**The one form whose shape is data.** `MetadataFields` renders a document type's fields from its
+definition, and the mapping from data type to control is exhaustive by the compiler: a new
+`MetadataDataType` is a build error rather than a field that silently renders as text.

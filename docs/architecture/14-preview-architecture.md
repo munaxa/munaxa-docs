@@ -122,3 +122,29 @@ Rendering untrusted files is the product's largest attack surface. Therefore:
 | Renderer crash or timeout | Retry with backoff, then mark `FAILED` with a reason visible to administrators. The document remains usable |
 | Partial render | Pages produced so far are served; the rest are marked pending |
 | Renderer upgrade | Old artefacts stay valid; regeneration is a background campaign, never a blocking migration |
+
+## Phase 3 — the upload-time thumbnail
+
+Phase 3 owns **one** artefact kind: a `THUMBNAIL`, drawn once when content arrives. Everything above
+— the renderer registry, the sandboxed plugins, page images, the PDF rendition, OCR text and the
+viewer — is Phase 7's, and `RENDERER_REGISTRY` is still deliberately unbound: a registry with one
+entry that is not a plugin would be a registry shaped by its single caller.
+
+What is built now is the `preview_artifact` table in its full shape, plus one producer, so a document
+uploaded today has a thumbnail and Phase 7 inherits a schema rather than a migration.
+
+**PNG only.** A PDF's first page, an Office document's cover and a DWG's viewport each need a real
+renderer, and each of those is a sandboxed subprocess with CPU, memory and time caps — a phase's
+worth of work, and building a fraction of it early would mean building the fraction with no sandbox.
+Every other format has no thumbnail until Phase 7, which the library renders as its format's label.
+
+**The encoder is written out rather than pulled in.** `sharp` is a native binding that has to build
+or download per architecture, which is exactly the dependency an air-gapped on-premise installer
+meets badly; a box-filter downscale and a PNG encoder are a couple of hundred lines with no
+dependency. The decoder refuses a decompression bomb from the header, before allocating — a
+twenty-five-byte header can honestly declare fourteen gigabytes of pixels, and that is the one
+security-relevant thing in the format.
+
+**Generating a thumbnail never fails a document.** The port returns nothing, deliberately: a
+thumbnail carries no information the document does not already have, and a create rolled back over
+one would lose a document in order to protect a picture.

@@ -67,15 +67,28 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and **Phase 0.5 has built the technical skeleton against them**: three applications, four
-packages, fifteen domain modules with enforced layer boundaries, ports for every external
-capability, the message pipeline, the API and frontend foundations, the database foundation
-with row-level security, and the test and DevOps foundations. There are no business features.
+and the product is built through **Phase 3**:
+
+- **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
+  with enforced layer boundaries, ports for every external capability, the message pipeline, the API
+  and frontend foundations, the database foundation with row-level security.
+- **Phase 1** — authentication, the permission catalogue, the hash-chained audit trail, optimistic
+  locking, the transactional outbox, settings, and the organisation scope tree.
+- **Phase 2** — the whole of Administration: sixteen areas of tenant configuration, on the API and
+  the web.
+- **Phase 2.5** — per-tenant infrastructure ([ADR-0015](./docs/architecture/adr/0015-database-per-tenant.md)):
+  a database, a storage location and a search index per tenant, resolved through a registry.
+- **Phase 3** — the document library. The first phase to store a customer's own bytes: two storage
+  adapters, content-addressed and deduplicated blobs behind the antivirus gate, the controlled record
+  and its business metadata, folder and library navigation, favourites, recents, duplicate detection
+  and the upload-time thumbnail.
+
+Approval and workflow execution, number allocation, revision control, full preview rendering and
+search are Phases 4 to 8, and each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
-What Phase 0.5 leaves owing is recorded in
-[`docs/reports/phase-0.5-technical-debt.md`](./docs/reports/phase-0.5-technical-debt.md); the
-gate itself is
-[`docs/reports/phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).
+Each phase's report records what it left owing, in `docs/reports/`. The most recent is
+[`phase-3-document-library.md`](./docs/reports/phase-3-document-library.md); the original gate is
+[`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

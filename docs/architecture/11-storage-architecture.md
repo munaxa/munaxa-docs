@@ -34,12 +34,37 @@ export interface StoragePort {
 }
 ```
 
-| Adapter | Use |
-| --- | --- |
-| `LocalStorageAdapter` | Development and single-node on-premise installs |
-| `S3Adapter` | AWS S3 and any S3-compatible store (MinIO, LocalStack in dev) |
-| `AzureBlobAdapter` | Azure deployments |
-| `R2Adapter` | Cloudflare R2 |
+| Adapter | Use | Status |
+| --- | --- | --- |
+| `LocalStorageAdapter` | Development and single-node on-premise installs | **Built (Phase 3)** |
+| `S3StorageAdapter` | AWS S3 and any S3-compatible store — MinIO, Cloudflare R2 | **Built (Phase 3)** |
+| `AzureBlobAdapter` | Azure deployments | Not built; a class and a `case` |
+| `GcsAdapter` | Google Cloud Storage | Not built; a class and a `case` |
+
+`S3` and `R2` are the same adapter under two driver names. They differ in endpoint, region and
+addressing style — configuration — and in nothing the adapter does, which is what "adding a provider
+is an adapter and a configuration value" was supposed to mean.
+
+Signing is AWS Signature Version 4, written out in `infrastructure/storage/sigv4.ts` rather than
+taken from the SDK. The reasoning is in that file's own comment; the check that it is correct is
+`sigv4.spec.ts`, which asserts against AWS's published test vectors rather than against itself.
+
+### The `LOCAL` driver has two endpoints of its own
+
+A filesystem has nothing in front of it that understands a presigned URL, so with
+`STORAGE_DRIVER=LOCAL` the API serves the bytes itself — through two endpoints that do nothing but
+stream, at `PUT` and `GET` on `/api/v1/storage/local`.
+
+They are authorised by a **signed capability** in the query rather than by a session: one object,
+one method, one expiry, HMAC-signed with the deployment's own key and domain-separated from every
+other use of it. They are `@Public` for the same reason an object store's presigned URLs need no
+session — the token *is* the credential. The capability is narrower than a session rather than a
+substitute for one, and it is the only place in this product written that way.
+
+Downloads from those endpoints are always `application/octet-stream` with `nosniff`, whatever the
+document's own type. The bytes come from the API's origin, so a stored HTML or SVG document rendered
+as itself would execute there, against a signed-in user's session. A preview that needs displaying
+is a rendered artefact ([14](./14-preview-architecture.md)), never the original file.
 
 Adding a provider means one adapter class and one configuration value. **No use case changes.** The
 port's vocabulary is deliberately provider-neutral: no `Bucket`, no `ContainerClient`, no
@@ -48,9 +73,22 @@ port's vocabulary is deliberately provider-neutral: no `Bucket`, no `ContainerCl
 ## 3. Content addressing and deduplication
 
 ```text
-storage_key  = <sha256[0:2]>/<sha256[2:4]>/<sha256>     what a use case names
-object key   = <tenant prefix>/<storage_key>            what the provider is given
+storage_key  = blobs/<sha256[0:2]>/<sha256[2:4]>/<sha256>     what a use case names
+derived key  = derived/<sha256[0:2]>/<sha256[2:4]>/<sha256>   thumbnails, renditions, OCR text
+staging key  = staging/<upload session id>                    where bytes land in flight
+object key   = <tenant prefix>/<storage_key>                  what the provider is given
 ```
+
+**Bytes land on the staging key and move to the content key at completion.** The content key *is*
+the digest, and the digest is not known until the bytes have arrived — writing to it on the client's
+word would let a client that computes its checksum wrongly overwrite the blob that legitimately
+holds that digest, and every integrity check afterwards would report tampering on a document nobody
+touched. So the store's own answer is read back, compared with what was announced, and only then
+does the blob get its name.
+
+Derived artefacts sit under their own root so that "everything derived" is a prefix listing: purging
+them with their source and tiering them aggressively are both prefix operations at every provider,
+and neither is expressible if thumbnails are interleaved with the documents they came from.
 
 The tenant prefix is **not part of the key a use case builds**, and that is the whole of the storage
 isolation ([ADR-0015](./adr/0015-database-per-tenant.md)). A `StorageKey` is a string, so nothing in the
@@ -100,7 +138,13 @@ Rules:
 - **Bytes never transit the API.** Presigned, direct-to-storage, both ways. The API stays stateless
   and small, and a 2 GB upload does not occupy an application process.
 - A file with `scan_status <> 'CLEAN'` **cannot be attached to a revision or downloaded**. Enforced
-  in the use case and by a database check, not only in the UI.
+  in the use case and by a database trigger — `infra/sql/post-migrate/03-content-gate.sql`, a
+  trigger rather than a `CHECK` because the condition spans two tables. The same file refuses to
+  move a *referenced* blob out of `CLEAN`, so a re-scan that finds something it missed cannot
+  silently leave a document pointing at hostile content: the revision is withdrawn first, then the
+  verdict is written.
+- With `AV_DRIVER=NONE` the verdict is `SKIPPED`, which is **not** `CLEAN`. A development
+  environment can upload; nothing can pretend the gate ran.
 - Validation is by **content sniffing, not extension**: declared MIME must match the detected type,
   the type must be in the tenant's allow-list, and size must be within the type's limit.
 - Uploads are quota-checked per tenant before presigning.

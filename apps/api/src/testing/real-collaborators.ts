@@ -7,6 +7,27 @@ import { ChainedAuditWriter } from '../modules/audit/infrastructure/chained-audi
 import { PrismaAuditRepository } from '../modules/audit/infrastructure/prisma-audit.repository';
 import { DefaultOrganizationService } from '../modules/organization/application/organization.service';
 import { PrismaScopeRepository } from '../modules/organization/infrastructure/prisma-scope.repository';
+import type { AppConfig } from '../core/config/configuration';
+import type { AntivirusPort } from '../ports/antivirus.port';
+import type { TenantRegistry } from '../core/tenancy/tenant-registry.port';
+import { LocalStorageAdapter } from '../infrastructure/storage/local.adapter';
+import { TenantScopedStorage } from '../infrastructure/tenancy/tenant-scoped-storage';
+import { ConfigurationService } from '../modules/administration/application/configuration.service';
+import { NumberingAdminService } from '../modules/administration/application/numbering-admin.service';
+import { PrismaConfigurationRepository } from '../modules/administration/infrastructure/prisma-configuration.repository';
+import { DefaultDocumentService } from '../modules/document/application/document.service';
+import { AdministrationConfigurationAdapter } from '../modules/document/infrastructure/administration-configuration.adapter';
+import { LibraryPlacementAdapter } from '../modules/document/infrastructure/library-placement.adapter';
+import { PrismaDocumentActivityRepository } from '../modules/document/infrastructure/prisma-document-activity.repository';
+import { PrismaDocumentRepository } from '../modules/document/infrastructure/prisma-document.repository';
+import { StorageContentGateAdapter } from '../modules/document/infrastructure/storage-content-gate.adapter';
+import type { UserAdminService } from '../modules/identity/application/user-admin.service';
+import { LibraryAdminService } from '../modules/library/application/library-admin.service';
+import { PrismaLibraryAdminRepository } from '../modules/library/infrastructure/prisma-library-admin.repository';
+import { PrismaRevisionWriter } from '../modules/revision/infrastructure/prisma-revision.writer';
+import { DefaultStorageService } from '../modules/storage/application/storage.service';
+import { PrismaFileObjectRepository } from '../modules/storage/infrastructure/prisma-file-object.repository';
+import { PrismaUploadSessionRepository } from '../modules/storage/infrastructure/prisma-upload-session.repository';
 
 /**
  * Real collaborators, wired the way the container wires them.
@@ -74,4 +95,105 @@ export function realWriteStack(
  */
 export function realOrganizationService(): DefaultOrganizationService {
   return new DefaultOrganizationService(new PrismaScopeRepository());
+}
+
+// --- Phase 3: the document library ---------------------------------------------------------
+//
+// The same boundary reason as everything above, and it bites harder here. A document-library test
+// needs the *real* storage service, the real configuration service, the real folder tree and the
+// real revision writer, because most of what it asserts is that those four commit together — and a
+// double for any of them would be written from the same belief as the code it stands in for. But a
+// suite living under `src/modules/document/` may not import `src/modules/storage/infrastructure/`,
+// `src/modules/library/infrastructure/` or `src/infrastructure/`: that is the cross-module boundary
+// `eslint.config.mjs` enforces, and it enforces it for tests too, correctly.
+//
+// So the composition lives here, in the layer whose job is knowing how the pieces fit together.
+
+export interface DocumentLibraryStack {
+  readonly storage: DefaultStorageService;
+  readonly documents: DefaultDocumentService;
+  readonly libraries: LibraryAdminService;
+  readonly configuration: ConfigurationService;
+  readonly numbering: NumberingAdminService;
+  /** The filesystem adapter underneath the scoping, for asserting against the disk itself. */
+  readonly localStorage: LocalStorageAdapter;
+}
+
+export interface DocumentLibraryOptions {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config: AppConfig;
+  readonly registry: TenantRegistry;
+  /** Where the filesystem driver writes. A temporary directory, per suite. */
+  readonly storageRoot: string;
+  readonly signingSecret: string;
+  readonly antivirus: AntivirusPort;
+  /** Answers `userExists`. Identity's own admin service needs a database this suite has not seeded. */
+  readonly users: Pick<UserAdminService, 'get'>;
+}
+
+/**
+ * Everything the document library is, wired the way the container wires it.
+ *
+ * The storage adapter is the real filesystem one *under the real tenant scoping*, so an upload in a
+ * suite using this genuinely writes bytes to a genuinely prefixed path — which is what makes the
+ * isolation assertions about the filesystem rather than about a wrapper.
+ */
+export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLibraryStack {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+
+  const localStorage = new LocalStorageAdapter({
+    root: options.storageRoot,
+    transferUrl: 'http://localhost:3001/api/v1/storage/local',
+    signingSecret: options.signingSecret,
+    now: () => options.clock.now(),
+  });
+  const storage = new DefaultStorageService(
+    new PrismaFileObjectRepository(stamps),
+    new PrismaUploadSessionRepository(stamps),
+    new TenantScopedStorage(localStorage, options.registry),
+    options.antivirus,
+    options.clock,
+    outbox,
+    options.config,
+    writer,
+  );
+
+  const configurationRepository = new PrismaConfigurationRepository(stamps);
+  const configuration = new ConfigurationService(configurationRepository, outbox, writer);
+  const libraries = new LibraryAdminService(
+    new PrismaLibraryAdminRepository(stamps),
+    realOrganizationService(),
+    outbox,
+    writer,
+  );
+
+  const documentRepository = new PrismaDocumentRepository(stamps);
+  const documents = new DefaultDocumentService(
+    documentRepository,
+    new PrismaDocumentActivityRepository(documentRepository),
+    new AdministrationConfigurationAdapter(
+      configuration,
+      realOrganizationService(),
+      options.users as UserAdminService,
+    ),
+    new LibraryPlacementAdapter(libraries),
+    new StorageContentGateAdapter(storage),
+    new PrismaRevisionWriter(stamps),
+    // The thumbnailer's whole contract is that it never fails a document, and Phase 3 draws one only
+    // for PNG. A suite uploading PDFs would get nothing from the real implementation, so a double
+    // that does nothing is honest about that rather than pretending to render.
+    { generate: () => Promise.resolve() },
+    outbox,
+    writer,
+  );
+
+  return {
+    storage,
+    documents,
+    libraries,
+    configuration,
+    numbering: new NumberingAdminService(configurationRepository, outbox, writer),
+    localStorage,
+  };
 }

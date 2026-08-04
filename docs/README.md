@@ -15,8 +15,9 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 2.5 — the platform foundation, the whole of
-Administration, and the per-tenant infrastructure the remaining phases are built on. Its map is
+The code the architecture describes exists through Phase 3 — the platform foundation, the whole of
+Administration, the per-tenant infrastructure the remaining phases are built on, and the document
+library that is the first thing to hold a customer's own content. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -75,6 +76,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 3 — the document library
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 3 — Document Library](./reports/phase-3-document-library.md) | The first phase to store a customer's bytes: the two storage adapters, the upload pipeline and its gate, what it costs, and what it deliberately does not do |
 
 ### Phase 2.5 — the deployment-agnostic foundation
 

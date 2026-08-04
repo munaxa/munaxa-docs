@@ -234,3 +234,59 @@ The design is 3NF with two deliberate, documented denormalisations:
 Everything else — metadata values, tags, ACLs, approvals, numbers — is fully normalised.
 `jsonb` appears only where the shape is genuinely tenant-defined (`numbering_rule.segments`,
 `metadata_field.validation`, `tenant.settings`, event payloads), never as a way to avoid modelling.
+
+## Phase 3 — the document library's tables
+
+Eight tables, and the interesting decisions are all about what is kept *apart*.
+
+| Table | Holds |
+| --- | --- |
+| `file_object` | Stored bytes: digest, size, sniffed type, key, driver, scan verdict, reference count |
+| `upload_session` | One transfer in flight, and what the client *claimed* about it |
+| `document` | The controlled record: where it sits, what it is, who owns it, its frozen policy |
+| `document_revision` | One controlled version, binding a document to a blob |
+| `document_metadata_value` | One tenant-defined field's value on one document, in a typed column |
+| `document_favorite` | A document one person marked |
+| `document_view` | When each person last opened each document |
+| `preview_artifact` | Something rendered from a revision — a thumbnail today |
+
+**File metadata and business metadata are separate tables** because they are facts with different
+lifetimes. What a file *is* changes whenever the content does; what a document *means* survives
+every replacement of it.
+
+**A claim and a fact are separate too.** `upload_session` holds the filename, declared type and size
+the client announced; `file_object` holds what the store actually reported. Keeping them apart is
+what lets a mismatch be *detected* rather than overwritten.
+
+**`document_metadata_value` has typed columns, not `jsonb`.** The tenant defines which fields exist;
+the product knows what a date is. Exactly one value column is populated, decided by the field's own
+`data_type` — which is why that type is immutable once a field exists.
+
+**`document_view` is one row per (user, document), updated in place.** "Which documents did I open
+lately" is a question about a screenful, and an append-only log would grow without bound to answer
+it. It is deliberately not derived from the audit trail, which does record every read: audit is
+evidence, and serving a convenience list from it would put a product query on the one table that
+must stay cheap to write and impossible to rewrite.
+
+### Constraints that are not `UNIQUE`
+
+Three rules span two tables and are therefore triggers, in `infra/sql/post-migrate/03-content-gate.sql`:
+
+- A revision may not reference a blob whose scan verdict is not `CLEAN`.
+- A blob referenced by a live revision may not leave `CLEAN` — quarantine withdraws the revision first.
+- A document may not name another document's revision as its current or latest one.
+
+The last is the single worst thing a document-control system can get wrong, and `document.current_revision_id`
+being unique only prevents half of it.
+
+`ck_file_object_ref_count` refuses a negative count. A negative count means the count has already
+drifted from what it counts, at which point the next retention sweep deletes a blob a document still
+points at.
+
+### The one non-partial unique index
+
+`uq_document_number` is **not** partial on `deleted_at`. Every other unique constraint in this schema
+is, so that a deleted row never blocks a new one — but a document number stays reserved forever
+precisely so it can never be re-issued ([ADR-0004](./adr/0004-numbering-assigned-at-approval.md)).
+`uq_revision_ordinal` is non-partial for the same kind of reason: a history with a gap and a history
+with two revision 2s are both unusable as evidence.

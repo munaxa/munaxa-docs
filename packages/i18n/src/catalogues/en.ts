@@ -49,6 +49,7 @@ export const en = {
     lightMode: 'Light',
     darkMode: 'Dark',
     admin: 'Administration',
+    documents: 'Documents',
   },
   /**
    * Administration.
@@ -507,6 +508,143 @@ export const en = {
       fellBack:
         'These settings could not be read and are using their defaults: {keys}. Save them again to fix it.',
       unrecognised: 'These stored settings are no longer used by the product: {keys}.',
+    },
+  },
+  /**
+   * The document library.
+   *
+   * Grouped the way the screens are: navigation, the list, the upload flow, a document's own fields
+   * and its two status vocabularies. The status names are the lifecycle's, spelled out for people —
+   * `UNDER_REVIEW` is a state machine's word and "In review" is a person's.
+   */
+  documents: {
+    title: 'Documents',
+    description: 'Everything filed in this organisation, and where it sits.',
+    nav: {
+      label: 'Libraries and folders',
+      libraries: 'Libraries',
+      folders: 'Folders',
+      views: 'Views',
+      favorites: 'Favourites',
+      recent: 'Recently opened',
+      noLibraries: 'No libraries have been set up yet.',
+    },
+    list: {
+      searchPlaceholder: 'Search titles, numbers and descriptions',
+      includeSubfolders: 'Include subfolders',
+    },
+    column: {
+      title: 'Title',
+      number: 'Number',
+      status: 'Status',
+      type: 'Type',
+      confidentiality: 'Confidentiality',
+      size: 'Size',
+      unknownFormat: 'File',
+    },
+    section: {
+      properties: 'Properties',
+      metadata: 'Details',
+      file: 'File',
+    },
+    field: {
+      title: 'Title',
+      description: 'Description',
+      documentType: 'Document type',
+      category: 'Category',
+      confidentiality: 'Confidentiality',
+      confidentialityHint: 'Leave blank to use the document type’s default.',
+      confidentialityRaiseOnly: 'A document’s confidentiality can be raised here, never lowered.',
+      folder: 'Folder',
+      number: 'Document number',
+      revision: 'Revision',
+    },
+    file: {
+      none: 'This document has no content yet.',
+      name: 'File name',
+      format: 'Format',
+      size: 'Size',
+      scan: 'Malware check',
+      checksum: 'SHA-256',
+    },
+    actions: {
+      edit: 'Edit properties',
+      move: 'Move',
+      download: 'Download',
+      favorite: 'Add to favourites',
+      unfavorite: 'Remove from favourites',
+      scan: 'Scan documents',
+      backToFolder: 'Back to the folder',
+      notReachable: 'This file has not cleared the malware check.',
+    },
+    move: {
+      warning:
+        'Moving a document changes the folder its permissions are inherited from, so it can change who is able to see it.',
+    },
+    upload: {
+      title: 'Add documents',
+      scanTitle: 'Scan documents',
+      into: 'Into {folder}',
+      prompt: 'Drag files here, or choose them',
+      scanPrompt: 'Drop scanned pages here, or choose them',
+      browse: 'Choose files',
+      hint: 'PDF, Word, Excel, PowerPoint, images, DWG, ZIP and text.',
+      fileCount: 'File {count} document(s)',
+      fileAnyway: 'File it anyway',
+      duplicateWarning: 'This exact file is already filed {count} time(s) in this organisation:',
+      blockedByDuplicates: 'Confirm the duplicates above before filing.',
+      unscanned:
+        'Some of these files have not cleared the malware check yet and cannot be filed until they do.',
+      rejected: {
+        type: 'That file type is not accepted.',
+        empty: 'That file is empty.',
+      },
+      phase: {
+        reading: 'Reading',
+        requesting: 'Preparing',
+        transferring: 'Uploading',
+        completing: 'Finishing',
+        stored: 'Uploaded',
+        alreadyStored: 'Already stored',
+        failed: 'Failed',
+      },
+    },
+    recent: {
+      empty: 'Nothing opened yet',
+      emptyHint: 'Documents you open will appear here, most recent first.',
+    },
+    origin: {
+      UPLOAD: 'Uploaded',
+      SCAN: 'Scanned',
+    },
+    scanStatus: {
+      PENDING: 'Being checked',
+      CLEAN: 'Clean',
+      INFECTED: 'Infected',
+      FAILED: 'Check failed',
+      SKIPPED: 'Not checked',
+    },
+    scan: {
+      PENDING: 'This file is still being checked for malware, so it cannot be opened yet.',
+      INFECTED: 'This file did not pass the malware check and cannot be opened.',
+      FAILED: 'The malware check on this file did not complete, so it cannot be opened.',
+      SKIPPED: 'No malware scanner is configured, so this file cannot be opened.',
+      CLEAN: 'This file has passed the malware check.',
+    },
+    status: {
+      DRAFT: 'Draft',
+      SUBMITTED: 'Submitted',
+      UNDER_REVIEW: 'In review',
+      CHANGES_REQUESTED: 'Changes requested',
+      REJECTED: 'Rejected',
+      APPROVED: 'Approved',
+      PUBLISHED: 'Published',
+      CHECKED_OUT: 'Checked out',
+      SUPERSEDED: 'Superseded',
+      ARCHIVED: 'Archived',
+      EXPIRED: 'Expired',
+      DELETED: 'Deleted',
+      PURGED: 'Purged',
     },
   },
   error: {

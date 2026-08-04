@@ -19,7 +19,7 @@ feature's internals**, which `eslint.config.mjs` enforces. A shared piece moves 
 `features/shared/` on its *third* consumer, not its second: extracting earlier produces an
 abstraction shaped by two accidents.
 
-Planned features, one per capability the workspace exposes: `documents`, `revisions`,
+Planned features, one per capability the workspace exposes: `revisions`,
 `approvals`, `search`, `audit`, `reports` and `notifications`. Each arrives with the phase that builds
 its screens ([16-frontend-architecture.md](../../../../docs/architecture/16-frontend-architecture.md)
 §3).
@@ -34,6 +34,28 @@ its screens ([16-frontend-architecture.md](../../../../docs/architecture/16-fron
 | `admin-configuration` | Confidentiality levels, metadata fields, categories, document types, retention policies, numbering rules, tenant settings |
 | `admin-libraries` | Libraries and their folder trees |
 | `admin-workflows` | Workflow definitions and their versions |
+
+## Built: the document workspace
+
+| Feature | Screens |
+| --- | --- |
+| `documents` | The library — tree, list, upload, scan intake, document properties, recents |
+
+It reuses `admin-shared` rather than forking it: the list *is* `ResourceList`, because a document
+list is searched, sorted, paged, soft-deleted, restored and has a recycle bin. The metadata form is
+composed from the same field set, with one addition — `TextField` grew a `date` type — so a
+tenant-configured `SELECT` behaves like a hand-written one.
+
+The one genuinely new shape is `metadata-fields.tsx`, which renders a form whose *shape is data*: a
+document type declares its fields and the mapping from data type to control is exhaustive by the
+compiler, so a new `MetadataDataType` is a build error rather than a field that silently renders as
+text.
+
+**The upload is the one place bytes do not go through a server action**, and that is the design
+rather than an exception to it. The browser PUTs straight to storage over a presigned URL that
+carries no session, names one object and expires in minutes — which is what keeps a 2 GB drawing out
+of a framework whose request bodies are bounded in megabytes. The access token never leaves the
+server.
 
 `admin-shared` is the `features/shared/` of the README's rule, and it earned the place: every export
 in it has between four and eighteen consumers. Three shapes are genuinely repeated —

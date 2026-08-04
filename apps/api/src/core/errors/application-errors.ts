@@ -50,8 +50,16 @@ export class VersionConflictError extends DomainError {
 }
 
 export class DuplicateError extends DomainError {
-  constructor(resource: string, field: string) {
-    super(ErrorCode.DUPLICATE, `That ${resource} already exists.`, { field });
+  /**
+   * `extra` carries what the duplicate *is*, where that is something the caller can act on.
+   *
+   * A code collision needs no detail — the caller typed the code. A document whose content is
+   * already filed somewhere else does: "this is already QA-014 under Quality/Procedures" is
+   * actionable and "that document already exists" is not. Scalars only, like every error detail,
+   * so a refusal never becomes a second copy of the data it is refusing.
+   */
+  constructor(resource: string, field: string, extra: ErrorDetails = {}) {
+    super(ErrorCode.DUPLICATE, `That ${resource} already exists.`, { field, ...extra });
   }
 }
 
@@ -71,6 +79,61 @@ export class DependencyUnavailableError extends DomainError {
 export class ProviderNotConfiguredError extends DependencyUnavailableError {
   constructor(capability: string, envVar: string) {
     super(capability, { configure: envVar });
+  }
+}
+
+/**
+ * The object store could not be reached, or refused.
+ *
+ * Distinct from a defect in this product, and reported as one: `DEPENDENCY_UNAVAILABLE` maps to a
+ * 503 with a retry hint, which is what an upload against a store that is down should get.
+ * Answering 500 would tell an operator to look here, and a client never to try again — both wrong
+ * (`11-storage-architecture.md` §8).
+ *
+ * The message never quotes the store's own error document. Those quote the request that produced
+ * them, signed URL included, and an exception message is the shortest path from a credential to a
+ * log file.
+ */
+export class StorageUnavailableError extends DependencyUnavailableError {
+  constructor(reason: string, options: { readonly cause?: unknown } = {}) {
+    super('Object storage', { reason });
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+}
+
+/**
+ * The content is stored but not yet cleared by the malware scanner, or was cleared and failed.
+ *
+ * Its own code because it is its own answer: the document exists, the caller may see it, and the
+ * bytes are deliberately unreachable until the verdict is `CLEAN`
+ * (`17-security-architecture.md` §5). A 404 would be a lie and a 403 would suggest a permission
+ * somebody could be granted.
+ */
+export class ContentNotScannedError extends DomainError {
+  constructor(status: string) {
+    super(
+      ErrorCode.CONTENT_NOT_SCANNED,
+      status === 'PENDING'
+        ? 'This file is still being checked for malware. Try again shortly.'
+        : 'This file did not pass the malware check and cannot be opened.',
+      { scanStatus: status },
+    );
+  }
+}
+
+/** The declared type, the sniffed type, the size or the archive limits refused the upload. */
+export class UnsupportedContentError extends DomainError {
+  constructor(message: string, details: ErrorDetails = {}) {
+    super(ErrorCode.UNSUPPORTED_CONTENT, message, details);
+  }
+}
+
+/** The tenant's storage allowance is spent. Checked before a target is issued, never after. */
+export class QuotaExceededError extends DomainError {
+  constructor(message: string, details: ErrorDetails = {}) {
+    super(ErrorCode.QUOTA_EXCEEDED, message, details);
   }
 }
 

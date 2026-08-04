@@ -123,3 +123,14 @@ Rules for anyone touching it:
   [08](./08-permission-model.md) — in one commit.
 - Every executed transition writes an `AuditEvent` carrying `from`, `to`, actor, reason and the
   workflow instance if any.
+
+## Phase 3 — everything is `DRAFT`
+
+Phase 3 creates documents and nothing moves them out of `DRAFT`: submission, approval, publication
+and check-out are Phases 4 and 6. The transition table above is the target, and the guard that
+enforces it is Phase 4's.
+
+One piece of it is written now and never fires. `refuseWhenFrozen` refuses an edit to a document in
+`SUBMITTED`, `UNDER_REVIEW`, `APPROVED`, `PUBLISHED`, `SUPERSEDED` or `ARCHIVED`, because content is
+frozen from the moment a document is handed to a workflow — and an edit path built without the check
+is an edit path somebody has to remember to add one to.
