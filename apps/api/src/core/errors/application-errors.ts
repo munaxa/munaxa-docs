@@ -63,6 +63,28 @@ export class DuplicateError extends DomainError {
   }
 }
 
+export class DocumentLockedError extends DomainError {
+  constructor(holderUserId: string, expiresAt: Date) {
+    super(ErrorCode.LOCKED, 'This document is checked out by somebody else.', {
+      // The holder is named, which is what makes the refusal actionable: "ask them, wait for
+      // the expiry, or force it" are all decisions that need to know who and until when.
+      holderUserId,
+      expiresAt: expiresAt.toISOString(),
+    });
+  }
+}
+
+export class InvalidTransitionError extends DomainError {
+  constructor(from: string, to: string) {
+    // Both halves named, which is what `06-document-lifecycle.md` asks of an illegal
+    // transition: "a 409 Conflict with the offending pair named".
+    super(ErrorCode.INVALID_TRANSITION, `A document cannot move from ${from} to ${to}.`, {
+      from,
+      to,
+    });
+  }
+}
+
 export class TenantReadOnlyError extends DomainError {
   constructor() {
     super(ErrorCode.TENANT_READ_ONLY, 'Your organisation is currently read-only.');

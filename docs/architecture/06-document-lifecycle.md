@@ -165,3 +165,25 @@ Publication, check-out, archival and purge are still not performed. `APPROVED �
 effective-date policy and the "exactly one published revision" rule, which is Phase 6's territory —
 though `ck_document_numbered_when_published` already stands, so a publication path that skipped
 numbering would be refused by the database before Phase 6 writes a line.
+
+## Phase 6 — publication and the check-out loop
+
+The caveat above is discharged. `IMPLEMENTED_TRANSITIONS` gained the rows this phase performs, and
+`GET /documents/{id}/workflow` offers exactly them:
+
+| Transition | Performed by |
+| --- | --- |
+| `APPROVED → PUBLISHED` | Manual publish (`document:publish`), superseding the prior published revision in the same transaction. An approved, unnumbered document is refused with a sentence pointing at manual assignment — the same rule `ck_document_numbered_when_published` holds below |
+| `PUBLISHED → CHECKED_OUT` | Check-out. The race is `uq_document_lock_live`'s to referee; the refusal names the holder |
+| `CHECKED_OUT → DRAFT` | Check-in (revision *n+1* in `DRAFT`, the published revision still effective), or a force check-in that preserves the holder's draft |
+| `CHECKED_OUT → PUBLISHED` | Cancel by the holder, or force check-in discarding the draft — the draft is `DISCARDED`, retained in history, audited |
+
+§3's "effective date reached or published manually" is built in its manual half: publication is
+immediate, the effective-from date defaults to today in the tenant's timezone and may not be in
+the future, because scheduled publication needs a timer this phase deliberately did not build.
+`FROZEN_STATUSES` gained `CHECKED_OUT` the moment the state became reachable — §1's "new draft
+revision only" — and the revision's own machine now moves in step with the document's:
+submission freezes the draft into `IN_APPROVAL`, every road back to an editable document returns
+it to `DRAFT`, and only publication makes it `PUBLISHED`. Document-level `SUPERSEDED`, `EXPIRED`,
+archival and purge remain unperformed: a newer *revision* supersedes a revision while the document
+stays `PUBLISHED`, nothing yet watches `effective_to`, and archival is a later phase's.

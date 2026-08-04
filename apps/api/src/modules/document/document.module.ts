@@ -9,11 +9,13 @@ import { RevisionModule } from '../revision/revision.module';
 import { StorageModule } from '../storage/storage.module';
 import { DefaultDocumentNumberService } from './application/document-number.service';
 import { DefaultDocumentService } from './application/document.service';
+import { RevisionControlService } from './application/revision-control.service';
 import { DOCUMENT_CONFIGURATION } from './application/configuration.port';
 import { DOCUMENT_PLACEMENT } from './application/placement.port';
 import {
   DOCUMENT_ACTIVITY_REPOSITORY,
   DOCUMENT_CONTENT_GATE,
+  DOCUMENT_LOCK_REPOSITORY,
   DOCUMENT_NUMBER_SERVICE,
   DOCUMENT_REPOSITORY,
   DOCUMENT_SERVICE,
@@ -21,9 +23,11 @@ import {
 import { AdministrationConfigurationAdapter } from './infrastructure/administration-configuration.adapter';
 import { LibraryPlacementAdapter } from './infrastructure/library-placement.adapter';
 import { PrismaDocumentActivityRepository } from './infrastructure/prisma-document-activity.repository';
+import { PrismaDocumentLockRepository } from './infrastructure/prisma-document-lock.repository';
 import { PrismaDocumentRepository } from './infrastructure/prisma-document.repository';
 import { StorageContentGateAdapter } from './infrastructure/storage-content-gate.adapter';
 import { DocumentsController } from './presentation/documents.controller';
+import { RevisionControlController } from './presentation/revision-control.controller';
 
 /**
  * Document — What is this document, in the business's terms?
@@ -66,16 +70,20 @@ import { DocumentsController } from './presentation/documents.controller';
     RevisionModule,
     PreviewModule,
   ],
-  controllers: [DocumentsController],
+  controllers: [DocumentsController, RevisionControlController],
   providers: [
     PrismaDocumentRepository,
     { provide: DOCUMENT_REPOSITORY, useExisting: PrismaDocumentRepository },
     { provide: DOCUMENT_ACTIVITY_REPOSITORY, useClass: PrismaDocumentActivityRepository },
+    // Declared in Phase 0.5, bound in Phase 6. The insert it performs is decided by
+    // `uq_document_lock_live` — the check-out race is the index's to referee.
+    { provide: DOCUMENT_LOCK_REPOSITORY, useClass: PrismaDocumentLockRepository },
     { provide: DOCUMENT_CONFIGURATION, useClass: AdministrationConfigurationAdapter },
     { provide: DOCUMENT_PLACEMENT, useClass: LibraryPlacementAdapter },
     { provide: DOCUMENT_CONTENT_GATE, useClass: StorageContentGateAdapter },
     { provide: DOCUMENT_SERVICE, useClass: DefaultDocumentService },
     { provide: DOCUMENT_NUMBER_SERVICE, useClass: DefaultDocumentNumberService },
+    RevisionControlService,
   ],
   // `DOCUMENT_NUMBER_SERVICE` is exported for exactly one consumer: Workflow's allocator
   // adapter, which is how the engine's `DOCUMENT_NUMBER_ALLOCATOR` seam gets its binding.

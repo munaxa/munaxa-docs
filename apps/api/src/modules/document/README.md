@@ -135,11 +135,36 @@ a client sends ever reaches a scope key. The engine reaches it through Workflow'
 series past it. `assignNumber` in the repository carries `document_number IS NULL` in its `WHERE`,
 so write-once is a property of the statement rather than a check that ran a moment earlier.
 
+## Phase 6 — revision control
+
+The check-out lock and the operations over it live here, because both belong to this module's
+aggregate: `RevisionControlService` (check-out, check-in, cancel, force check-in, publish,
+restore) moves the document's lifecycle and takes its lock, and every write onto
+`document_revision` itself goes through the widened `REVISION_WRITER` port — the same inversion
+Phase 3 cut, carried forward rather than joined by a second pattern.
+
+Three rules the service states and every path obeys:
+
+- **The lock order against the document row is fixed**: the document row first (under its
+  optimistic version), the lock row second, revision rows last. The check-out *race* is not
+  decided by that order — it is decided by `uq_document_lock_live`, the partial unique index of
+  exactly `uq_workflow_instance_live`'s shape, so two check-outs racing produce one lock and one
+  refusal naming the holder.
+- **The two machines stay two machines.** `applyLifecycleTransition` keeps the revision's own
+  status in step — submission freezes the draft into `IN_APPROVAL`, every road back to an
+  editable document returns it to `DRAFT` — and publication is the only thing that makes a
+  revision `PUBLISHED`, superseding the prior one in the same transaction.
+- **Check-in content passes the same gate as creation**: `CLEAN` or refused, in the use case and
+  again by the database trigger beneath it.
+
+`FROZEN_STATUSES` gained `CHECKED_OUT` the moment the state became reachable: a checked-out
+document accepts a new draft revision and nothing else.
+
 ## Deliberate limits
 
 | Limit | Why | Unblocked by |
 | --- | --- | --- |
 | No `capabilities` on a response | Object-level permission resolution is the ACL resolver's, and it is unbound. Inventing the object would be the client rendering affordances from a decision nothing made | The ACL phase |
-| No revision beyond the first | Check-out, check-in, compare and restore are Phase 6's | Phase 6 |
 | Declassification is refused outright | Reducing a document's confidentiality is a decision with its own procedure. Allowing it here would make it an ordinary edit any document editor can perform | The phase that gives it one |
-| No tags, links or check-out lock | Named in this module's own contract and not needed to file a document | Phases 6 and 16 |
+| No tags or links | Named in this module's own contract and not needed to file a document | Phase 16 |
+| Publication is manual and immediate | Scheduled publication at a future effective date needs a timer this phase deliberately did not build | The phase that schedules it |

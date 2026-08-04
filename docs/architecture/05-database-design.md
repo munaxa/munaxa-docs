@@ -116,8 +116,9 @@ CREATE TABLE document (
   current_revision_id     uuid NULL,                 -- the published revision
   latest_revision_id      uuid NULL,                 -- including drafts
   retention_policy_id     uuid NULL,                 -- frozen copy of the type's policy
-  effective_from          date NULL,
-  effective_to            date NULL,
+  -- Effective dates were sketched here and built on document_revision instead (Phase 6):
+  -- they describe one controlled version, and the document's own effectiveness is its
+  -- current revision's (10-revision-architecture.md §6).
   archived_at             timestamptz NULL,
   version                 int NOT NULL DEFAULT 0,
   created_at              timestamptz NOT NULL DEFAULT now(),
@@ -146,11 +147,11 @@ CREATE INDEX ix_document_updated    ON document (tenant_id, updated_at DESC) WHE
 | --- | --- | --- |
 | `library` | `owner_scope_type`, `owner_scope_id`, `code`, `root_folder_id` | `ck` exactly one owner scope |
 | `folder` | `library_id`, `parent_id NULL`, `name`, `path ltree`, `inherit_acl bool` | `path` gives ancestors in one query |
-| `document_revision` | `document_id`, `ordinal int`, `label`, `file_object_id`, `status`, `workflow_instance_id NULL`, `author_id`, `published_at NULL`, `change_summary` | `uq (document_id, ordinal)` |
+| `document_revision` | `document_id`, `ordinal int`, `label`, `file_object_id`, `status`, `change_note`, `published_at NULL`, `effective_from/to date NULL`, `restored_from_revision_id NULL`, `metadata_snapshot jsonb NULL` | `uq (document_id, ordinal)`; `uq (document_id) WHERE status = 'PUBLISHED'` — exactly one published revision, held by the database (Phase 6). Effective dates live here, not on `document`: they describe one controlled version ([10](./10-revision-architecture.md) §6) |
 | `document_metadata_value` | `document_id`, `metadata_field_id`, `value_text/num/date/bool/json` | `uq (document_id, metadata_field_id)` |
 | `document_tag` | `document_id`, `tag` | `uq (document_id, lower(tag))`; `ix (tenant_id, lower(tag))` |
 | `document_link` | `from_document_id`, `to_document_id`, `link_type` | `ck (from <> to)`; `uq (from, to, link_type)` |
-| `document_lock` | `document_id`, `user_id`, `acquired_at`, `expires_at`, `revision_id` | `uq (document_id) WHERE released_at IS NULL` |
+| `document_lock` | `document_id`, `locked_by`, `acquired_at`, `expires_at`, `released_at/by NULL`, `release_reason NULL`, `release_note NULL`, `checked_out_revision_id NULL`, `draft_revision_id NULL` | `uq (document_id) WHERE released_at IS NULL` — the check-out race is this index's to referee (Phase 6); `ck` released and reason travel together; `ck expires_at > acquired_at` |
 | `file_object` | `checksum_sha256`, `size_bytes`, `mime_type`, `storage_key`, `storage_driver`, `scan_status`, `scan_verdict`, `ref_count` | `uq (tenant_id, checksum_sha256)` → dedupe |
 | `upload_session` | `intent`, `target_key`, `expires_at`, `completed_at` | Expired sessions are swept |
 | `preview_artifact` | `revision_id`, `kind`, `page`, `file_object_id`, `renderer`, `renderer_version` | Disposable; rebuildable |

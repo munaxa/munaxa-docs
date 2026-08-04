@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 5**:
+and the product is built through **Phase 6**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -91,13 +91,18 @@ and the product is built through **Phase 5**:
   submission, assignment inside the approval's own transaction through the seam Phase 4 left
   unbound, a voided value never returned to the pool, gapless mode, manual assignment and held
   blocks — every issued value recorded forever in `number_reservation`.
+- **Phase 6** — revision control. The revision architecture made real: publication superseding the
+  prior revision in one transaction, the check-out lock with its race decided by a partial unique
+  index, check-in creating the next controlled revision beneath the still-effective published one,
+  restore as a row rather than a copy, the revision timeline and the compare API — and the version
+  badge beside the number, never inside it.
 
-Revision control, full preview rendering and search are Phases 6 to 8, and each report says what
-its phase deliberately left out.
+Full preview rendering and search are Phases 7 and 8, and each report says what its phase
+deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-5-document-numbering.md`](./docs/reports/phase-5-document-numbering.md); the original gate is
+[`phase-6-revision-control.md`](./docs/reports/phase-6-revision-control.md); the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

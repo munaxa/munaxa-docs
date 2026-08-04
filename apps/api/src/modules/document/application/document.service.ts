@@ -6,8 +6,10 @@ import {
   type DocumentId,
   DocumentOrigin,
   type DocumentOriginKey,
+  DocumentStatus,
   type DocumentStatusKey,
   MetadataDataType,
+  RevisionStatus,
   ScanStatus,
   ScopeType,
   type UserId,
@@ -19,6 +21,7 @@ import {
   ContentNotScannedError,
   DuplicateError,
   ForbiddenError,
+  InvalidTransitionError,
   NotFoundError,
   ValidationError,
 } from '../../../core/errors/application-errors';
@@ -507,7 +510,13 @@ export class DefaultDocumentService {
   async downloadUrl(id: string, inline: boolean): Promise<{ url: string; expiresAt: Date }> {
     return this.writer.read(async () => {
       const document = await this.require(id, false);
-      if (document.latestRevision === null) {
+      // The *effective* content when one exists. After a check-in the latest revision is an
+      // unapproved draft, and "the published revision stays effective until the new one
+      // publishes" (`06-document-lifecycle.md` §3) applies to downloads before anything else.
+      // A draft's own bytes are reachable through the revision history endpoint, deliberately
+      // behind `document:history:view`.
+      const revision = document.currentRevision ?? document.latestRevision;
+      if (revision === null) {
         throw new NotFoundError('The requested file');
       }
       const level = await this.configuration.confidentiality(document.confidentialityId);
@@ -516,11 +525,9 @@ export class DefaultDocumentService {
         // enough if the document's own classification forbids it (`08-permission-model.md` §4).
         throw new ForbiddenError('download this document');
       }
-      return this.content.downloadUrl(
-        document.latestRevision.file.fileObjectId,
-        document.latestRevision.file.filename,
-        { inline },
-      );
+      return this.content.downloadUrl(revision.file.fileObjectId, revision.file.filename, {
+        inline,
+      });
     });
   }
 
@@ -629,12 +636,36 @@ export class DefaultDocumentService {
         };
       }
       if (!isLegalTransition(current.status, input.to)) {
-        throw new ValidationError('That is not a legal transition for this document.', [
-          { field: 'status', message: `${current.status} → ${input.to}` },
-        ]);
+        throw new InvalidTransitionError(current.status, input.to);
       }
 
       await this.documents.setStatus(asId<DocumentId>(input.documentId), current.version, input.to);
+
+      // The revision's own, smaller machine, kept in step (`06-document-lifecycle.md` §1: the
+      // document's status and the revision's are two machines). Submission freezes the draft
+      // into IN_APPROVAL; every road back to an editable document — withdrawal, a change
+      // request, a rejection being revised — returns it to DRAFT. Guarded on the current state
+      // in the writer, so a transition that finds the revision elsewhere leaves it alone: the
+      // fresh draft a check-in just created is already DRAFT when the document follows it.
+      if (current.latestRevisionId !== null) {
+        if (input.to === DocumentStatus.SUBMITTED) {
+          await this.revisions.setWorkingStatus({
+            revisionId: current.latestRevisionId,
+            from: [RevisionStatus.DRAFT],
+            to: RevisionStatus.IN_APPROVAL,
+          });
+        } else if (
+          input.to === DocumentStatus.DRAFT ||
+          input.to === DocumentStatus.CHANGES_REQUESTED ||
+          input.to === DocumentStatus.REJECTED
+        ) {
+          await this.revisions.setWorkingStatus({
+            revisionId: current.latestRevisionId,
+            from: [RevisionStatus.IN_APPROVAL],
+            to: RevisionStatus.DRAFT,
+          });
+        }
+      }
 
       return {
         result: undefined,

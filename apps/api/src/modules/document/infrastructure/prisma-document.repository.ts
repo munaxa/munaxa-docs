@@ -188,6 +188,16 @@ export class PrismaDocumentRepository implements DocumentRepository {
     });
   }
 
+  async setCurrentRevision(id: DocumentId, revisionId: string): Promise<void> {
+    // Not versioned for the same reason `attachLatestRevision` is not: publication has already
+    // taken the document row under its own version guard a statement earlier, and bumping again
+    // here would hand the caller a stale `If-Match`.
+    await requireTransaction().document.updateMany({
+      where: { id, tenantId: this.tenantId() },
+      data: { currentRevisionId: revisionId },
+    });
+  }
+
   /**
    * Replaces every metadata value in one statement pair.
    *
@@ -346,6 +356,21 @@ export class PrismaDocumentRepository implements DocumentRepository {
           previews: { where: { kind: 'THUMBNAIL' as const }, take: 1 },
         },
       },
+      // The published revision, when one exists. Its own join rather than a second scan of
+      // `revisions`: what a reader reads is `current_revision_id`'s row, and after a check-in
+      // the latest revision is an unapproved draft that must not stand in for it.
+      currentRevision: {
+        include: {
+          fileObject: true,
+          previews: { where: { kind: 'THUMBNAIL' as const }, take: 1 },
+        },
+      },
+      // The live lock, so "checked out by whom, until when" renders without a second call.
+      locks: {
+        where: { releasedAt: null },
+        take: 1,
+        include: { holder: { select: { displayName: true } } },
+      },
       metadataValues: { include: { field: true } },
       favorites: { where: { userId: this.actorId() ?? NO_SUCH_ID }, take: 1 },
     };
@@ -396,8 +421,19 @@ interface JoinedRow {
   category: { name: string } | null;
   confidentiality: { name: string; rank: number };
   revisions: readonly JoinedRevision[];
+  currentRevision: JoinedRevision | null;
+  locks: readonly JoinedLock[];
   metadataValues: readonly JoinedMetadata[];
   favorites: readonly unknown[];
+}
+
+interface JoinedLock {
+  id: string;
+  lockedBy: string;
+  draftRevisionId: string | null;
+  acquiredAt: Date;
+  expiresAt: Date;
+  holder: { displayName: string } | null;
 }
 
 interface JoinedRevision {
@@ -430,8 +466,30 @@ interface JoinedMetadata {
   field: { key: string; name: string; dataType: string };
 }
 
+function toRevisionView(revision: JoinedRevision) {
+  return {
+    id: revision.id,
+    ordinal: revision.ordinal,
+    label: revision.label,
+    status: revision.status as RevisionStatusKey,
+    changeNote: revision.changeNote,
+    createdAt: revision.createdAt,
+    createdBy: revision.createdBy,
+    file: {
+      fileObjectId: revision.fileObject.id,
+      filename: revision.filename,
+      mimeType: revision.fileObject.mimeType,
+      sizeBytes: Number(revision.fileObject.sizeBytes),
+      checksumSha256: revision.fileObject.checksumSha256,
+      scanStatus: revision.fileObject.scanStatus as ScanStatusKey,
+      thumbnailFileObjectId: revision.previews[0]?.fileObjectId ?? null,
+    },
+  };
+}
+
 function toRow(row: JoinedRow, _actorId: string | null): DocumentRow {
   const revision = row.revisions[0];
+  const lock = row.locks[0];
   return {
     id: row.id as DocumentId,
     folderId: row.folderId as FolderId,
@@ -466,26 +524,18 @@ function toRow(row: JoinedRow, _actorId: string | null): DocumentRow {
     // The join was already restricted to the acting user, so a row present means this person
     // marked it. Counting rather than comparing keeps the answer where the query decided it.
     isFavorite: row.favorites.length > 0,
-    latestRevision:
-      revision === undefined
+    latestRevision: revision === undefined ? null : toRevisionView(revision),
+    currentRevision: row.currentRevision === null ? null : toRevisionView(row.currentRevision),
+    liveLock:
+      lock === undefined
         ? null
         : {
-            id: revision.id,
-            ordinal: revision.ordinal,
-            label: revision.label,
-            status: revision.status as RevisionStatusKey,
-            changeNote: revision.changeNote,
-            createdAt: revision.createdAt,
-            createdBy: revision.createdBy,
-            file: {
-              fileObjectId: revision.fileObject.id,
-              filename: revision.filename,
-              mimeType: revision.fileObject.mimeType,
-              sizeBytes: Number(revision.fileObject.sizeBytes),
-              checksumSha256: revision.fileObject.checksumSha256,
-              scanStatus: revision.fileObject.scanStatus as ScanStatusKey,
-              thumbnailFileObjectId: revision.previews[0]?.fileObjectId ?? null,
-            },
+            id: lock.id,
+            lockedBy: lock.lockedBy as UserId,
+            lockedByName: lock.holder?.displayName ?? null,
+            acquiredAt: lock.acquiredAt,
+            expiresAt: lock.expiresAt,
+            draftRevisionId: lock.draftRevisionId,
           },
     metadata: row.metadataValues.map((value) => ({
       fieldId: value.metadataFieldId,

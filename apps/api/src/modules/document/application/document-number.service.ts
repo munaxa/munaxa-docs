@@ -61,6 +61,13 @@ export class DefaultDocumentNumberService implements DocumentNumberService {
     workflowInstanceId: string,
   ): Promise<{ pendingNumber: string | null }> {
     const document = await this.require(documentId);
+    if (document.documentNumber !== null) {
+      // The revision cycle, which Phase 6 made reachable: a numbered document re-entering
+      // approval is its next revision being approved, and the number identifies the document,
+      // never the revision (`09-numbering-architecture.md` §4). Nothing to reserve — the
+      // reference reviewers hold is the number itself.
+      return { pendingNumber: null };
+    }
     const policy = await this.numbering.policyFor(asId<DocumentTypeId>(document.documentTypeId));
     if (policy === null || !policy.reserveOnSubmit) {
       // Draw-at-approval — the tenant's choice, and gapless mode's definition (§2).
@@ -80,6 +87,13 @@ export class DefaultDocumentNumberService implements DocumentNumberService {
     workflowInstanceId: string,
   ): Promise<{ documentNumber: string }> {
     const document = await this.require(documentId);
+    if (document.documentNumber !== null) {
+      // The next revision of a numbered document completing its approval. The number was
+      // assigned once, at the first approval, and `QMS-…-0042` stays identical through
+      // Original → R1 → R2 (§4) — so the approval completes carrying the number it already
+      // has, and no counter moves.
+      return { documentNumber: document.documentNumber };
+    }
     const instanceId = asId<WorkflowInstanceId>(workflowInstanceId);
 
     // The reservation drawn at submission, if the rule reserved one — kept exactly as rendered,

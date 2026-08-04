@@ -159,6 +159,15 @@ export const Settings = {
     'Documents at or above this confidentiality rank record an event when they are viewed.',
     { min: 0, max: 100 },
   ),
+
+  CHECKOUT_EXPIRY_HOURS: integerSetting(
+    'documents.checkoutExpiryHours',
+    // Three working days, roughly: long enough to edit a real document offline over a weekend,
+    // short enough that a forgotten lock does not hold a controlled document for a quarter.
+    72,
+    'How long a check-out lock lasts before any later operation may sweep it aside as expired.',
+    { min: 1, max: 8_760 },
+  ),
 } as const;
 
 export type SettingKey = (typeof Settings)[keyof typeof Settings]['key'];

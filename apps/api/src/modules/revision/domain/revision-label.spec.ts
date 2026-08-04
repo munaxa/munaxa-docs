@@ -47,11 +47,38 @@ describe('the alphabetic style', () => {
 });
 
 describe('the major/minor style', () => {
-  it('treats every ordinal as a minor of major one until something is approved', () => {
-    // Phase 3 only creates ordinal zero. What increments a major is Phase 6's decision, and until
-    // it is made a draft series is what this shows: 1.0, 1.1, 1.2.
+  it('calls the first issue 1.0', () => {
     expect(revisionLabelFor(0, RevisionLabelStyle.MAJOR_MINOR)).toBe('1.0');
-    expect(revisionLabelFor(3, RevisionLabelStyle.MAJOR_MINOR)).toBe('1.3');
+  });
+
+  it('increments the major at publication and the minor per draft since', () => {
+    // Phase 6's decision, made: publication increments the major. The first draft after the
+    // original publishes is 2.0; if that draft is discarded and re-checked-in, its replacement
+    // is 2.1 — and the ordinal underneath stays contiguous either way.
+    expect(
+      revisionLabelFor(1, RevisionLabelStyle.MAJOR_MINOR, { published: 1, sinceLastPublished: 0 }),
+    ).toBe('2.0');
+    expect(
+      revisionLabelFor(2, RevisionLabelStyle.MAJOR_MINOR, { published: 1, sinceLastPublished: 1 }),
+    ).toBe('2.1');
+    expect(
+      revisionLabelFor(3, RevisionLabelStyle.MAJOR_MINOR, { published: 2, sinceLastPublished: 0 }),
+    ).toBe('3.0');
+  });
+
+  it('refuses a lineage that does not count whole revisions', () => {
+    expect(() =>
+      revisionLabelFor(1, RevisionLabelStyle.MAJOR_MINOR, {
+        published: -1,
+        sinceLastPublished: 0,
+      }),
+    ).toThrow();
+    expect(() =>
+      revisionLabelFor(1, RevisionLabelStyle.MAJOR_MINOR, {
+        published: 0,
+        sinceLastPublished: 1.5,
+      }),
+    ).toThrow();
   });
 });
 

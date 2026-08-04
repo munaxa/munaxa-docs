@@ -122,16 +122,39 @@ export const documentFileSchema = z.object({
   thumbnailUrl: z.string().nullable(),
 });
 
+export const revisionStatusSchema = z.enum([
+  'DRAFT',
+  'IN_APPROVAL',
+  'PUBLISHED',
+  'SUPERSEDED',
+  /** A draft abandoned when its check-out was cancelled or replaced. Retained in history. */
+  'DISCARDED',
+]);
+
 export const documentRevisionSchema = z.object({
   id: uuidSchema,
   ordinal: z.number().int().nonnegative(),
   /** Rendered in the type's style at creation, so a style change never relabels history. */
   label: z.string(),
-  status: z.enum(['DRAFT', 'IN_APPROVAL', 'PUBLISHED', 'SUPERSEDED']),
+  status: revisionStatusSchema,
   changeNote: z.string().nullable(),
   createdAt: isoDateTimeSchema,
   createdBy: uuidSchema.nullable(),
   file: documentFileSchema,
+});
+
+/**
+ * The live check-out lock, when one stands: who holds the claim on the next revision, and
+ * until when. Null on a document nobody has checked out.
+ */
+export const documentLockSchema = z.object({
+  id: uuidSchema,
+  lockedBy: uuidSchema,
+  lockedByName: z.string().nullable(),
+  acquiredAt: isoDateTimeSchema,
+  expiresAt: isoDateTimeSchema,
+  /** Set once a check-in kept the lock: the working draft a cancel would discard. */
+  draftRevisionId: uuidSchema.nullable(),
 });
 
 /** One field's value, with enough of the field's definition to render it without a second call. */
@@ -183,8 +206,16 @@ export const documentSchema = administered({
    */
   pendingNumber: z.string().nullable(),
   ownerUserId: uuidSchema,
-  /** The newest revision — the only one Phase 3 creates. */
+  /** The newest revision, published or not — after a check-in this is the working draft. */
   latestRevision: documentRevisionSchema.nullable(),
+  /**
+   * The published, effective revision — what a reader is reading. Null until first
+   * publication. Distinct from `latestRevision` by design: the published revision stays
+   * effective until the next one publishes.
+   */
+  currentRevision: documentRevisionSchema.nullable(),
+  /** The live check-out lock, so "checked out by whom, until when" needs no second call. */
+  liveLock: documentLockSchema.nullable(),
   metadata: z.array(documentMetadataSchema),
   isFavorite: z.boolean(),
 });
@@ -255,6 +286,8 @@ export type UpdateDocumentBody = z.infer<typeof updateDocumentSchema>;
 export type MoveDocumentBody = z.infer<typeof moveDocumentSchema>;
 export type AssignDocumentNumberBody = z.infer<typeof assignDocumentNumberSchema>;
 export type Document = z.infer<typeof documentSchema>;
+export type DocumentLock = z.infer<typeof documentLockSchema>;
+export type RevisionStatusValue = z.infer<typeof revisionStatusSchema>;
 export type DocumentSummary = z.infer<typeof documentSummarySchema>;
 export type DocumentRevisionView = z.infer<typeof documentRevisionSchema>;
 export type DocumentFile = z.infer<typeof documentFileSchema>;

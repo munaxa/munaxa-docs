@@ -1,48 +1,55 @@
-import type { DocumentId, FileObjectId, RevisionId, RevisionStatusKey, UserId } from '@edms/domain';
+import type { DocumentId, RevisionId, RevisionStatusKey, ScanStatusKey } from '@edms/domain';
 
 /**
- * Revisions are inserted, never updated once published.
+ * Revision's read side: the history and the comparison.
  *
- * Restoring an old revision creates a **new** revision carrying the old content, with
- * `restoredFromRevisionId` recorded. History is never rewritten
- * (`docs/architecture/10-revision-architecture.md`).
+ * Reads only. Every write onto `document_revision` goes through `RevisionWriter` — the port
+ * Document declares and this module implements — because a revision is never a fact on its
+ * own: it exists with the lock release, the status move and the audit event of the operation
+ * that made it, all in one transaction that Document owns. Restoring is a write, so restore
+ * lives there too; what this side owns is answering "what did it look like, when, and how do
+ * these two differ".
  */
-export const REVISION_REPOSITORY = Symbol('RevisionRepository');
+export const REVISION_QUERY = Symbol('RevisionQuery');
 
-export interface RevisionRecord {
+export interface RevisionHistoryRow {
   readonly id: RevisionId;
-  readonly documentId: DocumentId;
-  /** Strictly increasing per document. The label is presentation; the ordinal is truth. */
   readonly ordinal: number;
   readonly label: string;
   readonly status: RevisionStatusKey;
-  readonly fileObjectId: FileObjectId | null;
-  readonly authorId: UserId;
+  readonly changeNote: string | null;
+  readonly createdAt: Date;
+  readonly createdBy: string | null;
+  readonly createdByName: string | null;
   readonly publishedAt: Date | null;
-  readonly restoredFromRevisionId: RevisionId | null;
-  readonly changeSummary: string | null;
+  /** Calendar days, as stored: `YYYY-MM-DD`. */
+  readonly effectiveFrom: string | null;
+  readonly effectiveTo: string | null;
+  readonly restoredFromRevisionId: string | null;
+  readonly restoredFromLabel: string | null;
+  readonly metadataSnapshot: Readonly<Record<string, SnapshotEntry>> | null;
+  readonly file: RevisionFileRow;
 }
 
-export interface RevisionRepository {
-  findById(id: RevisionId): Promise<RevisionRecord | null>;
-  findByOrdinal(documentId: DocumentId, ordinal: number): Promise<RevisionRecord | null>;
-  listForDocument(documentId: DocumentId): Promise<readonly RevisionRecord[]>;
-  /** Exactly one revision may be PUBLISHED at a time; enforced in the same transaction. */
-  findPublished(documentId: DocumentId): Promise<RevisionRecord | null>;
-  append(revision: RevisionRecord): Promise<void>;
-  updateStatus(id: RevisionId, status: RevisionStatusKey): Promise<void>;
+export interface RevisionFileRow {
+  readonly fileObjectId: string;
+  readonly filename: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly checksumSha256: string;
+  readonly scanStatus: ScanStatusKey;
 }
 
-export const REVISION_SERVICE = Symbol('RevisionService');
-
-export interface RevisionDiff {
-  readonly metadataChanges: readonly { field: string; from: string | null; to: string | null }[];
-  readonly textChanged: boolean;
-  readonly pageCountDelta: number;
+/** One field in a published revision's metadata snapshot, as publication wrote it. */
+export interface SnapshotEntry {
+  readonly name: string;
+  readonly dataType: string;
+  readonly value: unknown;
 }
 
-export interface RevisionService {
-  get(id: RevisionId): Promise<RevisionRecord | null>;
-  history(documentId: DocumentId): Promise<readonly RevisionRecord[]>;
-  compare(from: RevisionId, to: RevisionId): Promise<RevisionDiff>;
+export interface RevisionQuery {
+  /** Every revision of a document, oldest first — the timeline reads downward. */
+  historyFor(documentId: DocumentId): Promise<readonly RevisionHistoryRow[]>;
+  /** One revision by its ordinal. Null when the ordinal was never issued. */
+  byOrdinal(documentId: DocumentId, ordinal: number): Promise<RevisionHistoryRow | null>;
 }

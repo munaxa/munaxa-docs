@@ -10,6 +10,7 @@ import type {
   DocumentWorkflow,
   Folder,
   MetadataField,
+  RevisionHistory,
   User,
 } from '@edms/contracts';
 import { DomainError, ErrorCode, Permission } from '@edms/domain';
@@ -17,6 +18,7 @@ import { DomainError, ErrorCode, Permission } from '@edms/domain';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { ApprovalPanel } from '../../../../features/approvals/approval-panel';
 import { DocumentScreen } from '../../../../features/documents/document-screen';
+import { RevisionPanel } from '../../../../features/revisions/revision-panel';
 import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/admin/api';
 
 /**
@@ -57,9 +59,16 @@ export default async function DocumentPage({
     throw error;
   }
 
-  const [workflow, folders, categories, levels, users, departments, fields, types] =
+  // The timeline is compliance evidence with its own permission: fetched only when the caller
+  // holds `document:history:view`, and the panel simply omits it otherwise.
+  const canViewHistory = access.permissions.includes(Permission.DOCUMENT_HISTORY_VIEW);
+
+  const [workflow, history, folders, categories, levels, users, departments, fields, types] =
     await Promise.all([
       adminGet<DocumentWorkflow>(`/documents/${documentId}/workflow`),
+      canViewHistory
+        ? adminGet<RevisionHistory>(`/documents/${documentId}/revisions`)
+        : Promise.resolve(null),
       adminList<Folder>('/admin/folders', {
         page: 1,
         pageSize: 200,
@@ -129,6 +138,18 @@ export default async function DocumentPage({
           canApprove={access.permissions.includes(Permission.DOCUMENT_APPROVE)}
           canReject={access.permissions.includes(Permission.DOCUMENT_REJECT)}
           canManage={access.permissions.includes(Permission.WORKFLOW_MANAGE)}
+        />
+      }
+      revisions={
+        <RevisionPanel
+          document={document}
+          history={history}
+          availableTransitions={workflow.availableTransitions}
+          canCheckout={access.permissions.includes(Permission.DOCUMENT_CHECKOUT)}
+          canCheckin={access.permissions.includes(Permission.DOCUMENT_CHECKIN)}
+          canForce={access.permissions.includes(Permission.DOCUMENT_FORCE_CHECKIN)}
+          canPublish={access.permissions.includes(Permission.DOCUMENT_PUBLISH)}
+          canDownload={access.permissions.includes(Permission.DOCUMENT_DOWNLOAD)}
         />
       }
     />

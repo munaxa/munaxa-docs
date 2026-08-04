@@ -797,6 +797,82 @@ export const en = {
       DELETED: 'Deleted',
       PURGED: 'Purged',
     },
+    revision: {
+      draftBadge: '{label} in progress',
+    },
+  },
+  revisions: {
+    title: 'Revisions',
+    actions: {
+      checkOut: 'Check out',
+      checkIn: 'Check in',
+      cancelCheckOut: 'Cancel check-out',
+      forceCheckIn: 'Force check-in',
+      publish: 'Publish',
+      restore: 'Restore',
+    },
+    lock: {
+      heldByYou: 'You have this document checked out until {until}.',
+      heldByOther: 'Checked out by {name} until {until}.',
+      expired: 'The check-out held by {name} has expired; checking out will take it over.',
+    },
+    status: {
+      DRAFT: 'Draft',
+      IN_APPROVAL: 'In approval',
+      PUBLISHED: 'Published',
+      SUPERSEDED: 'Superseded',
+      DISCARDED: 'Discarded',
+    },
+    restoredFrom: 'Restored from {label}',
+    createdLine: 'By {name} on {date}',
+    publishedLine: 'Published {date}',
+    effectiveLine: 'Effective {from} – {to}',
+    checkIn: {
+      description:
+        'The new content becomes the next revision, in draft. The published revision stays effective until the new one is approved and published.',
+      prompt: 'Drop the new file here',
+      fileMissing: 'Upload the new file first.',
+      stored: '{name} is uploaded and ready to check in.',
+      changeNote: 'What changed',
+      keepCheckedOut: 'Keep checked out',
+      keepCheckedOutHint:
+        'Records this file as your working draft and keeps your lock. A later check-in replaces it; cancelling discards it.',
+    },
+    publish: {
+      description:
+        'The approved revision becomes the effective one, and the previous published revision is superseded — in the same step.',
+      effectiveFrom: 'Effective from',
+      effectiveFromHint: 'Today if left empty. Publication itself takes effect immediately.',
+      effectiveTo: 'Effective until',
+    },
+    force: {
+      description:
+        'Releases the check-out held by {name}. Their uploaded draft is preserved unless you discard it.',
+      note: 'Reason',
+      discardDraft: 'Discard their working draft',
+      discardDraftHint:
+        'The draft revision is marked discarded and the document returns to Published.',
+    },
+    restore: {
+      description:
+        'Creates a new revision carrying the content of {label}. Nothing is rewound: the new revision goes through approval like any other change.',
+      changeNote: 'What changed (optional)',
+    },
+    compare: {
+      title: 'Compare revisions',
+      from: 'From',
+      to: 'To',
+      run: 'Compare',
+      identical: 'The content is identical.',
+      changed: 'The content changed ({delta} bytes difference).',
+      filenameChanged: 'filename changed',
+      mimeChanged: 'format changed',
+      metadataUnchanged: 'No metadata changes between the published snapshots.',
+      metadataUnavailable:
+        'Metadata comparison needs both revisions to be published; a draft has no approved snapshot yet.',
+      textUnavailable: 'Side-by-side content comparison arrives with document previews.',
+      failed: 'The comparison could not be run.',
+    },
   },
   error: {
     VALIDATION_FAILED: 'Some of the details are not valid.',

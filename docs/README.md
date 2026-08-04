@@ -15,10 +15,11 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 5 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 6 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
-through it, and the numbering engine that gives an approved document its permanent identifier. Its
+through it, the numbering engine that gives an approved document its permanent identifier, and the
+revision control that publishes what was approved and produces the next controlled version. Its
 map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
@@ -78,6 +79,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 6 — revision control
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 6 — Revision Control](./reports/phase-6-revision-control.md) | The revision architecture made real: the check-out lock under concurrency, publication superseding in one transaction, restore as a row rather than a copy, the decisions 06 and 10 left open and how each was taken, the numbering seam's revision-cycle branch, and what the phase deliberately does not do |
 
 ### Phase 5 — document numbering
 

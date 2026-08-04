@@ -32,9 +32,34 @@ export const RevisionStatus = {
   IN_APPROVAL: 'IN_APPROVAL',
   PUBLISHED: 'PUBLISHED',
   SUPERSEDED: 'SUPERSEDED',
+  /**
+   * A draft abandoned when its check-out was cancelled or replaced. Retained in history —
+   * its ordinal is spent and never reissued, so the row stays and says what became of it
+   * (`10-revision-architecture.md` §3).
+   */
+  DISCARDED: 'DISCARDED',
 } as const;
 
 export type RevisionStatusKey = (typeof RevisionStatus)[keyof typeof RevisionStatus];
+
+/**
+ * Why a check-out lock ended. A closed set rather than a note, because "who released this
+ * lock and why" is a question a compliance report groups by; the free-text half is the
+ * lock's `releaseNote`, required when the release was forced.
+ */
+export const DocumentLockReleaseReason = {
+  /** The holder checked a new draft revision in. */
+  CHECKED_IN: 'CHECKED_IN',
+  /** The holder cancelled; any working draft was discarded. */
+  CANCELLED: 'CANCELLED',
+  /** Somebody with `document:force-checkin` released another person's lock. */
+  FORCED: 'FORCED',
+  /** The lock sat past its expiry and a later operation swept it aside. */
+  EXPIRED: 'EXPIRED',
+} as const;
+
+export type DocumentLockReleaseReasonKey =
+  (typeof DocumentLockReleaseReason)[keyof typeof DocumentLockReleaseReason];
 
 /**
  * How the content arrived.
