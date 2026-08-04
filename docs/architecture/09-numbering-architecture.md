@@ -177,3 +177,16 @@ Every mutation writes its own audit event — `NUMBER_RESERVED`, `NUMBER_ASSIGNE
 `document.number-assigned` through the outbox. The §5 table above is now enforced end to end and
 asserted by the integration suite against a real PostgreSQL, including the hundred parallel draws,
 the voided-value-never-reused rule, the delete-and-recreate refusal and gapless mode.
+
+## Phase 6 — the number through the revision cycle
+
+§4 became testable when Phase 6 made a document's second approval reachable, and the seam gained
+its deliberate branch: a numbered document re-entering approval is its next revision being
+approved, so `reserveForSubmission` reserves nothing and `assignAtApproval` returns the number the
+document already holds — no counter moves, no reservation is drawn, and `QMS-…-0042` reads
+identically through `Original → R1 → R2` with the revision label displayed beside it, never inside
+it. The integration suite asserts the number unchanged across a full revise-approve-publish cycle.
+Publication is where `ck_document_numbered_when_published` finally fires in anger: an approved
+document under a definition with `assignNumber: false` is legitimately approved and unnumbered,
+and publish refuses it with a sentence pointing at manual assignment rather than letting the
+constraint answer first.

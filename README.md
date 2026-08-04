@@ -2,13 +2,15 @@
 
 Product root for **Munaxa Docs**, the Enterprise Document Management System (EDMS).
 
-**The product is built through Phase 4: documents are created, submitted, approved and rejected.**
-Phase 0 designed the architecture and Phase 0.5 built the structure that implements it; Phases 1
-through 3 added authentication, the whole of Administration, per-tenant infrastructure and the
-document library; Phase 4 added the approval engine — and with it the first background work this
-product has ever run.
+**The product is built through Phase 6: documents are created, submitted, approved, numbered,
+published and revised.** Phase 0 designed the architecture and Phase 0.5 built the structure that
+implements it; Phases 1 through 3 added authentication, the whole of Administration, per-tenant
+infrastructure and the document library; Phase 4 added the approval engine — and with it the first
+background work this product has ever run; Phase 5 gave an approved document its permanent number;
+and Phase 6 added revision control — publication, the check-out lock, check-in, restore, the
+revision timeline and the compare API.
 
-Read the most recent report before starting: [Phase 4 — the workflow engine](./docs/reports/phase-4-workflow-engine.md).
+Read the most recent report before starting: [Phase 6 — revision control](./docs/reports/phase-6-revision-control.md).
 The original gate is the [Phase 0.5 architecture compliance report](./docs/reports/phase-0.5-architecture-compliance-report.md)
 and the [technical debt it records](./docs/reports/phase-0.5-technical-debt.md).
 

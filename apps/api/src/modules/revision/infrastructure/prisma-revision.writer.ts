@@ -1,36 +1,53 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
-import { RevisionLabelStyle, type RevisionLabelStyleKey, RevisionStatus } from '@edms/domain';
+import {
+  type AnyId,
+  type DocumentId,
+  type RevisionId,
+  RevisionLabelStyle,
+  type RevisionLabelStyleKey,
+  RevisionStatus,
+  type RevisionStatusKey,
+  asId,
+} from '@edms/domain';
 
+import { NotFoundError, VersionConflictError } from '../../../core/errors/application-errors';
+import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { RecordStamps } from '../../../core/persistence';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
-import type { RevisionWriter } from '../../document/application/ports';
+import type { RevisionFacts, RevisionWriter } from '../../document/application/ports';
+import {
+  revisionCreatedEvent,
+  revisionPublishedEvent,
+  revisionRestoredEvent,
+  revisionSupersededEvent,
+} from '../domain/events';
 import { revisionLabelFor } from '../domain/revision-label';
 
 /**
- * The first revision of a document.
+ * Every write onto `document_revision`, behind Document's inverted port.
  *
- * This class is the whole of Revision in Phase 3, and its shape is the dependency inversion the
- * boundary rules require. Revision sits *below* Document — it depends on Document, not the other
- * way round — so Document cannot call it. What Document can do is declare what it needs, in its own
- * words, and that is `RevisionWriter` in `document/application/ports.ts`. This implements it.
+ * Phase 3 built `createInitial` and called it the whole of Revision; Phase 6 fills in the rest
+ * of the port the same way, and the shape has not changed: Revision sits *below* Document — it
+ * depends on Document, not the other way round — so Document declares what it needs in its own
+ * vocabulary (`RevisionWriter` in `document/application/ports.ts`) and this class implements
+ * it. The import direction is the proof: this file imports Document's port, and nothing in
+ * Document imports anything of this module's.
  *
- * The direction of the import is the proof: this file imports Document's port, and nothing in
- * Document imports anything of Revision's. The Nest wiring in `document.module.ts` points the other
- * way, as DI wiring always does — from the consumer to the container entry that satisfies it — and
- * that is composition rather than dependency.
+ * Revision's own events are published from in here, inside the caller's transaction, because
+ * `revision.created` is Revision's fact in Revision's vocabulary — Document causes it without
+ * having to know how it is spelled.
  *
- * **Ordinal zero, and nothing else.** Check-out, check-in, compare and restore are Phase 6's;
- * publishing is Phase 4's. What is here is the record that binds a document to its bytes, which is
- * what makes "prove what was approved" answerable later: revision → file → checksum.
- *
- * It joins the caller's transaction. A document with no revision has no content, and there is no
- * moment at which that state should be observable.
+ * Everything joins the caller's transaction. A revision is never a fact on its own: it exists
+ * with the lock release, the status move and the audit event of the operation that made it.
  */
 @Injectable()
 export class PrismaRevisionWriter implements RevisionWriter {
-  constructor(private readonly stamps: RecordStamps) {}
+  constructor(
+    private readonly stamps: RecordStamps,
+    @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
+  ) {}
 
   async createInitial(input: {
     documentId: string;
@@ -66,6 +83,222 @@ export class PrismaRevisionWriter implements RevisionWriter {
 
     return { revisionId: id, label };
   }
+
+  async createNext(input: {
+    documentId: string;
+    fileObjectId: string;
+    filename: string;
+    changeNote: string | null;
+    labelStyle: string;
+    restoredFromRevisionId: string | null;
+  }): Promise<{ readonly revisionId: string; readonly ordinal: number; readonly label: string }> {
+    const tx = requireTransaction();
+    const tenantId = requireContext().tenantId;
+
+    // The lineage in one read: the next ordinal, how many revisions have published, and how far
+    // the newest is past the last publication — which is everything the label styles between
+    // them need. Read inside the same transaction that inserts, and the ordinal's uniqueness is
+    // still `uq_revision_ordinal`'s to enforce, not this read's to guess right.
+    const revisions = await tx.documentRevision.findMany({
+      where: { documentId: input.documentId, tenantId },
+      select: { ordinal: true, publishedAt: true },
+      orderBy: { ordinal: 'desc' },
+    });
+    const newest = revisions[0];
+    if (newest === undefined) {
+      throw new NotFoundError('The document this revision extends');
+    }
+    const ordinal = newest.ordinal + 1;
+    const published = revisions.filter((row) => row.publishedAt !== null).length;
+    const lastPublished = revisions.find((row) => row.publishedAt !== null);
+    const sinceLastPublished =
+      lastPublished === undefined ? ordinal : ordinal - lastPublished.ordinal - 1;
+    const label = revisionLabelFor(ordinal, asLabelStyle(input.labelStyle), {
+      published,
+      sinceLastPublished,
+    });
+
+    const id = this.stamps.nextId();
+    try {
+      await tx.documentRevision.create({
+        data: {
+          id,
+          tenantId,
+          documentId: input.documentId,
+          ordinal,
+          label,
+          status: RevisionStatus.DRAFT,
+          fileObjectId: input.fileObjectId,
+          filename: input.filename,
+          changeNote: input.changeNote,
+          restoredFromRevisionId: input.restoredFromRevisionId,
+          ...this.stamps.creation(),
+        },
+      });
+    } catch (error) {
+      if (isOrdinalCollision(error)) {
+        // Two check-ins racing on one document. `uq_revision_ordinal` decides — the read above
+        // was a moment old — and the loser is told to look again, not handed a stack trace.
+        throw new VersionConflictError(ordinal, ordinal + 1);
+      }
+      throw error;
+    }
+
+    const authorId = requireContext().userId ?? '';
+    await this.outbox.publish([
+      revisionCreatedEvent(asId<AnyId>(id), {
+        revisionId: id,
+        documentId: input.documentId,
+        ordinal,
+        authorId,
+      }),
+      ...(input.restoredFromRevisionId === null
+        ? []
+        : [
+            revisionRestoredEvent(asId<AnyId>(id), {
+              revisionId: id,
+              documentId: input.documentId,
+              restoredFromRevisionId: input.restoredFromRevisionId,
+            }),
+          ]),
+    ]);
+
+    return { revisionId: id, ordinal, label };
+  }
+
+  async describe(documentId: string, revisionId: string): Promise<RevisionFacts | null> {
+    const row = await requireTransaction().documentRevision.findFirst({
+      // The document is in the predicate, so a revision of another document is "not found"
+      // rather than somebody else's fact described under this document's URL.
+      where: { id: revisionId, documentId, tenantId: requireContext().tenantId, deletedAt: null },
+    });
+    return row === null ? null : toFacts(row);
+  }
+
+  async describePublished(documentId: string): Promise<RevisionFacts | null> {
+    const row = await requireTransaction().documentRevision.findFirst({
+      where: {
+        documentId,
+        tenantId: requireContext().tenantId,
+        status: RevisionStatus.PUBLISHED,
+      },
+    });
+    return row === null ? null : toFacts(row);
+  }
+
+  async setWorkingStatus(input: {
+    revisionId: string;
+    from: readonly RevisionStatusKey[];
+    to: RevisionStatusKey;
+  }): Promise<void> {
+    // The current status is in the predicate: a revision in neither named state matches nothing
+    // and stays what it is, which is what makes the engine's repeated transitions harmless.
+    await requireTransaction().documentRevision.updateMany({
+      where: {
+        id: input.revisionId,
+        tenantId: requireContext().tenantId,
+        status: { in: [...input.from] },
+      },
+      data: { status: input.to, ...this.stamps.update(), version: { increment: 1 } },
+    });
+  }
+
+  async publish(input: {
+    documentId: string;
+    revisionId: string;
+    publishedAt: Date;
+    effectiveFrom: Date;
+    effectiveTo: Date | null;
+    metadataSnapshot: Readonly<Record<string, unknown>>;
+  }): Promise<{ readonly supersededRevisionId: string | null }> {
+    const tx = requireTransaction();
+    const tenantId = requireContext().tenantId;
+
+    // Supersede first, publish second — in that order because `uq_revision_published` is not
+    // deferrable: while the old row still says PUBLISHED, the new row may not. The prior
+    // revision keeps its own `published_at` and its effective window; what it loses is only
+    // the status, which is the definition of superseded.
+    const prior = await tx.documentRevision.findFirst({
+      where: { documentId: input.documentId, tenantId, status: RevisionStatus.PUBLISHED },
+      select: { id: true },
+    });
+    if (prior !== null) {
+      await tx.documentRevision.updateMany({
+        where: { id: prior.id, tenantId, status: RevisionStatus.PUBLISHED },
+        data: {
+          status: RevisionStatus.SUPERSEDED,
+          ...this.stamps.update(),
+          version: { increment: 1 },
+        },
+      });
+    }
+
+    const { count } = await tx.documentRevision.updateMany({
+      // The states a revision may publish from. IN_APPROVAL is the two-machine model working;
+      // DRAFT covers every revision approved before Phase 6 existed, which nothing ever moved.
+      where: {
+        id: input.revisionId,
+        documentId: input.documentId,
+        tenantId,
+        status: { in: [RevisionStatus.IN_APPROVAL, RevisionStatus.DRAFT] },
+      },
+      data: {
+        status: RevisionStatus.PUBLISHED,
+        publishedAt: input.publishedAt,
+        effectiveFrom: input.effectiveFrom,
+        effectiveTo: input.effectiveTo,
+        metadataSnapshot: input.metadataSnapshot as never,
+        ...this.stamps.update(),
+        version: { increment: 1 },
+      },
+    });
+    if (count === 0) {
+      // Raced by another publish, or handed a revision in a state publication cannot take.
+      // Refusing is the only honest move — the supersession above rolls back with this.
+      throw new NotFoundError('A publishable revision of this document');
+    }
+
+    const revision = await tx.documentRevision.findFirstOrThrow({
+      where: { id: input.revisionId, tenantId },
+      select: { fileObjectId: true },
+    });
+    await this.outbox.publish([
+      revisionPublishedEvent(asId<AnyId>(input.revisionId), {
+        revisionId: input.revisionId,
+        documentId: input.documentId,
+        fileObjectId: revision.fileObjectId,
+      }),
+      ...(prior === null
+        ? []
+        : [
+            revisionSupersededEvent(asId<AnyId>(prior.id), {
+              revisionId: prior.id,
+              documentId: input.documentId,
+              supersededByRevisionId: input.revisionId,
+            }),
+          ]),
+    ]);
+
+    return { supersededRevisionId: prior?.id ?? null };
+  }
+
+  async discard(input: { documentId: string; revisionId: string }): Promise<void> {
+    // Only a DRAFT can be discarded — the predicate is the guard. The row stays: the ordinal is
+    // spent, and a history with a silent gap is unusable as evidence.
+    await requireTransaction().documentRevision.updateMany({
+      where: {
+        id: input.revisionId,
+        documentId: input.documentId,
+        tenantId: requireContext().tenantId,
+        status: RevisionStatus.DRAFT,
+      },
+      data: {
+        status: RevisionStatus.DISCARDED,
+        ...this.stamps.update(),
+        version: { increment: 1 },
+      },
+    });
+  }
 }
 
 /**
@@ -80,4 +313,37 @@ function asLabelStyle(raw: string): RevisionLabelStyleKey {
   return raw === RevisionLabelStyle.ALPHABETIC || raw === RevisionLabelStyle.MAJOR_MINOR
     ? raw
     : RevisionLabelStyle.NUMERIC;
+}
+
+/** A unique violation on the insert — two check-ins raced and `uq_revision_ordinal` decided. */
+function isOrdinalCollision(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
+}
+
+interface RevisionRow {
+  id: string;
+  documentId: string;
+  ordinal: number;
+  label: string;
+  status: string;
+  fileObjectId: string;
+  filename: string;
+  changeNote: string | null;
+  publishedAt: Date | null;
+  restoredFromRevisionId: string | null;
+}
+
+function toFacts(row: RevisionRow): RevisionFacts {
+  return {
+    id: asId<RevisionId>(row.id),
+    documentId: asId<DocumentId>(row.documentId),
+    ordinal: row.ordinal,
+    label: row.label,
+    status: row.status as RevisionStatusKey,
+    fileObjectId: row.fileObjectId,
+    filename: row.filename,
+    changeNote: row.changeNote,
+    publishedAt: row.publishedAt,
+    restoredFromRevisionId: row.restoredFromRevisionId,
+  };
 }

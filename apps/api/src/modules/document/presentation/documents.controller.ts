@@ -339,7 +339,29 @@ function stamps(
   };
 }
 
-function toDocument(row: DocumentRow, pendingNumber: string | null = null): Document {
+function toRevision(revision: NonNullable<DocumentRow['latestRevision']>) {
+  return {
+    id: revision.id,
+    ordinal: revision.ordinal,
+    label: revision.label,
+    status: revision.status,
+    changeNote: revision.changeNote,
+    createdAt: revision.createdAt.toISOString(),
+    createdBy: revision.createdBy,
+    file: {
+      fileObjectId: revision.file.fileObjectId,
+      filename: revision.file.filename,
+      mimeType: revision.file.mimeType,
+      sizeBytes: revision.file.sizeBytes,
+      checksumSha256: revision.file.checksumSha256,
+      scanStatus: revision.file.scanStatus,
+      reachable: revision.file.scanStatus === 'CLEAN',
+      thumbnailUrl: revision.file.thumbnailFileObjectId,
+    },
+  };
+}
+
+export function toDocument(row: DocumentRow, pendingNumber: string | null = null): Document {
   const revision = row.latestRevision;
   return {
     ...stamps(row),
@@ -363,27 +385,18 @@ function toDocument(row: DocumentRow, pendingNumber: string | null = null): Docu
     numberedAt: row.numberedAt === null ? null : row.numberedAt.toISOString(),
     pendingNumber,
     ownerUserId: row.ownerUserId,
-    latestRevision:
-      revision === null
+    latestRevision: revision === null ? null : toRevision(revision),
+    currentRevision: row.currentRevision === null ? null : toRevision(row.currentRevision),
+    liveLock:
+      row.liveLock === null
         ? null
         : {
-            id: revision.id,
-            ordinal: revision.ordinal,
-            label: revision.label,
-            status: revision.status,
-            changeNote: revision.changeNote,
-            createdAt: revision.createdAt.toISOString(),
-            createdBy: revision.createdBy,
-            file: toFile(row) ?? {
-              fileObjectId: revision.file.fileObjectId,
-              filename: revision.file.filename,
-              mimeType: revision.file.mimeType,
-              sizeBytes: revision.file.sizeBytes,
-              checksumSha256: revision.file.checksumSha256,
-              scanStatus: revision.file.scanStatus,
-              reachable: false,
-              thumbnailUrl: null,
-            },
+            id: row.liveLock.id,
+            lockedBy: row.liveLock.lockedBy,
+            lockedByName: row.liveLock.lockedByName,
+            acquiredAt: row.liveLock.acquiredAt.toISOString(),
+            expiresAt: row.liveLock.expiresAt.toISOString(),
+            draftRevisionId: row.liveLock.draftRevisionId,
           },
     metadata: row.metadata.map((entry) => ({
       fieldId: entry.fieldId,

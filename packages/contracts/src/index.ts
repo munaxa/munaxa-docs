@@ -17,6 +17,11 @@
  * a client assembling one from three flat collections could render it in an order the engine did
  * not mean.
  *
+ * Phase 6 adds `documents/revision-control.ts` — check-out, check-in, publication, the revision
+ * history and the compare. The one shape worth noticing there is the pair of dates: instants are
+ * ISO date-times, the effective window is calendar days, because "effective from the 1st" is a
+ * statement about a day in the tenant's own calendar rather than a moment in UTC.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -42,4 +47,5 @@ export * from './admin/approval-routing';
 export * from './admin/settings';
 export * from './documents/upload';
 export * from './documents/document';
+export * from './documents/revision-control';
 export * from './workflow/approval';

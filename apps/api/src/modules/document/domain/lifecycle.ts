@@ -85,6 +85,11 @@ export function isLegalTransition(from: DocumentStatusKey, to: DocumentStatusKey
  * `CHANGES_REQUESTED` is deliberately absent. An approver asking for changes is asking the author
  * to make them, so the document is editable again the moment the request is recorded — that is what
  * distinguishes it from a rejection.
+ *
+ * `CHECKED_OUT` joined the set in Phase 6, when the state became reachable. §1's table allows a
+ * checked-out document a "new draft revision only": the holder's edit happens in their own tools
+ * and arrives as the next revision at check-in, and a metadata edit landing meanwhile would change
+ * the record beneath somebody working from a copy of it.
  */
 export const FROZEN_STATUSES: ReadonlySet<DocumentStatusKey> = new Set<DocumentStatusKey>([
   DocumentStatus.SUBMITTED,
@@ -92,6 +97,7 @@ export const FROZEN_STATUSES: ReadonlySet<DocumentStatusKey> = new Set<DocumentS
   DocumentStatus.APPROVED,
   DocumentStatus.PUBLISHED,
   DocumentStatus.SUPERSEDED,
+  DocumentStatus.CHECKED_OUT,
   DocumentStatus.ARCHIVED,
 ]);
 
@@ -127,9 +133,19 @@ export const IMPLEMENTED_TRANSITIONS: Readonly<
   [DocumentStatus.UNDER_REVIEW]: Object.freeze([DocumentStatus.DRAFT]),
   [DocumentStatus.CHANGES_REQUESTED]: Object.freeze([DocumentStatus.DRAFT, DocumentStatus.DELETED]),
   [DocumentStatus.REJECTED]: Object.freeze([DocumentStatus.DRAFT, DocumentStatus.DELETED]),
+  /**
+   * Offered since Phase 5 — `ck_document_numbered_when_published` stood guard while nothing
+   * performed it — and performed since Phase 6: publication supersedes the prior revision in
+   * the same transaction.
+   */
   [DocumentStatus.APPROVED]: Object.freeze([DocumentStatus.PUBLISHED]),
-  [DocumentStatus.PUBLISHED]: Object.freeze([]),
-  [DocumentStatus.CHECKED_OUT]: Object.freeze([]),
+  /**
+   * Check-out is Phase 6's. `SUPERSEDED`, `EXPIRED` and `ARCHIVED` stay unoffered: nothing
+   * yet supersedes a *document* (a newer revision supersedes a revision, and the document
+   * stays `PUBLISHED`), nothing watches `effective_to`, and archival is a later phase.
+   */
+  [DocumentStatus.PUBLISHED]: Object.freeze([DocumentStatus.CHECKED_OUT]),
+  [DocumentStatus.CHECKED_OUT]: Object.freeze([DocumentStatus.PUBLISHED, DocumentStatus.DRAFT]),
   [DocumentStatus.SUPERSEDED]: Object.freeze([]),
   [DocumentStatus.ARCHIVED]: Object.freeze([DocumentStatus.DELETED]),
   [DocumentStatus.EXPIRED]: Object.freeze([]),

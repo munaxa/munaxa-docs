@@ -1,7 +1,11 @@
 import { Module } from '@nestjs/common';
 
 import { REVISION_WRITER } from '../document/application/ports';
+import { REVISION_QUERY } from './application/ports';
+import { RevisionQueryService } from './application/revision-query.service';
+import { PrismaRevisionQueryRepository } from './infrastructure/prisma-revision-query.repository';
 import { PrismaRevisionWriter } from './infrastructure/prisma-revision.writer';
+import { RevisionsController } from './presentation/revisions.controller';
 
 /**
  * Revision — What did it look like at each controlled point in time?
@@ -11,14 +15,12 @@ import { PrismaRevisionWriter } from './infrastructure/prisma-revision.writer';
  *
  * Nothing in core.
  *
- * **Phase 3 builds one thing: the first revision.** A document's identity, the revision an approver
- * approves and the bytes themselves are three records with three lifetimes
- * ([ADR-0003](../../../../../docs/architecture/adr/0003-document-identity-revision-file-separation.md)),
- * and a document created without the middle one would be a document with no content — so upload
- * creates ordinal zero, in the same transaction, and nothing else.
- *
- * Check-out, check-in, compare and restore are Phase 6's; publishing and superseding are Phase 4's.
- * The `document_revision` table is already the full shape for all of them.
+ * **Phase 3 built the first revision; Phase 6 built the rest.** A document's identity, the
+ * revision an approver approves and the bytes themselves are three records with three lifetimes
+ * ([ADR-0003](../../../../../docs/architecture/adr/0003-document-identity-revision-file-separation.md)).
+ * The writer now covers the whole life of the middle one — the next revision at check-in, the
+ * working-status moves, publication with its supersession, the discard a cancelled check-out
+ * performs — and the read side answers the history and the compare API.
  *
  * ### Why this module provides a token another module declared
  *
@@ -29,11 +31,23 @@ import { PrismaRevisionWriter } from './infrastructure/prisma-revision.writer';
  * `DocumentModule` imports this module to receive it — which is the direction DI wiring always
  * points, from the consumer to whatever satisfies it.
  *
+ * Phase 6 followed the same seam for every new Document↔Revision operation rather than invent a
+ * second pattern: Document declares check-in, publish and discard in its own vocabulary, this
+ * module implements them and publishes Revision's own events from inside the same transaction.
  * The alternative — Document writing `document_revision` itself — would put the revision table in
- * two modules, and the second one would be the one that forgets a rule when Phase 6 adds check-in.
+ * two modules, and the second one would be the one that forgets a rule.
+ *
+ * The *reads* — the timeline, the comparison — are this module's own surface
+ * (`presentation/revisions.controller.ts`), behind `document:history:view`, because a superseded
+ * revision remaining readable is the module's answer to the question it owns.
  */
 @Module({
-  providers: [{ provide: REVISION_WRITER, useClass: PrismaRevisionWriter }],
+  controllers: [RevisionsController],
+  providers: [
+    { provide: REVISION_WRITER, useClass: PrismaRevisionWriter },
+    { provide: REVISION_QUERY, useClass: PrismaRevisionQueryRepository },
+    RevisionQueryService,
+  ],
   exports: [REVISION_WRITER],
 })
 export class RevisionModule {}

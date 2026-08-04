@@ -54,6 +54,7 @@ export function DocumentScreen({
   canDownload,
   canAssignNumber,
   approvals,
+  revisions,
 }: {
   readonly document: Document;
   /** Candidate destinations for a move. Within the document's own library. */
@@ -78,6 +79,12 @@ export function DocumentScreen({
    * changed.
    */
   readonly approvals?: ReactNode;
+  /**
+   * Revision control — the timeline, check-out/check-in and publish — rendered by Revision's
+   * own feature and passed in, for the same reason approvals are: this screen keeps knowing
+   * nothing about how a revision moves.
+   */
+  readonly revisions?: ReactNode;
 }): ReactNode {
   const translate = useTranslate();
   const router = useRouter();
@@ -94,7 +101,16 @@ export function DocumentScreen({
     document.status !== 'SUBMITTED' &&
     document.status !== 'UNDER_REVIEW';
 
-  const file = document.latestRevision?.file ?? null;
+  // The effective revision is what a reader reads; the latest may be an unapproved draft
+  // beneath it, and the two are told apart everywhere they render.
+  const effectiveRevision = document.currentRevision ?? document.latestRevision;
+  const draftRevision =
+    document.currentRevision !== null &&
+    document.latestRevision !== null &&
+    document.latestRevision.id !== document.currentRevision.id
+      ? document.latestRevision
+      : null;
+  const file = effectiveRevision?.file ?? null;
   const values = Object.fromEntries(document.metadata.map((entry) => [entry.key, entry.value]));
 
   const refresh = (): void => {
@@ -201,10 +217,23 @@ export function DocumentScreen({
                 </dd>
               </div>
             ) : (
-              <Property
-                label={translate('documents.field.number')}
-                value={document.documentNumber}
-              />
+              // The version badge sits beside the number, never inside it: QMS-…-0042 reads the
+              // same through Original → R1 → R2, and the label is what changes
+              // (`09-numbering-architecture.md` §4).
+              <div className="min-w-0">
+                <dt className="text-sm opacity-70">{translate('documents.field.number')}</dt>
+                <dd className="flex items-center gap-2">
+                  <span className="truncate">{document.documentNumber ?? '—'}</span>
+                  {effectiveRevision !== null && (
+                    <Badge tone="success">{effectiveRevision.label}</Badge>
+                  )}
+                  {draftRevision !== null && (
+                    <Badge tone="muted">
+                      {translate('documents.revision.draftBadge', { label: draftRevision.label })}
+                    </Badge>
+                  )}
+                </dd>
+              </div>
             )}
             <Property label={translate('documents.field.category')} value={document.categoryName} />
             <Property
@@ -213,7 +242,7 @@ export function DocumentScreen({
             />
             <Property
               label={translate('documents.field.revision')}
-              value={document.latestRevision?.label ?? null}
+              value={effectiveRevision?.label ?? null}
             />
           </dl>
 
@@ -354,6 +383,8 @@ export function DocumentScreen({
       )}
 
       {approvals}
+
+      {revisions}
 
       <p>
         <Button

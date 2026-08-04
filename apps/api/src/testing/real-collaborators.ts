@@ -48,6 +48,10 @@ import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/work
 import type { QueuePort } from '../ports/queue.port';
 import { PrismaFileObjectRepository } from '../modules/storage/infrastructure/prisma-file-object.repository';
 import { PrismaUploadSessionRepository } from '../modules/storage/infrastructure/prisma-upload-session.repository';
+import { RevisionControlService } from '../modules/document/application/revision-control.service';
+import { PrismaDocumentLockRepository } from '../modules/document/infrastructure/prisma-document-lock.repository';
+import { RevisionQueryService } from '../modules/revision/application/revision-query.service';
+import { PrismaRevisionQueryRepository } from '../modules/revision/infrastructure/prisma-revision-query.repository';
 
 /**
  * Real collaborators, wired the way the container wires them.
@@ -200,7 +204,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     new LibraryPlacementAdapter(libraries),
     realOrganizationService(),
     new StorageContentGateAdapter(storage),
-    new PrismaRevisionWriter(stamps),
+    new PrismaRevisionWriter(stamps, outbox),
     // The thumbnailer's whole contract is that it never fails a document, and Phase 3 draws one only
     // for PNG. A suite uploading PDFs would get nothing from the real implementation, so a double
     // that does nothing is honest about that rather than pretending to render.
@@ -286,6 +290,60 @@ export interface WorkflowEngineOptions {
    * still a property of the engine worth asserting.
    */
   readonly withoutNumbering?: boolean;
+}
+
+// --- Phase 6: revision control ---------------------------------------------------------------
+//
+// The same boundary reason a third time. What this suite asserts is what only the database can
+// answer: two check-outs racing against `uq_document_lock_live`, two publishes racing against
+// `uq_revision_published`, a restore that costs a reference rather than a copy, and the frozen-
+// content refusal while CHECKED_OUT — so the service is composed here with its real lock
+// repository, its real revision writer, the real content gate and the real transaction boundary.
+
+export interface RevisionControlStack {
+  readonly control: RevisionControlService;
+  readonly revisionQueries: RevisionQueryService;
+}
+
+export interface RevisionControlOptions {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly documents: DefaultDocumentService;
+  readonly configuration: ConfigurationService;
+  readonly storage: DefaultStorageService;
+  /** Answers `userExists`, the way the library stack takes it. */
+  readonly users: Pick<UserAdminService, 'get'>;
+}
+
+export function realRevisionControl(options: RevisionControlOptions): RevisionControlStack {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+
+  // The catalogue defaults, the same way the engine stack answers settings for a tenant with no
+  // override — the lock expiry these suites exercise is the product's own default.
+  const settings = {
+    get: (definition: { defaultValue: unknown }) => Promise.resolve(definition.defaultValue),
+  } as never;
+
+  const control = new RevisionControlService(
+    new PrismaDocumentRepository(stamps),
+    new PrismaDocumentLockRepository(stamps),
+    new PrismaRevisionWriter(stamps, outbox),
+    new StorageContentGateAdapter(options.storage),
+    new AdministrationConfigurationAdapter(
+      options.configuration,
+      realOrganizationService(),
+      options.users as UserAdminService,
+    ),
+    options.documents,
+    settings,
+    outbox,
+    writer,
+  );
+
+  return {
+    control,
+    revisionQueries: new RevisionQueryService(new PrismaRevisionQueryRepository(), writer),
+  };
 }
 
 export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngineStack {

@@ -113,3 +113,33 @@ DROP TRIGGER IF EXISTS current_revision_belongs_to_document ON document;
 CREATE TRIGGER current_revision_belongs_to_document
   BEFORE INSERT OR UPDATE OF current_revision_id, latest_revision_id ON document
   FOR EACH ROW EXECUTE FUNCTION refuse_foreign_current_revision();
+
+-- The same rule from restore's side. A restored revision carries an older revision's content,
+-- and "older" means older *of this document*: a restore that named another document's revision
+-- would present that document's approved content as this one's — the failure the trigger above
+-- exists to prevent, reachable through one more door once Phase 6 adds it.
+CREATE OR REPLACE FUNCTION refuse_foreign_restore_source() RETURNS trigger AS $$
+DECLARE
+  owner uuid;
+BEGIN
+  IF NEW.restored_from_revision_id IS NOT NULL THEN
+    IF NEW.restored_from_revision_id = NEW.id THEN
+      RAISE EXCEPTION 'revision % cannot be restored from itself', NEW.id
+        USING ERRCODE = 'check_violation';
+    END IF;
+    SELECT document_id INTO owner FROM document_revision WHERE id = NEW.restored_from_revision_id;
+    IF owner IS DISTINCT FROM NEW.document_id THEN
+      RAISE EXCEPTION 'revision % of document % cannot restore revision % of document %',
+        NEW.id, NEW.document_id, NEW.restored_from_revision_id, owner
+        USING ERRCODE = 'check_violation';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS restore_source_belongs_to_document ON document_revision;
+CREATE TRIGGER restore_source_belongs_to_document
+  BEFORE INSERT OR UPDATE OF restored_from_revision_id ON document_revision
+  FOR EACH ROW EXECUTE FUNCTION refuse_foreign_restore_source();

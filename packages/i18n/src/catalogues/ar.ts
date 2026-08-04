@@ -738,6 +738,80 @@ export const ar: Catalogue = {
       DELETED: 'محذوفة',
       PURGED: 'مُزالة نهائيًا',
     },
+    revision: {
+      draftBadge: '{label} قيد الإعداد',
+    },
+  },
+  revisions: {
+    title: 'المراجعات',
+    actions: {
+      checkOut: 'سحب للتعديل',
+      checkIn: 'إيداع',
+      cancelCheckOut: 'إلغاء السحب',
+      forceCheckIn: 'إيداع إجباري',
+      publish: 'نشر',
+      restore: 'استرجاع',
+    },
+    lock: {
+      heldByYou: 'هذا المستند مسحوب لديك حتى {until}.',
+      heldByOther: 'مسحوب للتعديل لدى {name} حتى {until}.',
+      expired: 'انتهت مدة السحب لدى {name}؛ السحب الآن سيستولي على القفل.',
+    },
+    status: {
+      DRAFT: 'مسودة',
+      IN_APPROVAL: 'قيد الاعتماد',
+      PUBLISHED: 'منشورة',
+      SUPERSEDED: 'مُستبدَلة',
+      DISCARDED: 'مُهملة',
+    },
+    restoredFrom: 'استُرجعت من {label}',
+    createdLine: 'بواسطة {name} في {date}',
+    publishedLine: 'نُشرت {date}',
+    effectiveLine: 'سارية من {from} إلى {to}',
+    checkIn: {
+      description:
+        'يصبح المحتوى الجديد المراجعة التالية كمسودة. تبقى المراجعة المنشورة سارية حتى تُعتمد الجديدة وتُنشر.',
+      prompt: 'أسقط الملف الجديد هنا',
+      fileMissing: 'ارفع الملف الجديد أولًا.',
+      stored: 'تم رفع {name} وهو جاهز للإيداع.',
+      changeNote: 'ما الذي تغيّر',
+      keepCheckedOut: 'إبقاء المستند مسحوبًا',
+      keepCheckedOutHint:
+        'يسجَّل هذا الملف كمسودة عملك ويبقى القفل لديك. الإيداع التالي يستبدلها، والإلغاء يهملها.',
+    },
+    publish: {
+      description:
+        'تصبح المراجعة المعتمدة هي السارية، وتُستبدل المراجعة المنشورة السابقة — في الخطوة نفسها.',
+      effectiveFrom: 'سارية من',
+      effectiveFromHint: 'اليوم إن تُرك فارغًا. النشر نفسه نافذ فورًا.',
+      effectiveTo: 'سارية حتى',
+    },
+    force: {
+      description: 'يحرر السحب الذي لدى {name}. تُحفظ مسودتهم المرفوعة ما لم تُهملها.',
+      note: 'السبب',
+      discardDraft: 'إهمال مسودة عملهم',
+      discardDraftHint: 'تُعلَّم مراجعة المسودة كمُهملة ويعود المستند إلى منشور.',
+    },
+    restore: {
+      description:
+        'ينشئ مراجعة جديدة تحمل محتوى {label}. لا يُرجَع شيء إلى الوراء: تمر المراجعة الجديدة بالاعتماد كأي تغيير آخر.',
+      changeNote: 'ما الذي تغيّر (اختياري)',
+    },
+    compare: {
+      title: 'مقارنة المراجعات',
+      from: 'من',
+      to: 'إلى',
+      run: 'قارن',
+      identical: 'المحتوى متطابق.',
+      changed: 'تغيّر المحتوى (فرق {delta} بايت).',
+      filenameChanged: 'تغيّر اسم الملف',
+      mimeChanged: 'تغيّر التنسيق',
+      metadataUnchanged: 'لا تغييرات في البيانات الوصفية بين اللقطتين المنشورتين.',
+      metadataUnavailable:
+        'تتطلب مقارنة البيانات الوصفية أن تكون المراجعتان منشورتين؛ فالمسودة لا تملك لقطة معتمدة بعد.',
+      textUnavailable: 'تصل المقارنة الجنبية للمحتوى مع معاينات المستندات.',
+      failed: 'تعذّر إجراء المقارنة.',
+    },
   },
   error: {
     VALIDATION_FAILED: 'بعض البيانات غير صحيحة.',

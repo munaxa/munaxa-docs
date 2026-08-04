@@ -121,6 +121,7 @@ model Tenant {
   workflowTimers        WorkflowTimer[]
   approvalGroups        ApprovalGroup[]
   workingCalendars      WorkingCalendar[]
+  documentLocks         DocumentLock[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -314,6 +315,7 @@ model User {
   approvalTasks           ApprovalTask[]           @relation("TaskAssignee")
   workflowComments        WorkflowComment[]
   approvalGroups          ApprovalGroupMember[]
+  documentLocks           DocumentLock[]
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -953,31 +955,31 @@ model NumberSequence {
 /// second half of the never-reused guarantee — `uq (tenant_id, document_number)` on `document` is
 /// the first — and like the sequence, a reservation is never soft-deleted.
 model NumberReservation {
-  id                 String                  @id @db.Uuid
-  tenantId           String                  @map("tenant_id") @db.Uuid
-  numberingRuleId    String                  @map("numbering_rule_id") @db.Uuid
+  id                 String                 @id @db.Uuid
+  tenantId           String                 @map("tenant_id") @db.Uuid
+  numberingRuleId    String                 @map("numbering_rule_id") @db.Uuid
   /// The series the value was drawn from, exactly as `number_sequence.scope_key` spells it.
-  scopeKey           String                  @map("scope_key")
-  sequenceValue      BigInt                  @map("sequence_value")
+  scopeKey           String                 @map("scope_key")
+  sequenceValue      BigInt                 @map("sequence_value")
   /// The rendered number, fixed at the moment the value was drawn. Assignment never re-renders
   /// it: the pending reference reviewers held is the number the document receives (§2).
   formatted          String
-  state              NumberReservationState  @default(RESERVED)
-  origin             NumberOrigin            @default(AUTOMATIC)
+  state              NumberReservationState @default(RESERVED)
+  origin             NumberOrigin           @default(AUTOMATIC)
   /// Null for a `HELD` value nothing has claimed yet; set for everything else.
-  documentId         String?                 @map("document_id") @db.Uuid
+  documentId         String?                @map("document_id") @db.Uuid
   /// The approval that drew the value. Null for a manual assignment or a held block.
-  workflowInstanceId String?                 @map("workflow_instance_id") @db.Uuid
-  reservedAt         DateTime                @map("reserved_at") @db.Timestamptz(6)
-  assignedAt         DateTime?               @map("assigned_at") @db.Timestamptz(6)
-  voidedAt           DateTime?               @map("voided_at") @db.Timestamptz(6)
+  workflowInstanceId String?                @map("workflow_instance_id") @db.Uuid
+  reservedAt         DateTime               @map("reserved_at") @db.Timestamptz(6)
+  assignedAt         DateTime?              @map("assigned_at") @db.Timestamptz(6)
+  voidedAt           DateTime?              @map("voided_at") @db.Timestamptz(6)
   /// Why a voided value was voided — the workflow outcome or the controller's stated reason.
-  voidReason         String?                 @map("void_reason")
+  voidReason         String?                @map("void_reason")
   /// A controller's note on a held block: which offline process the values were set aside for.
   note               String?
-  createdAt          DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy          String?                 @map("created_by") @db.Uuid
-  updatedAt          DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdAt          DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy          String?                @map("created_by") @db.Uuid
+  updatedAt          DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   rule             NumberingRule     @relation(fields: [numberingRuleId], references: [id], onDelete: Restrict)
@@ -1334,8 +1336,26 @@ enum RevisionStatus {
   IN_APPROVAL
   PUBLISHED
   SUPERSEDED
+  /// A draft abandoned when its check-out was cancelled or replaced. Retained in history —
+  /// its ordinal is spent and never reissued (`10-revision-architecture.md` §3).
+  DISCARDED
 
   @@map("revision_status")
+}
+
+/// Why a check-out lock ended. A reason rather than a free-text note, because "who released
+/// this lock and why" is a question a compliance report groups by.
+enum DocumentLockReleaseReason {
+  /// The holder checked a new draft revision in.
+  CHECKED_IN
+  /// The holder cancelled; any working draft was discarded.
+  CANCELLED
+  /// Somebody with `document:force-checkin` released another person's lock.
+  FORCED
+  /// The lock sat past `expires_at` and a later operation swept it aside.
+  EXPIRED
+
+  @@map("document_lock_release_reason")
 }
 
 /// How the content arrived. Provenance, not behaviour: nothing branches on it, and an auditor
@@ -1526,19 +1546,20 @@ model Document {
   deletedBy         String?        @map("deleted_by") @db.Uuid
   version           Int            @default(1)
 
-  tenant            Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  folder            Folder                  @relation(fields: [folderId], references: [id], onDelete: Restrict)
-  documentType      DocumentType            @relation(fields: [documentTypeId], references: [id], onDelete: Restrict)
-  category          Category?               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  confidentiality   ConfidentialityLevel    @relation(fields: [confidentialityId], references: [id], onDelete: Restrict)
-  retentionPolicy   RetentionPolicy?        @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
-  currentRevision   DocumentRevision?       @relation("DocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
-  revisions         DocumentRevision[]      @relation("RevisionDocument")
+  tenant             Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  folder             Folder                  @relation(fields: [folderId], references: [id], onDelete: Restrict)
+  documentType       DocumentType            @relation(fields: [documentTypeId], references: [id], onDelete: Restrict)
+  category           Category?               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  confidentiality    ConfidentialityLevel    @relation(fields: [confidentialityId], references: [id], onDelete: Restrict)
+  retentionPolicy    RetentionPolicy?        @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
+  currentRevision    DocumentRevision?       @relation("DocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
+  revisions          DocumentRevision[]      @relation("RevisionDocument")
   metadataValues     DocumentMetadataValue[]
   favorites          DocumentFavorite[]
   views              DocumentView[]
   workflowInstances  WorkflowInstance[]
   numberReservations NumberReservation[]
+  locks              DocumentLock[]
 
   /// Deliberately **not** partial on `deleted_at`. A number stays reserved forever, so a deleted
   /// document still holds its own — which is the one exception to this schema's rule that a
@@ -1565,35 +1586,55 @@ model Document {
 /// chose. A label is a display convention; two documents of different types may show `R1` and `B`
 /// for the same ordinal, and both are correct.
 model DocumentRevision {
-  id           String         @id @db.Uuid
-  tenantId     String         @map("tenant_id") @db.Uuid
-  documentId   String         @map("document_id") @db.Uuid
+  id                     String         @id @db.Uuid
+  tenantId               String         @map("tenant_id") @db.Uuid
+  documentId             String         @map("document_id") @db.Uuid
   /// Contiguous and strictly increasing per document, from zero.
-  ordinal      Int
+  ordinal                Int
   /// Rendered from the ordinal at creation, in the type's style. Stored rather than derived on
   /// read, because a type whose style changes must not silently relabel history.
-  label        String
-  status       RevisionStatus @default(DRAFT)
-  fileObjectId String         @map("file_object_id") @db.Uuid
+  label                  String
+  status                 RevisionStatus @default(DRAFT)
+  fileObjectId           String         @map("file_object_id") @db.Uuid
   /// The filename as uploaded. What a download is named, and what the library shows beside a
   /// title somebody typed — the two are frequently different and both are wanted.
-  filename     String
+  filename               String
   /// What the author said about this revision. Free text, and not the document's description.
-  changeNote   String?        @map("change_note")
-  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy    String?        @map("created_by") @db.Uuid
-  updatedAt    DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy    String?        @map("updated_by") @db.Uuid
-  deletedAt    DateTime?      @map("deleted_at") @db.Timestamptz(6)
-  deletedBy    String?        @map("deleted_by") @db.Uuid
-  version      Int            @default(1)
+  changeNote             String?        @map("change_note")
+  /// When this revision became the effective one. Set at publication and never cleared — a
+  /// superseded revision keeps the instant it was published, which is half of its history.
+  publishedAt            DateTime?      @map("published_at") @db.Timestamptz(6)
+  /// The window this revision is (or was) effective for. On the revision rather than the
+  /// document (`10-revision-architecture.md` §6): effective dates describe one controlled
+  /// version, and the document's own effectiveness is its current revision's.
+  effectiveFrom          DateTime?      @map("effective_from") @db.Date
+  effectiveTo            DateTime?      @map("effective_to") @db.Date
+  /// Set when this revision was created by restoring an older one. Restore never rewinds:
+  /// it creates a new revision carrying old content, and this records which
+  /// (`10-revision-architecture.md` §5).
+  restoredFromRevisionId String?        @map("restored_from_revision_id") @db.Uuid
+  /// Every tenant-defined metadata value as it stood at publication, so an approved revision
+  /// can prove what the approver actually saw after the document's live metadata moves on
+  /// (`10-revision-architecture.md` §6). Null until published.
+  metadataSnapshot       Json?          @map("metadata_snapshot")
+  createdAt              DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy              String?        @map("created_by") @db.Uuid
+  updatedAt              DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy              String?        @map("updated_by") @db.Uuid
+  deletedAt              DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  deletedBy              String?        @map("deleted_by") @db.Uuid
+  version                Int            @default(1)
 
   tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   document          Document           @relation("RevisionDocument", fields: [documentId], references: [id], onDelete: Restrict)
   fileObject        FileObject         @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+  restoredFrom      DocumentRevision?  @relation("RevisionRestoredFrom", fields: [restoredFromRevisionId], references: [id], onDelete: Restrict)
+  restoredTo        DocumentRevision[] @relation("RevisionRestoredFrom")
   currentOf         Document[]         @relation("DocumentCurrentRevision")
   previews          PreviewArtifact[]
   workflowInstances WorkflowInstance[]
+  locksCheckedOut   DocumentLock[]     @relation("LockCheckedOutRevision")
+  locksDrafting     DocumentLock[]     @relation("LockDraftRevision")
 
   /// Not partial: an ordinal is never re-used, so a deleted revision still holds its place. A
   /// history with a gap and a history with two revision 2s are both unusable as evidence.
@@ -1601,6 +1642,53 @@ model DocumentRevision {
   @@index([tenantId, documentId, ordinal(sort: Desc)], map: "ix_revision_document")
   @@index([tenantId, fileObjectId], map: "ix_revision_file")
   @@map("document_revision")
+}
+
+/// The check-out lock: one person's exclusive claim on producing a document's next revision.
+///
+/// A row per check-out rather than a flag on the document, because the history is the point:
+/// who held it, since when, how it ended and why are compliance questions, and a boolean
+/// answers none of them. The live lock is the row with `released_at IS NULL`, and
+/// `uq_document_lock_live` (partial, in the migration — Prisma cannot express it) is what
+/// makes two racing check-outs produce one lock and one refusal rather than two locks —
+/// the same shape, for the same reason, as `uq_workflow_instance_live`.
+model DocumentLock {
+  id                   String                     @id @db.Uuid
+  tenantId             String                     @map("tenant_id") @db.Uuid
+  documentId           String                     @map("document_id") @db.Uuid
+  lockedBy             String                     @map("locked_by") @db.Uuid
+  /// The published revision the holder took away to edit — what "editing from" resolves to.
+  checkedOutRevisionId String?                    @map("checked_out_revision_id") @db.Uuid
+  /// The working draft checked in under this lock while it stays held. Null until a check-in
+  /// keeps the lock; cancelling the check-out discards the revision this names.
+  draftRevisionId      String?                    @map("draft_revision_id") @db.Uuid
+  acquiredAt           DateTime                   @map("acquired_at") @db.Timestamptz(6)
+  /// When the claim lapses, computed at acquisition from the tenant's own setting. An expired
+  /// live lock no longer excludes anybody; the next operation releases it as `EXPIRED`.
+  expiresAt            DateTime                   @map("expires_at") @db.Timestamptz(6)
+  releasedAt           DateTime?                  @map("released_at") @db.Timestamptz(6)
+  releasedBy           String?                    @map("released_by") @db.Uuid
+  releaseReason        DocumentLockReleaseReason? @map("release_reason")
+  /// Required when the release was forced: taking somebody's lock away is an act that has to
+  /// answer "why", and the audit event carries the same sentence.
+  releaseNote          String?                    @map("release_note")
+  createdAt            DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy            String?                    @map("created_by") @db.Uuid
+  updatedAt            DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy            String?                    @map("updated_by") @db.Uuid
+  version              Int                        @default(1)
+
+  tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document           Document          @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  holder             User              @relation(fields: [lockedBy], references: [id], onDelete: Restrict)
+  checkedOutRevision DocumentRevision? @relation("LockCheckedOutRevision", fields: [checkedOutRevisionId], references: [id], onDelete: Restrict)
+  draftRevision      DocumentRevision? @relation("LockDraftRevision", fields: [draftRevisionId], references: [id], onDelete: Restrict)
+
+  /// "Who has this checked out, and who had it" — the lock history of one document.
+  @@index([tenantId, documentId, acquiredAt(sort: Desc)], map: "ix_document_lock_document")
+  /// "What do I have checked out" — one person's live claims.
+  @@index([tenantId, lockedBy], map: "ix_document_lock_holder")
+  @@map("document_lock")
 }
 
 /// One tenant-defined field's value on one document.
@@ -1863,11 +1951,11 @@ model WorkflowInstance {
   updatedBy         String?               @map("updated_by") @db.Uuid
   version           Int                   @default(1)
 
-  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  document        Document           @relation(fields: [documentId], references: [id], onDelete: Restrict)
-  revision        DocumentRevision   @relation(fields: [revisionId], references: [id], onDelete: Restrict)
-  definition      WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
-  workflowVersion WorkflowVersion    @relation(fields: [workflowVersionId], references: [id], onDelete: Restrict)
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document           Document            @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision           DocumentRevision    @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  definition         WorkflowDefinition  @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  workflowVersion    WorkflowVersion     @relation(fields: [workflowVersionId], references: [id], onDelete: Restrict)
   stages             WorkflowStage[]
   tasks              ApprovalTask[]
   comments           WorkflowComment[]

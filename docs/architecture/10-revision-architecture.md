@@ -133,3 +133,47 @@ The snapshot is what makes the audit answer "what did the approver actually see"
 - Old revisions are lifecycle-tiered to cold storage after a configurable age; retrieval from cold
   storage is transparent but slower, and the UI says so ([11](./11-storage-architecture.md)).
 - Purging a document decrements every reference; blobs at zero are deleted after a grace period.
+
+## Phase 6 — what was built
+
+Phase 3 created ordinal zero and called it the whole of Revision; Phase 6 built everything above.
+
+**The lock is `document_lock`, and the race is the index's.** One live lock per document is
+`uq_document_lock_live` — partial on `released_at IS NULL`, the same shape as
+`uq_workflow_instance_live` — so two check-outs racing produce one lock and one refusal naming the
+holder, never a read-then-check answer. The lock order against the document row is fixed and
+stated in `revision-control.service.ts`: the document row first (under its optimistic version),
+the lock row second, revision rows last. Expiry is a tenant setting
+(`documents.checkoutExpiryHours`); an expired live lock is swept aside by the next operation that
+wants the document — released as `EXPIRED`, audited — rather than by a background job, because a
+lock nobody wants to take over excludes nobody. §3's error-shape note said `409`; the platform's
+error catalogue maps `LOCKED` to `423 Locked`, which is what the refusal carries, holder named.
+
+**Check-in creates the draft; cancel can discard one.** §3's cancel row ("draft revision
+discarded") is reachable through `keepCheckedOut`: a check-in may record the new revision as the
+lock's working draft and keep the claim, a further check-in replaces it (`DISCARDED`, ordinal
+spent, blob dereferenced), and a cancel discards it and returns the document to `PUBLISHED`
+untouched. Force check-in preserves the holder's draft by default, exactly as the table above
+says, and requires the reason its audit event records. "Multiple file check-in" is many
+*documents* in one request — one file per revision is ADR-0003, so several files for one document
+is refused by the contract's construction, not modelled around.
+
+**Publication supersedes in the same transaction, and the database referees.**
+`uq_revision_published` (partial on `status = 'PUBLISHED'`) is the second half of rule 5;
+`uq_document_current_revision` was already the first. Publication writes `published_at`, the
+effective window and the **metadata snapshot** of §6 onto the revision, moves the prior published
+revision to `SUPERSEDED` (its own `published_at` kept), and points `current_revision_id` at the
+new one — one transaction, refused whole under a race. Effective dates live on the revision, as
+§6 states, not on the document as the 05 sketch once drew them.
+
+**Restore costs a row, not a copy — proven in rows.** The restored revision references the old
+blob (`ref_count` up by one, no new `file_object`), records `restored_from_revision_id` — with a
+trigger refusing a source from another document — and enters the normal lifecycle as a draft.
+Mechanically it is a check-out and check-in in one transaction, so the lock history says it
+happened.
+
+**The compare API answers what the pipeline can answer honestly.** Content by checksum, metadata
+by the published snapshots (a draft has none, and the response says `available: false` rather
+than diffing live values), approval history via the approval timeline that already exists. Text
+and page comparison state `UNAVAILABLE`: they consume [14](./14-preview-architecture.md)'s
+artefacts, and rendering them is Phase 7's.

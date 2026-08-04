@@ -1,6 +1,7 @@
 import type {
   CategoryId,
   DocumentId,
+  DocumentLockReleaseReasonKey,
   DocumentOriginKey,
   DocumentStatusKey,
   DocumentTypeId,
@@ -83,7 +84,21 @@ export interface DocumentRow extends DocumentRecord {
   readonly confidentialityRank: number;
   readonly isFavorite: boolean;
   readonly latestRevision: RevisionView | null;
+  /** The published revision, when one exists — what a reader is reading. */
+  readonly currentRevision: RevisionView | null;
+  /** The live check-out lock, so a screen can say who holds it without a second call. */
+  readonly liveLock: LockView | null;
   readonly metadata: readonly MetadataView[];
+}
+
+export interface LockView {
+  readonly id: string;
+  readonly lockedBy: UserId;
+  readonly lockedByName: string | null;
+  readonly acquiredAt: Date;
+  readonly expiresAt: Date;
+  /** Set once a check-in kept the lock: the working draft a cancel would discard. */
+  readonly draftRevisionId: string | null;
 }
 
 export interface RevisionView {
@@ -183,6 +198,12 @@ export interface DocumentRepository {
   setDeleted(id: DocumentId, expectedVersion: number, deleted: boolean): Promise<void>;
   /** Called by the revision writer's caller once the first revision exists. */
   attachLatestRevision(id: DocumentId, revisionId: string): Promise<void>;
+  /**
+   * Points the document at its effective revision. Written by publication, inside the same
+   * transaction that moved the revision to `PUBLISHED` — the two halves of "exactly one
+   * published revision" commit together or not at all.
+   */
+  setCurrentRevision(id: DocumentId, revisionId: string): Promise<void>;
   replaceMetadata(id: DocumentId, values: ReadonlyMap<string, MetadataColumns>): Promise<void>;
 
   /** The library's own read of the folder tree: how many documents sit beneath a folder. */
@@ -227,9 +248,12 @@ export interface RecentRow {
 /**
  * What Document needs from Revision, in Document's own words.
  *
- * Implemented in the Revision module, which owns `document_revision` and everything that will
- * later be done to one. Phase 3 needs exactly one operation — create the first revision — because
- * check-out, check-in, compare and restore are Phase 6's and publishing is Phase 4's.
+ * Implemented in the Revision module, which owns `document_revision`. Phase 3 needed exactly one
+ * operation — create the first revision — and Phase 6 is what the rest were waiting for: the next
+ * revision at check-in, the status moves the two-machine model needs, publication with its
+ * supersession, and the discard a cancelled check-out performs. Every operation joins the
+ * caller's transaction, and the implementation publishes Revision's own events from inside it —
+ * Document never has to know Revision's vocabulary to cause a fact in it.
  */
 export interface RevisionWriter {
   createInitial(input: {
@@ -239,6 +263,121 @@ export interface RevisionWriter {
     changeNote: string | null;
     labelStyle: string;
   }): Promise<{ readonly revisionId: string; readonly label: string }>;
+
+  /**
+   * The next revision: ordinal max+1, `DRAFT`, labelled once in the type's style against the
+   * document's real publication lineage. `restoredFromRevisionId` set when this is a restore —
+   * the row that makes "a new revision carrying an older revision's content" provable.
+   */
+  createNext(input: {
+    documentId: string;
+    fileObjectId: string;
+    filename: string;
+    changeNote: string | null;
+    labelStyle: string;
+    restoredFromRevisionId: string | null;
+  }): Promise<{ readonly revisionId: string; readonly ordinal: number; readonly label: string }>;
+
+  /** One revision, described. Null when it does not exist or belongs to another document. */
+  describe(documentId: string, revisionId: string): Promise<RevisionFacts | null>;
+
+  /** The published revision of a document, or null. The one `uq_revision_published` allows. */
+  describePublished(documentId: string): Promise<RevisionFacts | null>;
+
+  /**
+   * Moves a revision between the working states (`DRAFT` ↔ `IN_APPROVAL`), guarded by what it
+   * currently is: a revision in neither named state is left alone rather than corrupted, which
+   * is what makes the engine's repeated transitions harmless.
+   */
+  setWorkingStatus(input: {
+    revisionId: string;
+    from: readonly RevisionStatusKey[];
+    to: RevisionStatusKey;
+  }): Promise<void>;
+
+  /**
+   * Publication's revision half, in one call so it is one fact: the prior published revision —
+   * if any — moves to `SUPERSEDED` first, then this one to `PUBLISHED` with its effective window
+   * and the metadata snapshot that proves what the approver saw. The order matters:
+   * `uq_revision_published` is not deferrable, and it is the constraint that decides a race.
+   */
+  publish(input: {
+    documentId: string;
+    revisionId: string;
+    publishedAt: Date;
+    effectiveFrom: Date;
+    effectiveTo: Date | null;
+    metadataSnapshot: Readonly<Record<string, unknown>>;
+  }): Promise<{ readonly supersededRevisionId: string | null }>;
+
+  /** A draft abandoned by cancel or replaced by a further check-in. Kept, marked, evented. */
+  discard(input: { documentId: string; revisionId: string }): Promise<void>;
+}
+
+export interface RevisionFacts {
+  readonly id: RevisionId;
+  readonly documentId: DocumentId;
+  readonly ordinal: number;
+  readonly label: string;
+  readonly status: RevisionStatusKey;
+  readonly fileObjectId: string;
+  readonly filename: string;
+  readonly changeNote: string | null;
+  readonly publishedAt: Date | null;
+  readonly restoredFromRevisionId: string | null;
+}
+
+/**
+ * The check-out lock. Declared in Phase 0.5, bound in Phase 6.
+ *
+ * `acquire` is an insert against `uq_document_lock_live` and nothing else — never a read
+ * followed by a check, because the check that ran a moment earlier is a moment old. Two
+ * check-outs racing therefore produce one lock and one `DocumentLockedError`, decided by the
+ * index, whatever both believed they had read.
+ */
+export interface DocumentLockRepository {
+  /** Inserts the live lock. Throws `DocumentLockedError` when one already stands. */
+  acquire(input: {
+    id: string;
+    documentId: string;
+    lockedBy: string;
+    checkedOutRevisionId: string | null;
+    acquiredAt: Date;
+    expiresAt: Date;
+  }): Promise<LockRecord>;
+
+  /** The live lock on a document, expired or not. Null when nobody holds one. */
+  liveFor(documentId: DocumentId): Promise<LockRecord | null>;
+
+  /**
+   * Releases an expired live lock, if that is what stands, and says whose it was. Called at
+   * the head of any operation that may sweep a lapsed claim aside; a live, unexpired lock is
+   * left exactly as it is.
+   */
+  releaseExpired(documentId: DocumentId, now: Date): Promise<LockRecord | null>;
+
+  /** Ends the lock with its reason. The row stays: lock history is the point of having rows. */
+  release(input: {
+    lockId: string;
+    reason: DocumentLockReleaseReasonKey;
+    releasedBy: string | null;
+    releaseNote: string | null;
+    at: Date;
+  }): Promise<void>;
+
+  /** Records the working draft a check-in created while keeping the lock. */
+  attachDraft(lockId: string, revisionId: string | null): Promise<void>;
+}
+
+export interface LockRecord {
+  readonly id: string;
+  readonly documentId: DocumentId;
+  readonly lockedBy: UserId;
+  readonly checkedOutRevisionId: string | null;
+  readonly draftRevisionId: string | null;
+  readonly acquiredAt: Date;
+  readonly expiresAt: Date;
+  readonly releasedAt: Date | null;
 }
 
 /**
