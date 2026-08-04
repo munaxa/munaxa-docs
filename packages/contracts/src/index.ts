@@ -11,6 +11,12 @@
  * and what the document means are two objects on the wire because they are two facts with two
  * lifetimes.
  *
+ * Phase 4 adds `workflow/` — a *running* approval, which is deliberately not the same contract as
+ * the definition it runs. `admin/workflow.ts` is what somebody authors; `workflow/approval.ts` is
+ * what somebody being asked to decide sees, and it is a timeline rather than a set of rows, because
+ * a client assembling one from three flat collections could render it in an order the engine did
+ * not mean.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -32,6 +38,8 @@ export * from './admin/configuration';
 export * from './admin/numbering';
 export * from './admin/library';
 export * from './admin/workflow';
+export * from './admin/approval-routing';
 export * from './admin/settings';
 export * from './documents/upload';
 export * from './documents/document';
+export * from './workflow/approval';

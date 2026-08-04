@@ -2,13 +2,14 @@
 
 Product root for **Munaxa Docs**, the Enterprise Document Management System (EDMS).
 
-**Phase 0.5 is complete: the technical skeleton exists and there are no business features.**
-Phase 0 designed the architecture; Phase 0.5 built the structure that implements it — apps,
-packages, layers, ports, dependency injection, the message pipeline, the API and frontend
-foundations, the database foundation and the test and DevOps foundations. No upload, no
-approval, no workflow, no revision, no document. Phase 1 starts from here.
+**The product is built through Phase 4: documents are created, submitted, approved and rejected.**
+Phase 0 designed the architecture and Phase 0.5 built the structure that implements it; Phases 1
+through 3 added authentication, the whole of Administration, per-tenant infrastructure and the
+document library; Phase 4 added the approval engine — and with it the first background work this
+product has ever run.
 
-Read the gate before starting: [Phase 0.5 architecture compliance report](./docs/reports/phase-0.5-architecture-compliance-report.md)
+Read the most recent report before starting: [Phase 4 — the workflow engine](./docs/reports/phase-4-workflow-engine.md).
+The original gate is the [Phase 0.5 architecture compliance report](./docs/reports/phase-0.5-architecture-compliance-report.md)
 and the [technical debt it records](./docs/reports/phase-0.5-technical-debt.md).
 
 This is now an **independent repository**. It owns its own API, apps, database, migrations,
@@ -83,5 +84,10 @@ cp .env.example .env              # then fill in JWT_ACCESS_SECRET
 pnpm prisma:generate
 pnpm build && pnpm test
 ```
+
+Redis is no longer optional. Phase 4 is the first phase with background work — the outbox dispatcher
+and the workflow engine's deadline timers — and `QUEUE_CONSUMERS_ENABLED` says which processes run
+it. It defaults to true, because a deployment where nothing consumes a lane is a deployment where
+approval deadlines silently never fire.
 
 Full reasoning: [`docs/architecture/01-monorepo-and-folder-structure.md`](./docs/architecture/01-monorepo-and-folder-structure.md).

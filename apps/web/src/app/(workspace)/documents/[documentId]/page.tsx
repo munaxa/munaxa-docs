@@ -7,6 +7,7 @@ import type {
   Department,
   Document,
   DocumentType,
+  DocumentWorkflow,
   Folder,
   MetadataField,
   User,
@@ -14,6 +15,7 @@ import type {
 import { DomainError, ErrorCode, Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
+import { ApprovalPanel } from '../../../../features/approvals/approval-panel';
 import { DocumentScreen } from '../../../../features/documents/document-screen';
 import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/admin/api';
 
@@ -28,6 +30,11 @@ import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/
  * The candidate folders for a move are limited to the document's own library. A document does not
  * cross libraries: its contents would move into a different permission chain, and there is no
  * confirmation dialogue that can honestly summarise that.
+ *
+ * The approval area is fetched alongside, in the same round of requests. Phase 4 added it, and it is
+ * on this page rather than a page of its own for one reason: "who must agree before this becomes
+ * official, and where has it got to" is a question about *this document*, and answering it somewhere
+ * else would make somebody navigate away from the thing they are deciding about.
  */
 export default async function DocumentPage({
   params,
@@ -50,23 +57,25 @@ export default async function DocumentPage({
     throw error;
   }
 
-  const [folders, categories, levels, users, departments, fields, types] = await Promise.all([
-    adminList<Folder>('/admin/folders', {
-      page: 1,
-      pageSize: 200,
-      sortBy: 'path',
-      sortDirection: 'asc',
-      search: '',
-      deleted: 'live',
-      filters: { libraryId: document.libraryId },
-    }),
-    adminOptions<Category>('/admin/categories', 'path'),
-    adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
-    adminOptions<User>('/admin/users', 'displayName'),
-    adminOptions<Department>('/admin/departments', 'path'),
-    adminOptions<MetadataField>('/admin/fields', 'name'),
-    adminOptions<DocumentType>('/admin/document-types', 'name'),
-  ]);
+  const [workflow, folders, categories, levels, users, departments, fields, types] =
+    await Promise.all([
+      adminGet<DocumentWorkflow>(`/documents/${documentId}/workflow`),
+      adminList<Folder>('/admin/folders', {
+        page: 1,
+        pageSize: 200,
+        sortBy: 'path',
+        sortDirection: 'asc',
+        search: '',
+        deleted: 'live',
+        filters: { libraryId: document.libraryId },
+      }),
+      adminOptions<Category>('/admin/categories', 'path'),
+      adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
+      adminOptions<User>('/admin/users', 'displayName'),
+      adminOptions<Department>('/admin/departments', 'path'),
+      adminOptions<MetadataField>('/admin/fields', 'name'),
+      adminOptions<DocumentType>('/admin/document-types', 'name'),
+    ]);
 
   const fieldsById = new Map(fields.data.map((field) => [field.id, field]));
   const type = types.data.find((candidate) => candidate.id === document.documentTypeId);
@@ -112,6 +121,15 @@ export default async function DocumentPage({
       canEdit={access.permissions.includes(Permission.DOCUMENT_EDIT)}
       canMove={access.permissions.includes(Permission.DOCUMENT_MOVE)}
       canDownload={access.permissions.includes(Permission.DOCUMENT_DOWNLOAD)}
+      approvals={
+        <ApprovalPanel
+          workflow={workflow}
+          canSubmit={access.permissions.includes(Permission.DOCUMENT_SUBMIT)}
+          canApprove={access.permissions.includes(Permission.DOCUMENT_APPROVE)}
+          canReject={access.permissions.includes(Permission.DOCUMENT_REJECT)}
+          canManage={access.permissions.includes(Permission.WORKFLOW_MANAGE)}
+        />
+      }
     />
   );
 }

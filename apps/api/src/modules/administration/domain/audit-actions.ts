@@ -22,6 +22,15 @@ export const AdministrationAudit = {
   RULE_CHANGED: 'RULE_CHANGED',
   /** One tenant setting. */
   SETTING_CHANGED: 'SETTING_CHANGED',
+  /**
+   * An approval group or a working calendar — Phase 4.
+   *
+   * Its own action rather than folded into `POLICY_CHANGED` for the same reason `RULE_CHANGED` is:
+   * these two decide *who is asked to approve* and *when they are considered late*, so "who changed
+   * the safety reviewers" and "who moved the holidays" are questions an investigation asks on their
+   * own, about a control rather than about a classification. The resource is in the payload.
+   */
+  ROUTING_CHANGED: 'ROUTING_CHANGED',
 } as const;
 
 export type AdministrationAuditAction =

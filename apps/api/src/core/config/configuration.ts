@@ -75,6 +75,25 @@ export const configSchema = z
 
     REDIS_URL: z.string().url(),
 
+    /**
+     * Whether this process consumes background jobs as well as enqueuing them.
+     *
+     * Phase 4 is the first phase with anything to consume — the outbox dispatcher and the workflow
+     * timers — and both run in the API process by default, because a single-server on-premise
+     * installation is one process and a deployment where nothing consumes a lane is a deployment
+     * where deadlines silently never fire.
+     *
+     * It is a switch rather than an assumption so that a horizontally scaled deployment can say so:
+     * every instance enqueues, and one runs the consumers. Stated in configuration rather than
+     * inferred from a hostname or an instance index, because "who is consuming this queue" must not
+     * be something an operator has to work out.
+     */
+    QUEUE_CONSUMERS_ENABLED: booleanFromEnv.default(true),
+
+    /** How many outbox rows the dispatcher claims per pass, and how often it looks. */
+    OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+    OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(200).max(60_000).default(2_000),
+
     /** Signing material for access tokens. Rotated by adding a key, never by editing one. */
     JWT_ISSUER: z.string().default('https://docs.munaxa.com'),
     JWT_AUDIENCE: z.string().default('munaxa-docs'),
@@ -284,6 +303,17 @@ export interface AppConfig {
     readonly maxTenantClients: number;
   };
   readonly redis: { readonly url: string };
+  /**
+   * Background work.
+   *
+   * Phase 4 is the first phase with any: the outbox has been accumulating events transactionally
+   * since Phase 1 with nothing consuming them, and the workflow engine's deadlines are delayed jobs.
+   */
+  readonly queue: {
+    readonly consumersEnabled: boolean;
+    readonly outboxBatchSize: number;
+    readonly outboxPollIntervalMs: number;
+  };
   readonly auth: {
     readonly issuer: string;
     readonly audience: string;
@@ -381,6 +411,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       maxTenantClients: raw.DATABASE_MAX_TENANT_CLIENTS,
     },
     redis: { url: raw.REDIS_URL },
+    queue: {
+      consumersEnabled: raw.QUEUE_CONSUMERS_ENABLED,
+      outboxBatchSize: raw.OUTBOX_BATCH_SIZE,
+      outboxPollIntervalMs: raw.OUTBOX_POLL_INTERVAL_MS,
+    },
     auth: {
       issuer: raw.JWT_ISSUER,
       audience: raw.JWT_AUDIENCE,

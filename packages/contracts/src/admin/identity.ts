@@ -36,6 +36,15 @@ export const departmentMembershipSchema = z.object({
    * both being accepted and the winner decided by query order.
    */
   isPrimary: z.boolean().default(false),
+  /**
+   * Whether this person manages the department rather than merely belonging to it.
+   *
+   * Added by Phase 4, because `MANAGER_OF` is one of the workflow engine's participant resolvers
+   * (`07-workflow-architecture.md` §2) and nothing in the model said who managed anything. A flag
+   * on the membership rather than a column on the department: a department can have two managers
+   * and a person can manage one department while belonging to three, and both are ordinary.
+   */
+  isManager: z.boolean().default(false),
 });
 
 export const createUserSchema = z.object({
@@ -90,6 +99,7 @@ export const userSchema = administered({
       name: z.string(),
       code: z.string(),
       isPrimary: z.boolean(),
+      isManager: z.boolean(),
     }),
   ),
 });

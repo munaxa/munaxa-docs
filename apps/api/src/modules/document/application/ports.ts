@@ -160,6 +160,15 @@ export interface DocumentRepository {
     },
   ): Promise<void>;
   move(id: DocumentId, expectedVersion: number, folderId: string): Promise<void>;
+  /**
+   * Moves the document's lifecycle status.
+   *
+   * Its own method rather than a field on `update`, because a status is never something a caller
+   * sets while editing a title: every transition is checked against the table in
+   * `domain/lifecycle.ts` and audited with both halves of the pair. A `status` that could arrive in
+   * a patch would be a way to publish a document by including a field in a form post.
+   */
+  setStatus(id: DocumentId, expectedVersion: number, status: DocumentStatusKey): Promise<void>;
   setDeleted(id: DocumentId, expectedVersion: number, deleted: boolean): Promise<void>;
   /** Called by the revision writer's caller once the first revision exists. */
   attachLatestRevision(id: DocumentId, revisionId: string): Promise<void>;

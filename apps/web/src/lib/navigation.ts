@@ -52,6 +52,15 @@ const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
     permission: Permission.DOCUMENT_VIEW,
   },
   {
+    // Phase 4. `document:view` rather than `document:approve`: the screen shows a person their own
+    // tasks and their own history, and somebody whose approvals have all been decided still has a
+    // history to read. The decisions themselves are gated on the endpoints behind them.
+    id: 'approvals',
+    href: '/approvals' as Route,
+    labelKey: 'nav.approvals',
+    permission: Permission.DOCUMENT_VIEW,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',

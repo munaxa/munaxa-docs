@@ -113,6 +113,13 @@ model Tenant {
   documents             Document[]
   documentRevisions     DocumentRevision[]
   previewArtifacts      PreviewArtifact[]
+  workflowInstances     WorkflowInstance[]
+  workflowStages        WorkflowStage[]
+  approvalTasks         ApprovalTask[]
+  workflowComments      WorkflowComment[]
+  workflowTimers        WorkflowTimer[]
+  approvalGroups        ApprovalGroup[]
+  workingCalendars      WorkingCalendar[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -303,6 +310,9 @@ model User {
   departments             UserDepartment[]
   favorites               DocumentFavorite[]
   documentViews           DocumentView[]
+  approvalTasks           ApprovalTask[]           @relation("TaskAssignee")
+  workflowComments        WorkflowComment[]
+  approvalGroups          ApprovalGroupMember[]
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -598,10 +608,11 @@ model Entity {
   deletedBy String?   @map("deleted_by") @db.Uuid
   version   Int       @default(1)
 
-  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  company     Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Restrict)
   branches    Branch[]
   departments Department[]
+  calendars   WorkingCalendar[]
 
   @@index([tenantId, companyId], map: "ix_entity_company")
   @@map("entity")
@@ -681,6 +692,14 @@ model UserDepartment {
   userId       String   @map("user_id") @db.Uuid
   departmentId String   @map("department_id") @db.Uuid
   isPrimary    Boolean  @default(false) @map("is_primary")
+  /// Whether this person manages the department rather than merely belonging to it.
+  ///
+  /// Added by Phase 4, because `MANAGER_OF` is a participant resolver
+  /// (`docs/architecture/07-workflow-architecture.md` §2) and nothing in the model said who
+  /// managed anything. A flag on the membership rather than a column on the department: a
+  /// department can have two managers and a person can manage one department while belonging to
+  /// three, and both are ordinary.
+  isManager    Boolean  @default(false) @map("is_manager")
   assignedAt   DateTime @default(now()) @map("assigned_at") @db.Timestamptz(6)
   assignedBy   String?  @map("assigned_by") @db.Uuid
 
@@ -1151,9 +1170,10 @@ model WorkflowDefinition {
   deletedBy   String?   @map("deleted_by") @db.Uuid
   version     Int       @default(1)
 
-  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   versions      WorkflowVersion[]
   documentTypes DocumentType[]
+  instances     WorkflowInstance[]
 
   @@index([tenantId, isActive], map: "ix_workflow_definition_active")
   @@map("workflow_definition")
@@ -1188,6 +1208,7 @@ model WorkflowVersion {
 
   tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   definitionRecord WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  instances        WorkflowInstance[]
 
   @@unique([definitionId, version], map: "uq_workflow_version_number")
   @@index([tenantId, definitionId, state], map: "ix_workflow_version_state")
@@ -1426,17 +1447,18 @@ model Document {
   deletedBy         String?        @map("deleted_by") @db.Uuid
   version           Int            @default(1)
 
-  tenant          Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  folder          Folder                  @relation(fields: [folderId], references: [id], onDelete: Restrict)
-  documentType    DocumentType            @relation(fields: [documentTypeId], references: [id], onDelete: Restrict)
-  category        Category?               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  confidentiality ConfidentialityLevel    @relation(fields: [confidentialityId], references: [id], onDelete: Restrict)
-  retentionPolicy RetentionPolicy?        @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
-  currentRevision DocumentRevision?       @relation("DocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
-  revisions       DocumentRevision[]      @relation("RevisionDocument")
-  metadataValues  DocumentMetadataValue[]
-  favorites       DocumentFavorite[]
-  views           DocumentView[]
+  tenant            Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  folder            Folder                  @relation(fields: [folderId], references: [id], onDelete: Restrict)
+  documentType      DocumentType            @relation(fields: [documentTypeId], references: [id], onDelete: Restrict)
+  category          Category?               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  confidentiality   ConfidentialityLevel    @relation(fields: [confidentialityId], references: [id], onDelete: Restrict)
+  retentionPolicy   RetentionPolicy?        @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
+  currentRevision   DocumentRevision?       @relation("DocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
+  revisions         DocumentRevision[]      @relation("RevisionDocument")
+  metadataValues    DocumentMetadataValue[]
+  favorites         DocumentFavorite[]
+  views             DocumentView[]
+  workflowInstances WorkflowInstance[]
 
   /// Deliberately **not** partial on `deleted_at`. A number stays reserved forever, so a deleted
   /// document still holds its own — which is the one exception to this schema's rule that a
@@ -1486,11 +1508,12 @@ model DocumentRevision {
   deletedBy    String?        @map("deleted_by") @db.Uuid
   version      Int            @default(1)
 
-  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  document   Document          @relation("RevisionDocument", fields: [documentId], references: [id], onDelete: Restrict)
-  fileObject FileObject        @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
-  currentOf  Document[]        @relation("DocumentCurrentRevision")
-  previews   PreviewArtifact[]
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document          Document           @relation("RevisionDocument", fields: [documentId], references: [id], onDelete: Restrict)
+  fileObject        FileObject         @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+  currentOf         Document[]         @relation("DocumentCurrentRevision")
+  previews          PreviewArtifact[]
+  workflowInstances WorkflowInstance[]
 
   /// Not partial: an ordinal is never re-used, so a deleted revision still holds its place. A
   /// history with a gap and a history with two revision 2s are both unusable as evidence.
@@ -1619,4 +1642,440 @@ model PreviewArtifact {
   @@unique([revisionId, kind, page], map: "uq_preview_artifact")
   @@index([tenantId, revisionId], map: "ix_preview_revision")
   @@map("preview_artifact")
+}
+
+// ---------------------------------------------------------------------------------------
+// Phase 4 — the workflow engine.
+//
+//   Phase 2 built the *definitions*: a workflow is versioned data, and a published version is
+//   immutable. These are the tables that read one. The split runs all the way down — a
+//   definition says "the author's manager approves"; an instance says "Dana approved, on
+//   Tuesday, under version 3" — and it is what makes "which rules was this approved under"
+//   answerable years after somebody edited the workflow
+//   (`docs/architecture/07-workflow-architecture.md` §1).
+//
+//   Four shapes recur here and each is load-bearing:
+//
+//     A **task is decided once**. `decision` is nullable and the update that fills it carries
+//     `AND decision IS NULL` in its `WHERE`; zero rows affected is a conflict, never an
+//     overwrite. A duplicate approval corrupts a quorum count, which is the one arithmetic in
+//     this product an auditor will re-derive by hand (§8).
+//
+//     **Timers are rows, not only jobs.** BullMQ holds the delayed job; `workflow_timer` holds
+//     what the job is *for*. That is what lets a stage cancel its timers, a paused instance
+//     store the time it had left and resume with it rather than restarting the clock (§6), and
+//     a reminder record that it has already fired.
+//
+//     **Both identities travel together.** A task carries who it belongs to and who decided
+//     it. Delegation is Phase 11 and is not built here, but a task that could only record one
+//     person would have to be migrated before it could be — so the columns exist and the audit
+//     already reads them (§4).
+//
+//     **Nothing here is soft-deleted.** An approval is evidence. A workflow that ends without a
+//     decision is `CANCELLED` with a stated reason; there is no state in which a decision was
+//     taken and the row that records it is gone.
+//
+//   Two configuration tables arrive with the engine because the engine cannot resolve without
+//   them: the working-day calendar deadlines are counted against (§6), and the approval groups
+//   the `GROUP` participant resolver names (§2).
+// ---------------------------------------------------------------------------------------
+
+/// Why a stage's tasks exist and what ends it.
+enum WorkflowInstanceState {
+  RUNNING
+  /// Timers are stopped and the remaining duration is stored. Nothing decides while paused.
+  PAUSED
+  COMPLETED
+  REJECTED
+  CANCELLED
+
+  @@map("workflow_instance_state")
+}
+
+enum WorkflowStageState {
+  PENDING
+  ACTIVE
+  COMPLETED
+  /// The stage's condition did not hold. Never used for "nobody resolved" — that fails loudly.
+  SKIPPED
+  /// The instance ended before this stage ran.
+  CANCELLED
+
+  @@map("workflow_stage_state")
+}
+
+/// What happened to one person's task, independently of what they decided.
+///
+/// Separate from `decision` because the two answer different questions. `SUPERSEDED` is an `ANY`
+/// stage's other tasks once somebody approved; `WITHDRAWN` is a task the instance ended under.
+/// Both are undecided, and neither is pending — a distinction an approval inbox has to make.
+enum ApprovalTaskState {
+  PENDING
+  DECIDED
+  WITHDRAWN
+  SUPERSEDED
+
+  @@map("approval_task_state")
+}
+
+enum TaskDecision {
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+
+  @@map("task_decision")
+}
+
+/// What a scheduled timer is for.
+enum WorkflowTimerKind {
+  DEADLINE
+  REMINDER
+
+  @@map("workflow_timer_kind")
+}
+
+enum WorkflowTimerState {
+  SCHEDULED
+  /// Held while its instance is paused, with `remaining_ms` carrying what was left.
+  PAUSED
+  FIRED
+  CANCELLED
+
+  @@map("workflow_timer_state")
+}
+
+/// One approval attempt on one revision of one document.
+///
+/// It binds to a **version**, never to a definition. Publishing a new version leaves this row
+/// reading the rules it started under, which `07-workflow-architecture.md` §1 calls the single
+/// most important property of the engine — and which is why `workflow_version` has no delete.
+model WorkflowInstance {
+  id                String                @id @db.Uuid
+  tenantId          String                @map("tenant_id") @db.Uuid
+  documentId        String                @map("document_id") @db.Uuid
+  /// The revision the approvers are deciding on. The bytes are frozen from submission, so this
+  /// is what "prove what was approved" resolves through: instance → revision → file → checksum.
+  revisionId        String                @map("revision_id") @db.Uuid
+  definitionId      String                @map("definition_id") @db.Uuid
+  workflowVersionId String                @map("workflow_version_id") @db.Uuid
+  state             WorkflowInstanceState @default(RUNNING)
+  /// The stage being decided. `-1` before the first activates and after the last completes, so
+  /// "which stage" never has to be inferred from a join.
+  currentStageIndex Int                   @default(-1) @map("current_stage_index")
+  startedAt         DateTime              @map("started_at") @db.Timestamptz(6)
+  startedBy         String?               @map("started_by") @db.Uuid
+  endedAt           DateTime?             @map("ended_at") @db.Timestamptz(6)
+  /// `WorkflowCancellationReason` for a cancellation; null otherwise. Never a free-text note —
+  /// the note is a comment, and the reason is what a report groups by.
+  endReason         String?               @map("end_reason")
+  pausedAt          DateTime?             @map("paused_at") @db.Timestamptz(6)
+  pauseReason       String?               @map("pause_reason")
+  /// How many escalations this instance has spent, against the definition's `maxEscalations`.
+  /// On the instance rather than the stage: a definition that escalates twice per stage across
+  /// six stages has escalated twelve times, and the cap is meant to stop a loop, not a stage.
+  escalationCount   Int                   @default(0) @map("escalation_count")
+  /// Set at completion when a number was assigned. Null while numbering is Phase 5's
+  /// ([ADR-0004](../docs/architecture/adr/0004-numbering-assigned-at-approval.md)).
+  numberAssigned    Boolean               @default(false) @map("number_assigned")
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?               @map("created_by") @db.Uuid
+  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy         String?               @map("updated_by") @db.Uuid
+  version           Int                   @default(1)
+
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document        Document           @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision        DocumentRevision   @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  definition      WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  workflowVersion WorkflowVersion    @relation(fields: [workflowVersionId], references: [id], onDelete: Restrict)
+  stages          WorkflowStage[]
+  tasks           ApprovalTask[]
+  comments        WorkflowComment[]
+  timers          WorkflowTimer[]
+
+  /// The approval history of one document, newest attempt first.
+  @@index([tenantId, documentId, startedAt(sort: Desc)], map: "ix_workflow_instance_document")
+  @@index([tenantId, state], map: "ix_workflow_instance_state")
+  /// "How many approvals bound to this version" — the count that makes a version undeletable.
+  @@index([tenantId, workflowVersionId], map: "ix_workflow_instance_version")
+  @@map("workflow_instance")
+}
+
+/// One stage of a running instance.
+///
+/// The definition's stage is copied here at activation rather than read back through the version
+/// on every query. Not denormalisation for speed: a stage's *condition* is evaluated once, at
+/// activation, against the document as it was then — so what the stage is running under has to be
+/// recorded, or "why did this stage not run" would have no answer.
+model WorkflowStage {
+  id             String             @id @db.Uuid
+  tenantId       String             @map("tenant_id") @db.Uuid
+  instanceId     String             @map("instance_id") @db.Uuid
+  /// Position in the definition. Contiguous from zero, because the definition's stages are an
+  /// array and their index is their order.
+  index          Int
+  name           String
+  completionRule String             @map("completion_rule")
+  /// The count for `QUORUM`, the percentage for `PERCENT`. Null for `ALL` and `ANY`.
+  threshold      Int?
+  /// Tasks inside this stage run in sequence rather than in parallel.
+  ordered        Boolean            @default(false)
+  state          WorkflowStageState @default(PENDING)
+  activatedAt    DateTime?          @map("activated_at") @db.Timestamptz(6)
+  completedAt    DateTime?          @map("completed_at") @db.Timestamptz(6)
+  /// When this stage becomes overdue. Computed at activation against the working-day calendar,
+  /// stored rather than recomputed: a tenant that adds a public holiday must not retroactively
+  /// move a deadline somebody has already been told about.
+  dueAt          DateTime?          @map("due_at") @db.Timestamptz(6)
+  /// Why the stage was skipped, when it was. `CONDITION_FALSE` is the only value the engine
+  /// writes; a stage is never skipped for want of participants (§8).
+  skipReason     String?            @map("skip_reason")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  version        Int                @default(1)
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instance WorkflowInstance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  tasks    ApprovalTask[]
+  comments WorkflowComment[]
+  timers   WorkflowTimer[]
+
+  @@unique([instanceId, index], map: "uq_workflow_stage_index")
+  @@index([tenantId, instanceId], map: "ix_workflow_stage_instance")
+  @@map("workflow_stage")
+}
+
+/// One resolved approver's task.
+///
+/// **Decided once.** `decision` is null until somebody decides, and the statement that fills it
+/// names `decision IS NULL` in its `WHERE`. Zero rows affected is a `409`, not a retry — two
+/// approvals from one task would make a quorum count say something that never happened (§3).
+model ApprovalTask {
+  id              String            @id @db.Uuid
+  tenantId        String            @map("tenant_id") @db.Uuid
+  instanceId      String            @map("instance_id") @db.Uuid
+  stageId         String            @map("stage_id") @db.Uuid
+  /// Whose task this is. The delegator, when a delegation is in play — the task never moves.
+  assigneeId      String            @map("assignee_id") @db.Uuid
+  /// Which resolver produced this assignee, for "why am I being asked to approve this".
+  resolvedBy      String            @map("resolved_by")
+  /// Position within an `ordered` stage. Zero for a parallel stage, where nothing is first.
+  sequence        Int               @default(0)
+  state           ApprovalTaskState @default(PENDING)
+  decision        TaskDecision?
+  /// Who actually decided. Equal to `assignee_id` unless a delegate acted (§4).
+  decidedById     String?           @map("decided_by_id") @db.Uuid
+  /// The delegator, set only when somebody decided on another person's behalf. Both identities
+  /// are here and in the audit event, which is what makes "who decided, and for whom" answerable
+  /// before delegation is built.
+  onBehalfOfId    String?           @map("on_behalf_of_id") @db.Uuid
+  decidedAt       DateTime?         @map("decided_at") @db.Timestamptz(6)
+  /// Required for a rejection and for a request for changes (`06-document-lifecycle.md` §3).
+  comment         String?
+  dueAt           DateTime?         @map("due_at") @db.Timestamptz(6)
+  /// The task this one escalated from, so an escalation chain reads in both directions.
+  escalatedFromId String?           @map("escalated_from_id") @db.Uuid
+  /// True when the engine decided this task itself, under a stage marked non-controlling.
+  autoDecided     Boolean           @default(false) @map("auto_decided")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  version         Int               @default(1)
+
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instance      WorkflowInstance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  stage         WorkflowStage     @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  assignee      User              @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: Restrict)
+  escalatedFrom ApprovalTask?     @relation("TaskEscalation", fields: [escalatedFromId], references: [id], onDelete: Restrict)
+  escalations   ApprovalTask[]    @relation("TaskEscalation")
+  comments      WorkflowComment[]
+  timers        WorkflowTimer[]
+
+  /// One resolver may not produce the same person twice in one stage: two tasks for one person
+  /// would count twice toward a quorum. Enforced here rather than only in the resolver, because
+  /// the resolver is where the de-duplication is easy to forget.
+  @@unique([stageId, assigneeId], map: "uq_approval_task_assignee")
+  /// The approval inbox. Partial on the state in the query rather than the index, because a
+  /// person's decided tasks are a list the same screen shows.
+  @@index([tenantId, assigneeId, state, dueAt], map: "ix_approval_task_inbox")
+  @@index([tenantId, instanceId], map: "ix_approval_task_instance")
+  @@index([tenantId, stageId], map: "ix_approval_task_stage")
+  @@map("approval_task")
+}
+
+/// Something somebody said about an approval.
+///
+/// Attached to the instance always, and to a stage and a task when it accompanied a decision.
+/// A decision's comment is stored on the task *and* here: the task's copy is the record of that
+/// decision and never changes, and this is the conversation, in order, that a reviewer reads.
+model WorkflowComment {
+  id         String        @id @db.Uuid
+  tenantId   String        @map("tenant_id") @db.Uuid
+  instanceId String        @map("instance_id") @db.Uuid
+  documentId String        @map("document_id") @db.Uuid
+  stageId    String?       @map("stage_id") @db.Uuid
+  taskId     String?       @map("task_id") @db.Uuid
+  authorId   String        @map("author_id") @db.Uuid
+  body       String
+  /// The decision this comment was made with, when it was made with one. Null for a remark.
+  decision   TaskDecision?
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instance WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  stage    WorkflowStage?   @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  task     ApprovalTask?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author   User             @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  /// The timeline: one instance's comments, oldest first, which is how a conversation reads.
+  @@index([tenantId, instanceId, createdAt], map: "ix_workflow_comment_instance")
+  @@index([tenantId, documentId, createdAt(sort: Desc)], map: "ix_workflow_comment_document")
+  @@map("workflow_comment")
+}
+
+/// A scheduled deadline or reminder, as a row.
+///
+/// The queue holds the delayed job; this holds what it is for. Three things need that and none of
+/// them can be answered by BullMQ: cancelling a stage has to cancel exactly its timers, a paused
+/// instance has to store the time each timer had left and resume with **that** rather than
+/// restarting the clock (§6), and a reminder has to record that it has already fired.
+///
+/// `job_id` is deterministic — derived from this row's identifier — so an at-least-once delivery
+/// that arrives twice is one job, and a re-enqueue after a pause replaces rather than duplicates.
+model WorkflowTimer {
+  id          String             @id @db.Uuid
+  tenantId    String             @map("tenant_id") @db.Uuid
+  instanceId  String             @map("instance_id") @db.Uuid
+  stageId     String             @map("stage_id") @db.Uuid
+  /// Set for a per-task reminder; null for a stage deadline.
+  taskId      String?            @map("task_id") @db.Uuid
+  kind        WorkflowTimerKind
+  state       WorkflowTimerState @default(SCHEDULED)
+  /// When it is due to fire. Recomputed on resume from `remaining_ms`, never re-derived from the
+  /// original duration — which is what "resumes with the remaining duration" means.
+  fireAt      DateTime           @map("fire_at") @db.Timestamptz(6)
+  /// What was left when the instance paused. Null whenever the timer is not paused.
+  remainingMs Int?               @map("remaining_ms")
+  firedAt     DateTime?          @map("fired_at") @db.Timestamptz(6)
+  /// The offset this reminder was scheduled at, so "which reminder" reads without arithmetic.
+  offset      String?
+  jobId       String             @map("job_id")
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  instance WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  stage    WorkflowStage    @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  task     ApprovalTask?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  /// The dispatcher's and the consumer's shared key. Unique per tenant so a job identifier can
+  /// never address two timers.
+  @@unique([tenantId, jobId], map: "uq_workflow_timer_job")
+  @@index([tenantId, instanceId, state], map: "ix_workflow_timer_instance")
+  @@index([tenantId, state, fireAt], map: "ix_workflow_timer_due")
+  @@map("workflow_timer")
+}
+
+/// A named set of people a workflow stage can address.
+///
+/// Administration's, not the engine's — the `GROUP` resolver names one by key and the engine
+/// never learns what is in it (§2, §8). It exists because a resolver that cannot resolve fails a
+/// submission loudly, so shipping the engine without the surface behind one of its resolver kinds
+/// would ship a definition that cannot be published usefully.
+///
+/// Deliberately not a role. A role carries permissions and is resolved on every request; a group
+/// is a routing list with no authority of its own, and conflating them would make "add Sam to the
+/// safety reviewers" a permission grant.
+model ApprovalGroup {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  key         String
+  name        String
+  description String?
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+  version     Int       @default(1)
+
+  tenant  Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  members ApprovalGroupMember[]
+
+  @@index([tenantId, isActive], map: "ix_approval_group_active")
+  @@map("approval_group")
+}
+
+model ApprovalGroupMember {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  groupId    String   @map("group_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz(6)
+  assignedBy String?  @map("assigned_by") @db.Uuid
+
+  group ApprovalGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  @@index([tenantId, userId], map: "ix_approval_group_member_user")
+  @@map("approval_group_member")
+}
+
+/// The working-day calendar a deadline duration is counted against.
+///
+/// `07-workflow-architecture.md` §6 says Administration owns this, and until now Administration
+/// had no calendar — while `WORKING_DAYS` is the *default* every stage deadline is authored with.
+/// A seam here would have meant every deadline in the product silently counting weekends, so the
+/// calendar is built rather than deferred.
+///
+/// Per entity, because a group with offices in two countries genuinely has two working weeks. One
+/// calendar per tenant is marked `is_default` and is what a document whose entity names none uses.
+model WorkingCalendar {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  code        String
+  name        String
+  /// Null for the tenant-wide calendar. Set for one that belongs to a single legal entity.
+  entityId    String?   @map("entity_id") @db.Uuid
+  /// ISO-8601 weekday numbers that are not worked: 1 is Monday, 7 is Sunday. An array rather
+  /// than seven booleans, because "which days are the weekend" is one fact and a Friday-Saturday
+  /// weekend is as ordinary as a Saturday-Sunday one.
+  weekendDays Int[]     @map("weekend_days")
+  /// The tenant's fallback. Exactly one live row per tenant carries it, enforced by a partial
+  /// unique index — a tenant with two defaults has no default.
+  isDefault   Boolean   @default(false) @map("is_default")
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+  version     Int       @default(1)
+
+  tenant   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  entity   Entity?                  @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  holidays WorkingCalendarHoliday[]
+
+  @@index([tenantId, entityId], map: "ix_working_calendar_entity")
+  @@map("working_calendar")
+}
+
+/// A day the calendar does not work.
+///
+/// A date rather than a timestamp: a public holiday is a calendar day in the tenant's own
+/// timezone, and storing an instant would make it land on the wrong day for half the world.
+model WorkingCalendarHoliday {
+  id         String   @id @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  calendarId String   @map("calendar_id") @db.Uuid
+  day        DateTime @db.Date
+  name       String
+
+  calendar WorkingCalendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@unique([calendarId, day], map: "uq_working_calendar_holiday")
+  @@index([tenantId, calendarId, day], map: "ix_working_calendar_holiday")
+  @@map("working_calendar_holiday")
 }

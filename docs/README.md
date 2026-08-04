@@ -15,9 +15,10 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 3 — the platform foundation, the whole of
-Administration, the per-tenant infrastructure the remaining phases are built on, and the document
-library that is the first thing to hold a customer's own content. Its map is
+The code the architecture describes exists through Phase 4 — the platform foundation, the whole of
+Administration, the per-tenant infrastructure the remaining phases are built on, the document library
+that is the first thing to hold a customer's own content, and the approval engine that moves a
+document through it. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -76,6 +77,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 4 — the workflow engine
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 4 — Workflow Engine](./reports/phase-4-workflow-engine.md) | The approval engine and the async half of the architecture: what one primitive bought, why the calendar was built rather than deferred, the concurrency defect the integration suite found, and what the phase deliberately does not do |
 
 ### Phase 3 — the document library
 

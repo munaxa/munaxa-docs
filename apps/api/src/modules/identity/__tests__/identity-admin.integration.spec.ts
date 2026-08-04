@@ -216,8 +216,8 @@ describe('creating a user', () => {
           displayName: 'Two Primary',
           roleIds: [],
           departments: [
-            { departmentId: first, isPrimary: true },
-            { departmentId: second, isPrimary: true },
+            { departmentId: first, isPrimary: true, isManager: false },
+            { departmentId: second, isPrimary: true, isManager: false },
           ],
         }),
       ),
@@ -265,7 +265,11 @@ describe('changing what somebody may do', () => {
     });
 
     await asAdmin(() =>
-      users.update(user.id, { departments: [{ departmentId, isPrimary: true }] }, user.version),
+      users.update(
+        user.id,
+        { departments: [{ departmentId, isPrimary: true, isManager: false }] },
+        user.version,
+      ),
     );
 
     const after = await owner.user.findUnique({

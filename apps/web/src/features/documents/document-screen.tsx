@@ -46,6 +46,7 @@ export function DocumentScreen({
   canEdit,
   canMove,
   canDownload,
+  approvals,
 }: {
   readonly document: Document;
   /** Candidate destinations for a move. Within the document's own library. */
@@ -59,6 +60,15 @@ export function DocumentScreen({
   readonly canEdit: boolean;
   readonly canMove: boolean;
   readonly canDownload: boolean;
+  /**
+   * The document's approval, rendered by Workflow's own feature and passed in.
+   *
+   * A slot rather than an import, so this screen keeps knowing nothing about approvals: the data it
+   * would need is fetched on the server beside the document, and a screen that reached for it would
+   * be a second place deciding what an approval looks like. Phase 4 added it and nothing else here
+   * changed.
+   */
+  readonly approvals?: ReactNode;
 }): ReactNode {
   const translate = useTranslate();
   const router = useRouter();
@@ -283,6 +293,8 @@ export function DocumentScreen({
           />
         </FormDialog>
       )}
+
+      {approvals}
 
       <p>
         <Button

@@ -107,7 +107,9 @@ export class AdministrationConfigurationAdapter implements DocumentConfiguration
 
     return {
       id: type.id,
+      code: type.code,
       name: type.name,
+      workflowDefinitionId: type.workflowDefinitionId,
       isActive: type.isActive,
       defaultConfidentialityId: type.defaultConfidentialityId,
       retentionPolicyId: type.retentionPolicyId,
@@ -134,8 +136,13 @@ export class AdministrationConfigurationAdapter implements DocumentConfiguration
         };
   }
 
+  async category(id: string): Promise<{ id: string; code: string } | null> {
+    const category = await this.notFoundAsNull(() => this.configuration.getCategory(id));
+    return category === null ? null : { id: category.id, code: category.code };
+  }
+
   async categoryExists(id: string): Promise<boolean> {
-    return (await this.notFoundAsNull(() => this.configuration.getCategory(id))) !== null;
+    return (await this.category(id)) !== null;
   }
 
   async userExists(id: string): Promise<boolean> {

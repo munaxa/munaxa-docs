@@ -231,6 +231,56 @@ export interface UserDirectory {
   contactFor(userId: UserId): Promise<UserContact | null>;
   /** Live users only, in one query — a notification to twenty people is not twenty round trips. */
   contactsFor(userIds: readonly UserId[]): Promise<readonly UserContact[]>;
+
+  // -------------------------------------------------------------------------------------
+  // Routing lookups — Phase 4.
+  //
+  // The workflow engine resolves a stage's participants at activation (`07-workflow-architecture.md`
+  // §2), and four of the seven resolver kinds are questions about *people*: who holds this role
+  // here, who belongs to this department, who manages this person, and which of these accounts is
+  // still active.
+  //
+  // They are added to this port rather than answered by a workflow repository reading `user` and
+  // `user_role`, because this interface is the whole of what other modules may know about a person
+  // and "nobody reads Identity's tables" is a rule with no exceptions in it. Every one of them is a
+  // read, returns identifiers, and is asked at a moment — none is cached, because a workflow that
+  // cached who a manager was would route an approval to somebody who left.
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * Everybody holding a role, optionally narrowed to one part of the organisation.
+   *
+   * `scope` narrows by the *user's* department or entity, which is what "the quality manager for
+   * this entity" means: roles are granted tenant-wide and the scope is where the holder sits. A
+   * scope naming a node that does not exist narrows to nobody rather than widening to the tenant —
+   * widening would silently route an approval meant for one department to every department.
+   */
+  holdersOfRole(roleKey: string, scope: DirectoryScope): Promise<readonly UserId[]>;
+
+  /** A department's members, or only the ones who manage it. */
+  membersOfDepartment(departmentId: string, managersOnly: boolean): Promise<readonly UserId[]>;
+
+  /**
+   * Whoever manages this person.
+   *
+   * The managers of their **primary** department, falling back to every department they belong to
+   * when they have no primary one. A person can have two managers and that is an ordinary
+   * arrangement, so this returns a list rather than picking one — and the workflow that asks
+   * creates a task for each, which its completion rule then counts.
+   *
+   * A person who manages their own department is excluded from their own result: "escalate to my
+   * manager" resolving to me is an escalation that goes nowhere and hides that nobody is above me.
+   */
+  managersOf(userId: UserId): Promise<readonly UserId[]>;
+
+  /** Which of these are live and active. The filter every resolver ends with. */
+  activeAmong(userIds: readonly UserId[]): Promise<readonly UserId[]>;
+}
+
+/** Where a role lookup looks. `nodeId` is null for `TENANT`, and only for it. */
+export interface DirectoryScope {
+  readonly kind: 'TENANT' | 'ENTITY' | 'DEPARTMENT';
+  readonly nodeId: string | null;
 }
 
 export const USER_SERVICE = Symbol('UserService');

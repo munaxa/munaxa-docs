@@ -120,6 +120,23 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = Object.freeze([
         descriptionKey: 'admin.workflows.description',
         permission: Permission.WORKFLOW_MANAGE,
       },
+      // Phase 4. Both sit directly after workflows and before them in nothing, because both are
+      // things a workflow *names*: a stage routes to a group, and a stage's deadline is counted
+      // against a calendar. An administrator authoring a workflow reaches for them from here.
+      {
+        id: 'approval-groups',
+        href: '/admin/approval-groups',
+        titleKey: 'admin.approvalGroups.title',
+        descriptionKey: 'admin.approvalGroups.description',
+        permission: Permission.WORKFLOW_MANAGE,
+      },
+      {
+        id: 'working-calendars',
+        href: '/admin/working-calendars',
+        titleKey: 'admin.calendars.title',
+        descriptionKey: 'admin.calendars.description',
+        permission: Permission.WORKFLOW_MANAGE,
+      },
     ],
   },
   {

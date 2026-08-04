@@ -147,6 +147,39 @@ tenant-wide — worse than not offering it.
 administrator sets its first password. A credential-bearing token belongs with the rest of the
 credential lifecycle in the security phase, not bolted onto administration.
 
+## Routing lookups — Phase 4
+
+`USER_DIRECTORY` gained four reads, and they are on that port rather than answered by a workflow
+repository for one reason: this interface is the whole of what other modules may know about a person,
+and "nobody reads Identity's tables" is a rule with no exceptions in it.
+
+| Read | Answers |
+| --- | --- |
+| `holdersOfRole` | Everybody with a role, narrowed to an entity or a department subtree |
+| `membersOfDepartment` | A department's members, or only the people who manage it |
+| `managersOf` | The managers of somebody's primary department |
+| `activeAmong` | Which of these accounts can actually sign in |
+
+Four of the workflow engine's seven participant resolver kinds are questions about people, and every
+one of them is asked *at stage activation* — [07 §2](../../../../../docs/architecture/07-workflow-architecture.md)
+resolves participants then precisely so an org change does not break a workflow authored before it.
+None of these is cached: a cache would reintroduce exactly the staleness the design removed, and the
+failure would show up as an approval routed to somebody who left.
+
+**`user_department.is_manager` is new**, and it is what makes `MANAGER_OF` resolvable at all —
+nothing in the model said who managed anything. A flag on the membership rather than a column on the
+department, because a department can have two managers and a person can manage one department while
+belonging to three. `managersOf` excludes the subject from their own result: "escalate to my manager"
+resolving to me is an escalation that goes nowhere and hides that there is nobody above me.
+
+`holdersOfRole` scoped to a node the document does not have narrows to **nobody**, never to the
+tenant. Widening is the dangerous default — it would route an approval meant for one department's
+quality manager to every quality manager in the organisation, silently.
+
 ## Still to build
 
 Delegation, MFA enrolment, and the events listed above — none of which are published yet.
+
+Delegation is Phase 11's and Phase 4 was careful not to make it unbuildable: an approval task carries
+`decided_by_id` and `on_behalf_of_id` already, the audit payload reads both, and the one check that
+phase relaxes — "the task belongs to you" — is in a single place in the engine.

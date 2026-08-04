@@ -7,13 +7,20 @@ import {
   NUMBERING_ADMIN_SERVICE,
   SETTINGS_ADMIN_SERVICE,
 } from './application/administration.ports';
+import {
+  APPROVAL_ROUTING_REPOSITORY,
+  APPROVAL_ROUTING_SERVICE,
+} from './application/approval-routing.ports';
+import { ApprovalRoutingService } from './application/approval-routing.service';
 import { ConfigurationService } from './application/configuration.service';
 import { NumberingAdminService } from './application/numbering-admin.service';
 import { SettingsAdminService } from './application/settings-admin.service';
 import { TENANT_SETTINGS_REPOSITORY } from './application/ports';
 import { CachedSettingsReader } from './infrastructure/cached-settings.reader';
+import { PrismaApprovalRoutingRepository } from './infrastructure/prisma-approval-routing.repository';
 import { PrismaConfigurationRepository } from './infrastructure/prisma-configuration.repository';
 import { PrismaTenantSettingsRepository } from './infrastructure/prisma-tenant-settings.repository';
+import { ApprovalRoutingController } from './presentation/approval-routing.controller';
 import {
   ConfigurationController,
   NumberingAdminController,
@@ -25,7 +32,7 @@ import {
  * Administration — How is this tenant configured?
  *
  * **Owns:** DocumentType, Category, MetadataField, NumberingRule and its sequences,
- * RetentionPolicy, ConfidentialityLevel, TenantSettings
+ * RetentionPolicy, ConfidentialityLevel, TenantSettings, ApprovalGroup, WorkingCalendar
  * **Depends on:** Organization
  *
  * `SETTINGS_READER` — settings are tenant configuration, which this module owns. The port is
@@ -51,6 +58,7 @@ import {
 @Module({
   controllers: [
     ConfigurationController,
+    ApprovalRoutingController,
     RetentionAdminController,
     NumberingAdminController,
     SettingsAdminController,
@@ -62,6 +70,8 @@ import {
     { provide: CONFIGURATION_SERVICE, useClass: ConfigurationService },
     { provide: NUMBERING_ADMIN_SERVICE, useClass: NumberingAdminService },
     { provide: SETTINGS_ADMIN_SERVICE, useClass: SettingsAdminService },
+    { provide: APPROVAL_ROUTING_REPOSITORY, useClass: PrismaApprovalRoutingRepository },
+    { provide: APPROVAL_ROUTING_SERVICE, useClass: ApprovalRoutingService },
   ],
   exports: [
     SETTINGS_READER,
@@ -70,6 +80,10 @@ import {
     // level, and Document asks about all three through this service rather than by reading the
     // rows behind it.
     CONFIGURATION_SERVICE,
+    // Phase 4: the workflow engine resolves a `GROUP` participant and counts a deadline against a
+    // working calendar. Both are this module's configuration, and both are reached through this
+    // service rather than by reading the rows behind them.
+    APPROVAL_ROUTING_SERVICE,
   ],
 })
 export class AdministrationModule {}
