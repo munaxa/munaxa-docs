@@ -146,18 +146,22 @@ draw a button that returns a 404.
 | `DRAFT → SUBMITTED → UNDER_REVIEW` | Submission, in one transaction: the instance, its stages and the first stage's tasks are created together |
 | `UNDER_REVIEW → CHANGES_REQUESTED` | An approver's decision. The instance ends with reason `RETURNED` |
 | `UNDER_REVIEW → REJECTED` | An approver's decision, per the stage's `onReject` |
-| `UNDER_REVIEW → APPROVED` | The final stage completing. The number seam is called and left unbound — see below |
+| `UNDER_REVIEW → APPROVED` | The final stage completing. The number is assigned through the seam, in the same transaction — see below |
 | `SUBMITTED`/`UNDER_REVIEW` `→ DRAFT` | Withdrawal by the author before anybody decided, or an administrative cancellation |
 
 `SUBMITTED` is a state a document passes *through* rather than rests in: the first stage activates
 inside the same transaction, because a document left `SUBMITTED` with no tasks would be waiting for a
 process that had already been asked to start.
 
-**`APPROVED` does not yet assign a number.** [ADR-0004](./adr/0004-numbering-assigned-at-approval.md)
-assigns one at approval and [07 §8](./07-workflow-architecture.md) forbids assigning one earlier; the
-allocator itself is Phase 5. The engine calls `DOCUMENT_NUMBER_ALLOCATOR` at completion, the port is
-unbound, and the instance records `numberAssigned: false`. A document that is approved and unnumbered
-is the honest state of a product without numbering.
+**`APPROVED` assigns the number — Phase 5.** [ADR-0004](./adr/0004-numbering-assigned-at-approval.md)
+reserves at submission and assigns at approval, and that is now what the machine does: submission
+draws the pending reference reviewers see, completion commits it onto `document.document_number` in
+the approval's own transaction, and every ending that is not an approval — rejection, return,
+withdrawal, cancellation — voids the reservation without returning the value to the pool
+([09](./09-numbering-architecture.md)). The engine's completion path did not change; the seam Phase 4
+left unbound was bound, which was the test of whether it was cut correctly.
 
 Publication, check-out, archival and purge are still not performed. `APPROVED → PUBLISHED` needs the
-effective-date policy and the "exactly one published revision" rule, which is Phase 6's territory.
+effective-date policy and the "exactly one published revision" rule, which is Phase 6's territory —
+though `ck_document_numbered_when_published` already stands, so a publication path that skipped
+numbering would be refused by the database before Phase 6 writes a line.

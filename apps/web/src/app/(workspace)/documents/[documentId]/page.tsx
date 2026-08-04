@@ -121,6 +121,7 @@ export default async function DocumentPage({
       canEdit={access.permissions.includes(Permission.DOCUMENT_EDIT)}
       canMove={access.permissions.includes(Permission.DOCUMENT_MOVE)}
       canDownload={access.permissions.includes(Permission.DOCUMENT_DOWNLOAD)}
+      canAssignNumber={access.permissions.includes(Permission.NUMBERING_MANAGE)}
       approvals={
         <ApprovalPanel
           workflow={workflow}

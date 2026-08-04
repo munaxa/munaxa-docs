@@ -166,7 +166,7 @@ CREATE INDEX ix_document_updated    ON document (tenant_id, updated_at DESC) WHE
 | `workflow_stage` | `instance_id`, `index`, `completion_rule`, `quorum`, `due_at`, `status` | |
 | `approval_task` | `stage_id`, `assignee_id`, `on_behalf_of_id NULL`, `decision`, `comment`, `decided_at`, `due_at`, `reminder_sent_at`, `escalated_from_task_id NULL` | `ix (tenant_id, assignee_id, decision) WHERE decision IS NULL` — the approval inbox |
 | `number_sequence` | `numbering_rule_id`, `scope_key text`, `next_value bigint` | `uq (tenant_id, numbering_rule_id, scope_key)` |
-| `number_reservation` | `sequence_id`, `value bigint`, `formatted text`, `document_id NULL`, `state`, `reserved_at`, `expires_at` | `uq (tenant_id, formatted)` |
+| `number_reservation` | `numbering_rule_id`, `scope_key`, `sequence_value bigint`, `formatted text`, `state`, `origin`, `document_id NULL`, `workflow_instance_id NULL`, `reserved_at`, `assigned_at NULL`, `voided_at NULL` | `uq (tenant_id, formatted)`; partial `uq` on the live `RESERVED` row per instance and per document. No `expires_at`: every instance-ending path voids in the same transaction, so a reservation cannot outlive its approval ([09](./09-numbering-architecture.md) Phase 5 notes) |
 | `retention_schedule` | `document_id`, `policy_id`, `trigger_at`, `due_at`, `disposition`, `state` | `ix (tenant_id, due_at) WHERE state = 'PENDING'` |
 | `legal_hold` | `document_id`, `reason`, `placed_by`, `placed_at`, `released_at NULL`, `released_by NULL` | Any live hold blocks disposition |
 
@@ -290,3 +290,19 @@ is, so that a deleted row never blocks a new one — but a document number stays
 precisely so it can never be re-issued ([ADR-0004](./adr/0004-numbering-assigned-at-approval.md)).
 `uq_revision_ordinal` is non-partial for the same kind of reason: a history with a gap and a history
 with two revision 2s are both unusable as evidence.
+
+## Phase 5 — the numbering table
+
+One table, one column and two enums were added; nothing existing changed shape.
+
+`number_reservation` records what became of every value a sequence has ever given out —
+`RESERVED`, `ASSIGNED`, `VOIDED`, `HELD` — with the rendered text stored at drawing time, never
+recomputed. `uq (tenant_id, formatted)` is the second half of the never-reused guarantee beside
+`uq_document_number`, and like the sequence, a reservation is never soft-deleted. Partial unique
+indexes keep at most one live `RESERVED` row per approval and per document; check constraints pair
+each state with exactly the facts that make it that state.
+
+`document.numbered_at` records the assignment instant beside the number, and
+`ck_document_numbered` ties the two together both ways. `ck_document_numbered_when_published` — the
+§3 sketch above — was added now, while `PUBLISHED` is not yet reachable, so the rule stands before
+Phase 6 builds the transition that must obey it.

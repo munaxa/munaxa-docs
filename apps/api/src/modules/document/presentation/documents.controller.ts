@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 
 import {
+  type AssignDocumentNumberBody,
   type Collection,
   type CreateDocumentBody,
   type Document,
@@ -21,12 +22,13 @@ import {
   type MoveDocumentBody,
   type RecentDocument,
   type UpdateDocumentBody,
+  assignDocumentNumberSchema,
   createDocumentSchema,
   documentListQuerySchema,
   moveDocumentSchema,
   updateDocumentSchema,
 } from '@edms/contracts';
-import { Permission, type UserId, asId } from '@edms/domain';
+import { type DocumentId, Permission, type UserId, asId } from '@edms/domain';
 import type { Page } from '@edms/utils';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
@@ -34,8 +36,8 @@ import { IfMatch } from '../../../core/http/admin-request';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { readMetadata } from '../domain/metadata';
-import { DOCUMENT_SERVICE } from '../application/ports';
-import type { DocumentRow, RecentRow } from '../application/ports';
+import { DOCUMENT_NUMBER_SERVICE, DOCUMENT_SERVICE } from '../application/ports';
+import type { DocumentNumberService, DocumentRow, RecentRow } from '../application/ports';
 import type { DefaultDocumentService } from '../application/document.service';
 
 /**
@@ -54,7 +56,10 @@ import type { DefaultDocumentService } from '../application/document.service';
  */
 @Controller({ path: 'documents', version: '1' })
 export class DocumentsController {
-  constructor(@Inject(DOCUMENT_SERVICE) private readonly documents: DefaultDocumentService) {}
+  constructor(
+    @Inject(DOCUMENT_SERVICE) private readonly documents: DefaultDocumentService,
+    @Inject(DOCUMENT_NUMBER_SERVICE) private readonly numbers: DocumentNumberService,
+  ) {}
 
   /**
    * The folder browser, the library browser and the favourites list — one endpoint.
@@ -131,6 +136,32 @@ export class DocumentsController {
   @Get(':id')
   @RequirePermission(Permission.DOCUMENT_VIEW)
   async get(@Param('id') id: string): Promise<Document> {
+    const row = await this.documents.open(id);
+    // The pending reference a reviewer holds, fetched only while it can exist: an unnumbered
+    // document may carry a live reservation; a numbered one never does.
+    const pendingNumber =
+      row.documentNumber === null
+        ? await this.numbers.pendingNumberFor(asId<DocumentId>(id))
+        : null;
+    return toDocument(row, pendingNumber);
+  }
+
+  /**
+   * Manual assignment and legacy import (`09-numbering-architecture.md` §3).
+   *
+   * `numbering:manage` rather than a document permission: recording a number by hand is a
+   * document controller's act on the numbering system — the same authority that configures the
+   * rules — not an edit of the document's content. The number is validated against the
+   * document's own rule and codes, the series fast-forwards past it, and a collision with any
+   * issued value is refused by the same constraints that protect the automatic path.
+   */
+  @Post(':id/number')
+  @RequirePermission(Permission.NUMBERING_MANAGE)
+  async assignNumber(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(assignDocumentNumberSchema)) body: AssignDocumentNumberBody,
+  ): Promise<Document> {
+    await this.numbers.assignManually(asId<DocumentId>(id), body.documentNumber);
     return toDocument(await this.documents.open(id));
   }
 
@@ -308,7 +339,7 @@ function stamps(
   };
 }
 
-function toDocument(row: DocumentRow): Document {
+function toDocument(row: DocumentRow, pendingNumber: string | null = null): Document {
   const revision = row.latestRevision;
   return {
     ...stamps(row),
@@ -329,6 +360,8 @@ function toDocument(row: DocumentRow): Document {
     status: row.status,
     origin: row.origin,
     documentNumber: row.documentNumber,
+    numberedAt: row.numberedAt === null ? null : row.numberedAt.toISOString(),
+    pendingNumber,
     ownerUserId: row.ownerUserId,
     latestRevision:
       revision === null

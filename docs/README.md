@@ -15,10 +15,11 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 4 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 5 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
-that is the first thing to hold a customer's own content, and the approval engine that moves a
-document through it. Its map is
+that is the first thing to hold a customer's own content, the approval engine that moves a document
+through it, and the numbering engine that gives an approved document its permanent identifier. Its
+map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -77,6 +78,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 5 — document numbering
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 5 — Document Numbering](./reports/phase-5-document-numbering.md) | The issuance half of the numbering architecture: the counter under concurrency, the decisions §2 and §3 left open and how each was taken, what binding Phase 4's seam proved, and what the phase deliberately does not do |
 
 ### Phase 4 — the workflow engine
 

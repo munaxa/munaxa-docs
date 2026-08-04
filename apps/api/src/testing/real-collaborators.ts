@@ -15,7 +15,10 @@ import { LocalStorageAdapter } from '../infrastructure/storage/local.adapter';
 import { TenantScopedStorage } from '../infrastructure/tenancy/tenant-scoped-storage';
 import { ConfigurationService } from '../modules/administration/application/configuration.service';
 import { NumberingAdminService } from '../modules/administration/application/numbering-admin.service';
+import { NumberingIssueService } from '../modules/administration/application/numbering-issue.service';
 import { PrismaConfigurationRepository } from '../modules/administration/infrastructure/prisma-configuration.repository';
+import { PrismaNumberIssueRepository } from '../modules/administration/infrastructure/prisma-number-issue.repository';
+import { DefaultDocumentNumberService } from '../modules/document/application/document-number.service';
 import { DefaultDocumentService } from '../modules/document/application/document.service';
 import { AdministrationConfigurationAdapter } from '../modules/document/infrastructure/administration-configuration.adapter';
 import { LibraryPlacementAdapter } from '../modules/document/infrastructure/library-placement.adapter';
@@ -37,6 +40,7 @@ import type { WorkflowDirectory } from '../modules/workflow/application/ports';
 import { WorkflowEngine } from '../modules/workflow/application/workflow-engine.service';
 import { WorkflowTimers } from '../modules/workflow/application/workflow-timers.service';
 import { DocumentContextAdapter } from '../modules/workflow/infrastructure/document-context.adapter';
+import { DocumentNumberAllocatorAdapter } from '../modules/workflow/infrastructure/document-number-allocator.adapter';
 import { PrismaApprovalQueryRepository } from '../modules/workflow/infrastructure/prisma-approval-query.repository';
 import { PrismaWorkflowEngineRepository } from '../modules/workflow/infrastructure/prisma-workflow-engine.repository';
 import { PrismaWorkflowVersionReader } from '../modules/workflow/infrastructure/prisma-workflow-version.reader';
@@ -233,6 +237,14 @@ export interface WorkflowEngineStack {
   readonly approvals: ApprovalService;
   readonly routing: ApprovalRoutingService;
   /**
+   * Phase 5's numbering, composed the way the container composes it — the issuance service over
+   * the real sequences and reservations, and Document's number service over that. Null when the
+   * stack was built `withoutNumbering`, which is Phase 4's deliberately unbound state.
+   */
+  readonly numbers: DefaultDocumentNumberService | null;
+  /** The issuance engine underneath it, for held blocks and the reservation listing. */
+  readonly issuance: NumberingIssueService | null;
+  /**
    * Phase 2's definition administration, composed here too.
    *
    * The engine suite needs a *published* version to bind to, and seeding one directly would
@@ -268,6 +280,12 @@ export interface WorkflowEngineOptions {
    * property this suite does assert.
    */
   readonly directory: WorkflowDirectory;
+  /**
+   * Composes the engine with `DOCUMENT_NUMBER_ALLOCATOR` unbound — Phase 4's state, kept
+   * composable because "an approval completes honestly unnumbered when nothing is bound" is
+   * still a property of the engine worth asserting.
+   */
+  readonly withoutNumbering?: boolean;
 }
 
 export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngineStack {
@@ -311,24 +329,57 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
   } as unknown as Logger;
 
   const timers = new WorkflowTimers(repository, queue, logger, stamps);
+
+  // The tenant's timezone, answered the way the settings reader answers it for a tenant with no
+  // override: the catalogue default. UTC, so the deadline and numbering assertions read as the
+  // dates somebody would check on a wall calendar.
+  const settings = {
+    get: (definition: { defaultValue: unknown }) => Promise.resolve(definition.defaultValue),
+  } as never;
+
+  // Phase 5's numbering, wired as the container wires it: Administration's issuance service over
+  // the real counters and reservations, Document's number service resolving the document's own
+  // codes, and the workflow adapter over that — bound to the engine's seam.
+  const issuance = options.withoutNumbering
+    ? null
+    : new NumberingIssueService(new PrismaNumberIssueRepository(), settings, writer);
+  const numbers =
+    issuance === null
+      ? null
+      : new DefaultDocumentNumberService(
+          new PrismaDocumentRepository(stamps),
+          new AdministrationConfigurationAdapter(
+            options.configuration,
+            realOrganizationService(),
+            // `userExists` is the one question this adapter would ask Identity, and numbering never
+            // asks it.
+            { get: () => Promise.resolve(null) } as never,
+          ),
+          new LibraryPlacementAdapter(
+            new LibraryAdminService(
+              new PrismaLibraryAdminRepository(stamps),
+              realOrganizationService(),
+              outbox,
+              writer,
+            ),
+          ),
+          realOrganizationService(),
+          issuance,
+          outbox,
+          writer,
+        );
+
   const engine = new WorkflowEngine(
     repository,
     new DocumentContextAdapter(options.documents),
     new PrismaWorkflowVersionReader(),
-    new WorkflowCalendarAdapter(routing, {
-      // The tenant's timezone, from settings. UTC here so the deadline assertions read as the dates
-      // somebody would check on a wall calendar.
-      get: () => Promise.resolve('UTC') as never,
-    } as never),
+    new WorkflowCalendarAdapter(routing, settings),
     outbox,
     logger,
     new ParticipantResolver(options.directory),
     timers,
     writer,
-    // `DOCUMENT_NUMBER_ALLOCATOR` is left unbound, exactly as the container leaves it. An approval
-    // completing with `numberAssigned: false` is what this build should produce, and the suite
-    // asserts it rather than papering over it with a stub.
-    null,
+    numbers === null ? null : new DocumentNumberAllocatorAdapter(numbers),
   );
 
   return {
@@ -336,6 +387,8 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     approvals: new ApprovalService(new PrismaApprovalQueryRepository(stamps), writer),
     routing,
     definitions: new WorkflowAdminService(new PrismaWorkflowAdminRepository(stamps), writer),
+    numbers,
+    issuance,
     enqueued,
     cancelled,
   };

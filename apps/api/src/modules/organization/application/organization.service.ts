@@ -90,4 +90,8 @@ export class DefaultOrganizationService {
   departmentsReachedBy(departmentIds: readonly AnyId[]): Promise<readonly ScopeNodeRecord[]> {
     return this.scopes.findSubtrees(departmentIds);
   }
+
+  branchCodeOf(departmentId: AnyId): Promise<string | null> {
+    return this.scopes.findBranchCodeOfDepartment(departmentId);
+  }
 }

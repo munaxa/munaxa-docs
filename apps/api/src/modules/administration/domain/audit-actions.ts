@@ -31,6 +31,15 @@ export const AdministrationAudit = {
    * own, about a control rather than about a classification. The resource is in the payload.
    */
   ROUTING_CHANGED: 'ROUTING_CHANGED',
+  /**
+   * A value drawn from a sequence and not yet a document's number — the pending reference a
+   * reviewer holds, and a controller's held block. Phase 5, with the two below.
+   */
+  NUMBER_RESERVED: 'NUMBER_RESERVED',
+  /** A document received its number. Written from the same transaction as the approval. */
+  NUMBER_ASSIGNED: 'NUMBER_ASSIGNED',
+  /** A reservation that will never become a number. The value is retained, never re-issued. */
+  NUMBER_VOIDED: 'NUMBER_VOIDED',
 } as const;
 
 export type AdministrationAuditAction =

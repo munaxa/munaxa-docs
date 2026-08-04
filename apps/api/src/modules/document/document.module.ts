@@ -7,12 +7,14 @@ import { OrganizationModule } from '../organization/organization.module';
 import { PreviewModule } from '../preview/preview.module';
 import { RevisionModule } from '../revision/revision.module';
 import { StorageModule } from '../storage/storage.module';
+import { DefaultDocumentNumberService } from './application/document-number.service';
 import { DefaultDocumentService } from './application/document.service';
 import { DOCUMENT_CONFIGURATION } from './application/configuration.port';
 import { DOCUMENT_PLACEMENT } from './application/placement.port';
 import {
   DOCUMENT_ACTIVITY_REPOSITORY,
   DOCUMENT_CONTENT_GATE,
+  DOCUMENT_NUMBER_SERVICE,
   DOCUMENT_REPOSITORY,
   DOCUMENT_SERVICE,
 } from './application/ports';
@@ -73,7 +75,10 @@ import { DocumentsController } from './presentation/documents.controller';
     { provide: DOCUMENT_PLACEMENT, useClass: LibraryPlacementAdapter },
     { provide: DOCUMENT_CONTENT_GATE, useClass: StorageContentGateAdapter },
     { provide: DOCUMENT_SERVICE, useClass: DefaultDocumentService },
+    { provide: DOCUMENT_NUMBER_SERVICE, useClass: DefaultDocumentNumberService },
   ],
-  exports: [DOCUMENT_SERVICE],
+  // `DOCUMENT_NUMBER_SERVICE` is exported for exactly one consumer: Workflow's allocator
+  // adapter, which is how the engine's `DOCUMENT_NUMBER_ALLOCATOR` seam gets its binding.
+  exports: [DOCUMENT_SERVICE, DOCUMENT_NUMBER_SERVICE],
 })
 export class DocumentModule {}

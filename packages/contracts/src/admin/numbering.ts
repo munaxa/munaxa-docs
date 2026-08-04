@@ -1,14 +1,20 @@
 import { z } from 'zod';
 
 import {
+  ALL_NUMBER_ORIGINS,
+  ALL_NUMBER_RESERVATION_STATES,
   ALL_NUMBER_SEGMENT_KINDS,
   ALL_SEQUENCE_RESET_SCOPES,
+  type NumberOriginKey,
+  type NumberReservationStateKey,
   type NumberSegmentKindKey,
   NumberSegmentKind,
   SequenceResetScope,
   type SequenceResetScopeKey,
 } from '@edms/domain';
 
+import { isoDateTimeSchema, uuidSchema } from '../common/identifiers';
+import { pageQuerySchema } from '../common/pagination';
 import { adminListQuerySchema } from '../common/query';
 import { administered, configurationKeySchema, descriptionSchema, nameSchema } from './record';
 
@@ -262,9 +268,77 @@ export const numberingPreviewSchema = z.object({
   omittedSegments: z.array(numberSegmentKindSchema),
 });
 
+export const numberReservationStateSchema = z.enum(
+  ALL_NUMBER_RESERVATION_STATES as [NumberReservationStateKey, ...NumberReservationStateKey[]],
+);
+
+export const numberOriginSchema = z.enum(
+  ALL_NUMBER_ORIGINS as [NumberOriginKey, ...NumberOriginKey[]],
+);
+
+/**
+ * One value drawn from a rule's sequence, whatever became of it (§2–§3). Voided and assigned
+ * rows are history and never leave this list — a gap in a visible series is explained by the
+ * voided value that made it, which is why the screen shows them rather than hiding them.
+ */
+export const numberReservationSchema = z.object({
+  id: uuidSchema,
+  scopeKey: z.string(),
+  /** As text: a counter is a `bigint`, and JSON numbers stop being exact at 2^53. */
+  sequenceValue: z.string(),
+  formatted: z.string(),
+  state: numberReservationStateSchema,
+  origin: numberOriginSchema,
+  documentId: uuidSchema.nullable(),
+  workflowInstanceId: uuidSchema.nullable(),
+  reservedAt: isoDateTimeSchema,
+  assignedAt: isoDateTimeSchema.nullable(),
+  voidedAt: isoDateTimeSchema.nullable(),
+  voidReason: z.string().nullable(),
+  note: z.string().nullable(),
+});
+
+export const numberReservationListQuerySchema = pageQuerySchema.extend({
+  state: numberReservationStateSchema.optional(),
+});
+
+/**
+ * A controller sets a run of values aside for an offline process (§3). The codes name which
+ * series the block comes from; the server renders and stores each value as `HELD`, which the
+ * automatic path can never draw — the sequence has already moved past it.
+ */
+export const holdNumberBlockSchema = z.object({
+  count: z.number().int().min(1).max(100),
+  note: z.string().trim().max(500).optional(),
+  context: z
+    .object({
+      companyCode: z.string().trim().max(16).optional(),
+      entityCode: z.string().trim().max(16).optional(),
+      branchCode: z.string().trim().max(16).optional(),
+      departmentCode: z.string().trim().max(16).optional(),
+      documentTypeCode: z.string().trim().max(16).optional(),
+      categoryCode: z.string().trim().max(16).optional(),
+    })
+    .default({}),
+});
+
+export const heldNumberBlockSchema = z.object({
+  values: z.array(z.string()),
+});
+
+/** Voiding a held value a controller no longer needs. Retained forever, never re-issued. */
+export const voidHeldNumberSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+});
+
 export type CreateNumberingRuleBody = z.infer<typeof createNumberingRuleSchema>;
 export type UpdateNumberingRuleBody = z.infer<typeof updateNumberingRuleSchema>;
 export type NumberingRule = z.infer<typeof numberingRuleSchema>;
 export type NumberingRuleListQuery = z.infer<typeof numberingRuleListQuerySchema>;
 export type PreviewNumberingRuleBody = z.infer<typeof previewNumberingRuleSchema>;
 export type NumberingPreview = z.infer<typeof numberingPreviewSchema>;
+export type NumberReservation = z.infer<typeof numberReservationSchema>;
+export type NumberReservationListQuery = z.infer<typeof numberReservationListQuerySchema>;
+export type HoldNumberBlockBody = z.infer<typeof holdNumberBlockSchema>;
+export type HeldNumberBlock = z.infer<typeof heldNumberBlockSchema>;
+export type VoidHeldNumberBody = z.infer<typeof voidHeldNumberSchema>;

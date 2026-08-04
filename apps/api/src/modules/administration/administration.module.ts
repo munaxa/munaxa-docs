@@ -14,11 +14,14 @@ import {
 import { ApprovalRoutingService } from './application/approval-routing.service';
 import { ConfigurationService } from './application/configuration.service';
 import { NumberingAdminService } from './application/numbering-admin.service';
+import { NumberingIssueService } from './application/numbering-issue.service';
+import { NUMBER_ISSUE_REPOSITORY } from './application/numbering-issue.ports';
 import { SettingsAdminService } from './application/settings-admin.service';
-import { TENANT_SETTINGS_REPOSITORY } from './application/ports';
+import { NUMBERING_SERVICE, TENANT_SETTINGS_REPOSITORY } from './application/ports';
 import { CachedSettingsReader } from './infrastructure/cached-settings.reader';
 import { PrismaApprovalRoutingRepository } from './infrastructure/prisma-approval-routing.repository';
 import { PrismaConfigurationRepository } from './infrastructure/prisma-configuration.repository';
+import { PrismaNumberIssueRepository } from './infrastructure/prisma-number-issue.repository';
 import { PrismaTenantSettingsRepository } from './infrastructure/prisma-tenant-settings.repository';
 import { ApprovalRoutingController } from './presentation/approval-routing.controller';
 import {
@@ -69,6 +72,8 @@ import {
     { provide: CONFIGURATION_REPOSITORY, useClass: PrismaConfigurationRepository },
     { provide: CONFIGURATION_SERVICE, useClass: ConfigurationService },
     { provide: NUMBERING_ADMIN_SERVICE, useClass: NumberingAdminService },
+    { provide: NUMBER_ISSUE_REPOSITORY, useClass: PrismaNumberIssueRepository },
+    { provide: NUMBERING_SERVICE, useClass: NumberingIssueService },
     { provide: SETTINGS_ADMIN_SERVICE, useClass: SettingsAdminService },
     { provide: APPROVAL_ROUTING_REPOSITORY, useClass: PrismaApprovalRoutingRepository },
     { provide: APPROVAL_ROUTING_SERVICE, useClass: ApprovalRoutingService },
@@ -84,6 +89,9 @@ import {
     // working calendar. Both are this module's configuration, and both are reached through this
     // service rather than by reading the rows behind them.
     APPROVAL_ROUTING_SERVICE,
+    // Phase 5: Document draws, commits and voids numbers through this service. It is the only
+    // way a value leaves a sequence — the rows behind it are this module's own.
+    NUMBERING_SERVICE,
   ],
 })
 export class AdministrationModule {}

@@ -5,6 +5,7 @@ import {
   type Document,
   type DuplicateReport,
   type UploadTarget,
+  assignDocumentNumberSchema,
   completeUploadSchema,
   createDocumentSchema,
   createUploadSchema,
@@ -94,6 +95,20 @@ export async function moveDocument(
 ): Promise<ActionResult<Document>> {
   return validated(moveDocumentSchema, input, (body) =>
     adminWrite<Document>({ path: `/documents/${id}/move`, method: 'POST', body, version }),
+  );
+}
+
+/**
+ * Records a number by hand — a legacy identifier, or a document approved before numbering
+ * existed. Behind `numbering:manage`; the server validates the number against the document's own
+ * rule and refuses any value the numbering system has ever issued.
+ */
+export async function assignDocumentNumber(
+  id: string,
+  input: unknown,
+): Promise<ActionResult<Document>> {
+  return validated(assignDocumentNumberSchema, input, (body) =>
+    adminWrite<Document>({ path: `/documents/${id}/number`, method: 'POST', body }),
   );
 }
 

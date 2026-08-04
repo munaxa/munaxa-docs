@@ -238,6 +238,11 @@ export interface OrganizationService {
   scopeChainFor(nodeId: AnyId, nodeType: ScopeTypeKey): Promise<readonly ScopeNodeSummary[]>;
   exists(nodeId: AnyId, nodeType: ScopeTypeKey): Promise<boolean>;
   departmentsReachedBy(departmentIds: readonly AnyId[]): Promise<readonly ScopeNodeSummary[]>;
+  /**
+   * The code of the branch a department is tied to, or null. Not part of the chain — permission
+   * never flows through a location — but a `BRANCH` segment in a document number reads it.
+   */
+  branchCodeOf(departmentId: AnyId): Promise<string | null>;
 }
 
 export interface ScopeNodeSummary {

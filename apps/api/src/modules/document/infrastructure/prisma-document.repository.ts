@@ -151,6 +151,22 @@ export class PrismaDocumentRepository implements DocumentRepository {
     }
   }
 
+  async assignNumber(id: DocumentId, documentNumber: string, at: Date): Promise<boolean> {
+    // `documentNumber: null` in the WHERE is the write-once rule itself: a numbered document
+    // matches no rows, whatever raced ahead of this statement. No version check — the caller
+    // holds the approval's transaction, and a number is never a lost-update casualty.
+    const result = await requireTransaction().document.updateMany({
+      where: { id, tenantId: this.tenantId(), documentNumber: null, deletedAt: null },
+      data: {
+        documentNumber,
+        numberedAt: at,
+        ...this.stamps.update(),
+        version: { increment: 1 },
+      },
+    });
+    return result.count > 0;
+  }
+
   async setDeleted(id: DocumentId, expectedVersion: number, deleted: boolean): Promise<void> {
     await this.versioned(
       id,
@@ -364,6 +380,7 @@ interface JoinedRow {
   status: string;
   origin: string;
   documentNumber: string | null;
+  numberedAt: Date | null;
   ownerUserId: string;
   currentRevisionId: string | null;
   latestRevisionId: string | null;
@@ -427,6 +444,7 @@ function toRow(row: JoinedRow, _actorId: string | null): DocumentRow {
     status: row.status as DocumentStatusKey,
     origin: row.origin as DocumentOriginKey,
     documentNumber: row.documentNumber,
+    numberedAt: row.numberedAt,
     ownerUserId: row.ownerUserId as UserId,
     currentRevisionId: row.currentRevisionId as RevisionId | null,
     latestRevisionId: row.latestRevisionId as RevisionId | null,

@@ -33,6 +33,7 @@ export type DocumentTypeId = Branded<'DocumentTypeId'>;
 export type CategoryId = Branded<'CategoryId'>;
 export type MetadataFieldId = Branded<'MetadataFieldId'>;
 export type NumberingRuleId = Branded<'NumberingRuleId'>;
+export type NumberReservationId = Branded<'NumberReservationId'>;
 export type RetentionPolicyId = Branded<'RetentionPolicyId'>;
 export type ConfidentialityLevelId = Branded<'ConfidentialityLevelId'>;
 export type LegalHoldId = Branded<'LegalHoldId'>;

@@ -21,7 +21,13 @@ import {
   optionalText,
   text,
 } from '../admin-shared';
-import { moveDocument, requestDownload, setFavorite, updateDocument } from './actions';
+import {
+  assignDocumentNumber,
+  moveDocument,
+  requestDownload,
+  setFavorite,
+  updateDocument,
+} from './actions';
 import { MetadataFields, type MetadataFieldDefinition, readMetadata } from './metadata-fields';
 
 /**
@@ -46,6 +52,7 @@ export function DocumentScreen({
   canEdit,
   canMove,
   canDownload,
+  canAssignNumber,
   approvals,
 }: {
   readonly document: Document;
@@ -60,6 +67,8 @@ export function DocumentScreen({
   readonly canEdit: boolean;
   readonly canMove: boolean;
   readonly canDownload: boolean;
+  /** `numbering:manage` — manual assignment is a document controller's act, not an edit. */
+  readonly canAssignNumber?: boolean;
   /**
    * The document's approval, rendered by Workflow's own feature and passed in.
    *
@@ -75,6 +84,15 @@ export function DocumentScreen({
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [numbering, setNumbering] = useState(false);
+
+  // Manual assignment applies only to an unnumbered document that is not in approval — while it
+  // is, the workflow owns numbering and the API refuses (09 §3).
+  const offerAssignNumber =
+    canAssignNumber === true &&
+    document.documentNumber === null &&
+    document.status !== 'SUBMITTED' &&
+    document.status !== 'UNDER_REVIEW';
 
   const file = document.latestRevision?.file ?? null;
   const values = Object.fromEntries(document.metadata.map((entry) => [entry.key, entry.value]));
@@ -149,6 +167,11 @@ export function DocumentScreen({
               {translate('documents.actions.move')}
             </Button>
           )}
+          {offerAssignNumber && (
+            <Button type="button" variant="outline" onClick={() => setNumbering(true)}>
+              {translate('documents.actions.assignNumber')}
+            </Button>
+          )}
           {canEdit && (
             <Button type="button" variant="outline" onClick={() => setEditing(true)}>
               {translate('documents.actions.edit')}
@@ -167,7 +190,22 @@ export function DocumentScreen({
         <Card className="lg:col-span-2">
           <h2 className="text-lg font-medium">{translate('documents.section.properties')}</h2>
           <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
-            <Property label={translate('documents.field.number')} value={document.documentNumber} />
+            {document.documentNumber === null && document.pendingNumber !== null ? (
+              // The reserved number, clearly marked pending: reviewers refer to it, and it is not
+              // the document's number until approval assigns it (ADR-0004).
+              <div className="min-w-0">
+                <dt className="text-sm opacity-70">{translate('documents.field.number')}</dt>
+                <dd className="flex items-center gap-2">
+                  <span className="truncate">{document.pendingNumber}</span>
+                  <Badge tone="warning">{translate('documents.number.pending')}</Badge>
+                </dd>
+              </div>
+            ) : (
+              <Property
+                label={translate('documents.field.number')}
+                value={document.documentNumber}
+              />
+            )}
             <Property label={translate('documents.field.category')} value={document.categoryName} />
             <Property
               label={translate('documents.field.description')}
@@ -290,6 +328,27 @@ export function DocumentScreen({
               label: folder.path === folder.id ? folder.name : `${folder.name}`,
             }))}
             defaultValue={document.folderId}
+          />
+        </FormDialog>
+      )}
+
+      {numbering && (
+        <FormDialog
+          open
+          title={translate('documents.actions.assignNumber')}
+          // Once written, forever: the dialogue says so before the form does it.
+          description={translate('documents.assignNumber.warning')}
+          onClose={() => setNumbering(false)}
+          onSubmit={(data) =>
+            assignDocumentNumber(document.id, { documentNumber: text(data, 'documentNumber') })
+          }
+          onSaved={refresh}
+        >
+          <TextField
+            name="documentNumber"
+            label={translate('documents.field.number')}
+            hint={translate('documents.assignNumber.hint')}
+            required
           />
         </FormDialog>
       )}

@@ -31,4 +31,10 @@ export interface ScopeRepository {
   findDepartmentsByIds(ids: readonly string[]): Promise<readonly ScopeNodeRecord[]>;
   /** Every department at or below each of these, by path prefix. */
   findSubtrees(ids: readonly AnyId[]): Promise<readonly ScopeNodeRecord[]>;
+  /**
+   * The live branch a department is tied to, or null. A branch never appears in a scope chain —
+   * permission does not flow through a location — but its code appears in document numbers,
+   * which is the one read anything outside administration makes of it.
+   */
+  findBranchCodeOfDepartment(departmentId: AnyId): Promise<string | null>;
 }

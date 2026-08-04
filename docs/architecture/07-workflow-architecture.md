@@ -220,10 +220,13 @@ shipping the engine without it would have shipped a definition kind nobody could
 `approval_task` carries `decided_by_id` and `on_behalf_of_id`, the audit payload reads both, and the
 single check that phase relaxes — "the task belongs to you" — is in one place in the engine.
 
-**Numbering is not built.** The engine calls `DOCUMENT_NUMBER_ALLOCATOR` at completion, the port is
-left unbound, and an approval completes with `numberAssigned: false`. That is §8's rule kept and
-[ADR-0004](./adr/0004-numbering-assigned-at-approval.md)'s seam defined without half-building a
-sequence.
+**Numbering is built, through the seam Phase 4 cut.** Phase 4 called `DOCUMENT_NUMBER_ALLOCATOR` at
+completion and left the port unbound, so approvals completed with `numberAssigned: false`. Phase 5
+bound it — an adapter over Document's number service — and every completed approval is numbered with
+no change to the engine's completion path, which was the test of whether the seam was cut correctly.
+The engine also reserves at submission and voids on every ending that is not an approval, each in
+the same transaction as the move it accompanies ([ADR-0004](./adr/0004-numbering-assigned-at-approval.md),
+[09](./09-numbering-architecture.md)).
 
 One property is worth recording because it was a defect the design did not name. Two approvers
 deciding at the same instant run in two transactions, and under `READ COMMITTED` neither sees the

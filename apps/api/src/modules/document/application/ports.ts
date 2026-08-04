@@ -57,6 +57,8 @@ export interface DocumentRecord {
   readonly origin: DocumentOriginKey;
   /** Assigned at approval, then immutable — and never reused, even after deletion. */
   readonly documentNumber: string | null;
+  /** When the number was assigned. Set with `documentNumber` and only with it. */
+  readonly numberedAt: Date | null;
   readonly ownerUserId: UserId;
   readonly currentRevisionId: RevisionId | null;
   readonly latestRevisionId: RevisionId | null;
@@ -169,6 +171,15 @@ export interface DocumentRepository {
    * a patch would be a way to publish a document by including a field in a form post.
    */
   setStatus(id: DocumentId, expectedVersion: number, status: DocumentStatusKey): Promise<void>;
+  /**
+   * Writes the document's number, once.
+   *
+   * `document_number IS NULL` sits in the `WHERE`, so this is the write-once path rather than a
+   * check that ran a moment earlier: zero rows matched means the document is already numbered —
+   * or gone — and the caller refuses. There is no update path; the column is written here and
+   * nowhere else, and never rewritten (`09-numbering-architecture.md` §5).
+   */
+  assignNumber(id: DocumentId, documentNumber: string, at: Date): Promise<boolean>;
   setDeleted(id: DocumentId, expectedVersion: number, deleted: boolean): Promise<void>;
   /** Called by the revision writer's caller once the first revision exists. */
   attachLatestRevision(id: DocumentId, revisionId: string): Promise<void>;
@@ -265,4 +276,46 @@ export interface DocumentService {
   exists(id: DocumentId): Promise<boolean>;
   /** The transitions this caller may perform right now, computed server-side. */
   availableTransitions(id: DocumentId): Promise<readonly DocumentStatusKey[]>;
+}
+
+export const DOCUMENT_NUMBER_SERVICE = Symbol('DocumentNumberService');
+
+/**
+ * The one path onto `document.document_number` (`09-numbering-architecture.md`, ADR-0004).
+ *
+ * Declared here because the number is the document's: this module resolves the document's real
+ * organisational codes — its library's scope chain, its department's branch — and hands them to
+ * Administration's issuance service, which owns the rules, the counters and the reservations.
+ * The engine reaches the first three methods through Workflow's `DOCUMENT_NUMBER_ALLOCATOR`
+ * seam; the manual path is a controller behind `numbering:manage`.
+ *
+ * Everything joins the caller's transaction. The codes are always resolved server-side from the
+ * document's own placement — never accepted from a client — which is what makes the schema's
+ * promise that "the application builds the scope key" true.
+ */
+export interface DocumentNumberService {
+  /**
+   * Draws the pending number a submission shows reviewers, when the type's rule reserves at
+   * submission. Null when the rule draws at approval instead — including gapless mode, which
+   * collapses to the same path (§2).
+   */
+  reserveForSubmission(
+    documentId: DocumentId,
+    workflowInstanceId: string,
+  ): Promise<{ readonly pendingNumber: string | null }>;
+  /** Assigns the number — the reservation if one is live, a fresh draw if not. */
+  assignAtApproval(
+    documentId: DocumentId,
+    workflowInstanceId: string,
+  ): Promise<{ readonly documentNumber: string }>;
+  /** Voids the approval's reservation, if it holds one. The value never returns to the pool. */
+  voidReservation(
+    documentId: DocumentId,
+    workflowInstanceId: string,
+    reason: string,
+  ): Promise<void>;
+  /** The pending number shown on a document under review, or null. */
+  pendingNumberFor(documentId: DocumentId): Promise<string | null>;
+  /** Manual assignment and legacy import (§3), behind `numbering:manage`. */
+  assignManually(documentId: DocumentId, requested: string): Promise<string>;
 }

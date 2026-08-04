@@ -12,6 +12,7 @@ import { ParticipantResolver } from './application/participant-resolver';
 import {
   APPROVAL_QUERY_REPOSITORY,
   APPROVAL_SERVICE,
+  DOCUMENT_NUMBER_ALLOCATOR,
   WORKFLOW_CALENDAR,
   WORKFLOW_DIRECTORY,
   WORKFLOW_DOCUMENT_GATE,
@@ -23,6 +24,7 @@ import { WorkflowAdminService } from './application/workflow-admin.service';
 import { WorkflowEngine } from './application/workflow-engine.service';
 import { WorkflowTimers } from './application/workflow-timers.service';
 import { DocumentContextAdapter } from './infrastructure/document-context.adapter';
+import { DocumentNumberAllocatorAdapter } from './infrastructure/document-number-allocator.adapter';
 import { PrismaApprovalQueryRepository } from './infrastructure/prisma-approval-query.repository';
 import { PrismaWorkflowAdminRepository } from './infrastructure/prisma-workflow-admin.repository';
 import { PrismaWorkflowEngineRepository } from './infrastructure/prisma-workflow-engine.repository';
@@ -60,12 +62,14 @@ import { WorkflowAdminController } from './presentation/workflow-admin.controlle
  * composes both behind one interface, so the engine asks "who approves this" and never learns which
  * module answered.
  *
- * ### What is deliberately not bound
+ * ### The seam Phase 4 cut, now bound
  *
- * `DOCUMENT_NUMBER_ALLOCATOR` — [ADR-0004] assigns a number at approval, and allocation is Phase
- * 5's. The engine injects it optionally and completes with `numberAssigned: false` when nothing is
- * bound, which is the honest outcome for a product without numbering. A stub returning a fabricated
- * number would be a lie the next phase has to find every trace of.
+ * `DOCUMENT_NUMBER_ALLOCATOR` — [ADR-0004] assigns a number at approval. Phase 4 declared the
+ * port, left it deliberately unbound, and completed approvals with `numberAssigned: false`.
+ * Phase 5 binds it to an adapter over Document's `DOCUMENT_NUMBER_SERVICE`, and binding it is
+ * what made every completed approval numbered — the engine's completion path did not change,
+ * which was the test of whether the seam was cut correctly. The port stays `@Optional` in the
+ * engine, so a composition without the binding still produces the honest unnumbered outcome.
  */
 @Module({
   imports: [DocumentModule, IdentityModule, AdministrationModule],
@@ -80,6 +84,8 @@ import { WorkflowAdminController } from './presentation/workflow-admin.controlle
     { provide: APPROVAL_QUERY_REPOSITORY, useClass: PrismaApprovalQueryRepository },
     { provide: WORKFLOW_VERSION_READER, useClass: PrismaWorkflowVersionReader },
     { provide: WORKFLOW_DOCUMENT_GATE, useClass: DocumentContextAdapter },
+    // --- Phase 5: numbering, through the seam Phase 4 left for it ---
+    { provide: DOCUMENT_NUMBER_ALLOCATOR, useClass: DocumentNumberAllocatorAdapter },
     { provide: WORKFLOW_DIRECTORY, useClass: WorkflowDirectoryAdapter },
     { provide: WORKFLOW_CALENDAR, useClass: WorkflowCalendarAdapter },
     ParticipantResolver,

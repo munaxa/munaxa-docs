@@ -4,7 +4,7 @@
 
 | | |
 | --- | --- |
-| **Owns** | DocumentType, Category, MetadataField, NumberingRule and its sequences, RetentionPolicy, ConfidentialityLevel, TenantSettings |
+| **Owns** | DocumentType, Category, MetadataField, NumberingRule with its sequences and reservations, RetentionPolicy, ConfidentialityLevel, TenantSettings |
 | **Depends on** | Organization |
 | **Binds in core** | `POLICY_EVALUATOR` and `FEATURE_FLAGS` — entitlements and settings are tenant configuration, which this module owns. |
 
@@ -160,3 +160,23 @@ promises Tuesday and an engine that escalates on Monday.
 Both are behind `workflow:manage` rather than `settings:manage`. The person who authors approval
 workflows maintains the groups they route to and the calendar their deadlines are counted against,
 and that is a narrower key than "can configure the tenant".
+
+## Number issuance — Phase 5
+
+Phase 2 configured the rules and drew nothing; `NUMBERING_SERVICE` is the drawing. It is exported
+for exactly one consumer — Document — and it is the only way a value leaves a sequence: the claim
+is a single upsert whose conflict arm increments (`RETURNING next_value - 1`), which takes the row
+lock `09-numbering-architecture.md` §2 describes and holds it for the microseconds until commit.
+The lock is always the last one a transaction takes — the callers already hold their instance and
+document rows — so approvals in one series serialise on the counter and never deadlock across it.
+
+Every value drawn gets a `number_reservation` row forever: `RESERVED` while an approval shows it as
+pending, `ASSIGNED` when it becomes a document's number, `VOIDED` when the approval was refused —
+retained, never returned to the pool — and `HELD` for a controller's offline block (§3). The
+rendered text and the scope key are fixed at drawing time, in the tenant's timezone
+(`locale.timezone`, the clock the working calendar reads), and never re-rendered. Each mutation
+writes its own audit event — `NUMBER_RESERVED`, `NUMBER_ASSIGNED`, `NUMBER_VOIDED` — inside the
+issuing transaction.
+
+Held blocks, the reservation listing and voiding a held value live on the numbering admin
+controller behind `numbering:manage`, beside the rules they belong to.

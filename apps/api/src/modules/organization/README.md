@@ -70,9 +70,11 @@ asserted against that case.
 
 Both sides of the tree now exist.
 
-The **read** side is `ORGANIZATION_SERVICE`: `scopeChainFor`, `exists` and `departmentsReachedBy`,
-over the five tables this module owns. Provisioning creates a root company and entity, so the tree
-is usable from the first sign-in.
+The **read** side is `ORGANIZATION_SERVICE`: `scopeChainFor`, `exists`, `departmentsReachedBy`
+and — since Phase 5 — `branchCodeOf`, over the five tables this module owns. The last is the one
+read anything outside administration makes of a branch: its code appears in document numbers, and
+it still never appears in a chain, because permission does not flow through a location.
+Provisioning creates a root company and entity, so the tree is usable from the first sign-in.
 
 The **write** side is `SCOPE_ADMIN_SERVICE` behind `org:manage` — create, edit, move, soft delete,
 restore, search, sort, page and filter, for all four node kinds. Both events above are published now

@@ -107,11 +107,15 @@ import {
  * alternative — skipping the stage — is a control silently not applied, which is the failure mode
  * the whole product exists to make impossible.
  *
- * **Nothing is numbered here.** [ADR-0004] assigns a number at approval and §8 forbids assigning
- * one earlier; allocation itself is Phase 5. The engine calls `DOCUMENT_NUMBER_ALLOCATOR` at
- * completion, the port is left unbound, and an approval completes with `numberAssigned: false` and
- * an audit event that says so. That is the honest outcome for a product without numbering, and it
- * is why the seam is optional rather than stubbed.
+ * **Numbering happens through the seam, never in the engine.** [ADR-0004] reserves at submission
+ * and assigns at approval, and §8 forbids assigning earlier. The engine calls
+ * `DOCUMENT_NUMBER_ALLOCATOR` — reserve on submit, assign on complete, void on every ending that
+ * is not an approval — always inside the same transaction as the move it accompanies. The port
+ * stays `@Optional`: with nothing bound an approval completes with `numberAssigned: false`, which
+ * Phase 4 shipped and test doubles still exercise. Lock order is fixed and stated: the instance
+ * row first (taken by every write path already), the document row next, and the sequence counter
+ * inside the allocator last — so two approvals in one series serialise on the counter for the
+ * tail of their transactions and cannot deadlock across it.
  */
 @Injectable()
 export class WorkflowEngine {
@@ -126,12 +130,9 @@ export class WorkflowEngine {
     private readonly timers: WorkflowTimers,
     private readonly writer: AdministeredWriter,
     /**
-     * Phase 5's, and deliberately absent.
-     *
-     * `@Optional` rather than a stub implementation: a stub returning a fabricated number would be
-     * a lie the next phase has to find every trace of, and one returning a sentinel would be a
-     * `TODO` wearing a type. Nothing bound means no number, which is what a product without
-     * numbering should produce.
+     * Bound by this module since Phase 5, and still `@Optional`: a composition without the
+     * binding — Phase 4's state, and the engine's test doubles — completes approvals honestly
+     * unnumbered rather than failing or fabricating.
      */
     @Optional()
     @Inject(DOCUMENT_NUMBER_ALLOCATOR)
@@ -229,6 +230,17 @@ export class WorkflowEngine {
         workflowInstanceId: instanceId,
         reason: null,
       });
+
+      // ADR-0004: the pending reference reviewers will use, drawn in the submission's own
+      // transaction — a submission that fails to validate never spends a value. Before
+      // `advanceFrom`, because a definition whose every stage is scoped away completes *inside*
+      // this call, and completion must find the reservation it commits.
+      if (this.numbering !== null) {
+        await this.numbering.reserveAtSubmission({
+          documentId,
+          workflowInstanceId: asId<WorkflowInstanceId>(instanceId),
+        });
+      }
 
       if (comment !== null) {
         await this.repository.addComment({
@@ -882,6 +894,17 @@ export class WorkflowEngine {
     await this.repository.cancelRemainingStages(aggregate.instance.id, stage.index + 1);
     await this.timers.cancelInstance(aggregate.instance.id);
 
+    // The pending number this approval held, if any, is spent — never issued and never reused.
+    // Voided in the same transaction as the refusal, so no reading ever sees a rejected document
+    // still holding a live pending reference (§2 of `09-numbering-architecture.md`).
+    if (this.numbering !== null) {
+      await this.numbering.voidReservation({
+        documentId: aggregate.instance.documentId,
+        workflowInstanceId: aggregate.instance.id,
+        reason: outcome,
+      });
+    }
+
     if (returnToAuthor) {
       await this.repository.endInstance({
         instanceId: aggregate.instance.id,
@@ -1028,10 +1051,11 @@ export class WorkflowEngine {
   /**
    * Every stage passed.
    *
-   * The number is drawn here and nowhere earlier: [ADR-0004] reserves at submission and assigns at
-   * approval, and §8 forbids assigning one before the final stage completes. With the allocator
-   * unbound — which is Phase 4's state — the instance records `numberAssigned: false` and the audit
-   * event says so, which is a fact about this build rather than a placeholder.
+   * The number is assigned here and nowhere earlier: [ADR-0004] reserves at submission and
+   * assigns at approval, and §8 forbids assigning one before the final stage completes. The
+   * allocator commits the submission's reservation — or draws now, for a rule that reserves
+   * nothing — inside this same transaction. This path did not change when Phase 5 bound the
+   * allocator; only unbound compositions still record `numberAssigned: false`.
    */
   private async complete(
     aggregate: WorkflowAggregate,
@@ -1144,6 +1168,15 @@ export class WorkflowEngine {
     }
     await this.repository.cancelRemainingStages(aggregate.instance.id, 0);
     await this.timers.cancelInstance(aggregate.instance.id);
+    // Withdrawal and cancellation void the reservation exactly as a rejection does: the value
+    // is spent and never returns to the pool.
+    if (this.numbering !== null) {
+      await this.numbering.voidReservation({
+        documentId: aggregate.instance.documentId,
+        workflowInstanceId: aggregate.instance.id,
+        reason,
+      });
+    }
     await this.repository.endInstance({
       instanceId: aggregate.instance.id,
       status,

@@ -161,8 +161,8 @@ export function ApprovalPanel({
       )}
 
       {current !== null && current.status === 'COMPLETED' && !current.numberAssigned && (
-        // Stated rather than left as a blank field. A document that is approved and unnumbered is
-        // the honest outcome of a build without numbering, and saying so is better than a gap.
+        // Stated rather than left as a blank field. Since Phase 5 this is the workflow's own
+        // choice — a definition whose completion does not assign a number — not a product gap.
         <Alert tone="info">{translate('approvals.numberPending')}</Alert>
       )}
 
