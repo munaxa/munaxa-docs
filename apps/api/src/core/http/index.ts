@@ -1,3 +1,4 @@
+export * from './admin-request';
 export * from './collection.interceptor';
 export * from './correlation-id.middleware';
 export * from './idempotency.interceptor';

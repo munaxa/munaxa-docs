@@ -3,6 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "description": "Pure helpers with no domain meaning, shared by every Munaxa Docs app and package.",
+  "//exports": "Narrow entry points exist because the barrel is not browser-safe: `uuid.ts` imports `node:crypto`, so a client bundle that reached the root export would fail to build. `./pagination` is pure arithmetic and constants, and the web app's URL-held list state needs the page-size bound without needing an identifier generator.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./pagination": {
+      "types": "./dist/pagination.d.ts",
+      "default": "./dist/pagination.js"
+    }
+  },
   "license": "UNLICENSED",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

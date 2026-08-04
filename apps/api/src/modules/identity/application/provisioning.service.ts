@@ -5,7 +5,7 @@ import {
   type RoleId,
   type TenantId,
   type UserId,
-  ALL_PERMISSIONS,
+  ALL_SYSTEM_ROLES,
   AuditOutcome,
   AuditSubjectType,
   SystemRole,
@@ -18,9 +18,15 @@ import { AUDIT_WRITER, type AuditWriter } from '../../../core/audit/audit-writer
 import { DuplicateError, ValidationError } from '../../../core/errors/application-errors';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
+import { TENANT_REGISTRY, type TenantRegistry } from '../../../core/tenancy/tenant-registry.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { PASSWORD_HASHER, type PasswordHasher } from './authentication.ports';
 import { checkPassword } from '../domain/password-policy';
+import {
+  DEFAULT_ROLE_DESCRIPTIONS,
+  DEFAULT_ROLE_NAMES,
+  DEFAULT_ROLE_PERMISSIONS,
+} from '../domain/role-seed';
 import { isPlausibleEmail, normalizeEmail } from '../domain/user';
 import { PROVISIONING_REPOSITORY, type ProvisioningRepository } from './ports';
 
@@ -47,14 +53,17 @@ export interface ProvisionedTenant {
 }
 
 /**
- * Bootstrapping a tenant: the organisation, an administrator role, and one person who can
- * sign in.
+ * Bootstrapping a tenant: the organisation, the eight seeded roles, and one person who can sign in.
  *
- * **This is not administration.** Creating, editing and deleting users and roles is Phase 2,
- * and nothing here grows into it: there is one operation, it runs once per tenant, and it
- * refuses to run twice. What it exists for is the chicken-and-egg problem underneath every
- * access-controlled system — the first account cannot be created by someone signed in, because
- * nobody is.
+ * **This is not administration.** Creating, editing and deleting users and roles is Phase 2's, and
+ * nothing here grows into it: there is one operation, it runs once per tenant, and it refuses to run
+ * twice. What it exists for is the chicken-and-egg problem underneath every access-controlled system
+ * — the first account cannot be created by someone signed in, because nobody is.
+ *
+ * Phase 2 changed one thing here: it seeds all eight roles from `08-permission-model.md` §6 rather
+ * than only the administrator's. The administrator is still the only role anybody *holds*; the others
+ * exist so that an administrator's first act — making a colleague an author — is a role assignment
+ * rather than a matrix-design exercise.
  *
  * Everything is one transaction. A half-provisioned tenant — an organisation with no
  * administrator, or a role with nobody holding it — is a workspace nobody can enter and nobody
@@ -71,6 +80,7 @@ export class ProvisioningService {
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
+    @Inject(TENANT_REGISTRY) private readonly registry: TenantRegistry,
   ) {}
 
   async provision(command: ProvisionTenantCommand): Promise<ProvisionedTenant> {
@@ -91,10 +101,16 @@ export class ProvisioningService {
       throw new ValidationError(`That password is not acceptable: ${rejections.join(', ')}.`);
     }
 
-    if (await this.repository.slugExists(slug)) {
-      // Named explicitly, unlike a sign-in failure: this is an operator provisioning a tenant,
-      // not an anonymous caller probing for which organisations exist.
-      throw new DuplicateError('organisation', 'slug');
+    // The tenant must already be *placed* — its database, storage and index configured — because
+    // provisioning writes into that database and there is no other one to fall back on. This is the
+    // order ADR-0015 imposes: an operator adds the tenant to the catalogue, migrates its database,
+    // then provisions it. Discovering the gap here, by name, is the whole point of checking.
+    const placement = await this.registry.bySlug(slug);
+    if (!placement) {
+      throw new ValidationError(
+        `'${slug}' is not in this deployment's tenant catalogue, so it has no database to be ` +
+          'provisioned into. Add it to the catalogue and migrate its database first.',
+      );
     }
 
     // The scope-tree root needs a code, and the organisation's short name is the best guess
@@ -103,17 +119,15 @@ export class ProvisioningService {
     // an administrator renames it in Phase 2.
     const code = deriveCode(slug, DEFAULT_ROOT_CODE);
 
-    const tenantId = asId<TenantId>(uuidv7(this.clock.now().getTime()));
+    // From the registry, never generated. The identifier is what routes every request to this
+    // database, so it is configuration an operator holds before provisioning runs — and it has to be
+    // the same value on a re-run against a database that already has rows carrying it.
+    const tenantId = asId<TenantId>(placement.id);
     const companyId = asId<AnyId>(uuidv7(this.clock.now().getTime()));
     const entityId = asId<AnyId>(uuidv7(this.clock.now().getTime()));
     const roleId = asId<RoleId>(uuidv7(this.clock.now().getTime()));
     const adminUserId = asId<UserId>(uuidv7(this.clock.now().getTime()));
     const passwordHash = await this.passwords.hash(command.adminPassword);
-
-    // The tenant row is written first and outside the tenant context, because the context is
-    // keyed on an identifier that does not exist until this succeeds. `tenant` is the one table
-    // with no row-level security policy, which is exactly what makes that possible.
-    await this.repository.createTenant({ id: tenantId, slug, name: command.name.trim() });
 
     const context: RequestContext = {
       tenantId,
@@ -130,6 +144,16 @@ export class ProvisioningService {
 
     return runWithContext(context, () =>
       this.unitOfWork.run(async () => {
+        // Checked inside the transaction, against this tenant's own database. A second provisioning
+        // run would otherwise write a second set of seeded roles beside the first.
+        if (await this.repository.alreadyProvisioned(tenantId)) {
+          // Named explicitly, unlike a sign-in failure: this is an operator provisioning a tenant,
+          // not an anonymous caller probing for which organisations exist.
+          throw new DuplicateError('organisation', 'slug');
+        }
+
+        await this.repository.createTenant({ id: tenantId, slug, name: command.name.trim() });
+
         await this.repository.createRootScope({
           companyId,
           entityId,
@@ -137,15 +161,26 @@ export class ProvisioningService {
           name: command.name.trim(),
         });
 
-        await this.repository.createAdminRole({
-          id: roleId,
-          key: SystemRole.TENANT_ADMIN,
-          name: 'Tenant administrator',
-          // Every permission the product defines. A first administrator who cannot grant
-          // themselves what they need is a tenant that needs a database console to finish
-          // setting up. The role is ordinary data afterwards — Phase 2 edits it like any other.
-          permissions: ALL_PERMISSIONS,
-        });
+        // All eight seeded roles, with the permissions `08-permission-model.md` §6 marks `✓` for
+        // each. The administrator's is the only one the first user is given; the rest exist so that
+        // making somebody an author is one click rather than a matrix-design exercise.
+        //
+        // Note what the administrator does *not* get: `document:approve` and `document:reject`.
+        // Approval authority comes from being assigned a task, never from seniority, and an
+        // administrator who needs to approve is assigned or delegated the task — with the audit trail
+        // saying so (§6, first deliberate row).
+        await this.repository.createSystemRoles(
+          ALL_SYSTEM_ROLES.map((key) => ({
+            id:
+              key === SystemRole.TENANT_ADMIN
+                ? roleId
+                : asId<RoleId>(uuidv7(this.clock.now().getTime())),
+            key,
+            name: DEFAULT_ROLE_NAMES[key],
+            description: DEFAULT_ROLE_DESCRIPTIONS[key],
+            permissions: DEFAULT_ROLE_PERMISSIONS[key],
+          })),
+        );
 
         await this.repository.createAdminUser({
           id: adminUserId,

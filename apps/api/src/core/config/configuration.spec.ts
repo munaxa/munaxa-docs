@@ -2,11 +2,23 @@ import { describe, expect, it } from 'vitest';
 
 import { ConfigurationError, loadConfig } from './configuration';
 
+/**
+ * The smallest environment that boots: a database, Redis, signing material, and *which tenant this
+ * installation serves*. The last one is the addition Phase 2.5 makes non-optional — a process that
+ * does not know which company it is serving has no database to connect to.
+ */
 const baseEnv = {
   DATABASE_URL: 'postgresql://app:secret@localhost:5432/edms',
   REDIS_URL: 'redis://localhost:6379',
   JWT_ACCESS_SECRET: 'a'.repeat(32),
+  TENANT_ID: '019489f0-0000-7000-8000-000000000001',
+  TENANT_SLUG: 'acme',
 } satisfies NodeJS.ProcessEnv;
+
+const CATALOGUE = JSON.stringify({
+  defaults: { databaseUrlTemplate: 'postgresql://app:secret@localhost:5432/edms_{slug}' },
+  tenants: [{ id: '019489f0-0000-7000-8000-000000000001', slug: 'acme' }],
+});
 
 describe('loadConfig', () => {
   it('applies documented defaults in development', () => {
@@ -14,6 +26,16 @@ describe('loadConfig', () => {
     expect(config.app.port).toBe(3001);
     expect(config.storage.driver).toBe('NONE');
     expect(config.http.corsOrigins).toEqual(['http://localhost:3000']);
+    // On premise unless stated otherwise: the default is the deployment a customer installs, not the
+    // one we operate, because getting the hosted service's configuration wrong is our problem to
+    // notice and getting a customer's wrong is theirs to suffer.
+    expect(config.deployment.profile).toBe('ON_PREMISE');
+    expect(config.deployment.tenants).toEqual({
+      source: 'SINGLE',
+      id: baseEnv.TENANT_ID,
+      slug: 'acme',
+    });
+    expect(config.database.maxTenantClients).toBe(25);
   });
 
   it('refuses to start production on placeholder providers', () => {
@@ -72,5 +94,103 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...baseEnv, STORAGE_ENDPOINT: 'not-a-url' })).toThrowError(
       ConfigurationError,
     );
+  });
+});
+
+/**
+ * Which tenants a process serves is the first thing it has to know, so these are boot failures
+ * rather than errors at the first request. Every one of them describes a configuration that would
+ * otherwise look like a working installation.
+ */
+describe('describing which tenants this deployment serves', () => {
+  it('takes a catalogue inline', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      TENANT_ID: undefined,
+      TENANT_SLUG: undefined,
+      TENANT_CATALOGUE: CATALOGUE,
+    });
+    expect(config.deployment.tenants).toEqual({ source: 'INLINE', document: CATALOGUE });
+  });
+
+  it('takes a catalogue as a file, for a mounted secret', () => {
+    const config = loadConfig({
+      ...baseEnv,
+      TENANT_ID: undefined,
+      TENANT_SLUG: undefined,
+      TENANT_CATALOGUE_PATH: '/etc/munaxa/tenants.json',
+    });
+    expect(config.deployment.tenants).toEqual({
+      source: 'FILE',
+      path: '/etc/munaxa/tenants.json',
+    });
+  });
+
+  it('refuses a single tenant and a catalogue together', () => {
+    // Two answers to "which tenants exist" is worse than either answer: whichever the code happened
+    // to read, the operator believes the other.
+    expect(() => loadConfig({ ...baseEnv, TENANT_CATALOGUE: CATALOGUE })).toThrowError(
+      ConfigurationError,
+    );
+  });
+
+  it('refuses a catalogue given twice', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        TENANT_ID: undefined,
+        TENANT_SLUG: undefined,
+        TENANT_CATALOGUE: CATALOGUE,
+        TENANT_CATALOGUE_PATH: '/etc/munaxa/tenants.json',
+      }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('refuses an installation that names no tenant at all', () => {
+    expect(() => loadConfig({ ...baseEnv, TENANT_SLUG: undefined })).toThrowError(
+      ConfigurationError,
+    );
+    expect(() => loadConfig({ ...baseEnv, TENANT_ID: undefined })).toThrowError(ConfigurationError);
+  });
+
+  it('refuses the cloud profile without a catalogue', () => {
+    // The hosted service serves more than one company by definition, so a cloud process with one
+    // tenant taken from its own environment is a misconfiguration that would only surface when the
+    // second customer signed up.
+    expect(() => loadConfig({ ...baseEnv, DEPLOYMENT_PROFILE: 'CLOUD' })).toThrowError(
+      ConfigurationError,
+    );
+  });
+
+  it('refuses a local filesystem in cloud production', () => {
+    // Not shared between instances: a document uploaded through one is missing from the next.
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        TENANT_ID: undefined,
+        TENANT_SLUG: undefined,
+        TENANT_CATALOGUE: CATALOGUE,
+        DEPLOYMENT_PROFILE: 'CLOUD',
+        NODE_ENV: 'production',
+        OPENAPI_ENABLED: 'false',
+        STORAGE_DRIVER: 'LOCAL',
+        MAIL_DRIVER: 'SMTP',
+        AV_DRIVER: 'ICAP',
+      }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('allows a local filesystem on premise, in production', () => {
+    // One server, one directory, backed up with the database. Refusing it would mean telling a
+    // customer to run object storage to use software installed on their own machine.
+    const config = loadConfig({
+      ...baseEnv,
+      NODE_ENV: 'production',
+      OPENAPI_ENABLED: 'false',
+      STORAGE_DRIVER: 'LOCAL',
+      MAIL_DRIVER: 'SMTP',
+      AV_DRIVER: 'ICAP',
+    });
+    expect(config.storage.driver).toBe('LOCAL');
   });
 });

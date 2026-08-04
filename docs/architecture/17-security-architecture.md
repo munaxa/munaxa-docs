@@ -8,7 +8,7 @@
 | Asset | Threat | Primary control |
 | --- | --- | --- |
 | Controlled documents | Unauthorised read, download or print | ACL + confidentiality + preview-only mode + full read audit ([08](./08-permission-model.md)) |
-| Tenant separation | Cross-tenant read or write | Four application layers + PostgreSQL RLS ([ADR-0002](./adr/0002-multi-tenant-isolation-model.md)) |
+| Tenant separation | Cross-tenant read or write | A database per tenant, plus the application layers and PostgreSQL RLS inside each ([ADR-0015](./adr/0015-database-per-tenant.md)) |
 | Approval integrity | Forged, bypassed or replayed approval | Server-side state machine, single-decision task update, audited delegation ([07](./07-workflow-architecture.md)) |
 | Audit trail | Tampering to hide an action | Append-only grants, DB trigger, hash chain, external checkpoints ([13](./13-audit-architecture.md)) |
 | Uploaded files | Malware, renderer exploit, zip bomb | AV gate, sandboxed renderers, resource caps ([14](./14-preview-architecture.md)) |

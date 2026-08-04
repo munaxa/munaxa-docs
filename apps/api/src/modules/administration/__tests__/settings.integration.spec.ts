@@ -8,11 +8,12 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { FakeCache } from '../../../testing/fake-ports';
 import { CachedSettingsReader } from '../infrastructure/cached-settings.reader';
 import { PrismaTenantSettingsRepository } from '../infrastructure/prisma-tenant-settings.repository';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * `tenant` is the one table with no row-level security policy — it has no `tenant_id` to key
@@ -35,7 +36,7 @@ const logger = {
   debug: () => {},
 } as unknown as Logger;
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const repository = new PrismaTenantSettingsRepository(prisma);
 const cache = new FakeCache();
 const reader = new CachedSettingsReader(repository, cache, logger);

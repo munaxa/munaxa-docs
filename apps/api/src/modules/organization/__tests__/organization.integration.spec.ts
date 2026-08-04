@@ -8,12 +8,13 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { DefaultOrganizationService } from '../application/organization.service';
 import { pathFor } from '../domain/scope-tree';
 import { PrismaScopeRepository } from '../infrastructure/prisma-scope.repository';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 /**
  * What the scope tree does is only half in TypeScript. The other half is row-level security,
@@ -43,7 +44,7 @@ const logger = {
   debug: () => {},
 } as unknown as Logger;
 
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const service = new DefaultOrganizationService(new PrismaScopeRepository());
 const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
@@ -71,9 +72,17 @@ type OwnerTx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 /**
  * Arranges a fixture through the owning role.
  *
- * The context still has to be set: `FORCE ROW LEVEL SECURITY` applies to the table owner too,
- * so a context-less session cannot insert a tenant-scoped row at all. That is the point of
- * forcing it — there is no role in this system for which the policy is advisory.
+ * The context is still set, because the policy is what the `asTenant` reads below are judged
+ * against and a fixture written outside it would be invisible to them. But it must not be
+ * mistaken for what *scopes* a read made here: `edms_owner` is the bootstrap superuser, both in
+ * this cluster and under the compose stack's `POSTGRES_USER`, and **a superuser bypasses
+ * row-level security whether or not it is forced**. `FORCE` binds a non-superuser table owner;
+ * it has nothing to bind on a superuser.
+ *
+ * So every assertion made through this helper carries its own `tenant_id` predicate. That is not
+ * belt-and-braces — without it the assertion reads across every tenant the suite has created,
+ * and passes only while there happens to be one. Row-level security keeps its own test below,
+ * where it is the subject rather than an unexamined assumption.
  *
  * One transaction per call, because a statement that is *expected* to fail aborts the one it
  * runs in; anything that must succeed afterwards needs a fresh one.
@@ -384,8 +393,15 @@ describe('the constraints the database holds', () => {
       });
     });
 
-    const inAcme = await asOwner(ACME, (tx) => tx.department.count({ where: { code: 'QA' } }));
-    const inOther = await asOwner(OTHER, (tx) => tx.department.count({ where: { code: 'QA' } }));
+    // Both counts name their tenant. The owner role is a superuser and bypasses the policy, so
+    // an unqualified count here would tally every tenant the suite has ever created and would
+    // only agree with these numbers while the database held exactly one.
+    const inAcme = await asOwner(ACME, (tx) =>
+      tx.department.count({ where: { tenantId: ACME, code: 'QA' } }),
+    );
+    const inOther = await asOwner(OTHER, (tx) =>
+      tx.department.count({ where: { tenantId: OTHER, code: 'QA' } }),
+    );
 
     expect(inAcme).toBe(2);
     // And the other tenant's own 'QA' is untouched — and invisible from here.

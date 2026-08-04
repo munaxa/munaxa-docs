@@ -8,7 +8,7 @@ import { normalizePageRequest, uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaService } from '../../../core/prisma/prisma.service';
+
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import type { SettingsReader } from '../../../core/settings/settings.port';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
@@ -23,6 +23,7 @@ import {
   PrismaNotificationPreferenceRepository,
   PrismaNotificationTemplateRepository,
 } from '../infrastructure/prisma-notification.repositories';
+import { sharedDatabase } from '../../../testing/tenant-database';
 
 const OWNER_URL = process.env['DATABASE_MIGRATION_URL'] ?? '';
 const APP_URL = process.env['DATABASE_URL'] ?? '';
@@ -40,7 +41,7 @@ const logger = {
 } as unknown as Logger;
 
 const clock = new FakeClock(new Date('2026-01-01T12:00:00Z'));
-const prisma = new PrismaService(config, logger);
+const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const messages = new PrismaNotificationMessageRepository();
 

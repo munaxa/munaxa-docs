@@ -24,7 +24,7 @@ graph TB
     WEB["Web (Next.js) ×N"]
     API["API (NestJS) ×N — stateless"]
     WRK["Workers ×M — preview · OCR · index · notify · retention"]
-    PG[("PostgreSQL 16 — primary")]
+    PG[("PostgreSQL 16 — one database per tenant")]
     RR[("Read replica")]
     RED[("Redis — queues · cache · locks")]
     OBJ[("Object storage — originals · derivatives")]
@@ -45,9 +45,28 @@ graph TB
   deployment with no database credentials ([14](./14-preview-architecture.md)).
 - **Storage and its CDN are a separate origin** from the application, so user content can never
   inherit application privileges.
+- **One database per tenant** ([ADR-0015](./adr/0015-database-per-tenant.md)). The API resolves which
+  one from the tenant's placement and holds a bounded number of pools, evicting the least recently
+  used. Past a few hundred tenants per process, a connection pooler in transaction mode goes in front —
+  safe because the tenant setting is transaction-local rather than session-level.
 - **Deployment targets are containers**; the same images run on Render, a Kubernetes cluster or a
-  customer's on-premise host. On-premise installs swap the storage driver to local or MinIO and the
-  mail driver to SMTP — no code change ([11](./11-storage-architecture.md)).
+  customer's on-premise host. The differences are configuration: `DEPLOYMENT_PROFILE=ON_PREMISE` with
+  one tenant derived from the environment, the storage driver on local or MinIO, the mail driver on
+  SMTP. No code change, and no build variant ([11](./11-storage-architecture.md)).
+
+### What differs between cloud and on-premise
+
+| | Cloud | On premise |
+| --- | --- | --- |
+| `DEPLOYMENT_PROFILE` | `CLOUD` | `ON_PREMISE` |
+| Which tenants | `TENANT_CATALOGUE` or `TENANT_CATALOGUE_PATH` | `TENANT_SLUG` + `TENANT_ID`, no catalogue |
+| Databases | One per customer, templated from the catalogue | One |
+| Storage | Object storage; `LOCAL` is refused in production | Local filesystem or MinIO, permitted in production |
+| Mail | Hosted provider | SMTP |
+
+Nothing above is a code path. The profile is read by the tenant registry and by boot validation, and by
+nothing else — business logic that branched on it would behave differently for a customer who bought the
+same product.
 
 ## 3. Configuration
 
@@ -89,6 +108,9 @@ Every gate is blocking. A failing test is never skipped to go green
 | --- | --- |
 | Applied migrations are never edited | Environments would diverge permanently |
 | Migrations run as the owner role, the app as a restricted role | RLS cannot be bypassed by the application |
+| Every release migrates **every** tenant database | Half the customers running against a schema the code no longer matches is worse than none of them migrated |
+| The runner reads the same catalogue the API reads | A separate list is how a tenant comes to be missed |
+| A failed run names the tenant it stopped on, and every step is idempotent | The re-run continues rather than restarting |
 | Expand → migrate → contract for any breaking change | Deploys stay rolling; old and new code coexist |
 | Every migration is reversible or documents why it is not | Rollback must be a decision, not a discovery |
 | Data backfills are jobs, not migrations | A migration that runs for an hour is an outage |
@@ -113,7 +135,7 @@ dead-letter growth, ready-check failure, index lag > 5 minutes, error rate above
 
 | Asset | Method | Retention | RPO | RTO |
 | --- | --- | --- | --- | --- |
-| PostgreSQL | Continuous WAL archiving + nightly base backup | 35 days PITR, monthly for 12 months | 5 min | 2 h |
+| PostgreSQL | Continuous WAL archiving + nightly base backup, **per tenant database** | 35 days PITR, monthly for 12 months | 5 min | 2 h |
 | Object storage | Versioning + cross-region replication | Per tenant retention policy | 15 min | 4 h |
 | Redis | None — rebuildable | — | — | Minutes |
 | Search index | None — rebuildable from source | — | — | Hours (rebuild) |
@@ -132,12 +154,14 @@ audit hash chain verifies end to end after the restore. An untested backup is no
 | Storage object lost or corrupted | Restore from versioning or replication; verify the checksum; if unrecoverable, mark the revision and raise a compliance incident — never silently substitute |
 | Ransomware or destructive action | PITR to before the event; object versioning restores blobs; the hash chain identifies exactly what was touched and when |
 | Tenant-level mistake (mass delete) | Soft delete makes this recoverable without a restore — the recycle bin is the first line of defence ([ADR-0010](./adr/0010-soft-delete-and-retention.md)) |
+| One tenant needs a point-in-time restore | Restore that tenant's database alone, to the minute, without touching anybody else's — which a shared database could not offer ([ADR-0015](./adr/0015-database-per-tenant.md)) |
 
 ## 8. Tenant provisioning and offboarding
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Provisioning
+    [*] --> Placed
+    Placed --> Provisioning: create the database · add the catalogue entry · migrate
     Provisioning --> Active: seed roles, settings, default library, numbering rules, workflows
     Active --> Suspended: non-payment or policy
     Suspended --> Active: reinstated
@@ -146,6 +170,14 @@ stateDiagram-v2
     Exported --> Purged: after the contractual grace period
 ```
 
-Suspension makes a tenant read-only rather than invisible: their evidence stays intact. Offboarding
-always produces a verifiable export — documents with their metadata, revisions and the audit trail
-with its checkpoints — before anything is purged.
+**Placement comes first**, and the order is not negotiable: a tenant is given a database, added to the
+catalogue and migrated *before* it is provisioned, because provisioning writes into that database and
+there is no other one to fall back on. The identifier in the catalogue entry is what routes every later
+request, so it is chosen at placement and never regenerated — provisioning reads it rather than inventing
+it, which is also what lets the whole bootstrap be one transaction.
+
+Suspension makes a tenant read-only rather than invisible: their evidence stays intact, and the status is
+read from the tenant row inside the transaction rather than from the catalogue, because a value read at
+boot is stale for as long as the process lives. Offboarding always produces a verifiable export —
+documents with their metadata, revisions and the audit trail with its checkpoints — before anything is
+purged, and purging is now dropping a database rather than deleting rows from a shared one.

@@ -155,8 +155,15 @@ export const PROVISIONING_REPOSITORY = Symbol('ProvisioningRepository');
  * second way to create users.
  */
 export interface ProvisioningRepository {
-  slugExists(slug: string): Promise<boolean>;
-  /** Written outside any tenant context — the context is keyed on what this creates. */
+  /**
+   * Whether this tenant's database already holds its tenant row.
+   *
+   * Replaces the slug-uniqueness check Phase 1 had. Uniqueness is now the registry's, checked at boot
+   * across the whole catalogue; what is left to ask here is whether *this* database has already been
+   * provisioned — a question only its own database can answer
+   * (`docs/architecture/adr/0015-database-per-tenant.md`).
+   */
+  alreadyProvisioned(tenantId: TenantId): Promise<boolean>;
   createTenant(tenant: { id: TenantId; slug: string; name: string }): Promise<void>;
   /**
    * The root of the scope tree.
@@ -171,12 +178,24 @@ export interface ProvisioningRepository {
     readonly code: string;
     readonly name: string;
   }): Promise<void>;
-  createAdminRole(role: {
-    id: RoleId;
-    key: string;
-    name: string;
-    permissions: readonly PermissionKey[];
-  }): Promise<void>;
+  /**
+   * The eight roles every tenant starts with, and their seeded permissions.
+   *
+   * All eight rather than only the administrator's, because a tenant with one role is a tenant that
+   * cannot delegate anything: an administrator's first act is to make somebody an author, and having
+   * to create the role first turns "add a colleague" into a matrix-design exercise. The seeds come
+   * from `08-permission-model.md` §6 via `domain/role-seed.ts`, and they are ordinary tenant data
+   * the moment they are written.
+   */
+  createSystemRoles(
+    roles: readonly {
+      readonly id: RoleId;
+      readonly key: string;
+      readonly name: string;
+      readonly description: string;
+      readonly permissions: readonly PermissionKey[];
+    }[],
+  ): Promise<void>;
   createAdminUser(user: {
     id: UserId;
     roleId: RoleId;

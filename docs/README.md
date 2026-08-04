@@ -15,7 +15,8 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes now exists as a skeleton. Its map is
+The code the architecture describes exists through Phase 2.5 — the platform foundation, the whole of
+Administration, and the per-tenant infrastructure the remaining phases are built on. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -56,7 +57,7 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | ADR | Decision |
 | --- | --- |
 | [0001](./architecture/adr/0001-product-root-placement.md) | The product root is `edms/`, not `docs/` |
-| [0002](./architecture/adr/0002-multi-tenant-isolation-model.md) | Shared database, row-level tenant isolation, RLS backstop |
+| [0002](./architecture/adr/0002-multi-tenant-isolation-model.md) | ~~Shared database, row-level tenant isolation, RLS backstop~~ — superseded by 0015 |
 | [0003](./architecture/adr/0003-document-identity-revision-file-separation.md) | Document, revision and file are three separate things |
 | [0004](./architecture/adr/0004-numbering-assigned-at-approval.md) | Numbers are reserved at submission, assigned at approval, never reused |
 | [0005](./architecture/adr/0005-hierarchical-acl-with-deny-precedence.md) | Inherited ACLs on the scope tree, explicit deny wins |
@@ -69,10 +70,23 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0012](./architecture/adr/0012-entitlements-as-data-enforced-centrally.md) | Plans and entitlements are data, enforced centrally, separate from permissions |
 | [0013](./architecture/adr/0013-operator-console-as-separate-surface.md) | Cross-tenant operations live in a separate, fully audited console |
 | [0014](./architecture/adr/0014-materialised-path-as-text.md) | The scope tree's ancestry is a materialised path stored as `text` |
+| [0015](./architecture/adr/0015-database-per-tenant.md) | One database, storage location and search index per tenant; where each lives is a placement resolved through a registry |
 
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 2.5 — the deployment-agnostic foundation
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 2.5 — Per-tenant infrastructure](./reports/phase-2.5-per-tenant-infrastructure.md) | The refactor that gave every tenant its own database, storage and index — what moved, what did not, and what it costs |
+
+### Phase 2 — administration
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 2 — Administration](./reports/phase-2-administration.md) | What the Administration phase built, the decisions worth carrying forward, and every limit it left deliberately in place |
 
 ### Phase 0.5 — the technical skeleton
 

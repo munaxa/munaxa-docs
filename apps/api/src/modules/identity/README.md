@@ -107,9 +107,46 @@ be created by somebody signed in, because nobody is.
 | One transaction | A tenant with no administrator, or a role nobody holds, is a workspace nobody can enter and nobody can fix |
 | The password policy applies | Unlike sign-in, this is a password being *set* — which is exactly what the policy governs |
 
-The role is ordinary data afterwards. Phase 2 edits it like any other.
+The role is ordinary data afterwards, and Phase 2 edits it like any other. Provisioning now seeds
+**eight** roles from `domain/role-seed.ts` rather than one, so a new tenant starts with a usable
+permission matrix instead of a single account holding everything.
+
+`role-seed.ts` seeds only the permission matrix's tenant-wide (`✓`) cells, plus the `own` ones. The
+scoped (`S`) cells are deliberately **not** seeded: step 6 of the resolution algorithm falls back to
+the tenant-level role grant, so seeding `document:delete` for a library manager would let them delete
+any document in a tenant that has no ACLs yet. `TENANT_ADMIN` gets everything except
+`document:approve` and `document:reject` — approving is an act, not an administrative power.
+
+## Administration
+
+`USER_ADMIN_SERVICE` (behind `user:manage`) and `ROLE_ADMIN_SERVICE` (behind `role:manage`) own people
+and access: create, edit, soft delete, restore, search, sort, page and filter.
+
+Three operations here are not edits, and are separate endpoints because of what they do beyond the
+row they touch.
+
+**Setting a password ends every session the person holds.** Whoever knew the old password may not be
+whoever should keep the session. The tenant's password policy applies, because this is a password
+being *set*, and the audit trail records that it happened without recording what it was.
+
+**Disabling an account ends every session too**, for the same reason.
+
+**Editing a role's permissions changes what everyone holding it may do**, on their next request rather
+than at their next sign-in. A system role's *key* is fixed — the product refers to the eight seeded
+roles by key, so renaming one would break the seed, the MFA policy and every report that groups by it
+— but its name and its permissions are ordinary tenant data.
+
+### Two deliberate limits
+
+**Role grants are tenant-wide only.** `user_role` has no `scope_type`/`scope_id`, and that is a
+decision rather than an omission: a role granted on one node needs the ACL resolver to enforce the
+boundary, and until that exists a scoped grant would be *stored* as scoped and *enforced* as
+tenant-wide — worse than not offering it.
+
+**There is no invitation-token subsystem.** A new account is created in `INVITED` status and an
+administrator sets its first password. A credential-bearing token belongs with the rest of the
+credential lifecycle in the security phase, not bolted onto administration.
 
 ## Still to build
 
-User and role administration, delegation, MFA enrolment, and the events listed above — none of
-which are published yet.
+Delegation, MFA enrolment, and the events listed above — none of which are published yet.

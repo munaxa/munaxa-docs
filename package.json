@@ -2,7 +2,7 @@
   "name": "munaxa-docs",
   "version": "0.1.0",
   "private": true,
-  "description": "Munaxa Docs — an independent Munaxa product repository. Consumes the shared design system from @munaxa/*.",
+  "description": "Munaxa Docs \u2014 an independent Munaxa product repository. Consumes the shared design system from @munaxa/*.",
   "license": "UNLICENSED",
   "packageManager": "pnpm@10.33.0",
   "engines": {
@@ -21,7 +21,7 @@
     "docker:down": "docker compose down",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev && pnpm db:post-migrate",
-    "prisma:deploy": "prisma migrate deploy && pnpm db:post-migrate",
+    "prisma:deploy": "node scripts/migrate-tenants.mjs",
     "db:post-migrate": "node scripts/apply-post-migrate.mjs"
   },
   "devDependencies": {

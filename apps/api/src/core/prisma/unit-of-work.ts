@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { Inject, Injectable } from '@nestjs/common';
 
-import { PrismaService, type PrismaTransaction } from './prisma.service';
+import { TenantDatabase, type PrismaTransaction } from './tenant-database';
 import { requireContext } from '../tenancy/tenant-context';
 
 /**
@@ -53,7 +53,7 @@ export function requireTransaction(): PrismaTransaction {
 
 @Injectable()
 export class PrismaUnitOfWork implements UnitOfWork {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(@Inject(TenantDatabase) private readonly databases: TenantDatabase) {}
 
   async run<TResult>(work: () => Promise<TResult>): Promise<TResult> {
     const existing = transactionStorage.getStore();
@@ -63,6 +63,9 @@ export class PrismaUnitOfWork implements UnitOfWork {
       return work();
     }
     const { tenantId } = requireContext();
-    return this.prisma.withTenant(tenantId, (tx) => transactionStorage.run(tx, work));
+    // The tenant decides *which database* the transaction opens on, not merely which rows it may
+    // touch. That is the whole of ADR-0015 as far as a use case is concerned, and it is why none of
+    // them changed.
+    return this.databases.withTenant(tenantId, (tx) => transactionStorage.run(tx, work));
   }
 }

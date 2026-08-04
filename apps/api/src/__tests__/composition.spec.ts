@@ -9,8 +9,16 @@ import { AppModule } from '../app.module';
 import { ACL_RESOLVER, type AclResolver } from '../core/authorization';
 import { TOKEN_VERIFIER, type TokenVerifier } from '../core/auth';
 import { APP_CONFIG, type AppConfig } from '../core/config';
-import { PrismaService } from '../core/prisma';
-import { CLOCK_PORT, STORAGE_PORT, type ClockPort, type StoragePort } from '../ports';
+import { TenantDatabase } from '../core/prisma';
+import {
+  CLOCK_PORT,
+  SEARCH_PORT,
+  STORAGE_PORT,
+  type ClockPort,
+  type SearchPort,
+  type StoragePort,
+} from '../ports';
+import { runWithContext, type RequestContext } from '../core/tenancy/tenant-context';
 import { RedisCacheAdapter } from '../infrastructure/cache/redis-cache.adapter';
 import { JwtTokenService } from '../modules/identity/infrastructure/jwt.token-service';
 import { aTenantId, aUserId } from '../testing/factories';
@@ -31,6 +39,10 @@ describe('application composition', () => {
     process.env.DATABASE_URL = 'postgresql://app:local@localhost:5432/edms';
     process.env.REDIS_URL = 'redis://localhost:6379';
     process.env.JWT_ACCESS_SECRET = 'a'.repeat(32);
+    // The single-tenant shape, which is what an on-premise installation runs and the cheapest thing
+    // to compose against: one placement, derived from this environment, no catalogue to parse.
+    process.env.TENANT_ID = '019489f0-0000-7000-8000-00000000000c';
+    process.env.TENANT_SLUG = 'composition';
   });
 
   afterEach(() => {
@@ -40,8 +52,14 @@ describe('application composition', () => {
 
   async function compile() {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(PrismaService)
-      .useValue({ $connect: vi.fn(), $disconnect: vi.fn(), ping: vi.fn() })
+      .overrideProvider(TenantDatabase)
+      .useValue({
+        clientFor: vi.fn(),
+        withTenant: vi.fn(),
+        ping: vi.fn(),
+        placements: vi.fn(() => Promise.resolve([])),
+        disconnectAll: vi.fn(),
+      })
       .overrideProvider(RedisCacheAdapter)
       .useValue({ get: vi.fn(), set: vi.fn(), delete: vi.fn() })
       .compile();
@@ -88,12 +106,52 @@ describe('application composition', () => {
     await moduleRef.close();
   });
 
+  it('scopes storage to a tenant before it reaches a provider at all', async () => {
+    // The tenant scoping is *outside* the vendor adapter, so a call with no tenant context never
+    // reaches one. That ordering is the isolation guarantee: an adapter written in a later phase
+    // inherits it and cannot opt out, because nothing above this file can reach past the wrapper
+    // (`docs/architecture/adr/0015-database-per-tenant.md`).
+    const moduleRef = await compile();
+    const storage = moduleRef.get<StoragePort>(STORAGE_PORT);
+
+    await expect(
+      storage.createDownloadUrl('any/key', { expiresInSeconds: 60 }),
+    ).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+
+    await moduleRef.close();
+  });
+
   it('refuses an unconfigured storage provider loudly, naming the variable that fixes it', async () => {
     const moduleRef = await compile();
     const storage = moduleRef.get<StoragePort>(STORAGE_PORT);
+
+    // Inside a context the scoping passes the call through, and the provider underneath is the one
+    // that fails — naming the environment variable that would configure it, rather than pretending to
+    // have stored bytes it never received.
     await expect(
-      storage.createDownloadUrl('any/key', { expiresInSeconds: 60 }),
+      runWithContext(
+        {
+          tenantId: process.env.TENANT_ID as RequestContext['tenantId'],
+          userId: null,
+          roles: [],
+          permissions: [],
+          sessionId: null,
+          correlationId: 'composition',
+          permissionVersion: 0,
+          locale: 'en',
+        },
+        () => storage.createDownloadUrl('any/key', { expiresInSeconds: 60 }),
+      ),
     ).rejects.toMatchObject({ details: { configure: 'STORAGE_DRIVER' } });
+
+    await moduleRef.close();
+  });
+
+  it('binds search behind its tenant scoping too, so a query cannot name another index', async () => {
+    const moduleRef = await compile();
+    // Declared in Phase 0.5 and unbound until now: an unbound port is a container that fails to
+    // resolve at boot, which reads as a broken deployment rather than an unconfigured one.
+    expect(moduleRef.get<SearchPort>(SEARCH_PORT)).toBeDefined();
     await moduleRef.close();
   });
 });

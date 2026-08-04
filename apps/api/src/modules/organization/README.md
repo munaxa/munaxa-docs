@@ -66,22 +66,48 @@ bare prefix comparison would make `a.bc` a descendant of `a.b`, and an ACL grant
 department would silently reach another. Both the pure check and the SQL prefix query are
 asserted against that case.
 
-## Phase 1 status
+## Phase 2 status
 
-The tree and the **read** side the permission model needs: `ORGANIZATION_SERVICE` answers
-`scopeChainFor`, `exists` and `departmentsReachedBy`, over the five tables this module owns.
-Provisioning creates a root company and entity, so the tree is usable from the first sign-in.
+Both sides of the tree now exist.
 
-Creating and editing nodes — with soft delete, restore, search and pagination — is **Phase 2**,
-which owns that capability. The events above are not published yet; nothing moves until there is
-a way to move it.
+The **read** side is `ORGANIZATION_SERVICE`: `scopeChainFor`, `exists` and `departmentsReachedBy`,
+over the five tables this module owns. Provisioning creates a root company and entity, so the tree
+is usable from the first sign-in.
+
+The **write** side is `SCOPE_ADMIN_SERVICE` behind `org:manage` — create, edit, move, soft delete,
+restore, search, sort, page and filter, for all four node kinds. Both events above are published now
+that there is something to move and something to retire.
+
+Three decisions in that write side are worth reading before changing it.
+
+**A delete is refused, never cascaded.** A company with entities under it, a department with members
+or children, cannot be removed; the API answers with the counts. Cascading would make "delete this
+company" a one-click way to remove every department in it, and refusing with a number is what lets
+somebody understand a reorganisation before performing it.
+
+**Moving a department is its own endpoint.** It rewrites the materialised path of the whole subtree
+in one statement and publishes `organization.department-moved`, because every ACL granted along the
+old chain stops applying the moment it lands. That is not a field on an edit form.
+
+**An entity's company cannot be changed.** Re-parenting an entity would move every branch,
+department, library and document under it into another permission chain, silently — a change no
+confirmation dialogue can honestly summarise. An entity created under the wrong company is deleted
+and recreated while it is still empty.
+
+The write side is also where `OrganizationNodeKind` comes from, and it is deliberately not
+`ScopeType`: `ScopeType` has no `BRANCH`, because a branch is a location rather than a permission
+level, and this module still has to create one.
 
 ## Tests
 
-`scope-tree.spec.ts` covers the pure rules. `pnpm test:integration` covers what only a database
+`scope-tree.spec.ts` covers the pure rules, which now re-export the shared path arithmetic in
+`@edms/domain`'s `tree.ts` — three trees need identical answers to the same questions, and one of
+them decides who can read what. `pnpm test:integration` covers what only a database
 can answer: chain resolution through all four levels, that a prefix without a separator is not a
 descendant, that another tenant's department resolves to an empty chain rather than a leak, the
 partial unique indexes on `lower(code)` including reuse after soft delete, one primary department
 per person, and that all five tables have `FORCE ROW LEVEL SECURITY` — which matters as much as
 `ENABLE`, since without it the owning role bypasses its own policies and every other check passes
-for the wrong reason.
+for the wrong reason. `scope-admin.integration.spec.ts` covers the write side: placement refusals,
+subtree rewriting on a move, the dependent counts that block a delete, code reuse after a soft
+delete, and optimistic-locking conflicts.

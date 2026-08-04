@@ -32,6 +32,14 @@ graph LR
 The index is a **read model**. It is never authoritative, it is rebuildable from source at any time,
 and a rebuild is a routine operation rather than an incident.
 
+**One index per tenant** ([ADR-0015](./adr/0015-database-per-tenant.md)). Which index answers a tenant's
+search is a placement, not a use-case decision, so adapters are written against a port that cannot run
+a query without being told the index — and the `tenant_id` on a search subject is *overwritten* from the
+ambient context rather than trusted, so a subject built for another tenant returns the caller's own
+results rather than a leak. For the PostgreSQL generation the index lives in the tenant's own database
+and the separation is already physical; for an external engine sharing one cluster, the index name is
+the entire boundary.
+
 ### Index entry
 
 | Field | Purpose |

@@ -75,6 +75,13 @@ export interface TenantSettingsRepository {
   /** Rejects a key outside the catalogue: a value nothing can read back is only clutter. */
   set<TValue>(key: string, value: TValue): Promise<void>;
   /**
+   * Drops a tenant's override, returning the setting to the product's default.
+   *
+   * Removing the key rather than storing today's default: a stored copy would stop tracking the
+   * product's opinion the day it changed, and nothing would say why this tenant was different.
+   */
+  remove(key: string): Promise<void>;
+  /**
    * The whole stored bag, unresolved.
    *
    * Settings are always read together — one read serves a request, whatever it asks for — so

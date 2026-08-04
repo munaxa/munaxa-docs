@@ -1,0 +1,281 @@
+'use server';
+
+import {
+  type Category,
+  type ConfidentialityLevel,
+  type DocumentType,
+  type MetadataField,
+  type NumberingPreview,
+  type NumberingRule,
+  type RetentionPolicy,
+  type SettingsResponse,
+  createCategorySchema,
+  createConfidentialityLevelSchema,
+  createDocumentTypeSchema,
+  createMetadataFieldSchema,
+  createNumberingRuleSchema,
+  createRetentionPolicySchema,
+  moveCategorySchema,
+  previewNumberingRuleSchema,
+  resetSettingSchema,
+  updateCategorySchema,
+  updateConfidentialityLevelSchema,
+  updateDocumentTypeSchema,
+  updateMetadataFieldSchema,
+  updateNumberingRuleSchema,
+  updateRetentionPolicySchema,
+  updateSettingSchema,
+} from '@edms/contracts';
+
+import type { ActionResult } from '../../lib/admin/action-result';
+import { adminWrite } from '../../lib/admin/api';
+import { validated } from '../../lib/admin/validated';
+
+/**
+ * Writes to the configuration a document type is assembled from.
+ *
+ * Six resources, and their dependency order is the order the screens are listed in: a document type
+ * needs a numbering rule and a confidentiality level to exist, and it may reference a retention
+ * policy, a workflow and any number of metadata fields.
+ */
+
+// --- Confidentiality levels ---------------------------------------------------------------
+
+export async function createConfidentialityLevel(
+  input: unknown,
+): Promise<ActionResult<ConfidentialityLevel>> {
+  return validated(createConfidentialityLevelSchema, input, (body) =>
+    adminWrite<ConfidentialityLevel>({
+      path: '/admin/confidentiality-levels',
+      method: 'POST',
+      body,
+    }),
+  );
+}
+
+export async function updateConfidentialityLevel(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<ConfidentialityLevel>> {
+  return validated(updateConfidentialityLevelSchema, input, (body) =>
+    adminWrite<ConfidentialityLevel>({
+      path: `/admin/confidentiality-levels/${id}`,
+      method: 'PATCH',
+      body,
+      version,
+    }),
+  );
+}
+
+export async function deleteConfidentialityLevel(
+  id: string,
+  version: number,
+): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/confidentiality-levels/${id}`, method: 'DELETE', version });
+}
+
+export async function restoreConfidentialityLevel(
+  id: string,
+  version: number,
+): Promise<ActionResult> {
+  return adminWrite({
+    path: `/admin/confidentiality-levels/${id}/restore`,
+    method: 'POST',
+    version,
+  });
+}
+
+// --- Retention policies -------------------------------------------------------------------
+
+export async function createRetentionPolicy(
+  input: unknown,
+): Promise<ActionResult<RetentionPolicy>> {
+  return validated(createRetentionPolicySchema, input, (body) =>
+    adminWrite<RetentionPolicy>({ path: '/admin/retention-policies', method: 'POST', body }),
+  );
+}
+
+export async function updateRetentionPolicy(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<RetentionPolicy>> {
+  return validated(updateRetentionPolicySchema, input, (body) =>
+    adminWrite<RetentionPolicy>({
+      path: `/admin/retention-policies/${id}`,
+      method: 'PATCH',
+      body,
+      version,
+    }),
+  );
+}
+
+export async function deleteRetentionPolicy(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/retention-policies/${id}`, method: 'DELETE', version });
+}
+
+export async function restoreRetentionPolicy(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/retention-policies/${id}/restore`, method: 'POST', version });
+}
+
+// --- Categories ---------------------------------------------------------------------------
+
+export async function createCategory(input: unknown): Promise<ActionResult<Category>> {
+  return validated(createCategorySchema, input, (body) =>
+    adminWrite<Category>({ path: '/admin/categories', method: 'POST', body }),
+  );
+}
+
+export async function updateCategory(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<Category>> {
+  return validated(updateCategorySchema, input, (body) =>
+    adminWrite<Category>({ path: `/admin/categories/${id}`, method: 'PATCH', body, version }),
+  );
+}
+
+/** Re-parenting, separate for the same reason a department's is: it rewrites a subtree's ancestry. */
+export async function moveCategory(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<Category>> {
+  return validated(moveCategorySchema, input, (body) =>
+    adminWrite<Category>({ path: `/admin/categories/${id}/move`, method: 'POST', body, version }),
+  );
+}
+
+export async function deleteCategory(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/categories/${id}`, method: 'DELETE', version });
+}
+
+export async function restoreCategory(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/categories/${id}/restore`, method: 'POST', version });
+}
+
+// --- Metadata fields ----------------------------------------------------------------------
+
+export async function createMetadataField(input: unknown): Promise<ActionResult<MetadataField>> {
+  return validated(createMetadataFieldSchema, input, (body) =>
+    adminWrite<MetadataField>({ path: '/admin/fields', method: 'POST', body }),
+  );
+}
+
+export async function updateMetadataField(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<MetadataField>> {
+  return validated(updateMetadataFieldSchema, input, (body) =>
+    adminWrite<MetadataField>({ path: `/admin/fields/${id}`, method: 'PATCH', body, version }),
+  );
+}
+
+export async function deleteMetadataField(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/fields/${id}`, method: 'DELETE', version });
+}
+
+export async function restoreMetadataField(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/fields/${id}/restore`, method: 'POST', version });
+}
+
+// --- Document types -----------------------------------------------------------------------
+
+export async function createDocumentType(input: unknown): Promise<ActionResult<DocumentType>> {
+  return validated(createDocumentTypeSchema, input, (body) =>
+    adminWrite<DocumentType>({ path: '/admin/document-types', method: 'POST', body }),
+  );
+}
+
+export async function updateDocumentType(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<DocumentType>> {
+  return validated(updateDocumentTypeSchema, input, (body) =>
+    adminWrite<DocumentType>({
+      path: `/admin/document-types/${id}`,
+      method: 'PATCH',
+      body,
+      version,
+    }),
+  );
+}
+
+export async function deleteDocumentType(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/document-types/${id}`, method: 'DELETE', version });
+}
+
+export async function restoreDocumentType(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/document-types/${id}/restore`, method: 'POST', version });
+}
+
+// --- Numbering rules ----------------------------------------------------------------------
+
+export async function createNumberingRule(input: unknown): Promise<ActionResult<NumberingRule>> {
+  return validated(createNumberingRuleSchema, input, (body) =>
+    adminWrite<NumberingRule>({ path: '/admin/numbering-rules', method: 'POST', body }),
+  );
+}
+
+export async function updateNumberingRule(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<NumberingRule>> {
+  return validated(updateNumberingRuleSchema, input, (body) =>
+    adminWrite<NumberingRule>({
+      path: `/admin/numbering-rules/${id}`,
+      method: 'PATCH',
+      body,
+      version,
+    }),
+  );
+}
+
+/**
+ * Renders a sample from an unsaved rule.
+ *
+ * A `POST` that claims nothing, because there is nothing to `GET` — the rule being previewed does not
+ * exist yet — and because drawing a real number to show a preview would burn one.
+ */
+export async function previewNumberingRule(
+  input: unknown,
+): Promise<ActionResult<NumberingPreview>> {
+  return validated(previewNumberingRuleSchema, input, (body) =>
+    adminWrite<NumberingPreview>({ path: '/admin/numbering-rules/preview', method: 'POST', body }),
+  );
+}
+
+export async function deleteNumberingRule(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/numbering-rules/${id}`, method: 'DELETE', version });
+}
+
+export async function restoreNumberingRule(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/admin/numbering-rules/${id}/restore`, method: 'POST', version });
+}
+
+// --- Settings -----------------------------------------------------------------------------
+
+/**
+ * Saves one setting.
+ *
+ * One key per request rather than the whole bag, matching the API: it merges in the database, so two
+ * administrators saving different settings at the same time cannot drop each other's change — which a
+ * read-modify-write of a whole bag would do, silently.
+ */
+export async function updateSetting(input: unknown): Promise<ActionResult<SettingsResponse>> {
+  return validated(updateSettingSchema, input, (body) =>
+    adminWrite<SettingsResponse>({ path: '/admin/settings', method: 'PUT', body }),
+  );
+}
+
+/** Returns a setting to the product's default by removing the tenant's override. */
+export async function resetSetting(input: unknown): Promise<ActionResult<SettingsResponse>> {
+  return validated(resetSettingSchema, input, (body) =>
+    adminWrite<SettingsResponse>({ path: '/admin/settings/reset', method: 'POST', body }),
+  );
+}

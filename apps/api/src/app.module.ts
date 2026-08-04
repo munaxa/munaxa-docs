@@ -14,6 +14,7 @@ import {
 import { MessagingModule } from './core/messaging';
 import { LoggerModule, ObservabilityModule } from './core/observability';
 import { OutboxModule } from './core/outbox';
+import { PersistenceModule } from './core/persistence';
 import { PrismaModule } from './core/prisma';
 import { TenancyModule, TenantIsolationGuard } from './core/tenancy';
 import { InfrastructureModule } from './infrastructure/infrastructure.module';
@@ -57,6 +58,7 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     ConfigModule,
     LoggerModule,
     PrismaModule,
+    PersistenceModule,
     TenancyModule,
     // Identity ships a real verifier, so the port no longer resolves to the one that rejects
     // everything. This is the only place that may import both `core/` and a module.

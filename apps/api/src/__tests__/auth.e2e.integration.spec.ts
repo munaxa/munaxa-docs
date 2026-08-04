@@ -28,6 +28,17 @@ const tenantId = uuidv7();
 const slug = `e2e-${tenantId.replaceAll('-', '').slice(-12)}`;
 const email = 'ada@e2e.test';
 
+/**
+ * The single-tenant shape, set before the application is composed.
+ *
+ * This is the one suite that boots the real container, so it is the one that has to configure tenancy
+ * the way a deployment does. Under ADR-0015 a process cannot start without knowing which tenants it
+ * serves — there is no default database to fall back on — and an on-premise installation says so with
+ * exactly these two variables.
+ */
+process.env['TENANT_ID'] = tenantId;
+process.env['TENANT_SLUG'] = slug;
+
 let app: INestApplication;
 let baseUrl: string;
 
@@ -224,13 +235,17 @@ describe('authentication over HTTP', () => {
 
   it('records every attempt in the audit trail, successes and failures alike', async () => {
     const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
-    // The tenant context has to be set even for the owner: FORCE ROW LEVEL SECURITY applies to
-    // the table owner too, so a `WHERE tenant_id = …` on a context-less session matches
-    // nothing at all. The predicate is not what scopes this read — the policy is.
+    // The predicate is what scopes this read, and it has to be: `edms_owner` is a superuser —
+    // the bootstrap role here, `POSTGRES_USER` under compose — and a superuser bypasses
+    // row-level security whether or not it is forced. Without `WHERE tenant_id`, this would
+    // read every tenant every suite in the run has created, and the gap-free assertion below
+    // would fail the moment there were two. The context is still set so the read sees what the
+    // application wrote under the same policy.
     const rows = await owner.$transaction(async (tx) => {
       await tx.$executeRawUnsafe("SELECT set_config('app.tenant_id', $1, true)", tenantId);
       return tx.$queryRawUnsafe<{ action: string; sequence: bigint }[]>(
-        'SELECT action, sequence FROM audit_event ORDER BY sequence',
+        'SELECT action, sequence FROM audit_event WHERE tenant_id = $1::uuid ORDER BY sequence',
+        tenantId,
       );
     });
     await owner.$disconnect();

@@ -31,19 +31,39 @@ CREATE UNIQUE INDEX uq_folder_name_live
 
 ## 2. Tenancy and row-level security
 
-Four application layers plus a database backstop
-([ADR-0002](./adr/0002-multi-tenant-isolation-model.md)):
+**One database per tenant** ([ADR-0015](./adr/0015-database-per-tenant.md)), with the row-level layers
+retained inside each one:
 
 | Layer | Mechanism |
 | --- | --- |
 | Token | `tenant_id` is a signed claim, never client-supplied |
 | Context | Request-scoped `AsyncLocalStorage`, not threaded by hand |
 | Guard | Rejects any request body or query naming a different tenant |
-| Data | Prisma client extension injects `where: { tenantId }` and stamps writes |
+| Connection | The tenant's placement decides **which database** the transaction opens on |
+| Data | The tenant predicate and stamps, applied by the repository |
 | Database | RLS policies on every tenant-scoped table, keyed on `current_setting('app.tenant_id')`, set per transaction |
 
 The application connects as a restricted role **without** `BYPASSRLS`. Migrations run as a separate
-owner role. A logic bug therefore cannot return another tenant's rows.
+owner role. A logic bug therefore cannot return another tenant's rows — and under ADR-0015 it cannot
+reach them at all, because they are not in the database the query ran against.
+
+`tenant_id` stays on every row, and that is not vestigial. The schema is identical in both
+deployments; an on-premise installation may legitimately serve two companies from one PostgreSQL, and
+there the row-level layers are the whole of the separation. What changed is that they are no longer the
+*only* boundary in the hosted service.
+
+### The schema is the same in every database
+
+Which means a partial unique index is per database rather than per cluster. Two customers may both use
+the company code `HQ`, and neither is told the other took it first — the index that would have decided
+between them exists once per tenant.
+
+### Migration
+
+`pnpm prisma:deploy` visits every tenant in the catalogue: the per-database SQL, then
+`prisma migrate deploy`, then the post-migration SQL, sequentially and fail-fast. `infra/sql/` is split
+by **scope** for the same reason — `cluster/` for roles, which are cluster-scoped; `database/` for
+grants and `current_tenant_id()`, which are not; `post-migrate/` for anything that references a table.
 
 ## 3. Core tables
 

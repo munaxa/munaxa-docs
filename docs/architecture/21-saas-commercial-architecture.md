@@ -12,8 +12,8 @@ model rather than inside it.
 
 | Decision | Choice | Recorded in |
 | --- | --- | --- |
-| Isolation | Multi-tenant, shared database, row-level isolation, RLS backstop | [ADR-0002](./adr/0002-multi-tenant-isolation-model.md) |
-| Dedicated-database tenants | Supported later by routing, not by a second data model | [19](./19-performance-and-scalability.md) §6 stage 4 |
+| Isolation | A database, storage location and search index per tenant | [ADR-0015](./adr/0015-database-per-tenant.md) |
+| Dedicated-database tenants | Every tenant, not only the largest — the routing is uniform | [ADR-0015](./adr/0015-database-per-tenant.md) |
 | On-premise | The same code with a single tenant and local drivers | [20](./20-deployment-architecture.md) §2 |
 | Plans and limits | Data, not code; enforced centrally | [ADR-0012](./adr/0012-entitlements-as-data-enforced-centrally.md) |
 | Cross-tenant operations | A separate, permission-gated, fully audited console | [ADR-0013](./adr/0013-operator-console-as-separate-surface.md) |
@@ -131,8 +131,8 @@ configuration a tenant can then change — nothing seeded is special-cased in co
 Custom domains: a tenant may claim a subdomain (`acme.docs.munaxa.com`) at provisioning and a custom
 domain later, verified by DNS record, with certificates issued automatically. The tenant is resolved
 from the host **only to select the login screen and branding** — never as an authorisation input.
-The `tenant_id` claim in the token remains the sole isolation authority
-([ADR-0002](./adr/0002-multi-tenant-isolation-model.md)).
+The `tenant_id` claim in the token remains the sole isolation authority, and it is what selects the
+tenant's database ([ADR-0015](./adr/0015-database-per-tenant.md)).
 
 ## 6. Payment provider
 

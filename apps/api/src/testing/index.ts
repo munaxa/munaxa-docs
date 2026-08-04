@@ -6,3 +6,4 @@
  */
 export * from './fake-ports';
 export * from './factories';
+export * from './real-collaborators';

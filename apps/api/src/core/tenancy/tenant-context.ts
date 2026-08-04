@@ -8,10 +8,15 @@ import { UnauthenticatedError } from '../errors/application-errors';
  * The request's tenant and actor, held in `AsyncLocalStorage` rather than threaded through
  * every signature by hand.
  *
- * This is isolation layer 2 of five: the token carries a signed `tenantId`, this context
- * carries it through the call tree, the isolation guard rejects any request naming another
- * tenant, the Prisma extension scopes every query, and RLS backstops all of it
- * (`docs/architecture/adr/0002-multi-tenant-isolation-model.md`).
+ * This is the layer everything else routes on: the token carries a signed `tenantId`, this context
+ * carries it through the call tree, the isolation guard rejects any request naming another tenant, and
+ * then — under [ADR-0015](../../../../../docs/architecture/adr/0015-database-per-tenant.md) — the
+ * tenant read from here decides *which database* the transaction opens on, which storage prefix a key
+ * is written under, and which search index answers a query. The row-level predicate and RLS still sit
+ * underneath all of that, inside each tenant's own database.
+ *
+ * Which is why the context is the thing that must never be absent rather than merely wrong: a missing
+ * tenant used to mean an unfiltered query, and now means no database to query at all.
  *
  * A parameter can be forgotten at one call site out of two hundred. A context read by the
  * data layer itself cannot.

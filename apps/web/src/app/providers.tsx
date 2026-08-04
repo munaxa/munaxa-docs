@@ -3,7 +3,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { type ReactNode, createContext, useContext, useState } from 'react';
 
-import { LocaleProvider } from '@munaxa/ui';
+import { LocaleProvider, ToastProvider } from '@munaxa/ui';
 
 import { DEFAULT_LOCALE, type LocaleKey, type MessageKey, translatorFor } from '@edms/i18n';
 
@@ -33,8 +33,18 @@ export function useSession(): SessionValue {
   return useContext(SessionContext);
 }
 
-/** Every user-visible string comes from the catalogues, never from a literal in a component. */
-export function useTranslate(): (key: MessageKey) => string {
+/**
+ * Every user-visible string comes from the catalogues, never from a literal in a component.
+ *
+ * The `values` argument is part of the signature rather than a second hook, because the strings
+ * that need it are the ones a component must not assemble itself: "Delete {name}?" is one sentence
+ * in English and a different word order in Arabic, and concatenating a name onto a translated
+ * fragment produces a sentence no translator ever saw.
+ */
+export function useTranslate(): (
+  key: MessageKey,
+  values?: Readonly<Record<string, string | number>>,
+) => string {
   return translatorFor(useSession().locale);
 }
 
@@ -52,7 +62,14 @@ export function Providers({
   return (
     <SessionContext.Provider value={session}>
       <LocaleProvider locale={session.locale}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          {/*
+            Outside the shell, so a message survives a navigation. A failed save is reported after the
+            list has already moved on, and a notice mounted inside the page it came from would be
+            unmounted before it was read.
+          */}
+          <ToastProvider>{children}</ToastProvider>
+        </QueryClientProvider>
       </LocaleProvider>
     </SessionContext.Provider>
   );
