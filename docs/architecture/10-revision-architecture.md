@@ -177,3 +177,17 @@ by the published snapshots (a draft has none, and the response says `available: 
 than diffing live values), approval history via the approval timeline that already exists. Text
 and page comparison state `UNAVAILABLE`: they consume [14](./14-preview-architecture.md)'s
 artefacts, and rendering them is Phase 7's.
+
+## Phase 7 — the comparison rows §4 promised
+
+Text and page comparison stopped stating `UNAVAILABLE`. The compare API now serves §4's third
+row from the preview pipeline's `TEXT` artefacts — paragraphs aligned by LCS, word-level
+highlighting inside changed pairs, capped and saying so when a side is truncated — and its
+fourth row as `pages.comparable`: where both sides render to pages, the client fetches each
+side's preview per click (issuing a page URL is an audited act, so nothing here is a URL). The
+queued-comparison sentence is kept literally: while a side is still rendering the state is
+`PENDING` — the render pipeline *is* the queue — and the UI says so rather than showing a
+partial diff. A format with no words (a drawing, an exhausted render) is honestly
+`UNAVAILABLE`, and a side read by OCR is flagged as the inference it is. The Approval layer of
+§4's table remains unbuilt, deliberately — the approval timeline already answers it on its own
+screen.

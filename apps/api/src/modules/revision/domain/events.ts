@@ -21,6 +21,12 @@ export interface RevisionCreatedPayload {
   readonly documentId: string;
   readonly ordinal: number;
   readonly authorId: string;
+  /**
+   * The blob the revision references. Added in Phase 7 — a compatible widening, not a shape
+   * change — so the preview consumer renders from the payload without reading the revision
+   * back, which a thin event exists to allow.
+   */
+  readonly fileObjectId: string;
 }
 
 export const revisionCreatedEvent = defineEvent<typeof REVISION_CREATED, RevisionCreatedPayload>(
@@ -64,6 +70,8 @@ export interface RevisionRestoredPayload {
   readonly revisionId: string;
   readonly documentId: string;
   readonly restoredFromRevisionId: string;
+  /** Added in Phase 7, as on `revision.created` — the restored content's blob. */
+  readonly fileObjectId: string;
 }
 
 export const revisionRestoredEvent = defineEvent<typeof REVISION_RESTORED, RevisionRestoredPayload>(

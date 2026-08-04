@@ -8,6 +8,7 @@ import { PreviewModule } from '../preview/preview.module';
 import { RevisionModule } from '../revision/revision.module';
 import { StorageModule } from '../storage/storage.module';
 import { DefaultDocumentNumberService } from './application/document-number.service';
+import { DocumentPreviewService } from './application/document-preview.service';
 import { DefaultDocumentService } from './application/document.service';
 import { RevisionControlService } from './application/revision-control.service';
 import { DOCUMENT_CONFIGURATION } from './application/configuration.port';
@@ -27,6 +28,7 @@ import { PrismaDocumentLockRepository } from './infrastructure/prisma-document-l
 import { PrismaDocumentRepository } from './infrastructure/prisma-document.repository';
 import { StorageContentGateAdapter } from './infrastructure/storage-content-gate.adapter';
 import { DocumentsController } from './presentation/documents.controller';
+import { DocumentPreviewController } from './presentation/document-preview.controller';
 import { RevisionControlController } from './presentation/revision-control.controller';
 
 /**
@@ -70,7 +72,7 @@ import { RevisionControlController } from './presentation/revision-control.contr
     RevisionModule,
     PreviewModule,
   ],
-  controllers: [DocumentsController, RevisionControlController],
+  controllers: [DocumentsController, RevisionControlController, DocumentPreviewController],
   providers: [
     PrismaDocumentRepository,
     { provide: DOCUMENT_REPOSITORY, useExisting: PrismaDocumentRepository },
@@ -84,6 +86,9 @@ import { RevisionControlController } from './presentation/revision-control.contr
     { provide: DOCUMENT_SERVICE, useClass: DefaultDocumentService },
     { provide: DOCUMENT_NUMBER_SERVICE, useClass: DefaultDocumentNumberService },
     RevisionControlService,
+    // Phase 7: the preview access decisions — permission → state → confidentiality — live
+    // beside the download's, because they are the same decisions about the same record.
+    DocumentPreviewService,
   ],
   // `DOCUMENT_NUMBER_SERVICE` is exported for exactly one consumer: Workflow's allocator
   // adapter, which is how the engine's `DOCUMENT_NUMBER_ALLOCATOR` seam gets its binding.

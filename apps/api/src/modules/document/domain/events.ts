@@ -21,6 +21,13 @@ export interface DocumentCreatedPayload {
   readonly folderId: string;
   readonly documentTypeId: string;
   readonly ownerUserId: string;
+  /**
+   * The initial revision and its blob. Added in Phase 7 — a compatible widening — because
+   * ordinal zero publishes no `revision.created` (`createInitial` predates the revision
+   * cycle), so this event is where the preview pipeline hears about a new document's content.
+   */
+  readonly revisionId: string;
+  readonly fileObjectId: string;
 }
 
 export const documentCreatedEvent = defineEvent<typeof DOCUMENT_CREATED, DocumentCreatedPayload>(

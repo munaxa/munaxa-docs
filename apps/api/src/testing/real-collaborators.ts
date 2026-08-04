@@ -25,11 +25,33 @@ import { LibraryPlacementAdapter } from '../modules/document/infrastructure/libr
 import { PrismaDocumentActivityRepository } from '../modules/document/infrastructure/prisma-document-activity.repository';
 import { PrismaDocumentRepository } from '../modules/document/infrastructure/prisma-document.repository';
 import { StorageContentGateAdapter } from '../modules/document/infrastructure/storage-content-gate.adapter';
+import { DocumentPreviewService } from '../modules/document/application/document-preview.service';
+import type { UserDirectory } from '../modules/identity/application/ports';
 import type { UserAdminService } from '../modules/identity/application/user-admin.service';
 import { LibraryAdminService } from '../modules/library/application/library-admin.service';
 import { PrismaLibraryAdminRepository } from '../modules/library/infrastructure/prisma-library-admin.repository';
 import { PrismaRevisionWriter } from '../modules/revision/infrastructure/prisma-revision.writer';
 import { DefaultStorageService } from '../modules/storage/application/storage.service';
+import { PreviewOcrService } from '../modules/preview/application/ocr.service';
+import { PreviewQueryService } from '../modules/preview/application/preview-query.service';
+import { PreviewRenderService } from '../modules/preview/application/render.service';
+import { NoOfficeConverter } from '../modules/preview/infrastructure/libreoffice.converter';
+import { ImageRenderer } from '../modules/preview/infrastructure/image.renderer';
+import { OfficeRenderer } from '../modules/preview/infrastructure/office.renderer';
+import { PdfRenderer } from '../modules/preview/infrastructure/pdf.renderer';
+import {
+  DefaultRendererRegistry,
+  RegistryPreviewAdapter,
+} from '../modules/preview/infrastructure/renderer.registry';
+import { TextRenderer } from '../modules/preview/infrastructure/text.renderer';
+import {
+  PrismaOcrResultRepository,
+  PrismaPreviewArtifactRepository,
+  PrismaPreviewRenderRepository,
+} from '../modules/preview/infrastructure/prisma-preview.repository';
+import type { OfficeConverter } from '../modules/preview/application/office-converter.port';
+import type { OcrPort } from '../ports/ocr.port';
+import type { StoragePort } from '../ports/storage.port';
 import { ApprovalRoutingService } from '../modules/administration/application/approval-routing.service';
 import { PrismaApprovalRoutingRepository } from '../modules/administration/infrastructure/prisma-approval-routing.repository';
 import { ApprovalService } from '../modules/workflow/application/approval.service';
@@ -141,6 +163,8 @@ export interface DocumentLibraryStack {
   readonly numbering: NumberingAdminService;
   /** The filesystem adapter underneath the scoping, for asserting against the disk itself. */
   readonly localStorage: LocalStorageAdapter;
+  /** The scoped port the service writes through — what the preview stack fetches bytes with. */
+  readonly storagePort: TenantScopedStorage;
 }
 
 export interface DocumentLibraryOptions {
@@ -172,10 +196,11 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     signingSecret: options.signingSecret,
     now: () => options.clock.now(),
   });
+  const scopedStorage = new TenantScopedStorage(localStorage, options.registry);
   const storage = new DefaultStorageService(
     new PrismaFileObjectRepository(stamps),
     new PrismaUploadSessionRepository(stamps),
-    new TenantScopedStorage(localStorage, options.registry),
+    scopedStorage,
     options.antivirus,
     options.clock,
     outbox,
@@ -220,6 +245,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     configuration,
     numbering: new NumberingAdminService(configurationRepository, outbox, writer),
     localStorage,
+    storagePort: scopedStorage,
   };
 }
 
@@ -311,6 +337,9 @@ export interface RevisionControlOptions {
   readonly documents: DefaultDocumentService;
   readonly configuration: ConfigurationService;
   readonly storage: DefaultStorageService;
+  /** The scoped port, for the compare API's text section reading artefact blobs back. */
+  readonly storagePort: StoragePort;
+  readonly config: AppConfig;
   /** Answers `userExists`, the way the library stack takes it. */
   readonly users: Pick<UserAdminService, 'get'>;
 }
@@ -342,8 +371,163 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
 
   return {
     control,
-    revisionQueries: new RevisionQueryService(new PrismaRevisionQueryRepository(), writer),
+    revisionQueries: new RevisionQueryService(
+      new PrismaRevisionQueryRepository(),
+      writer,
+      realPreviewQuery(options),
+    ),
   };
+}
+
+// --- Phase 7: the preview pipeline -----------------------------------------------------------
+//
+// The same boundary reason once more. What the preview suite asserts is what only the database
+// and the filesystem can answer: a render refused before the scan verdict is CLEAN, artefact
+// rows that do not duplicate under redelivery, derived blobs under the derived/ prefix and
+// excluded from the source's accounting — so the stack is composed here from the real
+// repositories, the real renderers and the real storage service, with only the queue recorded.
+
+export interface PreviewStackOptions {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly storage: DefaultStorageService;
+  readonly storagePort: StoragePort;
+  readonly config: AppConfig;
+  /** `NONE` by default — the honest CI shape; a suite that has LibreOffice passes the real one. */
+  readonly officeConverter?: OfficeConverter;
+  readonly ocr?: OcrPort;
+}
+
+export interface PreviewStack {
+  readonly render: PreviewRenderService;
+  readonly ocr: PreviewOcrService;
+  readonly queries: PreviewQueryService;
+  /** What the render decided to hand the slow lane. */
+  readonly enqueuedOcrJobs: {
+    readonly queue: string;
+    readonly jobId: string;
+    readonly payload: unknown;
+  }[];
+}
+
+export function realPreviewStack(options: PreviewStackOptions): PreviewStack {
+  const { stamps, outbox } = realWriteStack(options.clock, options.unitOfWork);
+  const registry = new DefaultRendererRegistry();
+  registry.register(new PdfRenderer());
+  registry.register(new OfficeRenderer(options.officeConverter ?? new NoOfficeConverter()));
+  registry.register(new ImageRenderer());
+  registry.register(new TextRenderer());
+
+  const enqueuedOcrJobs: PreviewStack['enqueuedOcrJobs'] = [];
+  const queue = {
+    enqueue: (queueName: string, payload: object, jobOptions: { jobId: string }) => {
+      enqueuedOcrJobs.push({ queue: queueName, jobId: jobOptions.jobId, payload });
+      return Promise.resolve({
+        queue: queueName,
+        jobId: jobOptions.jobId,
+        availableAt: options.clock.now(),
+      });
+    },
+    cancel: () => Promise.resolve(false),
+    depth: () => Promise.resolve({ queue: '', waiting: 0, active: 0, delayed: 0, failed: 0 }),
+  } as never;
+  const silentLogger = {
+    debug: () => undefined,
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+  } as never;
+
+  const artifacts = new PrismaPreviewArtifactRepository(stamps);
+  const renders = new PrismaPreviewRenderRepository(stamps);
+  const ocrResults = new PrismaOcrResultRepository(stamps);
+
+  const ocrPort: OcrPort = options.ocr ?? {
+    engine: 'none',
+    supports: () => false,
+    extract: () => Promise.reject(new Error('No OCR engine in this suite.')),
+  };
+
+  return {
+    render: new PreviewRenderService(
+      options.unitOfWork,
+      options.storage,
+      new RegistryPreviewAdapter(registry),
+      artifacts,
+      renders,
+      ocrResults,
+      outbox,
+      queue,
+      options.config,
+      silentLogger,
+    ),
+    ocr: new PreviewOcrService(
+      options.unitOfWork,
+      options.storage,
+      ocrPort,
+      artifacts,
+      ocrResults,
+      outbox,
+      options.config,
+      silentLogger,
+    ),
+    queries: realPreviewQuery(options),
+    enqueuedOcrJobs,
+  };
+}
+
+/**
+ * The preview access decisions, composed with the same real pieces the container binds — so
+ * "permission → state → confidentiality" and the audit rows it writes are asserted against the
+ * real repositories and the real hash chain, with only the user directory a seeded double.
+ */
+export function realDocumentPreview(options: {
+  clock: ClockPort;
+  unitOfWork: UnitOfWork;
+  storage: DefaultStorageService;
+  storagePort: StoragePort;
+  config: AppConfig;
+  configuration: ConfigurationService;
+  users: Pick<UserAdminService, 'get'>;
+  directory: UserDirectory;
+}): DocumentPreviewService {
+  const { stamps, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const settings = {
+    get: (definition: { defaultValue: unknown }) => Promise.resolve(definition.defaultValue),
+  } as never;
+  return new DocumentPreviewService(
+    writer,
+    new PrismaDocumentRepository(stamps),
+    new AdministrationConfigurationAdapter(
+      options.configuration,
+      realOrganizationService(),
+      options.users as UserAdminService,
+    ),
+    new PrismaRevisionWriter(stamps, new PrismaOutboxWriter(stamps)),
+    options.directory,
+    settings,
+    realPreviewQuery(options),
+  );
+}
+
+function realPreviewQuery(options: {
+  clock: ClockPort;
+  unitOfWork: UnitOfWork;
+  storage: DefaultStorageService;
+  storagePort: StoragePort;
+  config: AppConfig;
+}): PreviewQueryService {
+  const stamps = new RecordStamps(options.clock);
+  return new PreviewQueryService(
+    options.unitOfWork,
+    new PrismaPreviewArtifactRepository(stamps),
+    new PrismaPreviewRenderRepository(stamps),
+    new PrismaOcrResultRepository(stamps),
+    options.storage,
+    options.storagePort,
+    options.config,
+    options.clock,
+  );
 }
 
 export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngineStack {

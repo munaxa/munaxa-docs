@@ -447,9 +447,74 @@ function CompareSection({
           ) : (
             <p className="opacity-70">{translate('revisions.compare.metadataUnavailable')}</p>
           )}
-          <p className="opacity-70">{translate('revisions.compare.textUnavailable')}</p>
+          <TextCompare result={result} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The text section — Phase 6 shipped it stating `UNAVAILABLE`; Phase 7's artefacts fill the
+ * state in. Paragraphs from the extracted text, word-level highlighting inside changed pairs,
+ * `PENDING` while a side still renders (10 §4's queued comparison, said out loud), and the
+ * side-by-side offer where both sides have pages to look at.
+ */
+function TextCompare({ result }: { readonly result: RevisionCompare }): ReactNode {
+  const translate = useTranslate();
+
+  if (result.text.state === 'PENDING') {
+    return <p className="opacity-70">{translate('revisions.compare.textPending')}</p>;
+  }
+  if (result.text.state === 'UNAVAILABLE') {
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="opacity-70">{translate('revisions.compare.textUnavailable')}</p>
+        {result.pages.comparable && (
+          <p className="opacity-70">{translate('revisions.compare.pagesHint')}</p>
+        )}
+      </div>
+    );
+  }
+  if (result.text.identical === true) {
+    return <p className="opacity-70">{translate('revisions.compare.textIdentical')}</p>;
+  }
+  const changes = result.text.changes.filter((change) => change.kind !== 'EQUAL');
+  return (
+    <div className="flex flex-col gap-2" dir="auto">
+      {result.text.source === 'OCR' || result.text.source === 'MIXED' ? (
+        <p className="text-xs opacity-70">{translate('revisions.compare.textFromOcr')}</p>
+      ) : null}
+      {result.text.truncated && (
+        <p className="text-xs opacity-70">{translate('revisions.compare.textTruncated')}</p>
+      )}
+      <ul className="flex max-h-80 list-none flex-col gap-2 overflow-auto rounded border p-3">
+        {changes.map((change, index) => (
+          <li key={index} className="text-sm leading-relaxed">
+            {change.kind === 'REMOVED' && (
+              <del className="rounded bg-red-500/10 px-1 no-underline opacity-80">
+                {change.from}
+              </del>
+            )}
+            {change.kind === 'ADDED' && (
+              <ins className="rounded bg-green-500/10 px-1 no-underline">{change.to}</ins>
+            )}
+            {change.kind === 'CHANGED' && (
+              <span>
+                {(change.toWords ?? []).map((word, wordIndex) =>
+                  word.changed ? (
+                    <mark key={wordIndex} className="rounded px-0.5">
+                      {word.text}{' '}
+                    </mark>
+                  ) : (
+                    <span key={wordIndex}>{word.text} </span>
+                  ),
+                )}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

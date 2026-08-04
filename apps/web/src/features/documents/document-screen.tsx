@@ -53,6 +53,7 @@ export function DocumentScreen({
   canMove,
   canDownload,
   canAssignNumber,
+  preview,
   approvals,
   revisions,
 }: {
@@ -85,6 +86,11 @@ export function DocumentScreen({
    * nothing about how a revision moves.
    */
   readonly revisions?: ReactNode;
+  /**
+   * The viewer — Preview's own feature, passed in the way the other two are. Phase 7 added it
+   * and, as with Phase 4 and Phase 6, nothing else this screen knows had to change.
+   */
+  readonly preview?: ReactNode;
 }): ReactNode {
   const translate = useTranslate();
   const router = useRouter();
@@ -201,6 +207,8 @@ export function DocumentScreen({
         // is the case is the difference between a system that looks broken and one that is careful.
         <Alert tone="warning">{translate(`documents.scan.${file.scanStatus}`)}</Alert>
       )}
+
+      {preview}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">

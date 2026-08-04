@@ -49,6 +49,8 @@ export interface ConfidentialityView {
   readonly rank: number;
   readonly allowDownload: boolean;
   readonly allowPrint: boolean;
+  /** Views and prints carry the stamped mark (user, timestamp, number, "CONTROLLED COPY"). */
+  readonly watermark: boolean;
   readonly requireReason: boolean;
 }
 

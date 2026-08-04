@@ -151,6 +151,7 @@ export class PrismaRevisionWriter implements RevisionWriter {
         documentId: input.documentId,
         ordinal,
         authorId,
+        fileObjectId: input.fileObjectId,
       }),
       ...(input.restoredFromRevisionId === null
         ? []
@@ -159,6 +160,7 @@ export class PrismaRevisionWriter implements RevisionWriter {
               revisionId: id,
               documentId: input.documentId,
               restoredFromRevisionId: input.restoredFromRevisionId,
+              fileObjectId: input.fileObjectId,
             }),
           ]),
     ]);

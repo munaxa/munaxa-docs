@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 
 import { REVISION_WRITER } from '../document/application/ports';
+import { PreviewModule } from '../preview/preview.module';
 import { REVISION_QUERY } from './application/ports';
 import { RevisionQueryService } from './application/revision-query.service';
 import { PrismaRevisionQueryRepository } from './infrastructure/prisma-revision-query.repository';
@@ -42,6 +43,9 @@ import { RevisionsController } from './presentation/revisions.controller';
  * revision remaining readable is the module's answer to the question it owns.
  */
 @Module({
+  // Phase 7: the compare API's text and page sections consume the preview pipeline's
+  // artefacts through `PreviewQueryService` — the direction 10 §4 always drew.
+  imports: [PreviewModule],
   controllers: [RevisionsController],
   providers: [
     { provide: REVISION_WRITER, useClass: PrismaRevisionWriter },

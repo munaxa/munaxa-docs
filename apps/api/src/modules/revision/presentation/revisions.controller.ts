@@ -32,8 +32,9 @@ export class RevisionsController {
 
   /**
    * Two revisions, compared — by ordinal, because ordinals are the truth the labels render.
-   * Content by checksum, metadata by published snapshot, text explicitly unavailable until
-   * the preview pipeline (Phase 7) produces the artefacts it consumes.
+   * Content by checksum, metadata by published snapshot, text by paragraph from the preview
+   * pipeline's artefacts — `PENDING` while one is still rendering, which is 10 §4's queued
+   * comparison — and `pages.comparable` saying whether a side-by-side page view is possible.
    */
   @Get('documents/:id/revisions/compare')
   @RequirePermission(Permission.DOCUMENT_HISTORY_VIEW)
@@ -54,7 +55,25 @@ export class RevisionsController {
         available: comparison.metadata.available,
         changes: comparison.metadata.changes.map((change) => ({ ...change })),
       },
-      text: { state: 'UNAVAILABLE' },
+      text: {
+        state: comparison.text.state,
+        source: comparison.text.source,
+        changes:
+          comparison.text.comparison === null
+            ? []
+            : comparison.text.comparison.changes.map((change) => ({
+                kind: change.kind,
+                from: change.from,
+                to: change.to,
+                fromWords:
+                  change.fromWords === null ? null : change.fromWords.map((word) => ({ ...word })),
+                toWords:
+                  change.toWords === null ? null : change.toWords.map((word) => ({ ...word })),
+              })),
+        identical: comparison.text.comparison?.identical ?? null,
+        truncated: comparison.text.comparison?.truncated ?? false,
+      },
+      pages: { comparable: comparison.pages.comparable },
     };
   }
 }

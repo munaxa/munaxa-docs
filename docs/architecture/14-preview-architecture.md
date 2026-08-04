@@ -54,11 +54,11 @@ renderer degrades only its own formats. Nothing in the document module knows whi
 
 | Artefact | Kind | Notes |
 | --- | --- | --- |
-| Page images | `PAGE` | Web-optimised (WebP), per page, produced lazily beyond the first N pages |
-| Preview PDF | `PREVIEW_PDF` | For formats converted for viewing; watermarked on demand |
+| Page images | `PAGE_IMAGE` | Per page; for image formats the source serves as its own single page |
+| Preview PDF | `PDF` | The rendition a viewer draws and a print serves; watermarked on demand. For a PDF source it *is* the source, referenced rather than copied |
 | Thumbnail | `THUMBNAIL` | First page, list and card views |
-| Extracted text | `TEXT` | Per page, feeds search and revision comparison |
-| OCR text | `OCR` | Only when no usable text layer exists; carries engine, version and confidence |
+| Extracted text | `TEXT` | Per page where the format has pages, feeds search and revision comparison |
+| OCR text | `OCR` | Only when no usable text layer exists; `ocr_result` carries engine, version, language and confidence |
 
 All artefacts are `FileObject`s marked `derived = true`: disposable, excluded from quota,
 regenerable, purged with their source ([11](./11-storage-architecture.md)). `renderer` and
@@ -125,10 +125,10 @@ Rendering untrusted files is the product's largest attack surface. Therefore:
 
 ## Phase 3 — the upload-time thumbnail
 
-Phase 3 owns **one** artefact kind: a `THUMBNAIL`, drawn once when content arrives. Everything above
-— the renderer registry, the sandboxed plugins, page images, the PDF rendition, OCR text and the
-viewer — is Phase 7's, and `RENDERER_REGISTRY` is still deliberately unbound: a registry with one
-entry that is not a plugin would be a registry shaped by its single caller.
+Phase 3 owned **one** artefact kind: a `THUMBNAIL`, drawn once when content arrives. Everything
+above — the renderer registry, the sandboxed plugins, page images, the PDF rendition, OCR text
+and the viewer — was Phase 7's to build, and it is built; the caveat this section carried
+("`RENDERER_REGISTRY` is still deliberately unbound") is discharged below.
 
 What is built now is the `preview_artifact` table in its full shape, plus one producer, so a document
 uploaded today has a thumbnail and Phase 7 inherits a schema rather than a migration.
@@ -148,3 +148,55 @@ security-relevant thing in the format.
 **Generating a thumbnail never fails a document.** The port returns nothing, deliberately: a
 thumbnail carries no information the document does not already have, and a create rolled back over
 one would lose a document in order to protect a picture.
+
+## Phase 7 — what was built
+
+The registry of §2 binds, with four plugins — `munaxa-pdf`, `munaxa-office`, `munaxa-image`,
+`munaxa-text` — each claiming its formats and knowing nothing about documents, permissions or
+tenants. The renderer contract settled on **bytes in, bytes out**: the Phase 0.5 sketch had
+renderers exchanging storage keys, which would have handed every plugin a reach into storage —
+the opposite of §5's least-privilege row — so the orchestrator fetches the source through a
+presigned URL and stores what comes back, and a renderer *cannot* hold a credential rather than
+being told not to.
+
+**The server rasterises nothing.** A page raster needs a canvas; a canvas in Node is a native
+binding, and the air-gapped installer meeting native bindings badly has been the standing
+constraint since Phase 3's hand-written PNG codec. So the PDF path serves the rendition and the
+browser's own canvas draws it (pdf.js, bundled — no CDN); the server reads only the text layer,
+through the one pure-JS dependency this phase pulls in rather than writes out (`pdfjs-dist` —
+a PDF parser is years of format, not two hundred lines). Office documents get their text from a
+direct parse of the OOXML parts (a ZIP reader and a tag scan, written out, under §5's archive
+caps) and their pagination from LibreOffice, which is a subprocess per conversion — killed at
+the wall clock, throwaway profile, macros never executed, minimal environment — and a
+deployment decision: `OFFICE_DRIVER=NONE` degrades to text-only preview, honestly.
+
+**DWG has no renderer, deliberately.** Every real CAD engine is either proprietary or a native
+toolchain, both exactly what the installer meets badly, for a format whose fidelity errors are
+the kind an engineer acts on. §7's unsupported-format row — no preview, download offered where
+permitted, the UI saying so — is the shipped behaviour, and adding a CAD renderer later is one
+plugin. TIFF is the same decision at smaller stakes: browsers cannot draw it, OCR reads it
+directly, so it becomes searchable without becoming a picture.
+
+**Serving is §4 as routes**, with the order owned where the words mean something: permission on
+the route (`document:view` — never `document:download`; preview is what "readable, not
+downloadable" means), state in the document module (readers are served the current revision,
+drafts only through history behind `document:history:view`), confidentiality last and
+subtract-only — `allow_print` finally refuses, and `watermark` decides whether the issued URL
+points at bytes that carry the stamp. URLs are minted capabilities onto a preview stream
+(single artefact, short TTL, domain-separated HMAC — the `LOCAL` transfer token's construction),
+because a watermark must be burned in before a byte leaves and a presigned storage URL cannot
+do that. The mark is **per user, per request, cached never**: §4 allowed a shared cached mark;
+the stamp costs milliseconds against a size-capped rendition, so this deployment takes the
+stronger mark. "202 with status" is real (`preview_render`, one row per revision), prints go
+through the rendition and are audited as 13 §2's `PRINTED`, and a served view writes
+`DOCUMENT_VIEWED` gated by `audit.readEventsAboveRank` — that setting's first consumer.
+
+**The pipeline is §2's diagram running.** The outbox dispatcher fans `document.created` and the
+`revision.*` events to `documents.preview` beside `search.index` (one event, two lanes, two
+costs); nothing renders before the verdict is `CLEAN`; handlers are idempotent in the database —
+`uq_preview_artifact` recreated `NULLS NOT DISTINCT`, because the original index treated NULL
+pages as distinct and would have stored two thumbnails under redelivery. OCR is §6 exactly:
+Tesseract first (`ara+eng`), subprocess, only when extraction yielded nothing usable, flagged
+below seventy confidence, never touching the original. An image-only **PDF** stays unread —
+rasterising its pages is the rendering job the server deliberately does not do — and that
+limitation is recorded here rather than worked around badly.

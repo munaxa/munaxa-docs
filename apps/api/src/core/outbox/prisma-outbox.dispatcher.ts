@@ -95,8 +95,8 @@ export class PrismaOutboxDispatcher implements OutboxDispatcher {
       const rejected: { id: string; reason: string }[] = [];
 
       for (const row of rows) {
-        const lane = routeFor(row.event_type);
-        if (lane === null) {
+        const lanes = routesFor(row.event_type);
+        if (lanes.length === 0) {
           // An event nothing consumes. Marked processed rather than retried forever: the row is the
           // durable record that it happened, and leaving it unprocessed would make the pending
           // count grow without bound and hide the events that genuinely could not be delivered.
@@ -104,22 +104,25 @@ export class PrismaOutboxDispatcher implements OutboxDispatcher {
           continue;
         }
         try {
-          await this.queue.enqueue(
-            lane,
-            {
-              eventId: row.id,
-              tenantId,
-              aggregateType: row.aggregate_type,
-              aggregateId: row.aggregate_id,
-              eventType: row.event_type,
-              eventVersion: row.event_version,
-              payload: row.payload,
-              correlationId: row.correlation_id,
-            },
-            // Derived from the row, so a re-dispatch after a crash is the same job rather than a
-            // second one. This is what makes at-least-once safe rather than merely tolerable.
-            { jobId: `outbox:${row.id}` },
-          );
+          for (const lane of lanes) {
+            await this.queue.enqueue(
+              lane,
+              {
+                eventId: row.id,
+                tenantId,
+                aggregateType: row.aggregate_type,
+                aggregateId: row.aggregate_id,
+                eventType: row.event_type,
+                eventVersion: row.event_version,
+                payload: row.payload,
+                correlationId: row.correlation_id,
+              },
+              // Derived from the row and the lane, so a re-dispatch after a crash — including one
+              // that fell between two lanes of the same row — replaces rather than duplicates.
+              // This is what makes at-least-once safe rather than merely tolerable.
+              { jobId: `outbox:${row.id}:${lane}` },
+            );
+          }
           delivered.push(row.id);
         } catch (error) {
           rejected.push({
@@ -167,31 +170,51 @@ interface ClaimedRow {
 }
 
 /**
- * Which lane an event type goes to.
+ * Which lanes an event type goes to.
  *
  * A prefix match rather than a table of every event, and that is a deliberate trade. The alternative
  * — a registry every module contributes its own routes to — is more precise and costs a
  * cross-module registration that nothing would notice was missing until an event silently stopped
  * being delivered. A prefix is derived from the aggregate name, which the event type already
  * carries, so a new event in an existing module routes correctly with no change here at all.
+ * (Phase 7 kept the decision when it became the second consumer: what it needed was a second
+ * *lane* per prefix, not a registry.)
+ *
+ * A list, because one fact legitimately interests two lanes at two costs: a revision event is
+ * what the preview pipeline renders from *and* what the search projection will index, and the
+ * lanes are separated by cost precisely so the two reactions cannot starve each other.
  *
  * An unrouted event is not an error: most events exist so that a later phase can consume them, and
  * the outbox row is the durable record either way.
  */
-function routeFor(eventType: string): QueueNameKey | null {
+function routesFor(eventType: string): readonly QueueNameKey[] {
   if (eventType.startsWith('workflow.')) {
     // Notifications, once Phase 12 builds delivery. Until then the job is consumed by nothing and
     // the lane is where a consumer will look — which is the point of routing it now rather than
     // discovering the routing table is empty.
-    return QueueName.NOTIFICATIONS_DELIVER;
+    return [QueueName.NOTIFICATIONS_DELIVER];
   }
-  if (eventType.startsWith('document.') || eventType.startsWith('revision.')) {
-    return QueueName.SEARCH_INDEX;
+  if (eventType.startsWith('revision.')) {
+    return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW];
+  }
+  if (eventType === 'document.created') {
+    // The one document event that announces content: ordinal zero publishes no revision event
+    // (`createInitial` predates the revision cycle), so the preview pipeline hears about a new
+    // document's file from here.
+    return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW];
+  }
+  if (eventType.startsWith('document.')) {
+    return [QueueName.SEARCH_INDEX];
+  }
+  if (eventType.startsWith('preview.')) {
+    // The search projection consumes `preview.ocr-completed` in Phase 8; the lane is where it
+    // will look.
+    return [QueueName.SEARCH_INDEX];
   }
   if (eventType.startsWith('notification.')) {
-    return QueueName.NOTIFICATIONS_DELIVER;
+    return [QueueName.NOTIFICATIONS_DELIVER];
   }
-  return null;
+  return [];
 }
 
 /** Exponential, capped at five minutes, from the attempt count the row already carries. */

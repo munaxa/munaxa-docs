@@ -114,6 +114,8 @@ model Tenant {
   documents             Document[]
   documentRevisions     DocumentRevision[]
   previewArtifacts      PreviewArtifact[]
+  previewRenders        PreviewRender[]
+  ocrResults            OcrResult[]
   workflowInstances     WorkflowInstance[]
   workflowStages        WorkflowStage[]
   approvalTasks         ApprovalTask[]
@@ -1392,8 +1394,21 @@ enum PreviewArtifactKind {
   THUMBNAIL
   PDF
   TEXT
+  /// Text read off the pixels by an OCR engine — an inference with a confidence, never the
+  /// file's own words. `ocr_result` carries the engine, version, language and confidence.
+  OCR
 
   @@map("preview_artifact_kind")
+}
+
+/// Where rendering stands for a revision. `UNSUPPORTED` is a terminal answer, not a failure.
+enum PreviewRenderState {
+  PENDING
+  READY
+  FAILED
+  UNSUPPORTED
+
+  @@map("preview_render_state")
 }
 
 /// Stored bytes, and everything true about them independently of what they mean.
@@ -1632,6 +1647,8 @@ model DocumentRevision {
   restoredTo        DocumentRevision[] @relation("RevisionRestoredFrom")
   currentOf         Document[]         @relation("DocumentCurrentRevision")
   previews          PreviewArtifact[]
+  previewRender     PreviewRender?
+  ocrResult         OcrResult?
   workflowInstances WorkflowInstance[]
   locksCheckedOut   DocumentLock[]     @relation("LockCheckedOutRevision")
   locksDrafting     DocumentLock[]     @relation("LockDraftRevision")
@@ -1806,10 +1823,73 @@ model PreviewArtifact {
   fileObject FileObject       @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
 
   /// One artefact per revision, kind and page. A second would be two answers to "what does page
-  /// three look like", and nothing could say which is current.
+  /// three look like", and nothing could say which is current. `page` is nullable, so the
+  /// migration recreates this index `NULLS NOT DISTINCT` — a plain unique index treats every
+  /// NULL as distinct and would happily store two thumbnails (the same reason
+  /// `uq_document_lock_live` lives in raw SQL).
   @@unique([revisionId, kind, page], map: "uq_preview_artifact")
   @@index([tenantId, revisionId], map: "ix_preview_revision")
   @@map("preview_artifact")
+}
+
+/// Where rendering stands for one revision — the row behind "202 with status" and behind the
+/// operator's view of a failure (`14-preview-architecture.md` §§4, 7).
+///
+/// One row per revision, upserted by the preview consumer. The artefact rows are the evidence
+/// that pages exist; this is the answer when they do not yet, or never will: `PENDING` while the
+/// queue works, `FAILED` with an operator-readable reason when the renderer gave up,
+/// `UNSUPPORTED` when no renderer claims the format and the UI should offer download instead.
+model PreviewRender {
+  id              String             @id @db.Uuid
+  tenantId        String             @map("tenant_id") @db.Uuid
+  revisionId      String             @unique(map: "uq_preview_render_revision") @map("revision_id") @db.Uuid
+  state           PreviewRenderState @default(PENDING)
+  /// Why it failed or is unsupported, in a sentence an administrator can act on. Null when READY.
+  reason          String?
+  /// Which renderer answered, recorded even on failure so an upgrade knows what to retry.
+  renderer        String?
+  rendererVersion String?            @map("renderer_version")
+  /// Pages the renderer reported. Null until READY.
+  pageCount       Int?               @map("page_count")
+  attempts        Int                @default(0)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?            @map("created_by") @db.Uuid
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy       String?            @map("updated_by") @db.Uuid
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  revision DocumentRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, state], map: "ix_preview_render_state")
+  @@map("preview_render")
+}
+
+/// What an OCR engine read off a revision's pixels — metadata about the file, never the file.
+///
+/// The text itself is stored as a `preview_artifact` of kind `OCR` (a derived `FileObject`, like
+/// every other artefact); this row carries what the artefact bytes cannot: which engine, which
+/// version, which language, and how confident it was — so a low-confidence result can be flagged
+/// in the UI rather than presented as authoritative (`14-preview-architecture.md` §6).
+model OcrResult {
+  id             String   @id @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  revisionId     String   @unique(map: "uq_ocr_result_revision") @map("revision_id") @db.Uuid
+  engine         String
+  engineVersion  String   @map("engine_version")
+  /// The language(s) the engine was asked to read, e.g. `ara+eng`.
+  language       String
+  /// Mean word confidence, 0–100 as the engine reports it.
+  confidence     Int      @db.SmallInt
+  characterCount Int      @map("character_count")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?  @map("created_by") @db.Uuid
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?  @map("updated_by") @db.Uuid
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  revision DocumentRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+
+  @@map("ocr_result")
 }
 
 // ---------------------------------------------------------------------------------------

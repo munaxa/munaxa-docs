@@ -1,9 +1,17 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type DocumentId, RevisionStatus, asId } from '@edms/domain';
+import {
+  type DocumentId,
+  PreviewRenderState,
+  type RevisionId,
+  RevisionStatus,
+  asId,
+} from '@edms/domain';
 
 import { NotFoundError } from '../../../core/errors/application-errors';
 import { AdministeredWriter } from '../../../core/persistence';
+import { PreviewQueryService } from '../../preview/application/preview-query.service';
+import { type TextComparison, compareTexts } from '../domain/text-diff';
 import {
   REVISION_QUERY,
   type RevisionHistoryRow,
@@ -25,14 +33,20 @@ import {
  *   field; a side that has no snapshot yet (a draft, or anything published before nothing —
  *   there is none, snapshots arrive with publication) makes the answer "unavailable" rather
  *   than a diff of live values that proves nothing about what an approver saw.
- * - **Text and pages** consume the preview pipeline's artefacts, which are Phase 7's. The
- *   contract states `UNAVAILABLE`; the state fills in when the artefacts exist.
+ * - **Text and pages**, from Phase 7 on, consume the preview pipeline's artefacts, exactly as
+ *   the `UNAVAILABLE` contract promised: extracted text diffed by paragraph with word-level
+ *   highlighting, `PENDING` while an artefact is still rendering (10 §4's queued comparison —
+ *   the render *is* the queued work, and the UI says so rather than showing a partial diff),
+ *   and `UNAVAILABLE` where a format honestly has no words. The rendered-pages row is the
+ *   `pages.comparable` flag: the client fetches each side's preview per click, because issuing
+ *   a page URL is an audited act.
  */
 @Injectable()
 export class RevisionQueryService {
   constructor(
     @Inject(REVISION_QUERY) private readonly revisions: RevisionQuery,
     private readonly writer: AdministeredWriter,
+    private readonly previews: PreviewQueryService,
   ) {}
 
   async history(documentId: string): Promise<readonly RevisionHistoryRow[]> {
@@ -68,9 +82,64 @@ export class RevisionQueryService {
           filenameChanged: from.file.filename !== to.file.filename,
         },
         metadata: compareSnapshots(from, to),
+        text: await this.compareText(from, to),
+        pages: { comparable: await this.pagesComparable(from, to) },
       };
     });
   }
+
+  private async compareText(
+    from: RevisionHistoryRow,
+    to: RevisionHistoryRow,
+  ): Promise<TextComparisonSection> {
+    const [fromFacts, toFacts] = await Promise.all([
+      this.previews.facts(asId<RevisionId>(from.id)),
+      this.previews.facts(asId<RevisionId>(to.id)),
+    ]);
+    if (fromFacts.hasText && toFacts.hasText) {
+      const [fromPages, toPages] = await Promise.all([
+        this.previews.textPages(asId<RevisionId>(from.id)),
+        this.previews.textPages(asId<RevisionId>(to.id)),
+      ]);
+      if (fromPages !== null && toPages !== null) {
+        const sources = new Set([fromPages.source, toPages.source]);
+        return {
+          state: 'AVAILABLE',
+          source: sources.size === 1 ? fromPages.source : 'MIXED',
+          comparison: compareTexts(joinPages(fromPages.pages), joinPages(toPages.pages)),
+        };
+      }
+    }
+    // 10 §4: a missing artefact means the comparison is queued and the UI says so. The render
+    // pipeline is the queue; PENDING here is that promise kept, and a terminal render with no
+    // text — an unsupported format, a drawing, an exhausted failure — is honestly UNAVAILABLE.
+    const stillRendering =
+      fromFacts.state === PreviewRenderState.PENDING ||
+      toFacts.state === PreviewRenderState.PENDING;
+    return { state: stillRendering ? 'PENDING' : 'UNAVAILABLE', source: null, comparison: null };
+  }
+
+  private async pagesComparable(
+    from: RevisionHistoryRow,
+    to: RevisionHistoryRow,
+  ): Promise<boolean> {
+    const [fromFacts, toFacts] = await Promise.all([
+      this.previews.facts(asId<RevisionId>(from.id)),
+      this.previews.facts(asId<RevisionId>(to.id)),
+    ]);
+    const viewable = (mode: string | null): boolean => mode === 'PDF' || mode === 'IMAGE';
+    return viewable(fromFacts.mode) && viewable(toFacts.mode);
+  }
+}
+
+export interface TextComparisonSection {
+  readonly state: 'UNAVAILABLE' | 'PENDING' | 'AVAILABLE';
+  readonly source: 'TEXT' | 'OCR' | 'MIXED' | null;
+  readonly comparison: TextComparison | null;
+}
+
+function joinPages(pages: readonly { readonly text: string }[]): string {
+  return pages.map((page) => page.text).join('\n\n');
 }
 
 export interface Comparison {
@@ -86,6 +155,8 @@ export interface Comparison {
     readonly available: boolean;
     readonly changes: readonly MetadataChangeRow[];
   };
+  readonly text: TextComparisonSection;
+  readonly pages: { readonly comparable: boolean };
 }
 
 export interface MetadataChangeRow {

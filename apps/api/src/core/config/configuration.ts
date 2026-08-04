@@ -140,8 +140,35 @@ export const configSchema = z
 
     SEARCH_DRIVER: z.enum(['POSTGRES', 'OPENSEARCH']).default('POSTGRES'),
     OCR_DRIVER: z.enum(['NONE', 'TESSERACT', 'HOSTED']).default('NONE'),
+    /** Where the `TESSERACT` driver finds its binary. A path, so an installer can pin one. */
+    OCR_TESSERACT_PATH: z.string().default('tesseract'),
+    /** The languages the engine is asked to read, in its own syntax. */
+    OCR_LANGUAGES: z.string().default('ara+eng'),
     MAIL_DRIVER: z.enum(['NONE', 'SMTP', 'RESEND']).default('NONE'),
     AV_DRIVER: z.enum(['NONE', 'ICAP', 'HOSTED']).default('NONE'),
+    /**
+     * The office-to-PDF converter. `NONE` degrades honestly: Office documents keep their
+     * extracted text and lose their paginated rendition — the same posture as `OCR_DRIVER=NONE`.
+     * Deliberately absent from the production must-be-real list beside it: a deployment that
+     * previews Office documents as text is degraded, not misconfigured.
+     */
+    OFFICE_DRIVER: z.enum(['NONE', 'LIBREOFFICE']).default('NONE'),
+    OFFICE_LIBREOFFICE_PATH: z.string().default('soffice'),
+
+    /**
+     * The render sandbox's resource caps (`14-preview-architecture.md` §5). Deployment-tunable
+     * because they are capacity statements, not correctness ones — every value here trades
+     * "how large a document previews" against "how much one job may cost".
+     */
+    PREVIEW_RENDER_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
+    /** Sources above this are not rendered at all — the honest answer for a 2 GB scan. */
+    PREVIEW_MAX_SOURCE_BYTES: z.coerce.number().int().min(1_048_576).default(134_217_728),
+    PREVIEW_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(67_108_864),
+    PREVIEW_MAX_PAGES: z.coerce.number().int().min(1).max(10_000).default(500),
+    PREVIEW_MAX_TEXT_BYTES: z.coerce.number().int().min(4_096).default(2_097_152),
+    PREVIEW_MAX_ARCHIVE_ENTRIES: z.coerce.number().int().min(16).default(4_096),
+    PREVIEW_MAX_ARCHIVE_EXPANSION_RATIO: z.coerce.number().int().min(2).default(200),
+    PREVIEW_MAX_PIXELS: z.coerce.number().int().min(65_536).default(40_000_000),
 
     RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
     RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).default(300),
@@ -343,6 +370,25 @@ export interface AppConfig {
     readonly ocr: RawConfig['OCR_DRIVER'];
     readonly mail: RawConfig['MAIL_DRIVER'];
     readonly antivirus: RawConfig['AV_DRIVER'];
+    readonly office: RawConfig['OFFICE_DRIVER'];
+  };
+  readonly ocr: {
+    readonly tesseractPath: string;
+    readonly languages: string;
+  };
+  readonly office: {
+    readonly libreofficePath: string;
+  };
+  /** The render sandbox's resource caps (`14-preview-architecture.md` §5). */
+  readonly preview: {
+    readonly timeoutMs: number;
+    readonly maxSourceBytes: number;
+    readonly maxOutputBytes: number;
+    readonly maxPages: number;
+    readonly maxTextBytes: number;
+    readonly maxArchiveEntries: number;
+    readonly maxArchiveExpansionRatio: number;
+    readonly maxPixels: number;
   };
   readonly rateLimit: { readonly windowSeconds: number; readonly maxRequests: number };
   readonly observability: {
@@ -447,6 +493,24 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       ocr: raw.OCR_DRIVER,
       mail: raw.MAIL_DRIVER,
       antivirus: raw.AV_DRIVER,
+      office: raw.OFFICE_DRIVER,
+    },
+    ocr: {
+      tesseractPath: raw.OCR_TESSERACT_PATH,
+      languages: raw.OCR_LANGUAGES,
+    },
+    office: {
+      libreofficePath: raw.OFFICE_LIBREOFFICE_PATH,
+    },
+    preview: {
+      timeoutMs: raw.PREVIEW_RENDER_TIMEOUT_MS,
+      maxSourceBytes: raw.PREVIEW_MAX_SOURCE_BYTES,
+      maxOutputBytes: raw.PREVIEW_MAX_OUTPUT_BYTES,
+      maxPages: raw.PREVIEW_MAX_PAGES,
+      maxTextBytes: raw.PREVIEW_MAX_TEXT_BYTES,
+      maxArchiveEntries: raw.PREVIEW_MAX_ARCHIVE_ENTRIES,
+      maxArchiveExpansionRatio: raw.PREVIEW_MAX_ARCHIVE_EXPANSION_RATIO,
+      maxPixels: raw.PREVIEW_MAX_PIXELS,
     },
     rateLimit: {
       windowSeconds: raw.RATE_LIMIT_WINDOW_SECONDS,
