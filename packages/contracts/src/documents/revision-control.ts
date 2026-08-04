@@ -172,9 +172,36 @@ export const revisionCompareSchema = z.object({
     changes: z.array(metadataChangeSchema),
   }),
   text: z.object({
-    /** `UNAVAILABLE` until the preview pipeline (Phase 7) produces extractable artefacts. */
-    state: z.enum(['UNAVAILABLE']),
+    /**
+     * `UNAVAILABLE` was the whole enum until Phase 7; the state fills in now that the preview
+     * pipeline produces the artefacts it consumes (`10-revision-architecture.md` §4).
+     * `PENDING` is the queued comparison that section promises: an artefact is still
+     * rendering, and the UI says so rather than showing a partial diff.
+     */
+    state: z.enum(['UNAVAILABLE', 'PENDING', 'AVAILABLE']),
+    /** Which pipeline produced each side's words; `OCR` sides are flagged inferences. */
+    source: z.enum(['TEXT', 'OCR', 'MIXED']).nullable(),
+    /** Paragraph alignment with word-level highlighting. Empty unless AVAILABLE. */
+    changes: z.array(
+      z.object({
+        kind: z.enum(['EQUAL', 'ADDED', 'REMOVED', 'CHANGED']),
+        from: z.string().nullable(),
+        to: z.string().nullable(),
+        fromWords: z.array(z.object({ text: z.string(), changed: z.boolean() })).nullable(),
+        toWords: z.array(z.object({ text: z.string(), changed: z.boolean() })).nullable(),
+      }),
+    ),
+    identical: z.boolean().nullable(),
+    /** True when a side exceeded the compared-paragraph cap and the diff stops early. */
+    truncated: z.boolean(),
   }),
+  /**
+   * Whether both sides can be looked at, page for page — 10 §4's rendered-pages row, for the
+   * formats whose text is unreliable. The client fetches each side's preview through the
+   * revision preview endpoints; nothing here is a URL, deliberately, because issuing one is an
+   * audited act performed per click.
+   */
+  pages: z.object({ comparable: z.boolean() }),
 });
 
 export type CheckInDocumentBody = z.infer<typeof checkInDocumentSchema>;

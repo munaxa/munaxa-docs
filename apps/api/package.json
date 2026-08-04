@@ -2,7 +2,7 @@
   "name": "@edms/api",
   "version": "0.1.0",
   "private": true,
-  "description": "Munaxa Docs API \u2014 NestJS modular monolith. Every business rule, every permission decision, every audit write.",
+  "description": "Munaxa Docs API — NestJS modular monolith. Every business rule, every permission decision, every audit write.",
   "license": "UNLICENSED",
   "main": "dist/main.js",
   "scripts": {
@@ -32,6 +32,8 @@
     "class-validator": "^0.14.1",
     "helmet": "^8.0.0",
     "ioredis": "^5.4.2",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
     "pino": "^9.6.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",

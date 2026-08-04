@@ -255,6 +255,8 @@ export class DefaultDocumentService {
           folderId: folder.id,
           documentTypeId: policy.id,
           ownerUserId: this.requireActor(),
+          revisionId: revision.revisionId,
+          fileObjectId: file.fileObjectId,
         }),
       ]);
 

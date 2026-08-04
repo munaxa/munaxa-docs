@@ -141,9 +141,10 @@ describe('the outbox dispatcher', () => {
     expect(result).toEqual({ claimed: 1, enqueued: 1, failed: 0 });
     expect(handed).toHaveLength(1);
     expect(handed[0]?.queue).toBe(QueueName.NOTIFICATIONS_DELIVER);
-    // Derived from the row, so a re-dispatch after a crash is the same job rather than a second
-    // one. This is what makes at-least-once delivery safe rather than merely tolerable.
-    expect(handed[0]?.jobId).toBe(`outbox:${eventId}`);
+    // Derived from the row and the lane, so a re-dispatch after a crash is the same job rather
+    // than a second one — and an event fanned to two lanes is two distinct jobs, not a
+    // collision. This is what makes at-least-once delivery safe rather than merely tolerable.
+    expect(handed[0]?.jobId).toBe(`outbox:${eventId}:${QueueName.NOTIFICATIONS_DELIVER}`);
 
     const row = await owner.outboxMessage.findUniqueOrThrow({ where: { id: eventId } });
     expect(row.processedAt).not.toBeNull();
@@ -195,7 +196,7 @@ describe('the outbox dispatcher', () => {
       data: { availableAt: new Date(Date.now() - 1_000) },
     });
     expect(await dispatcher.dispatchBatch(10)).toEqual({ claimed: 1, enqueued: 1, failed: 0 });
-    expect(handed[0]?.jobId).toBe(`outbox:${eventId}`);
+    expect(handed[0]?.jobId).toBe(`outbox:${eventId}:${QueueName.NOTIFICATIONS_DELIVER}`);
   });
 
   it('skips rows another dispatcher is holding rather than blocking behind them', async () => {
@@ -226,7 +227,9 @@ describe('the outbox dispatcher', () => {
     await other.$disconnect();
 
     expect(result.claimed).toBe(1);
-    expect(handed.map((job) => job.jobId)).toEqual([`outbox:${free}`]);
+    expect(handed.map((job) => job.jobId)).toEqual([
+      `outbox:${free}:${QueueName.NOTIFICATIONS_DELIVER}`,
+    ]);
     // The held row is untouched and the next pass finds it — no double send, no starvation.
     expect(
       (await owner.outboxMessage.findUniqueOrThrow({ where: { id: held } })).processedAt,

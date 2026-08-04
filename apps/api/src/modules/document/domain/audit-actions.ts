@@ -21,6 +21,12 @@ export const DocumentAudit = {
   DOCUMENT_MOVED: 'DOCUMENT_MOVED',
   /** Somebody opened it. Required outright by levels that demand a stated reason. */
   DOCUMENT_VIEWED: 'DOCUMENT_VIEWED',
+  /**
+   * Somebody was issued a print of it — through the preview path, never the original, so the
+   * watermark survives (`14-preview-architecture.md` §4). 13 §2's `PRINTED` row, made real by
+   * Phase 7; always written, because 13 says prints are audited unconditionally.
+   */
+  DOCUMENT_PRINTED: 'DOCUMENT_PRINTED',
 } as const;
 
 export type DocumentAuditAction = (typeof DocumentAudit)[keyof typeof DocumentAudit];

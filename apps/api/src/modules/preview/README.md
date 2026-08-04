@@ -4,9 +4,9 @@
 
 | | |
 | --- | --- |
-| **Owns** | PreviewArtifact, thumbnails, OcrResult |
+| **Owns** | PreviewArtifact, PreviewRender, OcrResult, thumbnails, the renderer plugins |
 | **Depends on** | Storage |
-| **Binds in core** | `RENDERER_REGISTRY` — renderers are plugins, registered per format. |
+| **Binds in core** | `RENDERER_REGISTRY` and `PREVIEW_PORT` — renderers are plugins, registered per format. Bound since Phase 7. |
 
 ## Layers
 
@@ -15,8 +15,8 @@ preview/
 ├── preview.module.ts   composition for this module
 ├── domain/                    entities, value objects, pure rules, events — no Nest, no Prisma
 ├── application/               use cases and the ports this module declares
-├── infrastructure/            Prisma repositories and adapters implementing those ports
-└── presentation/              controllers, DTOs, OpenAPI decorators, view mappers
+├── infrastructure/            Prisma repositories, the renderers, the converters
+└── presentation/              the preview stream endpoint
 ```
 
 The dependency rule points inward, and it is enforced by `eslint.config.mjs` at the app root,
@@ -29,39 +29,57 @@ react to its **events** — never through its repositories or its Prisma models.
 | --- | --- |
 | `preview.rendered` | Artefacts exist for a revision and can be served. |
 | `preview.failed` | Rendering hit a limit or an unsupported format; the reason is operator-visible. |
-| `preview.ocr-completed` | Extracted text is available to the search projection. |
+| `preview.ocr-completed` | Extracted text is available to the search projection (Phase 8's consumer). |
 
-## Phase 3 — the upload-time thumbnail, and only that
+All three, declared in Phase 0.5, are published since Phase 7 — from inside the transaction
+that records the artefact rows, through the outbox like every other fact.
 
-Page images, PDF renditions, extracted text and the viewer that shows them are Phase 7's.
-`RENDERER_REGISTRY` is still unbound, and correctly so: a registry with one entry that is not a
-plugin would be a registry shaped by its single caller.
+## Phase 7 — the pipeline, the registry, the viewer's data path
 
-What Phase 3 builds is the `preview_artifact` table and one producer for it, so a document uploaded
-today has a thumbnail and Phase 7 inherits a schema rather than a migration.
+`RENDERER_REGISTRY` stayed deliberately unbound through Phase 3 ("a registry with one entry
+that is not a plugin would be a registry shaped by its single caller"). It binds here, with
+four genuinely independent plugins:
 
-### It never fails a document
+| Renderer | Formats | What comes out |
+| --- | --- | --- |
+| `munaxa-pdf` | PDF | The source referenced as its own rendition; the text layer per page. Pages are drawn client-side — a canvas in Node is a native binding, and the browser has a real one |
+| `munaxa-office` | Word, Excel, PowerPoint | Text by parsing the OOXML parts directly (no engine needed); a paginated PDF rendition when `OFFICE_DRIVER=LIBREOFFICE`. Legacy `.doc`/`.xls`/`.ppt` are claimed only when a converter exists to read them |
+| `munaxa-image` | PNG, JPEG, GIF, WebP, BMP | The source as its own single page; a PDF rendition (watermarkable, printable) for PNG/JPEG; the Phase 3 thumbnail for PNG |
+| `munaxa-text` | TXT, CSV | One normalised UTF-8 text artefact; the viewer's text pane is the presentation |
 
-That is the whole contract of `DOCUMENT_THUMBNAILER`, which is why the port returns nothing. A
-thumbnail is a decoration that makes a grid legible and carries no information the document does not
-already have; a create rolled back because a preview could not be drawn would lose a document in
-order to protect a picture. Every failure path here ends in a logged warning and a document with no
-thumbnail — which is an ordinary state every client already renders, since a Word document has never
-had one.
+A renderer knows nothing about documents, permissions or tenants: bytes in, bytes out, limits
+enforced. Fetching the source through a presigned URL and storing artefacts as derived
+`FileObject`s is the orchestrator's (`application/render.service.ts`), which is what keeps a
+renderer incapable of holding storage credentials rather than merely told not to.
 
-### PNG only, and the encoder is written out
+**What deliberately has no renderer:** DWG/CAD (every real engine is proprietary or a native
+toolchain an air-gapped installer meets badly — 14 §7's unsupported-format row is the designed
+answer), TIFF (browsers cannot draw it; OCR reads it directly, so it becomes searchable
+without becoming a picture), ZIP (an archive is a container, not a document).
 
-The narrowness is deliberate. A PDF's first page, an Office document's cover and a DWG's viewport
-each need a renderer — a PDF engine, a headless office suite, a CAD library — and every one of those
-is a sandboxed subprocess with CPU, memory and time caps. That is a phase's worth of work, and
-building a fraction of it here would mean building the fraction with no sandbox.
+**The async half.** `PreviewConsumer` subscribes `documents.preview` and `documents.ocr` — the
+lanes the catalogue has carried since Phase 0.5, separated by cost so OCR cannot starve
+rendering. The outbox dispatcher routes `document.created` and the `revision.*` events onto
+the fast lane. Nothing renders before the scan verdict is `CLEAN`; handlers are idempotent in
+the database (`preview_render` upserted per revision, `uq_preview_artifact` recreated
+`NULLS NOT DISTINCT` so a page-less artefact really is unique), never in the delivery.
 
-`sharp` is the obvious dependency and is deliberately not used: it is a native binding that has to
-build or download per architecture, which is exactly the dependency an air-gapped on-premise
-installer meets badly. A box-filter downscale and a PNG encoder are about two hundred lines of
-arithmetic with no dependency at all — and the decoder refuses a decompression bomb from the header,
-before it allocates anything.
+**OCR** (`OCR_DRIVER=TESSERACT`, `ara+eng` by default) runs only when extraction yielded
+nothing usable, stores its text as an `OCR` artefact with engine, version, language and
+confidence in `ocr_result`, flags low-confidence output rather than presenting it as the
+document's words, and never modifies the original. `NONE` degrades honestly, the same way
+`AV_DRIVER=NONE` does.
 
-The trade is recorded rather than hidden: **every other raster format has no thumbnail until Phase
-7** brings a renderer that handles it properly. A hand-written JPEG decoder would be the wrong trade
-in the other direction.
+**Serving** stays split on purpose: `PreviewQueryService` answers *what exists and how to
+present it*; the document module owns *whether* — permission → state → confidentiality, beside
+the download path those words already live in. The stream endpoint
+(`presentation/preview-stream.controller.ts`) is where an issued URL is redeemed and where a
+watermark (user, timestamp, document number, "CONTROLLED COPY") is burned into the rendition
+before a byte leaves — minted per request, cached never: the stronger per-user mark at the
+cost of a stamp per view.
+
+### The thumbnail contract is unchanged
+
+`DOCUMENT_THUMBNAILER` still never fails a document, still returns nothing, and the Phase 3
+PNG codec is still the encoder — the image renderer reuses it, so a check-in draws a thumbnail
+the same way an upload does.

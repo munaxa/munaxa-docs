@@ -10,7 +10,6 @@ import type {
   NotificationPort,
 } from '../../ports/notification.port';
 import type { OcrPort, OcrRequest, OcrResult } from '../../ports/ocr.port';
-import type { PreviewPort, RenderRequest, RenderResult } from '../../ports/preview.port';
 import type { SearchQuery, SearchResults, SearchSubject } from '../../ports/search.port';
 import type { PlacedSearchPort } from '../tenancy/tenant-scoped-search';
 import type {
@@ -104,17 +103,6 @@ export class UnconfiguredAntivirusAdapter implements AntivirusPort {
 
   scan(_request: ScanRequest): Promise<ScanVerdict> {
     return Promise.reject(new ProviderNotConfiguredError('Malware scanning', 'AV_DRIVER'));
-  }
-}
-
-@Injectable()
-export class UnconfiguredPreviewAdapter implements PreviewPort {
-  canRender(_mimeType: string): boolean {
-    return false;
-  }
-
-  render(_request: RenderRequest): Promise<RenderResult> {
-    return Promise.reject(new ProviderNotConfiguredError('Preview rendering', 'PREVIEW_DRIVER'));
   }
 }
 

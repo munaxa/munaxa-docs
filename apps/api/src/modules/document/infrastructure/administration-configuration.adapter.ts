@@ -133,6 +133,7 @@ export class AdministrationConfigurationAdapter implements DocumentConfiguration
           rank: level.rank,
           allowDownload: level.allowDownload,
           allowPrint: level.allowPrint,
+          watermark: level.watermark,
           requireReason: level.requireReason,
         };
   }

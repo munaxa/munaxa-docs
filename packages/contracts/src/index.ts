@@ -22,6 +22,12 @@
  * ISO date-times, the effective window is calendar days, because "effective from the 1st" is a
  * statement about a day in the tenant's own calendar rather than a moment in UTC.
  *
+ * Phase 7 adds `documents/preview.ts` — the viewer's manifest, content URL and extracted text.
+ * The shape worth noticing is the manifest's split between *state* (whether rendering is done)
+ * and *confidentiality* (what the level subtracts): the UI combines the second with the caller's
+ * own permissions, and a level only ever narrows. It also widens the compare contract's
+ * `text.state`, which Phase 6 shipped as `UNAVAILABLE` with exactly this filling-in in mind.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -48,4 +54,5 @@ export * from './admin/settings';
 export * from './documents/upload';
 export * from './documents/document';
 export * from './documents/revision-control';
+export * from './documents/preview';
 export * from './workflow/approval';

@@ -10,6 +10,7 @@ import type {
   DocumentWorkflow,
   Folder,
   MetadataField,
+  PreviewManifest,
   RevisionHistory,
   User,
 } from '@edms/contracts';
@@ -18,6 +19,7 @@ import { DomainError, ErrorCode, Permission } from '@edms/domain';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { ApprovalPanel } from '../../../../features/approvals/approval-panel';
 import { DocumentScreen } from '../../../../features/documents/document-screen';
+import { PreviewPanel } from '../../../../features/preview/preview-panel';
 import { RevisionPanel } from '../../../../features/revisions/revision-panel';
 import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/admin/api';
 
@@ -63,28 +65,41 @@ export default async function DocumentPage({
   // holds `document:history:view`, and the panel simply omits it otherwise.
   const canViewHistory = access.permissions.includes(Permission.DOCUMENT_HISTORY_VIEW);
 
-  const [workflow, history, folders, categories, levels, users, departments, fields, types] =
-    await Promise.all([
-      adminGet<DocumentWorkflow>(`/documents/${documentId}/workflow`),
-      canViewHistory
-        ? adminGet<RevisionHistory>(`/documents/${documentId}/revisions`)
-        : Promise.resolve(null),
-      adminList<Folder>('/admin/folders', {
-        page: 1,
-        pageSize: 200,
-        sortBy: 'path',
-        sortDirection: 'asc',
-        search: '',
-        deleted: 'live',
-        filters: { libraryId: document.libraryId },
-      }),
-      adminOptions<Category>('/admin/categories', 'path'),
-      adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
-      adminOptions<User>('/admin/users', 'displayName'),
-      adminOptions<Department>('/admin/departments', 'path'),
-      adminOptions<MetadataField>('/admin/fields', 'name'),
-      adminOptions<DocumentType>('/admin/document-types', 'name'),
-    ]);
+  const [
+    workflow,
+    history,
+    preview,
+    folders,
+    categories,
+    levels,
+    users,
+    departments,
+    fields,
+    types,
+  ] = await Promise.all([
+    adminGet<DocumentWorkflow>(`/documents/${documentId}/workflow`),
+    canViewHistory
+      ? adminGet<RevisionHistory>(`/documents/${documentId}/revisions`)
+      : Promise.resolve(null),
+    // The viewer's manifest. Absent — a document with no content yet, or an API refusal — the
+    // panel is simply not rendered, which is the same posture as the history above.
+    adminGet<PreviewManifest>(`/documents/${documentId}/preview`).catch(() => null),
+    adminList<Folder>('/admin/folders', {
+      page: 1,
+      pageSize: 200,
+      sortBy: 'path',
+      sortDirection: 'asc',
+      search: '',
+      deleted: 'live',
+      filters: { libraryId: document.libraryId },
+    }),
+    adminOptions<Category>('/admin/categories', 'path'),
+    adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
+    adminOptions<User>('/admin/users', 'displayName'),
+    adminOptions<Department>('/admin/departments', 'path'),
+    adminOptions<MetadataField>('/admin/fields', 'name'),
+    adminOptions<DocumentType>('/admin/document-types', 'name'),
+  ]);
 
   const fieldsById = new Map(fields.data.map((field) => [field.id, field]));
   const type = types.data.find((candidate) => candidate.id === document.documentTypeId);
@@ -131,6 +146,16 @@ export default async function DocumentPage({
       canMove={access.permissions.includes(Permission.DOCUMENT_MOVE)}
       canDownload={access.permissions.includes(Permission.DOCUMENT_DOWNLOAD)}
       canAssignNumber={access.permissions.includes(Permission.NUMBERING_MANAGE)}
+      preview={
+        preview === null ? undefined : (
+          <PreviewPanel
+            document={document}
+            initialManifest={preview}
+            canPrint={access.permissions.includes(Permission.DOCUMENT_PRINT)}
+            canDownload={access.permissions.includes(Permission.DOCUMENT_DOWNLOAD)}
+          />
+        )
+      }
       approvals={
         <ApprovalPanel
           workflow={workflow}

@@ -2,18 +2,24 @@
  * Text extraction from images and scanned pages, feeding the search index
  * (`docs/architecture/12-search-architecture.md`).
  *
- * OCR is slow and runs in its own queue lane. The port is therefore a request/response over
- * bytes already in storage — never over an upload in flight.
+ * OCR is slow and runs in its own queue lane. The port is a request/response over bytes the
+ * orchestrator fetched through a presigned URL for that one blob — an engine adapter holds no
+ * storage credentials, the same least-privilege row every renderer sits under
+ * (`14-preview-architecture.md` §5). The Phase 0.5 sketch passed a storage key instead; that
+ * shape would have required every engine to reach storage itself, and is replaced the same way
+ * the preview port's was.
  */
 export const OCR_PORT = Symbol('OcrPort');
 
 export interface OcrRequest {
-  readonly storageKey: string;
+  readonly bytes: Buffer;
+  /** The *sniffed* MIME type. */
   readonly mimeType: string;
-  /** BCP-47 hints; the engine may detect something else and say so in the result. */
-  readonly languageHints: readonly string[];
-  readonly maxPages: number;
+  /** In the engine's own syntax, e.g. `ara+eng` for Tesseract. */
+  readonly languages: string;
   readonly timeoutMs: number;
+  /** Ceiling on the extracted text, in bytes of UTF-8. */
+  readonly maxTextBytes: number;
 }
 
 export interface OcrResult {
@@ -21,7 +27,6 @@ export interface OcrResult {
   readonly language: string;
   /** 0–1. Low confidence is recorded, not hidden: it explains a poor search result later. */
   readonly confidence: number;
-  readonly pageCount: number;
   readonly engine: string;
   readonly engineVersion: string;
 }

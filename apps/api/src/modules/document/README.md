@@ -168,3 +168,16 @@ document accepts a new draft revision and nothing else.
 | Declassification is refused outright | Reducing a document's confidentiality is a decision with its own procedure. Allowing it here would make it an ordinary edit any document editor can perform | The phase that gives it one |
 | No tags or links | Named in this module's own contract and not needed to file a document | Phase 16 |
 | Publication is manual and immediate | Scheduled publication at a future effective date needs a timer this phase deliberately did not build | The phase that schedules it |
+
+## Phase 7 — the preview surface
+
+The preview access decisions live here, beside the download's, because they are the same
+decisions about the same record: **permission** on the route (`document:view` for preview —
+deliberately not `document:download`, because preview is what "readable, not downloadable"
+means; `document:history:view` for a named revision; `document:print` for print), **state** in
+`document-preview.service.ts` (readers are served the current revision, exactly as downloads
+are), **confidentiality** last and subtract-only — `allow_print` refuses a permitted caller,
+`watermark` decides whether the issued URL points at bytes that carry the stamp. What exists
+and how to present it is Preview's answer (`PreviewQueryService`); whether is this module's.
+A served view audits `DOCUMENT_VIEWED` gated by `audit.readEventsAboveRank`; a print audits
+13 §2's `PRINTED` row, unconditionally, through the rendition and never the original.

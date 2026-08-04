@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 6**:
+and the product is built through **Phase 7**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -96,13 +96,18 @@ and the product is built through **Phase 6**:
   index, check-in creating the next controlled revision beneath the still-effective published one,
   restore as a row rather than a copy, the revision timeline and the compare API — and the version
   badge beside the number, never inside it.
+- **Phase 7** — document preview. `RENDERER_REGISTRY` finally binds, with four independent
+  plugins; the preview lanes finally consume — rendering behind the antivirus gate, idempotent
+  under redelivery, OCR in its own slow lane; the confidentiality columns finally mean something —
+  `allow_print` refuses, `watermark` is burned into the served rendition per viewer; the compare
+  API's text state fills in from extracted text; and the document screen gains the modular viewer
+  with zoom, rotate, page navigation, in-document search, fullscreen and gated print.
 
-Full preview rendering and search are Phases 7 and 8, and each report says what its phase
-deliberately left out.
+Search is Phase 8, and each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-6-revision-control.md`](./docs/reports/phase-6-revision-control.md); the original gate is
+[`phase-7-document-preview.md`](./docs/reports/phase-7-document-preview.md); the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

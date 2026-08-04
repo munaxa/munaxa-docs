@@ -329,6 +329,8 @@ beforeAll(async () => {
     documents: library.documents,
     configuration: library.configuration,
     storage: library.storage,
+    storagePort: library.storagePort,
+    config: appConfig,
     users,
   });
 

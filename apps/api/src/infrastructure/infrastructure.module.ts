@@ -8,19 +8,18 @@ import { CACHE_PORT } from '../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
 import { NOTIFICATION_PORT } from '../ports/notification.port';
 import { QUEUE_CONSUMER, QUEUE_PORT } from '../ports/queue.port';
-import { OCR_PORT } from '../ports/ocr.port';
-import { PREVIEW_PORT } from '../ports/preview.port';
+import { OCR_PORT, type OcrPort } from '../ports/ocr.port';
 import { SEARCH_PORT } from '../ports/search.port';
 import { STORAGE_PORT, type StoragePort } from '../ports/storage.port';
 import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-registry.port';
 import { RedisCacheAdapter } from './cache/redis-cache.adapter';
 import { BullMqQueueAdapter } from './queue/bullmq.adapter';
 import { SystemClockAdapter } from './clock/system-clock.adapter';
+import { TesseractOcrAdapter } from './providers/tesseract-ocr.adapter';
 import {
   UnconfiguredAntivirusAdapter,
   UnconfiguredNotificationAdapter,
   UnconfiguredOcrAdapter,
-  UnconfiguredPreviewAdapter,
   UnconfiguredSearchAdapter,
   UnconfiguredStorageAdapter,
 } from './providers/unconfigured.adapters';
@@ -155,6 +154,25 @@ function signingCredentials(config: AppConfig): SigningCredentials {
   };
 }
 
+/**
+ * The OCR engine, chosen by configuration.
+ *
+ * `HOSTED` is accepted by the schema — Phase 0.5's promise of a cloud engine — and refused
+ * here, at boot, because no hosted adapter exists yet and a value that boots but never
+ * extracts would be `NONE` wearing a different name. The refusal names the variable.
+ */
+function ocrAdapterFor(config: AppConfig): OcrPort {
+  switch (config.providers.ocr) {
+    case 'TESSERACT':
+      return new TesseractOcrAdapter(config.ocr.tesseractPath);
+    case 'HOSTED':
+      throw new Error('OCR_DRIVER=HOSTED has no adapter yet; use TESSERACT or NONE.');
+    case 'NONE':
+    default:
+      return new UnconfiguredOcrAdapter();
+  }
+}
+
 function requireBucket(config: AppConfig): string {
   // Boot validation already refuses a remote driver with no bucket, so this narrows rather than
   // decides — and it throws rather than defaulting, because a default bucket name is a default
@@ -193,10 +211,12 @@ function requireBucket(config: AppConfig): string {
     },
     { provide: PLACED_SEARCH_PORT, useClass: UnconfiguredSearchAdapter },
     { provide: SEARCH_PORT, useClass: TenantScopedSearch },
-    { provide: OCR_PORT, useClass: UnconfiguredOcrAdapter },
+    // `PREVIEW_PORT` and `RENDERER_REGISTRY` are bound by the Preview module, which is what
+    // "binds in core" has meant in its contract since Phase 0.5: the renderers are that
+    // module's plugins, and this file would otherwise have to import them all.
+    { provide: OCR_PORT, useFactory: ocrAdapterFor, inject: [APP_CONFIG] },
     { provide: NOTIFICATION_PORT, useClass: UnconfiguredNotificationAdapter },
     { provide: ANTIVIRUS_PORT, useClass: UnconfiguredAntivirusAdapter },
-    { provide: PREVIEW_PORT, useClass: UnconfiguredPreviewAdapter },
   ],
   exports: [
     CLOCK_PORT,
@@ -209,7 +229,6 @@ function requireBucket(config: AppConfig): string {
     OCR_PORT,
     NOTIFICATION_PORT,
     ANTIVIRUS_PORT,
-    PREVIEW_PORT,
   ],
 })
 export class InfrastructureModule {}
