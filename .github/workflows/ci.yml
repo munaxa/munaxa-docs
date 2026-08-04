@@ -70,6 +70,123 @@ jobs:
       - name: Build
         run: pnpm build
 
+  integration:
+    name: Integration · real PostgreSQL, two tenants
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    # The suite exists because two Phase 1 defects were invisible to unit tests: a revocation
+    # rolled back by the exception that reported it, and row-level security applying to the table
+    # owner. Both are properties of the database, and only the database can be asked about them.
+    #
+    # It ran only on developers' machines until now, which meant every claim about tenant
+    # isolation, the audit hash chain, cascade restores and workflow immutability was verified
+    # exactly where it is least likely to be verified again.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: edms_owner
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          # Trust, because this cluster exists for the length of one job and is reachable only
+          # from it. It also keeps the tenant URLs below password-free, so a failing step cannot
+          # print a credential-shaped string into a public log.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edms_owner -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      LOG_LEVEL: fatal
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_ACCESS_SECRET: ci-only-secret-at-least-thirty-two-characters
+      CORS_ORIGINS: http://localhost:3000
+      STORAGE_DRIVER: NONE
+      SEARCH_DRIVER: POSTGRES
+      OCR_DRIVER: NONE
+      MAIL_DRIVER: NONE
+      AV_DRIVER: NONE
+
+      # Two tenants in two databases, which is what the isolation suite needs to run at all. It
+      # skips rather than passes when the second is absent, so without this the most important
+      # assertions in the product would be reported as a green build.
+      DATABASE_URL: postgresql://edms_app@127.0.0.1:5432/ci_edms_acme
+      DATABASE_MIGRATION_URL: postgresql://edms_owner@127.0.0.1:5432/ci_edms_acme
+      SECOND_DATABASE_URL: postgresql://edms_app@127.0.0.1:5432/ci_edms_rival
+      SECOND_DATABASE_MIGRATION_URL: postgresql://edms_owner@127.0.0.1:5432/ci_edms_rival
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@munaxa'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # `CREATE DATABASE` cannot run inside a transaction, and the cluster's roles are
+      # cluster-scoped, so both are psql rather than the migration runner. Everything after this
+      # point is the repository's own tooling, unmodified — which is the point: the job proves the
+      # documented procedure, not a CI-only shortcut that could drift from it.
+      - name: Create the tenant databases and the cluster roles
+        run: |
+          set -euo pipefail
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE ci_edms_acme OWNER edms_owner' \
+            -c 'CREATE DATABASE ci_edms_rival OWNER edms_owner'
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/sql/cluster/01-roles.sql
+        env:
+          ADMIN_URL: postgresql://edms_owner@127.0.0.1:5432/postgres
+
+      # The same runner an operator uses, reading the same catalogue the API reads. It applies the
+      # per-database SQL, the schema and the post-migration SQL to each tenant in turn — so a
+      # release that would leave one customer's database unmigrated fails here.
+      - name: Migrate every tenant database
+        run: node scripts/migrate-tenants.mjs
+        env:
+          TENANT_CATALOGUE: >-
+            {"defaults":{"databaseUrlTemplate":"postgresql://edms_app@127.0.0.1:5432/ci_edms_{slug}",
+            "migrationUrlTemplate":"postgresql://edms_owner@127.0.0.1:5432/ci_edms_{slug}",
+            "storage":{"driver":"LOCAL","container":"munaxa-docs","prefixTemplate":"tenants/{slug}"},
+            "search":{"indexTemplate":"docs-{slug}"}},
+            "tenants":[{"id":"019489f0-0000-7000-8000-0000000000a1","slug":"acme"},
+            {"id":"019489f0-0000-7000-8000-0000000000b2","slug":"rival"}]}
+
+      # Through turbo rather than straight into the package, because the suites import the
+      # workspace packages by their published entry points and those are built output. Running the
+      # package script directly resolves `@edms/domain` to a `dist` that does not exist on a fresh
+      # checkout — which is exactly how this job failed the first time it ran.
+      - name: Integration tests
+        run: pnpm test:integration
+
   boundaries:
     name: Product isolation
     runs-on: ubuntu-latest

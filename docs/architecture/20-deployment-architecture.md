@@ -102,6 +102,19 @@ graph LR
 Every gate is blocking. A failing test is never skipped to go green
 ([rulebook §10](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md#10-tests)).
 
+**The integration gate runs against two real tenant databases**, not one. The suite exists because
+the defects it was written for are properties of a database — row-level security applying to the
+table owner, a revocation rolled back by the exception reporting it — and the tenant-isolation suite
+added in Phase 2.5 *skips rather than passes* when only one database is configured. A pipeline with
+one database would therefore have reported the product's most important assertions as a green build
+while never running them.
+
+The job bootstraps the way the documentation says an operator does: create the databases, apply the
+cluster roles, then run `scripts/migrate-tenants.mjs` against the same catalogue format the API
+reads. Nothing in it is a CI-only shortcut, which is what stops the pipeline and the documented
+procedure from drifting apart — and it means a release that would leave one customer's database
+unmigrated fails here rather than in production.
+
 ### Migrations
 
 | Rule | Reason |

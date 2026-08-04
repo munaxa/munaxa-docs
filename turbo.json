@@ -19,6 +19,18 @@
       "dependsOn": ["^build", "prisma:generate", "typegen"],
       "outputs": ["coverage/**"]
     },
+    // Same dependencies as `test`, because the suites import the workspace packages the same way
+    // and those packages are consumed as built output. Never cached: the result is a statement
+    // about a live database, not about the inputs turbo can hash.
+    "test:integration": {
+      "dependsOn": ["^build", "prisma:generate"],
+      "cache": false,
+      // Everything, because the suites are configured entirely by environment — two database
+      // URLs, Redis, the driver selection, the tenant catalogue — and a phase that adds one more
+      // should not have to remember to list it here. Safe precisely because nothing is cached:
+      // there is no hash for an undeclared variable to invalidate.
+      "passThroughEnv": ["*"]
+    },
     "build-storybook": {
       "dependsOn": ["^build"],
       "outputs": ["storybook-static/**"]

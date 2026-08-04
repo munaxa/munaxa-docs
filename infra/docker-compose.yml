@@ -17,6 +17,10 @@ services:
       POSTGRES_DB: edms
       POSTGRES_USER: edms_owner
       POSTGRES_PASSWORD: local-development-only
+      # Read by ./sql/cluster/02-app-credentials.sh. `edms_app` is created without a password —
+      # correct for production, where the credential is issued outside this repository — so the
+      # local stack has to supply one, or the `DATABASE_URL` in .env.example cannot authenticate.
+      EDMS_APP_PASSWORD: local-development-only
     ports:
       - '5433:5432'
     volumes:
