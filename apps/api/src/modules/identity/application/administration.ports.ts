@@ -29,6 +29,7 @@ export interface UserAdminRow {
     readonly name: string;
     readonly code: string;
     readonly isPrimary: boolean;
+    readonly isManager: boolean;
   }[];
   readonly createdAt: Date;
   readonly createdBy: string | null;
@@ -76,6 +77,8 @@ export interface RoleListRequest extends IdentityListRequest {
 export interface DepartmentMembership {
   readonly departmentId: string;
   readonly isPrimary: boolean;
+  /** Manages it, rather than merely belonging to it. What `MANAGER_OF` resolves against. */
+  readonly isManager: boolean;
 }
 
 export interface IdentityAdminRepository {

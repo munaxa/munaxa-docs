@@ -63,6 +63,15 @@ const users: UserDirectory = {
   contactFor: () => Promise.resolve(null),
   contactsFor: () =>
     Promise.resolve([{ userId, email: 'ada@notif.test', displayName: 'Ada Lovelace' }]),
+  // The routing lookups Phase 4 added to this port. Notification asks none of them — they exist for
+  // the workflow engine's participant resolution — and they refuse rather than returning an empty
+  // list, so a future caller that reaches for one here fails loudly instead of quietly finding
+  // nobody.
+  holdersOfRole: () => Promise.reject(new Error('Notification does not resolve role holders.')),
+  membersOfDepartment: () =>
+    Promise.reject(new Error('Notification does not resolve department members.')),
+  managersOf: () => Promise.reject(new Error('Notification does not resolve managers.')),
+  activeAmong: (ids) => Promise.resolve(ids),
 };
 
 const service = new DefaultNotificationService(

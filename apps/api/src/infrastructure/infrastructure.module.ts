@@ -7,12 +7,14 @@ import { ANTIVIRUS_PORT } from '../ports/antivirus.port';
 import { CACHE_PORT } from '../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
 import { NOTIFICATION_PORT } from '../ports/notification.port';
+import { QUEUE_CONSUMER, QUEUE_PORT } from '../ports/queue.port';
 import { OCR_PORT } from '../ports/ocr.port';
 import { PREVIEW_PORT } from '../ports/preview.port';
 import { SEARCH_PORT } from '../ports/search.port';
 import { STORAGE_PORT, type StoragePort } from '../ports/storage.port';
 import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-registry.port';
 import { RedisCacheAdapter } from './cache/redis-cache.adapter';
+import { BullMqQueueAdapter } from './queue/bullmq.adapter';
 import { SystemClockAdapter } from './clock/system-clock.adapter';
 import {
   UnconfiguredAntivirusAdapter,
@@ -37,6 +39,12 @@ import { TenantScopedStorage } from './tenancy/tenant-scoped-storage';
  * This is the only file in the application that knows which provider is in use. A use case
  * asks for `STORAGE_PORT`; whether that is S3, Azure Blob or a local directory is decided
  * here, from validated configuration (`docs/architecture/02-backend-architecture.md` §4).
+ *
+ * **Phase 4 binds the queue**, which is the first thing in the product to run work outside a
+ * request. `QUEUE_PORT` was declared in Phase 0.5 with its lanes and retry policies written down
+ * beside it and nothing bound to it, so the outbox accumulated events nothing consumed and the
+ * deadline half of the workflow architecture did not exist. One adapter provides both halves —
+ * producing and consuming — because they share a connection pool and a shutdown.
  *
  * Phase 0.5 bound the two adapters that carry no vendor decision — the system clock and Redis —
  * and bound every other port to the adapter that fails naming the environment variable that would
@@ -163,8 +171,13 @@ function requireBucket(config: AppConfig): string {
   providers: [
     SystemClockAdapter,
     RedisCacheAdapter,
+    BullMqQueueAdapter,
     { provide: CLOCK_PORT, useExisting: SystemClockAdapter },
     { provide: CACHE_PORT, useExisting: RedisCacheAdapter },
+    // Both halves of the queue are one adapter, and one instance: the producers and the workers
+    // share a connection pool and a shutdown, and two instances would mean two of each.
+    { provide: QUEUE_PORT, useExisting: BullMqQueueAdapter },
+    { provide: QUEUE_CONSUMER, useExisting: BullMqQueueAdapter },
     {
       // The vendor adapter, chosen by configuration, then wrapped so every key it is given carries the
       // tenant's prefix and every key it answers with is checked against it.
@@ -188,6 +201,8 @@ function requireBucket(config: AppConfig): string {
   exports: [
     CLOCK_PORT,
     CACHE_PORT,
+    QUEUE_PORT,
+    QUEUE_CONSUMER,
     STORAGE_PORT,
     LOCAL_STORAGE_ADAPTER,
     SEARCH_PORT,

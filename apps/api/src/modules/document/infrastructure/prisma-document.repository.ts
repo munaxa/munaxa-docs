@@ -130,6 +130,27 @@ export class PrismaDocumentRepository implements DocumentRepository {
     await this.versioned(id, expectedVersion, { folderId });
   }
 
+  /**
+   * Moves the lifecycle status.
+   *
+   * Guarded on the version like every other write here, so a decision taken against a document
+   * somebody has since edited loses rather than overwriting. The transition's *legality* is checked
+   * in the use case against the table; this is the write that follows it.
+   */
+  async setStatus(
+    id: DocumentId,
+    expectedVersion: number,
+    status: DocumentStatusKey,
+  ): Promise<void> {
+    const { count } = await requireTransaction().document.updateMany({
+      where: { id, tenantId: this.tenantId(), version: expectedVersion, deletedAt: null },
+      data: { status, ...this.stamps.update(), version: expectedVersion + 1 },
+    });
+    if (count === 0) {
+      throw new VersionConflictError(expectedVersion, expectedVersion);
+    }
+  }
+
   async setDeleted(id: DocumentId, expectedVersion: number, deleted: boolean): Promise<void> {
     await this.versioned(
       id,

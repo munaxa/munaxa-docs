@@ -29,6 +29,7 @@ export function toUser(row: UserAdminRow): User {
       name: membership.name,
       code: membership.code,
       isPrimary: membership.isPrimary,
+      isManager: membership.isManager,
     })),
     createdAt: row.createdAt.toISOString(),
     createdBy: row.createdBy,

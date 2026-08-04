@@ -11,6 +11,8 @@
  * a prefix, so a subtree listing is a `LIKE 'a.b.%'` (ADR-0014). `libraryId` is what lets a
  * document list be filtered by library without a join per row.
  */
+import type { ScopeTypeKey } from '@edms/domain';
+
 export const DOCUMENT_PLACEMENT = Symbol('DocumentPlacement');
 
 export interface FolderPlacement {
@@ -20,6 +22,18 @@ export interface FolderPlacement {
   readonly path: string;
   readonly libraryId: string;
   readonly libraryName: string;
+  /**
+   * Which organisation node owns the library this folder is in.
+   *
+   * Added by Phase 4, because a workflow's `ROLE` participant resolver can be scoped to the
+   * document's entity or department (`07-workflow-architecture.md` §2) and a document's own
+   * organisational position is its library's. It is here rather than resolved separately for the
+   * same reason `libraryId` is: the alternative is a second lookup per document at exactly the
+   * moment an approval is starting.
+   */
+  readonly ownerScopeType: ScopeTypeKey;
+  /** Null for a tenant-wide library, and only for one. */
+  readonly ownerScopeId: string | null;
 }
 
 export interface DocumentPlacement {

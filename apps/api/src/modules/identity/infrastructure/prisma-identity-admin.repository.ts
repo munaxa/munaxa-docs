@@ -175,6 +175,7 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
         userId,
         departmentId: membership.departmentId,
         isPrimary: membership.isPrimary,
+        isManager: membership.isManager,
         assignedAt: this.stamps.now(),
         assignedBy: requireContext().userId,
       })),
@@ -402,6 +403,7 @@ const USER_SELECTION = {
     select: {
       departmentId: true,
       isPrimary: true,
+      isManager: true,
       department: { select: { name: true, code: true } },
     },
   },
@@ -443,6 +445,7 @@ interface UserSelection {
   departments: {
     departmentId: string;
     isPrimary: boolean;
+    isManager: boolean;
     department: { name: string; code: string };
   }[];
 }
@@ -462,6 +465,7 @@ function toUserRow(row: UserSelection): UserAdminRow {
       name: membership.department.name,
       code: membership.department.code,
       isPrimary: membership.isPrimary,
+      isManager: membership.isManager,
     })),
     createdAt: row.createdAt,
     createdBy: row.createdBy,

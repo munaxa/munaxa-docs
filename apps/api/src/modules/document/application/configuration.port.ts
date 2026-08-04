@@ -22,7 +22,16 @@ export const DOCUMENT_CONFIGURATION = Symbol('DocumentConfiguration');
 /** A document type, reduced to what creating a document under it needs. */
 export interface DocumentTypePolicy {
   readonly id: string;
+  /** The tenant's own code for the type. What a workflow's `appliesTo` names it by. */
+  readonly code: string;
   readonly name: string;
+  /**
+   * The approval process a document of this type goes through.
+   *
+   * Null means none is required, which is legitimate for a reference type — and it is why
+   * submission refuses with a sentence rather than approving a document nobody looked at.
+   */
+  readonly workflowDefinitionId: string | null;
   readonly isActive: boolean;
   readonly defaultConfidentialityId: string;
   readonly retentionPolicyId: string | null;
@@ -44,6 +53,8 @@ export interface ConfidentialityView {
 export interface DocumentConfiguration {
   documentType(id: string): Promise<DocumentTypePolicy | null>;
   confidentiality(id: string): Promise<ConfidentialityView | null>;
+  /** A category's code, for the fact set a workflow condition is evaluated against. Null if gone. */
+  category(id: string): Promise<{ readonly id: string; readonly code: string } | null>;
   categoryExists(id: string): Promise<boolean>;
   userExists(id: string): Promise<boolean>;
   departmentExists(id: string): Promise<boolean>;

@@ -40,3 +40,40 @@ export interface QueuePort {
   cancel(queue: string, jobId: string): Promise<boolean>;
   depth(queue: string): Promise<QueueDepth>;
 }
+
+/**
+ * The other half of the port: receiving.
+ *
+ * Declared separately from `QueuePort` because the two have different holders. Every module that
+ * schedules work injects the producer; exactly one class per lane consumes it, and giving the
+ * consumer's interface to everything that enqueues would let a use case start pulling jobs off a
+ * queue in the middle of a request.
+ *
+ * Phase 4 is what binds both — nothing had ever run a background job before it — and the shape is
+ * deliberately minimal: a handler, registered at boot, that either returns or throws. Retries,
+ * backoff and dead-lettering are the adapter's, from the lane's own definition in `@edms/domain`,
+ * because a handler that had to know its own retry policy would be a handler that can disagree with
+ * the catalogue.
+ */
+export const QUEUE_CONSUMER = Symbol('QueueConsumer');
+
+export interface JobEnvelope<TPayload extends object = object> {
+  readonly jobId: string;
+  readonly attempt: number;
+  readonly payload: TPayload;
+}
+
+export interface QueueConsumer {
+  /**
+   * Registers a handler for a lane.
+   *
+   * A throw is a failure and is retried per the lane's policy; a return is success. Nothing else
+   * is signalled, because "succeeded but do not retry" and "failed but do not retry" are the same
+   * outcome to a queue and distinguishing them in a return value invites a handler to swallow a
+   * failure quietly.
+   */
+  subscribe<TPayload extends object>(
+    queue: string,
+    handle: (job: JobEnvelope<TPayload>) => Promise<void>,
+  ): Promise<void>;
+}

@@ -1,38 +1,33 @@
 import { describe, expect, it } from 'vitest';
 
-import { QUEUES, QueueName, SCHEDULE, deadLetterQueueFor, queueDefinition } from './queues';
+import * as domain from '@edms/domain';
 
-describe('queue definitions', () => {
-  it('defines every queue exactly once', () => {
-    const names = QUEUES.map((queue) => queue.name);
-    expect(new Set(names).size).toBe(names.length);
-    expect(new Set(names)).toEqual(new Set(Object.values(QueueName)));
+import * as reexported from './queues';
+
+/**
+ * That the re-export is faithful.
+ *
+ * The queue catalogue moved to `@edms/domain` in Phase 4, when it acquired a second reader: the API
+ * enqueues and this application consumes, and a name known to only one of them is a message nothing
+ * receives. `queues.ts` here became a re-export so that every existing import kept working.
+ *
+ * A re-export can drift in one direction that nothing else would catch — a name added to the
+ * catalogue and not re-exported here is a lane this application cannot subscribe to, and the
+ * failure is a queue nobody consumes rather than a compile error. So this asserts the two sides
+ * agree rather than testing the definitions themselves, which `@edms/domain`'s own suite does.
+ */
+describe('the queue catalogue', () => {
+  it('re-exports every lane the shared catalogue defines', () => {
+    expect(new Set(Object.values(reexported.QueueName))).toEqual(
+      new Set(Object.values(domain.QueueName)),
+    );
+    expect(reexported.QUEUES).toBe(domain.QUEUES);
+    expect(reexported.SCHEDULE).toBe(domain.SCHEDULE);
   });
 
-  it('gives every queue bounded retries and a timeout', () => {
-    for (const queue of QUEUES) {
-      expect(queue.retry.attempts).toBeGreaterThan(0);
-      expect(queue.retry.attempts).toBeLessThanOrEqual(10);
-      expect(queue.timeoutMs).toBeGreaterThan(0);
-      expect(queue.concurrency).toBeGreaterThan(0);
-    }
-  });
-
-  it('runs destructive and ordering-sensitive work single-file', () => {
-    expect(queueDefinition(QueueName.RETENTION_RUN).concurrency).toBe(1);
-    expect(queueDefinition(QueueName.OUTBOX_DISPATCH).concurrency).toBe(1);
-  });
-
-  it('names a dead letter queue for every lane', () => {
-    for (const queue of QUEUES) {
-      expect(deadLetterQueueFor(queue.name)).toBe(`${queue.name}.dead`);
-    }
-  });
-
-  it('locks every scheduled job so instances do not run it several times', () => {
-    for (const job of SCHEDULE) {
-      expect(job.lockKey).toMatch(/^schedule:/);
-      expect(QUEUES.some((queue) => queue.name === job.queue)).toBe(true);
-    }
+  it('re-exports the helpers a consumer needs to configure itself', () => {
+    expect(reexported.queueDefinition).toBe(domain.queueDefinition);
+    expect(reexported.deadLetterQueueFor).toBe(domain.deadLetterQueueFor);
+    expect(reexported.DEAD_LETTER_SUFFIX).toBe(domain.DEAD_LETTER_SUFFIX);
   });
 });

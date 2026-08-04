@@ -10,6 +10,7 @@ import { PrismaScopeRepository } from '../modules/organization/infrastructure/pr
 import type { AppConfig } from '../core/config/configuration';
 import type { AntivirusPort } from '../ports/antivirus.port';
 import type { TenantRegistry } from '../core/tenancy/tenant-registry.port';
+import type { Logger } from '../core/observability/logger';
 import { LocalStorageAdapter } from '../infrastructure/storage/local.adapter';
 import { TenantScopedStorage } from '../infrastructure/tenancy/tenant-scoped-storage';
 import { ConfigurationService } from '../modules/administration/application/configuration.service';
@@ -26,6 +27,21 @@ import { LibraryAdminService } from '../modules/library/application/library-admi
 import { PrismaLibraryAdminRepository } from '../modules/library/infrastructure/prisma-library-admin.repository';
 import { PrismaRevisionWriter } from '../modules/revision/infrastructure/prisma-revision.writer';
 import { DefaultStorageService } from '../modules/storage/application/storage.service';
+import { ApprovalRoutingService } from '../modules/administration/application/approval-routing.service';
+import { PrismaApprovalRoutingRepository } from '../modules/administration/infrastructure/prisma-approval-routing.repository';
+import { ApprovalService } from '../modules/workflow/application/approval.service';
+import { WorkflowAdminService } from '../modules/workflow/application/workflow-admin.service';
+import { PrismaWorkflowAdminRepository } from '../modules/workflow/infrastructure/prisma-workflow-admin.repository';
+import { ParticipantResolver } from '../modules/workflow/application/participant-resolver';
+import type { WorkflowDirectory } from '../modules/workflow/application/ports';
+import { WorkflowEngine } from '../modules/workflow/application/workflow-engine.service';
+import { WorkflowTimers } from '../modules/workflow/application/workflow-timers.service';
+import { DocumentContextAdapter } from '../modules/workflow/infrastructure/document-context.adapter';
+import { PrismaApprovalQueryRepository } from '../modules/workflow/infrastructure/prisma-approval-query.repository';
+import { PrismaWorkflowEngineRepository } from '../modules/workflow/infrastructure/prisma-workflow-engine.repository';
+import { PrismaWorkflowVersionReader } from '../modules/workflow/infrastructure/prisma-workflow-version.reader';
+import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/workflow-calendar.adapter';
+import type { QueuePort } from '../ports/queue.port';
 import { PrismaFileObjectRepository } from '../modules/storage/infrastructure/prisma-file-object.repository';
 import { PrismaUploadSessionRepository } from '../modules/storage/infrastructure/prisma-upload-session.repository';
 
@@ -178,6 +194,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
       options.users as UserAdminService,
     ),
     new LibraryPlacementAdapter(libraries),
+    realOrganizationService(),
     new StorageContentGateAdapter(storage),
     new PrismaRevisionWriter(stamps),
     // The thumbnailer's whole contract is that it never fails a document, and Phase 3 draws one only
@@ -195,5 +212,131 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     configuration,
     numbering: new NumberingAdminService(configurationRepository, outbox, writer),
     localStorage,
+  };
+}
+
+// --- Phase 4: the workflow engine ------------------------------------------------------------
+//
+// The same boundary reason again, and the sharpest instance of it yet. Almost everything the engine
+// suite asserts is a property of the *database*: a task decided once under concurrency, a quorum
+// counted correctly while two people decide at the same instant, a rolled-back decision leaving no
+// trace, a paused timer resuming with the duration it had left. A repository double cannot be asked
+// any of those, because it is written from the same belief as the code it stands in for.
+//
+// So the engine is composed here with its real repositories, the real audit writer, the real outbox
+// and the real transaction boundary — and only the two genuinely external things are stood in for:
+// the queue, because Redis is not what these assertions are about, and the directory, because who
+// works here is Identity's suite to prove.
+
+export interface WorkflowEngineStack {
+  readonly engine: WorkflowEngine;
+  readonly approvals: ApprovalService;
+  readonly routing: ApprovalRoutingService;
+  /**
+   * Phase 2's definition administration, composed here too.
+   *
+   * The engine suite needs a *published* version to bind to, and seeding one directly would
+   * sidestep the trigger that refuses a draft binding — which is one of the properties the suite
+   * asserts. So a definition is authored and published through the real service, exactly as an
+   * administrator would.
+   */
+  readonly definitions: WorkflowAdminService;
+  /** Every job the engine handed to the queue, in order. The scheduling assertions read this. */
+  readonly enqueued: EnqueuedTimerJob[];
+  /** Job identifiers the engine asked to cancel — what "cancelling a stage cancels its timers" is. */
+  readonly cancelled: string[];
+}
+
+export interface EnqueuedTimerJob {
+  readonly queue: string;
+  readonly jobId: string;
+  readonly delayMs: number;
+}
+
+export interface WorkflowEngineOptions {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly documents: DefaultDocumentService;
+  readonly configuration: ConfigurationService;
+  /**
+   * Who works here.
+   *
+   * A double rather than the real `PrismaUserDirectory`, and deliberately: a suite about the engine
+   * seeds two or three people directly and asserts about routing, not about whether Identity reads
+   * `user_role` correctly — which is `identity-admin.integration.spec.ts`'s job. The one thing it
+   * must be honest about is `activeAmong`, because "a resolver that yields nobody fails loudly" is a
+   * property this suite does assert.
+   */
+  readonly directory: WorkflowDirectory;
+}
+
+export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngineStack {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const repository = new PrismaWorkflowEngineRepository(stamps);
+  const enqueued: EnqueuedTimerJob[] = [];
+  const cancelled: string[] = [];
+
+  // The queue, recorded rather than run. Redis is not what these assertions are about, and what
+  // *is* — that a job is handed over only after the transaction commits, and that cancelling a
+  // stage cancels exactly its timers — is visible in what was asked of it.
+  const queue: QueuePort = {
+    enqueue: (queueName, _payload, jobOptions) => {
+      enqueued.push({
+        queue: queueName,
+        jobId: jobOptions.jobId,
+        delayMs: jobOptions.delayMs ?? 0,
+      });
+      return Promise.resolve({
+        queue: queueName,
+        jobId: jobOptions.jobId,
+        availableAt: options.clock.now(),
+      });
+    },
+    cancel: (_queueName, jobId) => {
+      cancelled.push(jobId);
+      return Promise.resolve(true);
+    },
+    depth: (queueName) =>
+      Promise.resolve({ queue: queueName, waiting: 0, active: 0, delayed: 0, failed: 0 }),
+  };
+
+  const routingRepository = new PrismaApprovalRoutingRepository(stamps);
+  const routing = new ApprovalRoutingService(routingRepository, writer);
+
+  const logger = {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  } as unknown as Logger;
+
+  const timers = new WorkflowTimers(repository, queue, logger, stamps);
+  const engine = new WorkflowEngine(
+    repository,
+    new DocumentContextAdapter(options.documents),
+    new PrismaWorkflowVersionReader(),
+    new WorkflowCalendarAdapter(routing, {
+      // The tenant's timezone, from settings. UTC here so the deadline assertions read as the dates
+      // somebody would check on a wall calendar.
+      get: () => Promise.resolve('UTC') as never,
+    } as never),
+    outbox,
+    logger,
+    new ParticipantResolver(options.directory),
+    timers,
+    writer,
+    // `DOCUMENT_NUMBER_ALLOCATOR` is left unbound, exactly as the container leaves it. An approval
+    // completing with `numberAssigned: false` is what this build should produce, and the suite
+    // asserts it rather than papering over it with a stub.
+    null,
+  );
+
+  return {
+    engine,
+    approvals: new ApprovalService(new PrismaApprovalQueryRepository(stamps), writer),
+    routing,
+    definitions: new WorkflowAdminService(new PrismaWorkflowAdminRepository(stamps), writer),
+    enqueued,
+    cancelled,
   };
 }

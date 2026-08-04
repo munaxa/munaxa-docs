@@ -6,9 +6,10 @@ import {
   type DocumentId,
   DocumentOrigin,
   type DocumentOriginKey,
-  DocumentStatus,
+  type DocumentStatusKey,
   MetadataDataType,
   ScanStatus,
+  ScopeType,
   type UserId,
   asId,
 } from '@edms/domain';
@@ -30,9 +31,19 @@ import {
   requireVersion,
 } from '../../../core/persistence';
 import { requireContext } from '../../../core/tenancy/tenant-context';
+import {
+  ORGANIZATION_SERVICE,
+  type OrganizationService,
+} from '../../organization/application/ports';
 import { DocumentAudit } from '../domain/audit-actions';
+import { implementedTransitionsFrom, isFrozen, isLegalTransition } from '../domain/lifecycle';
 import { documentCreatedEvent, documentDeletedEvent, documentMovedEvent } from '../domain/events';
-import { type MetadataInputValue, coerceMetadata, referenceFieldsIn } from '../domain/metadata';
+import {
+  type MetadataInputValue,
+  coerceMetadata,
+  readMetadata,
+  referenceFieldsIn,
+} from '../domain/metadata';
 import {
   DOCUMENT_ACTIVITY_REPOSITORY,
   DOCUMENT_CONTENT_GATE,
@@ -85,6 +96,7 @@ export class DefaultDocumentService {
     @Inject(DOCUMENT_ACTIVITY_REPOSITORY) private readonly activity: DocumentActivityRepository,
     @Inject(DOCUMENT_CONFIGURATION) private readonly configuration: DocumentConfiguration,
     @Inject(DOCUMENT_PLACEMENT) private readonly placement: DocumentPlacement,
+    @Inject(ORGANIZATION_SERVICE) private readonly organization: OrganizationService,
     @Inject(DOCUMENT_CONTENT_GATE) private readonly content: DocumentContentGate,
     @Inject(REVISION_WRITER) private readonly revisions: RevisionWriter,
     @Inject(DOCUMENT_THUMBNAILER) private readonly thumbnails: DocumentThumbnailer,
@@ -512,7 +524,204 @@ export class DefaultDocumentService {
     });
   }
 
+  // --- What the workflow engine asks ------------------------------------------------------
+
+  /**
+   * Everything an approval needs to know about a document, in one read.
+   *
+   * Assembled here rather than in the engine, and the assembly is the security-relevant part.
+   * `07-workflow-architecture.md` §2 says a stage condition is "evaluated by a pure function; no
+   * expression ever reaches an evaluator that can touch I/O or the database" — so the facts a
+   * tenant-authored expression is compared against are gathered *before* evaluation, by code that
+   * knows what it is fetching, into a flat map of pre-approved keys. The evaluator does a lookup
+   * and a comparison; it has nothing to reach with and nothing to reach into.
+   *
+   * A `Map` rather than an object for the same reason. A tenant names the keys, and a plain object
+   * whose keys a tenant names is one `condition.field` of `"constructor"` away from resolving
+   * something that is not a fact about their document.
+   */
+  async approvalContext(id: string): Promise<DocumentApprovalFacts | null> {
+    return this.writer.read(async () => {
+      const document = await this.documents.findById(asId<DocumentId>(id), false);
+      if (document === null) {
+        return null;
+      }
+      const [policy, level, category, folder] = await Promise.all([
+        this.configuration.documentType(document.documentTypeId),
+        this.configuration.confidentiality(document.confidentialityId),
+        document.categoryId === null
+          ? Promise.resolve(null)
+          : this.configuration.category(document.categoryId),
+        this.placement.folder(document.folderId),
+      ]);
+
+      const placement = await this.organisationalPlacement(folder);
+      const facts = new Map<string, FactValue>([
+        ['documentType.code', policy?.code ?? null],
+        ['category.code', category?.code ?? null],
+        ['confidentiality.rank', level?.rank ?? null],
+        ['department.code', placement.departmentCode],
+        ['entity.code', placement.entityCode],
+        // Computed rather than stored: "is this the first controlled version" is what a workflow
+        // author means by a first issue, and it is the ordinal rather than a flag anybody maintains.
+        ['revision.isFirst', (document.latestRevision?.ordinal ?? 0) === 0],
+        ['revision.ordinal', document.latestRevision?.ordinal ?? 0],
+      ]);
+
+      const userFields = new Map<string, UserId>();
+      for (const entry of document.metadata) {
+        const value = readMetadata(entry.dataType, entry.columns);
+        facts.set(`metadata.${entry.key}`, toFact(value));
+        if (entry.dataType === MetadataDataType.USER && typeof value === 'string') {
+          // A `DOCUMENT_FIELD` resolver names one of these by key — "Reviewer" — and the engine
+          // never learns which fields exist, only that it was handed the people they name.
+          userFields.set(entry.key, asId<UserId>(value));
+        }
+      }
+
+      return {
+        documentId: asId<DocumentId>(document.id),
+        status: document.status,
+        title: document.title,
+        documentTypeId: document.documentTypeId,
+        documentTypeName: document.documentTypeName,
+        workflowDefinitionId: policy?.workflowDefinitionId ?? null,
+        ownerUserId: document.ownerUserId,
+        // `createdBy` is the author. Distinct from the owner, which can be reassigned — and
+        // `MANAGER_OF: AUTHOR` means the person who wrote it, not whoever holds it now.
+        authorUserId: document.createdBy === null ? null : asId<UserId>(document.createdBy),
+        latestRevisionId: document.latestRevisionId,
+        latestRevisionLabel: document.latestRevision?.label ?? null,
+        entityId: placement.entityId,
+        departmentId: placement.departmentId,
+        userFields,
+        facts,
+      };
+    });
+  }
+
+  /**
+   * Moves a document through its lifecycle, on the engine's instruction.
+   *
+   * The transition is checked against `LEGAL_TRANSITIONS` rather than against a condition written
+   * here, which is `06-document-lifecycle.md` §5's first rule: the table is the only source of
+   * truth, and a status check written inline is one that disagrees with it the first time somebody
+   * adds a state.
+   *
+   * An illegal pair is a `409` naming both halves. That matters more than it looks — the engine
+   * calls this several times in one approval, and a silent no-op would leave a document in a state
+   * its own approval believes it is not in.
+   */
+  async applyLifecycleTransition(input: {
+    readonly documentId: string;
+    readonly to: DocumentStatusKey;
+    readonly workflowInstanceId: string | null;
+    readonly reason: string | null;
+  }): Promise<void> {
+    await this.writer.write(async () => {
+      const current = await this.require(input.documentId, false);
+      if (current.status === input.to) {
+        // Idempotent by design. The engine transitions to `UNDER_REVIEW` as each stage activates,
+        // and a second stage activating must not be a conflict.
+        return {
+          result: undefined,
+          change: this.transitioned(input, current.status, true),
+        };
+      }
+      if (!isLegalTransition(current.status, input.to)) {
+        throw new ValidationError('That is not a legal transition for this document.', [
+          { field: 'status', message: `${current.status} → ${input.to}` },
+        ]);
+      }
+
+      await this.documents.setStatus(asId<DocumentId>(input.documentId), current.version, input.to);
+
+      return {
+        result: undefined,
+        change: this.transitioned(input, current.status, false),
+      };
+    });
+  }
+
+  /**
+   * The transitions this document can make right now.
+   *
+   * Answered from `IMPLEMENTED_TRANSITIONS` rather than from the full table, because §5's rule is
+   * that "the UI asks the API for the available transitions and renders exactly those" — and
+   * offering one that nothing performs would make the client render a button that returns a 404.
+   */
+  async availableTransitions(id: string): Promise<readonly DocumentStatusKey[]> {
+    const document = await this.writer.read(() => this.require(id, false));
+    return implementedTransitionsFrom(document.status);
+  }
+
   // --- Internals -------------------------------------------------------------------------
+
+  /**
+   * Where a document sits in the organisation: its entity and its department, if any.
+   *
+   * Walked from the library's owning node rather than stored on the document, because it is the
+   * library's position and a document that moves between libraries moves with it. A library owned
+   * by a department is inside an entity too, which is why this reads the chain rather than the node.
+   */
+  private async organisationalPlacement(
+    folder: {
+      readonly ownerScopeType: string;
+      readonly ownerScopeId: string | null;
+    } | null,
+  ): Promise<{
+    entityId: string | null;
+    entityCode: string | null;
+    departmentId: string | null;
+    departmentCode: string | null;
+  }> {
+    const empty = { entityId: null, entityCode: null, departmentId: null, departmentCode: null };
+    if (folder === null || folder.ownerScopeId === null) {
+      return empty;
+    }
+    const chain = await this.organization.scopeChainFor(
+      asId<AnyId>(folder.ownerScopeId),
+      folder.ownerScopeType as never,
+    );
+    const entity = chain.find((node) => node.type === ScopeType.ENTITY);
+    // The *deepest* department in the chain: a library owned by a sub-team belongs to that team,
+    // not to the parent the walk started from. `findLast` is not available on the target lib, so
+    // the chain is reversed rather than searched backwards by index.
+    const department = [...chain].reverse().find((node) => node.type === ScopeType.DEPARTMENT);
+    return {
+      entityId: entity?.id ?? null,
+      entityCode: entity?.code ?? null,
+      departmentId: department?.id ?? null,
+      departmentCode: department?.code ?? null,
+    };
+  }
+
+  private transitioned(
+    input: {
+      readonly documentId: string;
+      readonly to: DocumentStatusKey;
+      readonly workflowInstanceId: string | null;
+      readonly reason: string | null;
+    },
+    from: DocumentStatusKey,
+    unchanged: boolean,
+  ) {
+    return {
+      action: DocumentAudit.DOCUMENT_CHANGED,
+      subjectType: AuditSubjectType.DOCUMENT,
+      subjectId: asId<AnyId>(input.documentId),
+      operation: AdministrativeOperation.UPDATED,
+      before: { status: from },
+      // `from`, `to`, the reason and the workflow instance — which is what §5 asks every executed
+      // transition to record.
+      after: {
+        status: input.to,
+        workflowInstanceId: input.workflowInstanceId,
+        reason: input.reason,
+        ...(unchanged && { unchanged: true }),
+      },
+    };
+  }
 
   private async require(id: string, includeDeleted: boolean): Promise<DocumentRow> {
     const row = await this.documents.findById(asId<DocumentId>(id), includeDeleted);
@@ -657,14 +866,12 @@ export class DefaultDocumentService {
   /**
    * Refuses an edit to a document whose content is frozen.
    *
-   * Phase 3 creates documents in `DRAFT` and nothing moves them out of it, so today this only ever
-   * passes. It is written now because the transition table is Phase 4's and the *rule* is not: a
-   * submitted document's content is frozen from the moment it is handed to a workflow
-   * (`06-document-lifecycle.md`), and an edit path built without the check is an edit path somebody
-   * has to remember to add one to.
+   * Written in Phase 3 against statuses nothing could reach; Phase 4 is what makes it fire. The set
+   * moved to `domain/lifecycle.ts` with the transition table it belongs to, because "the bytes under
+   * review must be the bytes approved" is a row of that table rather than a rule of this service.
    */
   private refuseWhenFrozen(document: DocumentRow): void {
-    if (FROZEN_STATUSES.has(document.status)) {
+    if (isFrozen(document.status)) {
       throw new ValidationError('This document is in approval and cannot be edited.', [
         { field: 'status', message: document.status },
       ]);
@@ -717,15 +924,38 @@ export class DefaultDocumentService {
   }
 }
 
-/** Content is frozen from submission onward. Phase 4 is what puts a document into these. */
-const FROZEN_STATUSES: ReadonlySet<string> = new Set([
-  DocumentStatus.SUBMITTED,
-  DocumentStatus.UNDER_REVIEW,
-  DocumentStatus.APPROVED,
-  DocumentStatus.PUBLISHED,
-  DocumentStatus.SUPERSEDED,
-  DocumentStatus.ARCHIVED,
-]);
+/**
+ * A document as an approval sees it.
+ *
+ * Declared here rather than in Workflow's ports, even though Workflow is what asks for it, because
+ * Document is what knows how to assemble one — and the adapter in Workflow's infrastructure maps it
+ * to Workflow's own vocabulary. Two shapes that happen to look alike, owned by the module that can
+ * be wrong about each.
+ */
+export interface DocumentApprovalFacts {
+  readonly documentId: DocumentId;
+  readonly status: DocumentStatusKey;
+  readonly title: string;
+  readonly documentTypeId: string;
+  readonly documentTypeName: string;
+  readonly workflowDefinitionId: string | null;
+  readonly ownerUserId: UserId;
+  readonly authorUserId: UserId | null;
+  readonly latestRevisionId: string | null;
+  readonly latestRevisionLabel: string | null;
+  readonly entityId: string | null;
+  readonly departmentId: string | null;
+  readonly userFields: ReadonlyMap<string, UserId>;
+  readonly facts: ReadonlyMap<string, FactValue>;
+}
+
+/** What a condition may be compared against. Deliberately not `unknown`. */
+export type FactValue = string | number | boolean | readonly string[] | null;
+
+/** A stored metadata value, narrowed to the fact set. A list stays a list; everything else is scalar. */
+function toFact(value: string | number | boolean | readonly string[] | null): FactValue {
+  return value;
+}
 
 /** Re-exported so a caller naming an origin does not have to reach into the domain package. */
 export { DocumentOrigin };

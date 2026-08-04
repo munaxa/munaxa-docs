@@ -25,12 +25,17 @@ export class LibraryPlacementAdapter implements DocumentPlacement {
       if (folder.deletedAt !== null) {
         return null;
       }
+      // The owning node comes from the library rather than the folder: folders sit *below* the
+      // organisation tree, and where a document belongs organisationally is where its library does.
+      const library = await this.libraries.getLibrary(folder.libraryId);
       return {
         id: folder.id,
         name: folder.name,
         path: folder.path,
         libraryId: folder.libraryId,
         libraryName: folder.libraryName,
+        ownerScopeType: library.ownerScopeType,
+        ownerScopeId: library.ownerScopeId,
       };
     } catch (error) {
       if (isNotFound(error)) {
