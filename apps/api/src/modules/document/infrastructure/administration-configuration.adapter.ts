@@ -110,6 +110,7 @@ export class AdministrationConfigurationAdapter implements DocumentConfiguration
       code: type.code,
       name: type.name,
       workflowDefinitionId: type.workflowDefinitionId,
+      numberingRuleId: type.numberingRuleId,
       isActive: type.isActive,
       defaultConfidentialityId: type.defaultConfidentialityId,
       retentionPolicyId: type.retentionPolicyId,

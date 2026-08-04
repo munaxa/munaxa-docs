@@ -4,6 +4,7 @@ import type {
   ConfidentialityLevel,
   DocumentType,
   MetadataField,
+  NumberReservation,
   NumberingPreview,
   NumberingRule,
   RetentionPolicy,
@@ -21,6 +22,7 @@ import type {
   NumberingRuleRow,
   RetentionPolicyRow,
 } from '../application/administration.ports';
+import type { ReservationRecord } from '../application/numbering-issue.ports';
 import type { SettingRow, SettingsView } from '../application/settings-admin.service';
 import type { FormattedNumber } from '../domain/numbering';
 
@@ -177,6 +179,25 @@ export function toNumberingRule(row: NumberingRuleRow, sample: string): Numberin
 
 export function toNumberingPreview(formatted: FormattedNumber): NumberingPreview {
   return { sample: formatted.formatted, omittedSegments: [...formatted.omitted] };
+}
+
+export function toNumberReservation(record: ReservationRecord): NumberReservation {
+  return {
+    id: record.id,
+    scopeKey: record.scopeKey,
+    // Text on the wire: a counter is a bigint, and JSON numbers stop being exact at 2^53.
+    sequenceValue: record.sequenceValue.toString(),
+    formatted: record.formatted,
+    state: record.state,
+    origin: record.origin,
+    documentId: record.documentId,
+    workflowInstanceId: record.workflowInstanceId,
+    reservedAt: record.reservedAt.toISOString(),
+    assignedAt: record.assignedAt === null ? null : record.assignedAt.toISOString(),
+    voidedAt: record.voidedAt === null ? null : record.voidedAt.toISOString(),
+    voidReason: record.voidReason,
+    note: record.note,
+  };
 }
 
 export function toSetting(row: SettingRow): Setting {

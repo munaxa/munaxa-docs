@@ -60,6 +60,44 @@ export const ALL_NUMBER_SEGMENT_KINDS: readonly NumberSegmentKindKey[] = Object.
 );
 
 /**
+ * What became of a value drawn from a sequence, or set aside before one could draw it.
+ *
+ * `RESERVED` is a pending number a reviewer can refer to; `ASSIGNED` is a document's number;
+ * `VOIDED` is a value whose approval was refused — retained forever, never returned to the pool;
+ * `HELD` is a value a controller set aside for an offline process
+ * (`09-numbering-architecture.md` §2–§3).
+ */
+export const NumberReservationState = {
+  RESERVED: 'RESERVED',
+  ASSIGNED: 'ASSIGNED',
+  VOIDED: 'VOIDED',
+  HELD: 'HELD',
+} as const;
+
+export type NumberReservationStateKey =
+  (typeof NumberReservationState)[keyof typeof NumberReservationState];
+
+export const ALL_NUMBER_RESERVATION_STATES: readonly NumberReservationStateKey[] = Object.freeze(
+  Object.values(NumberReservationState),
+);
+
+/**
+ * How a number came to exist: drawn by an approval, assigned by a controller under
+ * `numbering:manage`, or supplied with a legacy document at import (§3).
+ */
+export const NumberOrigin = {
+  AUTOMATIC: 'AUTOMATIC',
+  MANUAL: 'MANUAL',
+  IMPORTED: 'IMPORTED',
+} as const;
+
+export type NumberOriginKey = (typeof NumberOrigin)[keyof typeof NumberOrigin];
+
+export const ALL_NUMBER_ORIGINS: readonly NumberOriginKey[] = Object.freeze(
+  Object.values(NumberOrigin),
+);
+
+/**
  * Which scope node a segment draws its code from.
  *
  * Kept beside the segment kinds because the two are read together: a formatter given a segment

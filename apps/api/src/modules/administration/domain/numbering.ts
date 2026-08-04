@@ -83,10 +83,13 @@ const MAXIMUM_PADDING = 12;
  * checked against the sequence's scope key instead, which always contains it.
  */
 const SCOPE_REQUIRES_SEGMENT: Readonly<
-  Partial<Record<SequenceResetScopeKey, NumberSegmentKindKey>>
+  Partial<Record<SequenceResetScopeKey, readonly NumberSegmentKindKey[]>>
 > = Object.freeze({
-  [SequenceResetScope.YEARLY]: NumberSegmentKind.YEAR,
-  [SequenceResetScope.MONTHLY]: NumberSegmentKind.MONTH,
+  [SequenceResetScope.YEARLY]: [NumberSegmentKind.YEAR],
+  // Month *and* year: a monthly counter restarts every month of every year, and a number whose
+  // text carries only the month renders identically in March of two different years — the same
+  // text for two different documents, one year apart.
+  [SequenceResetScope.MONTHLY]: [NumberSegmentKind.MONTH, NumberSegmentKind.YEAR],
 });
 
 /**
@@ -164,8 +167,8 @@ function checkResetScope(rule: NumberingRuleShape): readonly RuleRejection[] {
 
   const kinds = new Set(rule.segments.map((segment) => segment.kind));
   for (const entry of scope) {
-    const required = SCOPE_REQUIRES_SEGMENT[entry];
-    if (required !== undefined && !kinds.has(required)) {
+    const required = SCOPE_REQUIRES_SEGMENT[entry] ?? [];
+    if (required.some((kind) => !kinds.has(kind))) {
       rejections.push('RESET_SCOPE_WITHOUT_SEGMENT');
     }
   }
@@ -312,6 +315,104 @@ export function scopeKeyFor(rule: NumberingRuleShape, context: NumberingContext)
   }
 
   return components.join('|');
+}
+
+export type ManualNumberRejection =
+  'SHAPE_MISMATCH' | 'REQUIRED_CODE_MISSING' | 'SEQUENCE_OUT_OF_RANGE';
+
+export interface ManualNumberMatch {
+  readonly sequenceValue: bigint;
+  /**
+   * The instant the number's own `YEAR`/`MONTH` segments name, or null when the rule renders
+   * neither. A legacy number reading `2019` belongs to 2019's series regardless of when it is
+   * being imported, and this is what `scopeKeyFor` is given so the right counter fast-forwards.
+   */
+  readonly encodedDate: Date | null;
+}
+
+/**
+ * Whether a manually supplied number matches the rule's shape for this document, and which
+ * sequence value it spends (§3).
+ *
+ * Matching is by reconstruction rather than a grammar: every non-sequence segment renders to a
+ * known string given the document's own codes, so the candidate either is that rendering with a
+ * counter and a date in the holes, or it is refused. The counter may be *wider* than the padding —
+ * a series that outgrew its padding widens rather than wrapping — but never narrower, and never
+ * zero: a value below 1 names a counter position that cannot exist.
+ *
+ * An optional segment whose code resolves empty is absent from the expected form, exactly as the
+ * formatter drops it. One that resolves is required to appear: accepting both forms would give one
+ * document two admissible spellings, which is the ambiguity the save-time validator exists to
+ * prevent.
+ */
+export function matchManualNumber(
+  rule: NumberingRuleShape,
+  context: Omit<NumberingContext, 'assignedAt'>,
+  candidate: string,
+): ManualNumberMatch | ManualNumberRejection {
+  const parts: string[] = [];
+  let yearDigits: 2 | 4 | null = null;
+
+  for (const segment of rule.segments) {
+    switch (segment.kind) {
+      case NumberSegmentKind.YEAR:
+        yearDigits = segment.digits ?? 4;
+        parts.push(`(?<year>\\d{${String(yearDigits)}})`);
+        break;
+      case NumberSegmentKind.MONTH:
+        parts.push('(?<month>0[1-9]|1[0-2])');
+        break;
+      case NumberSegmentKind.SEQUENCE:
+        parts.push(`(?<sequence>\\d{${String(segment.padding ?? 4)},})`);
+        break;
+      default: {
+        const rendered = renderSegment(segment, { ...context, assignedAt: new Date(0) }, 0n);
+        if (rendered === null) {
+          // Optional and empty: dropped with its separator, exactly as the formatter drops it.
+          continue;
+        }
+        if (rendered.length === 0) {
+          // A required code the document cannot supply. The automatic path would render a visible
+          // gap to expose the misconfiguration; the manual path refuses for the same reason.
+          return 'REQUIRED_CODE_MISSING';
+        }
+        parts.push(escapeForPattern(rendered));
+      }
+    }
+  }
+
+  const pattern = new RegExp(
+    `^${parts.join(escapeForPattern(rule.separator))}$`,
+    // The codes carry their own case; nothing here is case-insensitive, because `qa-0001` and
+    // `QA-0001` as one number would be two spellings of it.
+  );
+  const matched = pattern.exec(candidate);
+  if (matched === null || matched.groups === undefined) {
+    return 'SHAPE_MISMATCH';
+  }
+
+  const sequenceValue = BigInt(matched.groups['sequence'] ?? '0');
+  if (sequenceValue < 1n) {
+    return 'SEQUENCE_OUT_OF_RANGE';
+  }
+
+  const yearText = matched.groups['year'];
+  const monthText = matched.groups['month'];
+  if (yearText === undefined && monthText === undefined) {
+    return { sequenceValue, encodedDate: null };
+  }
+  // A two-digit year reads as this century, which is the only reading a rule that chose two
+  // digits can mean; a series older than 2000 needs the four-digit form it was issued under.
+  const year = yearText === undefined ? null : Number(yearText) + (yearDigits === 2 ? 2000 : 0);
+  const month = monthText === undefined ? 1 : Number(monthText);
+  return {
+    sequenceValue,
+    encodedDate: new Date(Date.UTC(year ?? 1970, month - 1, 1)),
+  };
+}
+
+function escapeForPattern(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

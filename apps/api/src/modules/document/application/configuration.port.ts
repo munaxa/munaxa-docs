@@ -32,6 +32,8 @@ export interface DocumentTypePolicy {
    * submission refuses with a sentence rather than approving a document nobody looked at.
    */
   readonly workflowDefinitionId: string | null;
+  /** The rule this type numbers under. Every type names one; issuance resolves it live. */
+  readonly numberingRuleId: string;
   readonly isActive: boolean;
   readonly defaultConfidentialityId: string;
   readonly retentionPolicyId: string | null;

@@ -123,12 +123,23 @@ is the security-relevant half: §2 requires that no tenant-authored expression r
 that can touch I/O, so the facts are gathered *before* evaluation by code that knows what it is
 fetching, into a `Map` whose keys a tenant does not choose.
 
+## Phase 5 — the number
+
+`DOCUMENT_NUMBER_SERVICE` is the one path onto `document.document_number`, and this module owns it
+because the number is the document's: the service resolves the document's real organisational codes
+— its library's scope chain, its department's branch, its type and category — and hands them to
+Administration's issuance service, which owns the rules, the counters and the reservations. Nothing
+a client sends ever reaches a scope key. The engine reaches it through Workflow's
+`DOCUMENT_NUMBER_ALLOCATOR` adapter; the manual path (`POST /documents/{id}/number`, behind
+`numbering:manage`) validates a supplied number against the rule's shape and fast-forwards the
+series past it. `assignNumber` in the repository carries `document_number IS NULL` in its `WHERE`,
+so write-once is a property of the statement rather than a check that ran a moment earlier.
+
 ## Deliberate limits
 
 | Limit | Why | Unblocked by |
 | --- | --- | --- |
 | No `capabilities` on a response | Object-level permission resolution is the ACL resolver's, and it is unbound. Inventing the object would be the client rendering affordances from a decision nothing made | The ACL phase |
-| No document number | Reserved at submission, assigned at approval ([ADR-0004](../../../../../docs/architecture/adr/0004-numbering-assigned-at-approval.md)) | Phase 5 |
 | No revision beyond the first | Check-out, check-in, compare and restore are Phase 6's | Phase 6 |
 | Declassification is refused outright | Reducing a document's confidentiality is a decision with its own procedure. Allowing it here would make it an ordinary edit any document editor can perform | The phase that gives it one |
 | No tags, links or check-out lock | Named in this module's own contract and not needed to file a document | Phases 6 and 16 |

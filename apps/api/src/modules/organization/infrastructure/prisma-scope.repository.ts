@@ -73,6 +73,23 @@ export class PrismaScopeRepository implements ScopeRepository {
       .filter((node): node is ScopeNodeRecord => node !== undefined);
   }
 
+  async findBranchCodeOfDepartment(departmentId: AnyId): Promise<string | null> {
+    const tx = requireTransaction();
+    const { tenantId } = requireContext();
+    const department = await tx.department.findFirst({
+      where: { id: departmentId, tenantId, deletedAt: null },
+      select: { branchId: true },
+    });
+    if (department === null || department.branchId === null) {
+      return null;
+    }
+    const branch = await tx.branch.findFirst({
+      where: { id: department.branchId, tenantId, deletedAt: null },
+      select: { code: true },
+    });
+    return branch?.code ?? null;
+  }
+
   async findSubtrees(ids: readonly AnyId[]): Promise<readonly ScopeNodeRecord[]> {
     if (ids.length === 0) {
       return [];

@@ -7,6 +7,7 @@ import {
   PREVIEW_SEQUENCE_VALUE,
   checkRule,
   formatNumber,
+  matchManualNumber,
   scopeKeyFor,
 } from './numbering';
 
@@ -378,5 +379,81 @@ describe('previewing', () => {
   it('renders a counter that shows the padding off', () => {
     // A sample of `0001` looks the same at padding 4 as a sample of `1` does at padding 1.
     expect(PREVIEW_SEQUENCE_VALUE).toBeGreaterThan(9n);
+  });
+});
+
+describe('matching a manually supplied number (§3)', () => {
+  const workedExample = ruleFor({
+    segments: [
+      { kind: NumberSegmentKind.LITERAL, value: 'QMS' },
+      { kind: NumberSegmentKind.ENTITY_CODE },
+      { kind: NumberSegmentKind.BRANCH_CODE, optional: true },
+      { kind: NumberSegmentKind.DEPARTMENT_CODE },
+      { kind: NumberSegmentKind.YEAR, digits: 4 },
+      { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+    ],
+    resetScope: [SequenceResetScope.YEARLY, SequenceResetScope.PER_ENTITY],
+  });
+  const codes = { entityCode: 'JO', branchCode: 'AMM', departmentCode: 'QA' };
+
+  it('extracts the sequence value and the encoded date from a matching number', () => {
+    const match = matchManualNumber(workedExample, codes, 'QMS-JO-AMM-QA-2019-0154');
+    expect(match).toEqual({
+      sequenceValue: 154n,
+      // 2019, not this year: the number's own text names the series it belongs to, so a legacy
+      // import fast-forwards 2019's counter rather than spending the live one.
+      encodedDate: new Date(Date.UTC(2019, 0, 1)),
+    });
+  });
+
+  it('accepts a counter wider than the padding and refuses one narrower', () => {
+    // A series that outgrows its padding widens rather than wrapping (§1), so `12345` at
+    // padding 4 is a number this rule can genuinely have issued. `042` is not.
+    expect(matchManualNumber(workedExample, codes, 'QMS-JO-AMM-QA-2026-12345')).toMatchObject({
+      sequenceValue: 12345n,
+    });
+    expect(matchManualNumber(workedExample, codes, 'QMS-JO-AMM-QA-2026-042')).toBe(
+      'SHAPE_MISMATCH',
+    );
+  });
+
+  it('expects the document’s own codes, not whatever the number claims', () => {
+    // The document is in entity JO. A number reading `SA` is another entity's shape.
+    expect(matchManualNumber(workedExample, codes, 'QMS-SA-AMM-QA-2026-0001')).toBe(
+      'SHAPE_MISMATCH',
+    );
+  });
+
+  it('drops an optional segment exactly as the formatter drops it', () => {
+    const withoutBranch = { entityCode: 'JO', departmentCode: 'QA' };
+    expect(matchManualNumber(workedExample, withoutBranch, 'QMS-JO-QA-2026-0007')).toMatchObject({
+      sequenceValue: 7n,
+    });
+    // The document has a branch, so the branchless spelling is not this document's number: one
+    // admissible spelling per document, which is the ambiguity rule the validator holds.
+    expect(matchManualNumber(workedExample, codes, 'QMS-JO-QA-2026-0007')).toBe('SHAPE_MISMATCH');
+  });
+
+  it('refuses a required code the document cannot supply', () => {
+    expect(matchManualNumber(workedExample, { entityCode: 'JO' }, 'QMS-JO--2026-0001')).toBe(
+      'REQUIRED_CODE_MISSING',
+    );
+  });
+
+  it('reads a two-digit year as this century', () => {
+    const rule = ruleFor({
+      segments: [
+        { kind: NumberSegmentKind.YEAR, digits: 2 },
+        { kind: NumberSegmentKind.SEQUENCE, padding: 3 },
+      ],
+      resetScope: [SequenceResetScope.YEARLY],
+    });
+    expect(matchManualNumber(rule, {}, '19-001')).toMatchObject({
+      encodedDate: new Date(Date.UTC(2019, 0, 1)),
+    });
+  });
+
+  it('refuses a counter of zero', () => {
+    expect(matchManualNumber(ruleFor(), {}, '0000')).toBe('SEQUENCE_OUT_OF_RANGE');
   });
 });

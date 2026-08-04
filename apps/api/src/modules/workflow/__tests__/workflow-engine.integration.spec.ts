@@ -17,6 +17,7 @@ import {
   TaskDecision,
   type ApprovalTaskId,
   type DocumentId,
+  type NumberingRuleId,
   type TenantId,
   type UploadSessionId,
   type UserId,
@@ -92,6 +93,7 @@ let root: string;
 let owner: PrismaClient;
 let library: DocumentLibraryStack;
 let workflow: WorkflowEngineStack;
+let unitOfWork: PrismaUnitOfWork;
 
 let rootFolderId: string;
 let confidentialityId: string;
@@ -191,7 +193,10 @@ async function markClean(fileObjectId: string): Promise<void> {
  * and a type is created pointing at the definition — because "an instance binds to a published
  * version" is a property the database enforces with a trigger, and a seeded row would sidestep it.
  */
-async function typeWithWorkflow(stages: readonly unknown[]): Promise<string> {
+async function typeWithWorkflow(
+  stages: readonly unknown[],
+  ruleId: string = numberingRuleId,
+): Promise<string> {
   const definition = await as(() =>
     workflow.definitions.create({
       key: unique('wf-'),
@@ -213,7 +218,7 @@ async function typeWithWorkflow(stages: readonly unknown[]): Promise<string> {
     library.configuration.createDocumentType({
       code: unique('T'),
       name: 'Procedure',
-      numberingRuleId,
+      numberingRuleId: ruleId,
       defaultConfidentialityId: confidentialityId,
       revisionLabelStyle: 'NUMERIC',
       isActive: true,
@@ -278,7 +283,7 @@ beforeAll(async () => {
   } as unknown as AppConfig;
 
   const prisma = sharedDatabase(appConfig, logger, APP_URL);
-  const unitOfWork = new PrismaUnitOfWork(prisma);
+  unitOfWork = new PrismaUnitOfWork(prisma);
 
   library = realDocumentLibrary({
     clock,
@@ -751,14 +756,24 @@ describe('deciding', () => {
     expect(stages[1]?.state).toBe(WorkflowStageStatus.ACTIVE);
   });
 
-  it('completes without a number, because allocation is Phase 5', async () => {
+  it('completes with a number, drawn through the seam Phase 4 left for it', async () => {
     const typeId = await typeWithWorkflow(oneStage());
     const documentId = await aDocument(typeId);
     const { instanceId } = await as(() =>
       workflow.engine.submit(asId<DocumentId>(documentId), null),
     );
-    const task = await owner.approvalTask.findFirstOrThrow({ where: { instanceId } });
 
+    // ADR-0004's first half: submission reserved a pending value, visible and clearly not the
+    // document's number yet.
+    const submitted = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(submitted.documentNumber).toBeNull();
+    const reservation = await owner.numberReservation.findFirstOrThrow({
+      where: { workflowInstanceId: instanceId },
+    });
+    expect(reservation.state).toBe('RESERVED');
+    expect(reservation.formatted).toMatch(/^QA-\d{3,}$/);
+
+    const task = await owner.approvalTask.findFirstOrThrow({ where: { instanceId } });
     await as(
       () =>
         workflow.engine.decide({
@@ -769,14 +784,54 @@ describe('deciding', () => {
       REVIEWER,
     );
 
+    // The second half: approval assigned exactly the value reviewers were shown, in the same
+    // transaction as the approval. This assertion flipping from Phase 4's "completes without a
+    // number" is the phase working — binding the allocator changed no engine code.
     const instance = await owner.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } });
     const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
-    // The seam is called and nothing is bound to it, so the approval completes and the document is
-    // approved and unnumbered — which is what a product without numbering should produce, and is
-    // recorded rather than papered over ([ADR-0004], §8).
+    expect(instance.state).toBe(WorkflowInstanceStatus.COMPLETED);
+    expect(instance.numberAssigned).toBe(true);
+    expect(document.status).toBe(DocumentStatus.APPROVED);
+    expect(document.documentNumber).toBe(reservation.formatted);
+    expect(document.numberedAt).not.toBeNull();
+    const assigned = await owner.numberReservation.findUniqueOrThrow({
+      where: { id: reservation.id },
+    });
+    expect(assigned.state).toBe('ASSIGNED');
+    expect(assigned.documentId).toBe(documentId);
+  });
+
+  it('completes honestly unnumbered when the allocator is unbound, as Phase 4 shipped', async () => {
+    // The same engine composed without the binding — a composition the port deliberately allows.
+    const unbound = realWorkflowEngine({
+      clock,
+      unitOfWork,
+      documents: library.documents,
+      configuration: library.configuration,
+      directory,
+      withoutNumbering: true,
+    });
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      unbound.engine.submit(asId<DocumentId>(documentId), null),
+    );
+    const task = await owner.approvalTask.findFirstOrThrow({ where: { instanceId } });
+
+    await as(
+      () =>
+        unbound.engine.decide({
+          taskId: asId<ApprovalTaskId>(task.id),
+          decision: TaskDecision.APPROVED,
+          comment: null,
+        }),
+      REVIEWER,
+    );
+
+    const instance = await owner.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } });
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
     expect(instance.state).toBe(WorkflowInstanceStatus.COMPLETED);
     expect(instance.numberAssigned).toBe(false);
-    expect(document.status).toBe(DocumentStatus.APPROVED);
     expect(document.documentNumber).toBeNull();
   });
 });
@@ -1113,5 +1168,272 @@ describe('the audit trail', () => {
     const instance = await owner.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } });
     expect(after['workflowVersionId']).toBe(instance.workflowVersionId);
     expect(after['workflowVersion']).toBe(1);
+  });
+});
+
+// --- Phase 5: numbering through the engine ----------------------------------------------------
+//
+// The guarantees of `09-numbering-architecture.md` §5, asked of the real database through the real
+// engine: distinct numbers under parallel approvals, a voided value never returning to the pool,
+// gapless mode drawing only at approval, and the manual path fast-forwarding the series while the
+// unique constraints refuse every collision — including a deleted document's number, forever.
+
+describe('numbering', () => {
+  async function aRule(overrides: Record<string, unknown> = {}): Promise<{
+    readonly id: string;
+    readonly prefix: string;
+  }> {
+    const prefix = unique('N').replace(/-/g, '');
+    const rule = await as(() =>
+      library.numbering.create({
+        key: unique('issue-'),
+        name: `Series ${prefix}`,
+        separator: '-',
+        segments: [
+          { kind: NumberSegmentKind.LITERAL, value: prefix },
+          { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+        ] as never,
+        resetScope: ['NEVER'],
+        reserveOnSubmit: true,
+        strictGapless: false,
+        ...overrides,
+      }),
+    );
+    return { id: rule.id, prefix };
+  }
+
+  async function approve(instanceId: string): Promise<void> {
+    const task = await owner.approvalTask.findFirstOrThrow({
+      where: { instanceId, state: 'PENDING' },
+    });
+    await as(
+      () =>
+        workflow.engine.decide({
+          taskId: asId<ApprovalTaskId>(task.id),
+          decision: TaskDecision.APPROVED,
+          comment: null,
+        }),
+      REVIEWER,
+    );
+  }
+
+  function numbersService() {
+    const numbers = workflow.numbers;
+    if (numbers === null) {
+      throw new Error('The stack was composed with numbering; this cannot be null.');
+    }
+    return numbers;
+  }
+
+  function issuanceService() {
+    const issuance = workflow.issuance;
+    if (issuance === null) {
+      throw new Error('The stack was composed with numbering; this cannot be null.');
+    }
+    return issuance;
+  }
+
+  it('gives parallel approvals in one series distinct, consecutive numbers', async () => {
+    // The phase's own risk, exercised where the engine meets the counter: five decisions in five
+    // transactions, each holding its own instance lock, all contending on one sequence row. The
+    // rule draws at approval, so the draw itself is what races (§2, §5).
+    const rule = await aRule({ reserveOnSubmit: false });
+    const typeId = await typeWithWorkflow(oneStage(), rule.id);
+    const submissions: string[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const documentId = await aDocument(typeId);
+      const { instanceId } = await as(() =>
+        workflow.engine.submit(asId<DocumentId>(documentId), null),
+      );
+      submissions.push(instanceId);
+    }
+
+    await Promise.all(submissions.map((instanceId) => approve(instanceId)));
+
+    const documents = await owner.document.findMany({
+      where: { documentTypeId: typeId },
+      select: { documentNumber: true },
+    });
+    const values = documents.map((row) => row.documentNumber).sort();
+    expect(values).toEqual([
+      `${rule.prefix}-0001`,
+      `${rule.prefix}-0002`,
+      `${rule.prefix}-0003`,
+      `${rule.prefix}-0004`,
+      `${rule.prefix}-0005`,
+    ]);
+  });
+
+  it('voids the reservation on rejection and never returns the value to the pool', async () => {
+    const rule = await aRule();
+    const typeId = await typeWithWorkflow(oneStage(), rule.id);
+
+    const rejectedId = await aDocument(typeId);
+    const first = await as(() => workflow.engine.submit(asId<DocumentId>(rejectedId), null));
+    const task = await owner.approvalTask.findFirstOrThrow({
+      where: { instanceId: first.instanceId },
+    });
+    await as(
+      () =>
+        workflow.engine.decide({
+          taskId: asId<ApprovalTaskId>(task.id),
+          decision: TaskDecision.REJECTED,
+          comment: 'Not this one.',
+        }),
+      REVIEWER,
+    );
+
+    const voided = await owner.numberReservation.findFirstOrThrow({
+      where: { workflowInstanceId: first.instanceId },
+    });
+    expect(voided.state).toBe('VOIDED');
+    expect(voided.formatted).toBe(`${rule.prefix}-0001`);
+    const rejected = await owner.document.findUniqueOrThrow({ where: { id: rejectedId } });
+    expect(rejected.documentNumber).toBeNull();
+
+    // The next document draws the *next* value. `0001` is a gap in the visible series, which
+    // ADR-0004 accepts; reusing it is what it forbids.
+    const approvedId = await aDocument(typeId);
+    const second = await as(() => workflow.engine.submit(asId<DocumentId>(approvedId), null));
+    await approve(second.instanceId);
+    const approved = await owner.document.findUniqueOrThrow({ where: { id: approvedId } });
+    expect(approved.documentNumber).toBe(`${rule.prefix}-0002`);
+  });
+
+  it('voids the reservation on withdrawal', async () => {
+    const rule = await aRule();
+    const typeId = await typeWithWorkflow(oneStage(), rule.id);
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+
+    await as(() => workflow.engine.withdraw(asId<DocumentId>(documentId), 'Not ready.'));
+
+    const reservation = await owner.numberReservation.findFirstOrThrow({
+      where: { workflowInstanceId: instanceId },
+    });
+    expect(reservation.state).toBe('VOIDED');
+    expect(reservation.voidReason).toBe('WITHDRAWN');
+  });
+
+  it('draws only at approval in gapless mode, so nothing can ever be voided', async () => {
+    const rule = await aRule({ reserveOnSubmit: false, strictGapless: true });
+    const typeId = await typeWithWorkflow(oneStage(), rule.id);
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+
+    // No pending value exists during review — the trade-off the regime demands (§2).
+    expect(await owner.numberReservation.count({ where: { workflowInstanceId: instanceId } })).toBe(
+      0,
+    );
+
+    await approve(instanceId);
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.documentNumber).toBe(`${rule.prefix}-0001`);
+    const reservation = await owner.numberReservation.findFirstOrThrow({
+      where: { workflowInstanceId: instanceId },
+    });
+    // Reserved and assigned in the one transaction: the same code path, with no time between.
+    expect(reservation.state).toBe('ASSIGNED');
+  });
+
+  it('records a manual number, fast-forwards the series, and refuses every collision', async () => {
+    const rule = await aRule();
+    const typeId = await typeWithWorkflow(oneStage(), rule.id);
+    const manualId = await aDocument(typeId);
+
+    // §3: the supplied number is validated against the rule's shape for this document.
+    await expect(
+      as(() => numbersService().assignManually(asId<DocumentId>(manualId), 'WRONG-1')),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    await as(() =>
+      numbersService().assignManually(asId<DocumentId>(manualId), `${rule.prefix}-0007`),
+    );
+    const manual = await owner.document.findUniqueOrThrow({ where: { id: manualId } });
+    expect(manual.documentNumber).toBe(`${rule.prefix}-0007`);
+    expect(manual.numberedAt).not.toBeNull();
+
+    // The series fast-forwarded past the supplied value: the next automatic draw is 0008, so the
+    // manual number can never collide with a later automatic one.
+    const nextId = await aDocument(typeId);
+    const next = await as(() => workflow.engine.submit(asId<DocumentId>(nextId), null));
+    await approve(next.instanceId);
+    expect((await owner.document.findUniqueOrThrow({ where: { id: nextId } })).documentNumber).toBe(
+      `${rule.prefix}-0008`,
+    );
+
+    // A spent value is refused however it is asked for again.
+    const otherId = await aDocument(typeId);
+    await expect(
+      as(() => numbersService().assignManually(asId<DocumentId>(otherId), `${rule.prefix}-0007`)),
+    ).rejects.toMatchObject({ code: 'DUPLICATE' });
+
+    // Delete and recreate: the number stays spent forever. Uniqueness deliberately ignores
+    // `deleted_at`, so a deleted document holds its number for good (§5).
+    const doomed = await owner.document.findUniqueOrThrow({ where: { id: manualId } });
+    await as(() => library.documents.remove(manualId, doomed.version));
+    await expect(
+      as(() => numbersService().assignManually(asId<DocumentId>(otherId), `${rule.prefix}-0007`)),
+    ).rejects.toMatchObject({ code: 'DUPLICATE' });
+  });
+
+  it('holds a block for offline work, which the automatic path can never draw', async () => {
+    const rule = await aRule();
+    const typeId = await typeWithWorkflow(oneStage(), rule.id);
+
+    const held = await as(() =>
+      issuanceService().holdBlock({
+        numberingRuleId: asId<NumberingRuleId>(rule.id),
+        codes: {},
+        count: 2,
+        note: 'Paper forms for the field office.',
+      }),
+    );
+    expect(held.map((value) => value.formatted)).toEqual([
+      `${rule.prefix}-0001`,
+      `${rule.prefix}-0002`,
+    ]);
+
+    // The counter has moved past the block, so an approval draws 0003 — a held value cannot be
+    // drawn automatically because it has already been drawn (§3).
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+    await approve(instanceId);
+    expect(
+      (await owner.document.findUniqueOrThrow({ where: { id: documentId } })).documentNumber,
+    ).toBe(`${rule.prefix}-0003`);
+
+    // The offline process comes back: a manual assignment of a held value claims the held row.
+    const claimedId = await aDocument(typeId);
+    await as(() =>
+      numbersService().assignManually(asId<DocumentId>(claimedId), `${rule.prefix}-0001`),
+    );
+    const claimed = await owner.numberReservation.findFirstOrThrow({
+      // The tenant filter matters here: `formatted` is unique per tenant, and this database has
+      // hosted other runs' tenants.
+      where: { tenantId: TENANT, formatted: `${rule.prefix}-0001` },
+    });
+    expect(claimed.state).toBe('ASSIGNED');
+    expect(claimed.documentId).toBe(claimedId);
+
+    // The other held value is released — voided, retained, and never re-issued.
+    const remaining = held[1];
+    if (remaining === undefined) {
+      throw new Error('The block held two values.');
+    }
+    await as(() => issuanceService().releaseHeld(remaining.reservationId, 'Forms cancelled.'));
+    expect(
+      (
+        await owner.numberReservation.findFirstOrThrow({
+          where: { tenantId: TENANT, formatted: `${rule.prefix}-0002` },
+        })
+      ).state,
+    ).toBe('VOIDED');
   });
 });

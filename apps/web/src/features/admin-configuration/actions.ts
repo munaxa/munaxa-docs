@@ -4,6 +4,7 @@ import {
   type Category,
   type ConfidentialityLevel,
   type DocumentType,
+  type HeldNumberBlock,
   type MetadataField,
   type NumberingPreview,
   type NumberingRule,
@@ -15,6 +16,7 @@ import {
   createMetadataFieldSchema,
   createNumberingRuleSchema,
   createRetentionPolicySchema,
+  holdNumberBlockSchema,
   moveCategorySchema,
   previewNumberingRuleSchema,
   resetSettingSchema,
@@ -25,6 +27,7 @@ import {
   updateNumberingRuleSchema,
   updateRetentionPolicySchema,
   updateSettingSchema,
+  voidHeldNumberSchema,
 } from '@edms/contracts';
 
 import type { ActionResult } from '../../lib/admin/action-result';
@@ -247,6 +250,35 @@ export async function previewNumberingRule(
 ): Promise<ActionResult<NumberingPreview>> {
   return validated(previewNumberingRuleSchema, input, (body) =>
     adminWrite<NumberingPreview>({ path: '/admin/numbering-rules/preview', method: 'POST', body }),
+  );
+}
+
+/** Sets a run of values aside for an offline process (`09-numbering-architecture.md` §3). */
+export async function holdNumberBlock(
+  ruleId: string,
+  input: unknown,
+): Promise<ActionResult<HeldNumberBlock>> {
+  return validated(holdNumberBlockSchema, input, (body) =>
+    adminWrite<HeldNumberBlock>({
+      path: `/admin/numbering-rules/${ruleId}/held-blocks`,
+      method: 'POST',
+      body,
+    }),
+  );
+}
+
+/** Voids a held value a controller no longer needs. It is retained, never re-issued. */
+export async function voidHeldNumber(
+  ruleId: string,
+  reservationId: string,
+  input: unknown,
+): Promise<ActionResult> {
+  return validated(voidHeldNumberSchema, input, (body) =>
+    adminWrite({
+      path: `/admin/numbering-rules/${ruleId}/reservations/${reservationId}/void`,
+      method: 'POST',
+      body,
+    }),
   );
 }
 

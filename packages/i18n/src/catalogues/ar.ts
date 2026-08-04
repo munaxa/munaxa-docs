@@ -349,6 +349,39 @@ export const ar: Catalogue = {
       resetPER_CATEGORY: 'لكل تصنيف',
       paddingLocked:
         'لا يمكن تغيير عدد الخانات ما دامت لهذه القاعدة سلسلة قائمة — إذ سيصبح للرقم صورتان مكتوبتان. أنشئ قاعدة جديدة بدلًا من ذلك.',
+      reservations: {
+        action: 'الأرقام المحجوزة',
+        title: 'الأرقام المحجوزة — {rule}',
+        description:
+          'كل قيمة سحبتها هذه القاعدة وما آلت إليه. القيمة الملغاة تفسّر فجوة في السلسلة؛ تُحفظ للأبد ولا تُصدر مجددًا أبدًا.',
+        holdBlock: 'حجز مجموعة',
+        holdBlockDescription:
+          'تُفرَد مجموعة أرقام متتالية لعمل يُنجز خارج هذا النظام، ولا يمكن للمسار التلقائي سحبها أبدًا.',
+        count: 'العدد',
+        note: 'الغرض من المجموعة',
+        entityCode: 'رمز الكيان',
+        departmentCode: 'رمز القسم',
+        documentTypeCode: 'رمز نوع الوثيقة',
+        held: 'تم حجز {count} من الأرقام.',
+        void: 'إلغاء',
+        voidWarning: 'سيُلغى {value}. تُحفظ القيمة للأبد ولا يمكن إسنادها إلى وثيقة أبدًا.',
+        voidReason: 'سبب الاستغناء عنه',
+        stateFilter: 'الحالة',
+        allStates: 'كل الحالات',
+        empty: 'لم يُسحب شيء بعد',
+        emptyDescription: 'تظهر القيم هنا مع تقديم الوثائق واعتمادها.',
+        state: {
+          RESERVED: 'معلّق',
+          ASSIGNED: 'مُسند',
+          VOIDED: 'ملغى',
+          HELD: 'محجوز',
+        },
+        origin: {
+          AUTOMATIC: 'تلقائي',
+          MANUAL: 'يدوي',
+          IMPORTED: 'مستورد',
+        },
+      },
     },
     libraries: {
       title: 'مكتبات الوثائق',
@@ -549,7 +582,7 @@ export const ar: Catalogue = {
     pauseTENANT_SUSPENDED: 'المؤسسة موقوفة',
     pauseADMINISTRATIVE: 'إداري',
     resume: 'رفع الإيقاف',
-    numberPending: 'تم الاعتماد. يُسند رقم المستند في إصدار لاحق.',
+    numberPending: 'اعتُمدت دون رقم وثيقة: مسار الاعتماد هذا لا يُسند رقمًا.',
     stageStatusPENDING: 'لم تبدأ',
     stageStatusACTIVE: 'قيد التنفيذ',
     stageStatusCOMPLETED: 'اكتملت',
@@ -627,6 +660,15 @@ export const ar: Catalogue = {
       scan: 'مسح وثائق ضوئيًا',
       backToFolder: 'العودة إلى المجلد',
       notReachable: 'لم يجتز هذا الملف فحص البرمجيات الخبيثة.',
+      assignNumber: 'إسناد رقم',
+    },
+    number: {
+      pending: 'معلّق',
+    },
+    assignNumber: {
+      warning:
+        'رقم الوثيقة يُصدر مرة واحدة ولا يتغيّر أبدًا — لا بعد الحذف ولا في أي وقت. ويجب أن يطابق الشكل الذي تنتجه قاعدة ترقيم هذه الوثيقة.',
+      hint: 'مثال: HR-POL-2026-000154، تمامًا كما تصيغه القاعدة.',
     },
     move: {
       warning:

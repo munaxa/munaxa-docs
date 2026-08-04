@@ -428,26 +428,45 @@ export interface WorkflowCalendarReader {
 export const DOCUMENT_NUMBER_ALLOCATOR = Symbol('DocumentNumberAllocator');
 
 /**
- * The seam Phase 5 fills, and the reason it is a seam rather than a stub.
+ * The seam Phase 4 cut and Phase 5 filled.
  *
  * [ADR-0004](../../../../../docs/architecture/adr/0004-numbering-assigned-at-approval.md) reserves
  * a number at submission and assigns it at approval, and §8 lists "assign a document number before
- * the final stage completes" as something the engine must never do. So the engine has to call
- * *something* at completion, and that call has to be in the same transaction as the approval.
+ * the final stage completes" as something the engine must never do. So the engine calls this at
+ * completion, in the same transaction as the approval — and, since Phase 5, at submission to
+ * reserve and on every ending-without-approval path to void.
  *
- * Phase 4 declares the port and leaves it **unbound**, in the same deliberate way Phase 2 left
- * `OUTBOX_DISPATCHER` unbound. The engine injects it optionally; with nothing bound, an approval
- * completes with `numberAssigned: false` and the audit event says so. That is an honest outcome —
- * the document is approved and unnumbered, which is exactly what a product without numbering
- * should produce — rather than a stub returning a fabricated string that a later phase would have
- * to find every trace of.
+ * The port stays `@Optional` in the engine's constructor, exactly as Phase 4 left it: with
+ * nothing bound an approval completes with `numberAssigned: false`, which was the honest outcome
+ * for a product without numbering and remains the engine's behaviour under test doubles. The
+ * binding lives in this module — an adapter over Document's `DOCUMENT_NUMBER_SERVICE` — and
+ * binding it is the whole of what made every completed approval numbered, with no change to the
+ * engine's completion path. That was the test of whether the seam was cut correctly.
  */
 export interface DocumentNumberAllocator {
+  /**
+   * Draws the pending number a reviewer refers to, when the document's rule reserves at
+   * submission. Null means the rule draws at approval instead — including gapless mode.
+   */
+  reserveAtSubmission(input: {
+    readonly documentId: DocumentId;
+    readonly workflowInstanceId: WorkflowInstanceId;
+  }): Promise<{ readonly pendingNumber: string | null }>;
   /** Draws and assigns the number, inside the caller's transaction. */
   assignAtApproval(input: {
     readonly documentId: DocumentId;
     readonly workflowInstanceId: WorkflowInstanceId;
   }): Promise<{ readonly documentNumber: string }>;
+  /**
+   * Voids the instance's reservation, if it holds one. Called on every path that ends an
+   * instance without approval — rejection, return to author, withdrawal, cancellation — and the
+   * voided value never returns to the pool (§2 of `09-numbering-architecture.md`).
+   */
+  voidReservation(input: {
+    readonly documentId: DocumentId;
+    readonly workflowInstanceId: WorkflowInstanceId;
+    readonly reason: string;
+  }): Promise<void>;
 }
 
 // --- The services other modules and controllers call -------------------------------------------

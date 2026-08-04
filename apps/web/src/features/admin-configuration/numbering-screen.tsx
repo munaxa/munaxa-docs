@@ -1,5 +1,7 @@
 'use client';
 
+import type { Route } from 'next';
+import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
 import type { NumberSegment, NumberingRule } from '@edms/contracts';
@@ -75,6 +77,7 @@ export function NumberingScreen({
   state: ListState;
 }): ReactNode {
   const translate = useTranslate();
+  const router = useRouter();
   const column = useAdminColumns<NumberingRule>();
   const { refresh } = useListNavigation(state);
   const [editing, setEditing] = useState<NumberingRule | null | undefined>(undefined);
@@ -110,6 +113,15 @@ export function NumberingScreen({
             ? null
             : translate('admin.list.inUseByTypes', { count: row.documentTypeCount })
         }
+        extraActions={(row) => [
+          {
+            id: 'reservations',
+            label: translate('admin.numbering.reservations.action'),
+            onSelect: () => {
+              router.push(`/admin/numbering/${row.id}/reservations` as Route);
+            },
+          },
+        ]}
         columns={[
           {
             id: 'name',

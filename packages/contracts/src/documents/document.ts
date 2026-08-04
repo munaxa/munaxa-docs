@@ -99,6 +99,15 @@ export const moveDocumentSchema = z.object({
   folderId: uuidSchema,
 });
 
+/**
+ * Manual assignment or legacy import (`09-numbering-architecture.md` §3), behind
+ * `numbering:manage`. The number is validated server-side against the document's own rule and
+ * codes; a value that collides with any issued, reserved or voided number is refused.
+ */
+export const assignDocumentNumberSchema = z.object({
+  documentNumber: z.string().trim().min(1).max(128),
+});
+
 /** What the bytes are. Never mixed with what the document means. */
 export const documentFileSchema = z.object({
   fileObjectId: uuidSchema,
@@ -165,6 +174,14 @@ export const documentSchema = administered({
   origin: documentOriginSchema,
   /** Null until approval. Reserved forever once issued, even after deletion. */
   documentNumber: z.string().nullable(),
+  /** When the number was assigned. Set with `documentNumber` and only with it. */
+  numberedAt: isoDateTimeSchema.nullable(),
+  /**
+   * The reserved number a document under review shows, clearly marked pending — it is not the
+   * document's number until approval assigns it (ADR-0004). Null once assigned, and always null
+   * for a rule that draws only at approval.
+   */
+  pendingNumber: z.string().nullable(),
   ownerUserId: uuidSchema,
   /** The newest revision — the only one Phase 3 creates. */
   latestRevision: documentRevisionSchema.nullable(),
@@ -236,6 +253,7 @@ export const recentDocumentSchema = documentSummarySchema.extend({
 export type CreateDocumentBody = z.infer<typeof createDocumentSchema>;
 export type UpdateDocumentBody = z.infer<typeof updateDocumentSchema>;
 export type MoveDocumentBody = z.infer<typeof moveDocumentSchema>;
+export type AssignDocumentNumberBody = z.infer<typeof assignDocumentNumberSchema>;
 export type Document = z.infer<typeof documentSchema>;
 export type DocumentSummary = z.infer<typeof documentSummarySchema>;
 export type DocumentRevisionView = z.infer<typeof documentRevisionSchema>;

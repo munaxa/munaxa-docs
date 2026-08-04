@@ -388,6 +388,40 @@ export const en = {
       resetPER_CATEGORY: 'Per category',
       paddingLocked:
         'The number of digits cannot change while this rule has a live series — one number would have two written forms. Create a new rule instead.',
+      reservations: {
+        action: 'Reserved numbers',
+        title: 'Reserved numbers — {rule}',
+        description:
+          'Every value this rule has drawn, and what became of it. A voided value explains a gap in the series; it is kept forever and never re-issued.',
+        holdBlock: 'Reserve a block',
+        holdBlockDescription:
+          'Sets a run of consecutive numbers aside for work done outside this system. The automatic path can never draw them.',
+        count: 'How many',
+        note: 'What the block is for',
+        entityCode: 'Entity code',
+        departmentCode: 'Department code',
+        documentTypeCode: 'Document type code',
+        held: '{count} number(s) reserved.',
+        void: 'Void',
+        voidWarning:
+          '{value} will be voided. The value is kept forever and can never be issued to a document.',
+        voidReason: 'Why it is no longer needed',
+        stateFilter: 'State',
+        allStates: 'All states',
+        empty: 'Nothing drawn yet',
+        emptyDescription: 'Values appear here as documents are submitted and approved.',
+        state: {
+          RESERVED: 'Pending',
+          ASSIGNED: 'Assigned',
+          VOIDED: 'Voided',
+          HELD: 'Held',
+        },
+        origin: {
+          AUTOMATIC: 'Automatic',
+          MANUAL: 'Manual',
+          IMPORTED: 'Imported',
+        },
+      },
     },
     libraries: {
       title: 'Document libraries',
@@ -599,7 +633,7 @@ export const en = {
     pauseTENANT_SUSPENDED: 'organisation suspended',
     pauseADMINISTRATIVE: 'administrative',
     resume: 'Release the hold',
-    numberPending: 'Approved. A document number is assigned in a later release.',
+    numberPending: 'Approved without a document number: this workflow does not assign one.',
     stageStatusPENDING: 'Not started',
     stageStatusACTIVE: 'In progress',
     stageStatusCOMPLETED: 'Done',
@@ -684,6 +718,15 @@ export const en = {
       scan: 'Scan documents',
       backToFolder: 'Back to the folder',
       notReachable: 'This file has not cleared the malware check.',
+      assignNumber: 'Assign a number',
+    },
+    number: {
+      pending: 'Pending',
+    },
+    assignNumber: {
+      warning:
+        'A document number is issued once and never changes — not after deletion, not ever. It must match the shape this document’s numbering rule produces.',
+      hint: 'For example HR-POL-2026-000154, exactly as the rule renders it.',
     },
     move: {
       warning:

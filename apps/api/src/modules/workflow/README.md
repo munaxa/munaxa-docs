@@ -73,11 +73,14 @@ resolve empty, and calls it a silent loss of a control. Submission refuses, nami
 stage whose *condition* does not hold is a different thing and is `SKIPPED` with a stated reason —
 the two look alike from outside, which is exactly why the engine keeps them apart.
 
-**Nothing is numbered here.** [ADR-0004](../../../../../docs/architecture/adr/0004-numbering-assigned-at-approval.md)
-assigns a number at approval and §8 forbids assigning one earlier; allocation is Phase 5's. The
-engine calls `DOCUMENT_NUMBER_ALLOCATOR` at completion, the port is left **unbound**, and an approval
-completes with `numberAssigned: false`. A stub returning a fabricated number would be a lie the next
-phase has to find every trace of.
+**Numbering goes through the seam, never through engine code.** [ADR-0004](../../../../../docs/architecture/adr/0004-numbering-assigned-at-approval.md)
+reserves at submission and assigns at approval, and §8 forbids assigning earlier. The engine calls
+`DOCUMENT_NUMBER_ALLOCATOR` — reserve on submit, assign on complete, void on every ending that is
+not an approval — always inside the same transaction as the move it accompanies. Phase 4 left the
+port unbound and approvals completed `numberAssigned: false`; Phase 5 bound it to an adapter over
+Document's number service, and every completed approval is numbered with no change to the
+completion path. The port stays `@Optional`, so an unbound composition still produces the honest
+unnumbered outcome rather than a fabricated number.
 
 ### Timers are rows as well as jobs
 

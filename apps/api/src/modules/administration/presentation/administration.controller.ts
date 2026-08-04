@@ -24,11 +24,15 @@ import {
   type CreateNumberingRuleBody,
   type CreateRetentionPolicyBody,
   type DocumentType,
+  type HeldNumberBlock,
+  type HoldNumberBlockBody,
   type MetadataField,
   type MoveCategoryBody,
+  type NumberReservation,
   type NumberingPreview,
   type NumberingRule,
   type PreviewNumberingRuleBody,
+  type VoidHeldNumberBody,
   type ResetSettingBody,
   type RetentionPolicy,
   type Setting,
@@ -49,10 +53,13 @@ import {
   createNumberingRuleSchema,
   createRetentionPolicySchema,
   documentTypeListQuerySchema,
+  holdNumberBlockSchema,
   metadataFieldListQuerySchema,
   moveCategorySchema,
+  numberReservationListQuerySchema,
   numberingRuleListQuerySchema,
   previewNumberingRuleSchema,
+  voidHeldNumberSchema,
   resetSettingSchema,
   retentionPolicyListQuerySchema,
   updateCategorySchema,
@@ -63,7 +70,7 @@ import {
   updateRetentionPolicySchema,
   updateSettingSchema,
 } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { type NumberReservationId, type NumberingRuleId, Permission, asId } from '@edms/domain';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
 import { IfMatch } from '../../../core/http/admin-request';
@@ -76,6 +83,8 @@ import {
 } from '../application/administration.ports';
 import type { ConfigurationService } from '../application/configuration.service';
 import type { NumberingAdminService } from '../application/numbering-admin.service';
+import type { NumberingIssueService } from '../application/numbering-issue.service';
+import { NUMBERING_SERVICE } from '../application/ports';
 import type { SettingsAdminService } from '../application/settings-admin.service';
 import {
   toCategory,
@@ -83,6 +92,7 @@ import {
   toConfidentialityLevel,
   toDocumentType,
   toMetadataField,
+  toNumberReservation,
   toNumberingPreview,
   toNumberingRule,
   toRetentionPolicy,
@@ -384,11 +394,54 @@ export class RetentionAdminController {
   }
 }
 
-/** Numbering rules, behind `numbering:manage`. */
+/** Numbering rules and their reservations, behind `numbering:manage`. */
 @Controller({ path: 'admin/numbering-rules', version: '1' })
 @RequirePermission(Permission.NUMBERING_MANAGE)
 export class NumberingAdminController {
-  constructor(@Inject(NUMBERING_ADMIN_SERVICE) private readonly numbering: NumberingAdminService) {}
+  constructor(
+    @Inject(NUMBERING_ADMIN_SERVICE) private readonly numbering: NumberingAdminService,
+    @Inject(NUMBERING_SERVICE) private readonly issuance: NumberingIssueService,
+  ) {}
+
+  /**
+   * Every value a rule has drawn, whatever became of it — where a gap in the visible series is
+   * explained by the voided value that made it (§2), and where a held block is watched.
+   */
+  @Get(':id/reservations')
+  async reservations(
+    @Param('id') id: string,
+    @Query(new ZodValidationPipe(numberReservationListQuerySchema))
+    query: ReturnType<typeof numberReservationListQuerySchema.parse>,
+  ): Promise<Collection<NumberReservation>> {
+    const page = await this.issuance.listReservations(asId<NumberingRuleId>(id), query);
+    return toCollection(page, toNumberReservation);
+  }
+
+  /** Sets a run of values aside for an offline process (§3). */
+  @Post(':id/held-blocks')
+  @HttpCode(HttpStatus.CREATED)
+  async holdBlock(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(holdNumberBlockSchema)) body: HoldNumberBlockBody,
+  ): Promise<HeldNumberBlock> {
+    const values = await this.issuance.holdBlock({
+      numberingRuleId: asId<NumberingRuleId>(id),
+      codes: body.context,
+      count: body.count,
+      note: body.note ?? null,
+    });
+    return { values: values.map((value) => value.formatted) };
+  }
+
+  /** Voids a held value a controller no longer needs. Retained forever, never re-issued. */
+  @Post(':id/reservations/:reservationId/void')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async voidHeld(
+    @Param('reservationId') reservationId: string,
+    @Body(new ZodValidationPipe(voidHeldNumberSchema)) body: VoidHeldNumberBody,
+  ): Promise<void> {
+    await this.issuance.releaseHeld(asId<NumberReservationId>(reservationId), body.reason);
+  }
 
   @Get()
   async list(

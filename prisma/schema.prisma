@@ -101,6 +101,7 @@ model Tenant {
   retentionPolicies     RetentionPolicy[]
   numberingRules        NumberingRule[]
   numberSequences       NumberSequence[]
+  numberReservations    NumberReservation[]
   categories            Category[]
   metadataFields        MetadataField[]
   documentTypes         DocumentType[]
@@ -902,8 +903,9 @@ model NumberingRule {
   deletedBy       String?              @map("deleted_by") @db.Uuid
   version         Int                  @default(1)
 
-  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   sequences     NumberSequence[]
+  reservations  NumberReservation[]
   documentTypes DocumentType[]
 
   @@index([tenantId], map: "ix_numbering_rule_tenant")
@@ -936,6 +938,60 @@ model NumberSequence {
   /// back from the recycle bin would re-issue numbers it had already given out.
   @@unique([tenantId, numberingRuleId, scopeKey], map: "uq_number_sequence_scope")
   @@map("number_sequence")
+}
+
+/// What became of a value drawn from a sequence, or set aside before one could draw it.
+///
+/// Every issued value has a row here forever (`09-numbering-architecture.md` §2). `RESERVED` is a
+/// pending number a reviewer can refer to; `ASSIGNED` is a document's number; `VOIDED` is a value
+/// whose approval was refused, withdrawn or cancelled — retained, never returned to the pool;
+/// `HELD` is a value a controller set aside for an offline process, which the automatic path can
+/// never draw because the sequence has already moved past it.
+///
+/// The formatted text is stored, not recomputed: the rule may change afterwards, and a re-render
+/// of an issued number is a bug rather than a feature (§1). `uq (tenant_id, formatted)` is the
+/// second half of the never-reused guarantee — `uq (tenant_id, document_number)` on `document` is
+/// the first — and like the sequence, a reservation is never soft-deleted.
+model NumberReservation {
+  id                 String                  @id @db.Uuid
+  tenantId           String                  @map("tenant_id") @db.Uuid
+  numberingRuleId    String                  @map("numbering_rule_id") @db.Uuid
+  /// The series the value was drawn from, exactly as `number_sequence.scope_key` spells it.
+  scopeKey           String                  @map("scope_key")
+  sequenceValue      BigInt                  @map("sequence_value")
+  /// The rendered number, fixed at the moment the value was drawn. Assignment never re-renders
+  /// it: the pending reference reviewers held is the number the document receives (§2).
+  formatted          String
+  state              NumberReservationState  @default(RESERVED)
+  origin             NumberOrigin            @default(AUTOMATIC)
+  /// Null for a `HELD` value nothing has claimed yet; set for everything else.
+  documentId         String?                 @map("document_id") @db.Uuid
+  /// The approval that drew the value. Null for a manual assignment or a held block.
+  workflowInstanceId String?                 @map("workflow_instance_id") @db.Uuid
+  reservedAt         DateTime                @map("reserved_at") @db.Timestamptz(6)
+  assignedAt         DateTime?               @map("assigned_at") @db.Timestamptz(6)
+  voidedAt           DateTime?               @map("voided_at") @db.Timestamptz(6)
+  /// Why a voided value was voided — the workflow outcome or the controller's stated reason.
+  voidReason         String?                 @map("void_reason")
+  /// A controller's note on a held block: which offline process the values were set aside for.
+  note               String?
+  createdAt          DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy          String?                 @map("created_by") @db.Uuid
+  updatedAt          DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  rule             NumberingRule     @relation(fields: [numberingRuleId], references: [id], onDelete: Restrict)
+  document         Document?         @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  workflowInstance WorkflowInstance? @relation(fields: [workflowInstanceId], references: [id], onDelete: Restrict)
+
+  /// Reuse made impossible even under a logic bug, deliberately not partial on anything: a
+  /// voided value blocks its text as firmly as an assigned one (§2).
+  @@unique([tenantId, formatted], map: "uq_number_reservation_formatted")
+  @@index([tenantId, documentId], map: "ix_number_reservation_document")
+  @@index([tenantId, workflowInstanceId], map: "ix_number_reservation_instance")
+  /// The admin screen's listing: a rule's reservations, newest first, filterable by state.
+  @@index([tenantId, numberingRuleId, state, reservedAt(sort: Desc)], map: "ix_number_reservation_rule")
+  @@map("number_reservation")
 }
 
 /// Business classification, hierarchical and cutting across folders.
@@ -1291,6 +1347,26 @@ enum DocumentOrigin {
   @@map("document_origin")
 }
 
+/// What became of a drawn number (`09-numbering-architecture.md` §2).
+enum NumberReservationState {
+  RESERVED
+  ASSIGNED
+  VOIDED
+  HELD
+
+  @@map("number_reservation_state")
+}
+
+/// How a number came to exist. `AUTOMATIC` is the workflow path; `MANUAL` is a controller acting
+/// under `numbering:manage`; `IMPORTED` is a legacy number supplied with a migrated document (§3).
+enum NumberOrigin {
+  AUTOMATIC
+  MANUAL
+  IMPORTED
+
+  @@map("number_origin")
+}
+
 enum PreviewArtifactKind {
   PAGE_IMAGE
   THUMBNAIL
@@ -1412,8 +1488,8 @@ model UploadSession {
 /// policy — and keeps it. Editing the type afterwards applies to documents created later and to
 /// nothing that already exists.
 ///
-/// `document_number` is null through Phase 3 and stays null until approval: numbers are reserved at
-/// submission and assigned at approval, which is Phase 5's
+/// `document_number` is null until approval: numbers are reserved at submission and assigned at
+/// approval, inside the approval's own transaction
 /// ([ADR-0004](../docs/architecture/adr/0004-numbering-assigned-at-approval.md)).
 model Document {
   id                String         @id @db.Uuid
@@ -1434,6 +1510,9 @@ model Document {
   origin            DocumentOrigin @default(UPLOAD)
   /// Assigned once, at approval, and never reused — even after deletion. Null until then.
   documentNumber    String?        @map("document_number")
+  /// When the number was assigned — the instant `YEAR`/`MONTH` segments were rendered against,
+  /// in the tenant's timezone. Set with `document_number` and only with it.
+  numberedAt        DateTime?      @map("numbered_at") @db.Timestamptz(6)
   ownerUserId       String         @map("owner_user_id") @db.Uuid
   /// The effective revision. Null until one is published, which is Phase 4's work.
   currentRevisionId String?        @unique(map: "uq_document_current_revision") @map("current_revision_id") @db.Uuid
@@ -1455,10 +1534,11 @@ model Document {
   retentionPolicy   RetentionPolicy?        @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
   currentRevision   DocumentRevision?       @relation("DocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
   revisions         DocumentRevision[]      @relation("RevisionDocument")
-  metadataValues    DocumentMetadataValue[]
-  favorites         DocumentFavorite[]
-  views             DocumentView[]
-  workflowInstances WorkflowInstance[]
+  metadataValues     DocumentMetadataValue[]
+  favorites          DocumentFavorite[]
+  views              DocumentView[]
+  workflowInstances  WorkflowInstance[]
+  numberReservations NumberReservation[]
 
   /// Deliberately **not** partial on `deleted_at`. A number stays reserved forever, so a deleted
   /// document still holds its own — which is the one exception to this schema's rule that a
@@ -1774,7 +1854,7 @@ model WorkflowInstance {
   /// On the instance rather than the stage: a definition that escalates twice per stage across
   /// six stages has escalated twelve times, and the cap is meant to stop a loop, not a stage.
   escalationCount   Int                   @default(0) @map("escalation_count")
-  /// Set at completion when a number was assigned. Null while numbering is Phase 5's
+  /// Set at completion when the definition's `onComplete.assignNumber` drew a number
   /// ([ADR-0004](../docs/architecture/adr/0004-numbering-assigned-at-approval.md)).
   numberAssigned    Boolean               @default(false) @map("number_assigned")
   createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1788,10 +1868,11 @@ model WorkflowInstance {
   revision        DocumentRevision   @relation(fields: [revisionId], references: [id], onDelete: Restrict)
   definition      WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
   workflowVersion WorkflowVersion    @relation(fields: [workflowVersionId], references: [id], onDelete: Restrict)
-  stages          WorkflowStage[]
-  tasks           ApprovalTask[]
-  comments        WorkflowComment[]
-  timers          WorkflowTimer[]
+  stages             WorkflowStage[]
+  tasks              ApprovalTask[]
+  comments           WorkflowComment[]
+  timers             WorkflowTimer[]
+  numberReservations NumberReservation[]
 
   /// The approval history of one document, newest attempt first.
   @@index([tenantId, documentId, startedAt(sort: Desc)], map: "ix_workflow_instance_document")
