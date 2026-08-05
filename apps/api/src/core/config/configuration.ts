@@ -154,6 +154,46 @@ export const configSchema = z
      * highlighting and ranking, not archival: past this point more text sharpens nothing.
      */
     SEARCH_MAX_BODY_CHARS: z.coerce.number().int().min(10_000).max(5_000_000).default(1_000_000),
+
+    /**
+     * The resolved-decision cache of `08-permission-model.md` §8 (Phase 14).
+     *
+     * A TTL rather than a correctness mechanism: every write that could change an answer
+     * invalidates by prefix in the same transaction, and the TTL is the backstop for the one thing
+     * prefix invalidation cannot reach — a change made in another tenant's process to shared
+     * ancestry. Short, because §8 says short and because the failure mode of a stale entry is
+     * somebody seeing a document for another few seconds after being denied it.
+     *
+     * Zero disables the cache entirely, which is the switch to reach for when an authorisation
+     * answer is under investigation: a cold cache produces the same answer by construction.
+     */
+    ACL_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(600).default(30),
+    /**
+     * How many ACL entries one resolution will read for a caller before it stops narrowing.
+     *
+     * A bound rather than a page size. `visibilityFilter` reads every entry naming the caller in
+     * the tenant, which is small by design — entries name roles and departments, not people, and
+     * an administrator granting ten thousand of them to one subject has built something the
+     * permissions screen cannot render either. Past the bound the filter degrades **closed**: it
+     * keeps every deny it read and drops the tenant-wide allow, so the failure mode of an
+     * unreasonable configuration is seeing less, never more.
+     */
+    ACL_MAX_SUBJECT_ENTRIES: z.coerce.number().int().min(100).max(100_000).default(5_000),
+    /**
+     * Time-based one-time passwords (Phase 14).
+     *
+     * `MFA_TOTP_STEP_SECONDS` and `MFA_TOTP_DIGITS` are RFC 6238's defaults and are configurable
+     * because an authenticator app is the other half of the protocol and not every tenant's is the
+     * same. `MFA_TOTP_SKEW_STEPS` is how many steps either side of now are accepted — one step is
+     * the usual compromise between a slow phone clock and a captured code's useful life.
+     */
+    MFA_TOTP_STEP_SECONDS: z.coerce.number().int().min(15).max(120).default(30),
+    MFA_TOTP_DIGITS: z.coerce.number().int().min(6).max(8).default(6),
+    MFA_TOTP_SKEW_STEPS: z.coerce.number().int().min(0).max(4).default(1),
+    /** How many single-use recovery codes an enrolment issues. Issued once, never re-shown. */
+    MFA_RECOVERY_CODE_COUNT: z.coerce.number().int().min(4).max(24).default(10),
+    /** Consecutive failed challenges before the enrolment refuses until an administrator resets it. */
+    MFA_MAX_FAILED_ATTEMPTS: z.coerce.number().int().min(3).max(50).default(10),
     OCR_DRIVER: z.enum(['NONE', 'TESSERACT', 'HOSTED']).default('NONE'),
     /** Where the `TESSERACT` driver finds its binary. A path, so an installer can pin one. */
     OCR_TESSERACT_PATH: z.string().default('tesseract'),
@@ -523,6 +563,19 @@ export interface AppConfig {
     readonly recentLimit: number;
     readonly maxBodyChars: number;
   };
+  /** The resolved-decision cache and the walk's bounds (`08-permission-model.md` §8). */
+  readonly acl: {
+    readonly cacheTtlSeconds: number;
+    readonly maxSubjectEntries: number;
+  };
+  /** The second factor (`17-security-architecture.md` §2). */
+  readonly mfa: {
+    readonly totpStepSeconds: number;
+    readonly totpDigits: number;
+    readonly totpSkewSteps: number;
+    readonly recoveryCodeCount: number;
+    readonly maxFailedAttempts: number;
+  };
   readonly office: {
     readonly libreofficePath: string;
   };
@@ -681,6 +734,17 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       rebuildBatchSize: raw.SEARCH_REBUILD_BATCH_SIZE,
       recentLimit: raw.SEARCH_RECENT_LIMIT,
       maxBodyChars: raw.SEARCH_MAX_BODY_CHARS,
+    },
+    acl: {
+      cacheTtlSeconds: raw.ACL_CACHE_TTL_SECONDS,
+      maxSubjectEntries: raw.ACL_MAX_SUBJECT_ENTRIES,
+    },
+    mfa: {
+      totpStepSeconds: raw.MFA_TOTP_STEP_SECONDS,
+      totpDigits: raw.MFA_TOTP_DIGITS,
+      totpSkewSteps: raw.MFA_TOTP_SKEW_STEPS,
+      recoveryCodeCount: raw.MFA_RECOVERY_CODE_COUNT,
+      maxFailedAttempts: raw.MFA_MAX_FAILED_ATTEMPTS,
     },
     office: {
       libreofficePath: raw.OFFICE_LIBREOFFICE_PATH,

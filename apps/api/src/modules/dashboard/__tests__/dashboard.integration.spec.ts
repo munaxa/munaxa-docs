@@ -134,14 +134,23 @@ const unread: DashboardNotificationMetrics = {
   unreadCount: () => Promise.resolve(7),
 };
 
+/**
+ * Enough configuration for the collaborators this suite builds.
+ *
+ * `acl` joined it in Phase 14, with the cache off: every count here is asserted against the list it
+ * summarises in the same test, and a cached decision between the two would make the assertion a
+ * statement about the cache rather than about the predicate.
+ */
+const appConfig = {
+  env: 'test',
+  database: { url: APP_URL, poolSize: 10 },
+  acl: { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 },
+} as unknown as AppConfig;
+
 beforeAll(async () => {
   if (!OWNER_URL || !APP_URL) {
     throw new Error('DATABASE_URL and DATABASE_MIGRATION_URL must both be set.');
   }
-  const appConfig = {
-    env: 'test',
-    database: { url: APP_URL, poolSize: 10 },
-  } as unknown as AppConfig;
 
   // A tenant database whose client counts every model operation it performs. Prisma's own query
   // log needs the client to be constructed with event logging, and the production one is not — so
@@ -152,7 +161,13 @@ beforeAll(async () => {
 
   await seed();
 
-  stack = realDashboard({ clock, unitOfWork, delegations: noDelegations, notifications: unread });
+  stack = realDashboard({
+    clock,
+    unitOfWork,
+    config: appConfig,
+    delegations: noDelegations,
+    notifications: unread,
+  });
 }, 120_000);
 
 describe('a user widget counts the caller’s own rows, and the list agrees', () => {
@@ -241,6 +256,7 @@ describe('a user widget counts the caller’s own rows, and the list agrees', ()
     const { dashboard: withoutNotifications } = realDashboard({
       clock,
       unitOfWork,
+      config: appConfig,
       delegations: noDelegations,
       notifications: null,
     });
@@ -405,6 +421,7 @@ describe('the whole dashboard composes in a bounded number of queries', () => {
     const { dashboard: broken } = realDashboard({
       clock,
       unitOfWork,
+      config: appConfig,
       delegations: noDelegations,
       notifications: unread,
       // Only the document source is broken. Everything else is the real adapter over the real

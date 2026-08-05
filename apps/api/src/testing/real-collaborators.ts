@@ -127,6 +127,8 @@ import { PostgresIndexAdapter } from '../infrastructure/search/postgres-index.ad
 import { PostgresSearchAdapter } from '../infrastructure/search/postgres-search.adapter';
 import { TenantScopedSearch } from '../infrastructure/tenancy/tenant-scoped-search';
 import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
+import { PrismaAclRepository } from '../modules/library/infrastructure/prisma-acl.repository';
+import { PrismaScopeChainReader } from '../modules/library/infrastructure/prisma-scope-chain.reader';
 import { DefaultSearchService } from '../modules/search/application/search.service';
 import { SavedSearchService } from '../modules/search/application/saved-search.service';
 import { SearchProjectionService } from '../modules/search/application/search-projection.service';
@@ -151,6 +153,8 @@ import { OrganizationDashboardMetrics } from '../modules/organization/infrastruc
 import { RetentionDashboardMetrics } from '../modules/retention/infrastructure/dashboard-metrics.adapter';
 import { StorageDashboardMetrics } from '../modules/storage/infrastructure/dashboard-metrics.adapter';
 import { WorkflowDashboardMetrics } from '../modules/workflow/infrastructure/dashboard-metrics.adapter';
+import type { CachePort } from '../ports/cache.port';
+import { FakeCache } from './fake-ports';
 /**
  * Real collaborators, wired the way the container wires them.
  *
@@ -577,6 +581,34 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
 // excluded from the source's accounting — so the stack is composed here from the real
 // repositories, the real renderers and the real storage service, with only the queue recorded.
 
+/**
+ * The real ACL resolver, with the real walk behind it.
+ *
+ * Phase 14 gave `PrismaAclResolver` four collaborators where it had one, and five call sites in this
+ * file constructed it by hand. One factory instead, so a suite cannot accidentally assemble a
+ * resolver over a *different* chain reader or a warm cache and then assert a permission answer from
+ * it — which would be a suite testing something other than the product.
+ *
+ * The cache defaults to a `FakeCache` over the suite's own clock, so a test that wants to assert
+ * cold-cache equivalence sets `ACL_CACHE_TTL_SECONDS=0` in its config, and one that wants to assert
+ * invalidation can inspect this instance.
+ */
+export function realAclResolver(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config: AppConfig;
+  readonly cache?: CachePort;
+}): PrismaAclResolver {
+  const stamps = new RecordStamps(options.clock);
+  return new PrismaAclResolver(
+    options.unitOfWork,
+    new PrismaAclRepository(stamps),
+    new PrismaScopeChainReader(new PrismaScopeRepository()),
+    options.cache ?? new FakeCache(options.clock),
+    options.config,
+  );
+}
+
 export interface PreviewStackOptions {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
@@ -886,7 +918,7 @@ export function realSearchStack(options: SearchStackOptions): SearchStack {
   const { stamps, audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
 
   const source = new PrismaSearchSourceReader(options.unitOfWork);
-  const acl = new PrismaAclResolver(options.unitOfWork);
+  const acl = realAclResolver(options);
   const index = new PostgresIndexAdapter(options.clock);
   const engine = new TenantScopedSearch(new PostgresSearchAdapter(), options.registry);
   const rebuildRepository = new PrismaSearchRebuildRepository(stamps);
@@ -992,7 +1024,7 @@ export interface AuditStack {
 export function realAuditStack(options: AuditStackOptions): AuditStack {
   const { audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const repository = new PrismaAuditRepository();
-  const acl = new PrismaAclResolver(options.unitOfWork);
+  const acl = realAclResolver(options);
   const logger = silentLogger();
   const denials = new AccessDenialRecorder(audit, logger);
 
@@ -1307,11 +1339,7 @@ export function realNotifications(options: {
     options.unitOfWork,
     logger,
   );
-  const visibility = new RecipientVisibilityService(
-    new PrismaAclResolver(options.unitOfWork),
-    directory,
-    logger,
-  );
+  const visibility = new RecipientVisibilityService(realAclResolver(options), directory, logger);
   const events = new NotificationEventService(
     notifications,
     batches,
@@ -1374,6 +1402,8 @@ export interface DashboardStack {
 export function realDashboard(options: {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
+  /** Phase 14: the resolver reads its cache TTL and its walk bounds from here. */
+  readonly config: AppConfig;
   readonly delegations?: DashboardDelegationMetrics | null;
   readonly notifications?: DashboardNotificationMetrics | null;
   /** Overridden by the suite that asserts a failing source degrades one card, not the page. */
@@ -1381,7 +1411,7 @@ export function realDashboard(options: {
 }): DashboardStack {
   const stamps = new RecordStamps(options.clock);
   const documents = new PrismaDocumentRepository(stamps);
-  const acl = new PrismaAclResolver(options.unitOfWork);
+  const acl = realAclResolver(options);
 
   const dashboard = new DefaultDashboardService(
     options.unitOfWork,
