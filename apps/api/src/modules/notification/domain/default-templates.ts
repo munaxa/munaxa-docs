@@ -436,6 +436,33 @@ export const DEFAULT_TEMPLATES: TemplateTable = Object.freeze({
     },
   },
 
+  // --- Bulk operations -----------------------------------------------------------------------
+
+  [NotificationType.BULK_OPERATION_COMPLETED.key]: {
+    en: {
+      [EMAIL]: body('Your bulk operation over {{documentCount}} item(s) has finished', [
+        'Hello {{displayName}},',
+        'Your {{operationKind}} operation over {{documentCount}} item(s) has finished: {{appliedCount}} applied, {{refusedCount}} refused.',
+        'See what each item did here: {{operationLink}}',
+      ]),
+      [IN_APP]: inApp(
+        'Bulk operation finished',
+        '{{appliedCount}} of {{documentCount}} item(s) were applied; {{refusedCount}} were refused.',
+      ),
+    },
+    ar: {
+      [EMAIL]: body('انتهت عمليتك المجمَّعة على {{documentCount}} من العناصر', [
+        'مرحبًا {{displayName}}،',
+        'انتهت عملية {{operationKind}} على {{documentCount}} من العناصر: طُبِّق {{appliedCount}} ورُفِض {{refusedCount}}.',
+        'اطّلع على نتيجة كل عنصر هنا: {{operationLink}}',
+      ]),
+      [IN_APP]: inApp(
+        'انتهت العملية المجمَّعة',
+        'طُبِّق {{appliedCount}} من {{documentCount}} من العناصر ورُفِض {{refusedCount}}.',
+      ),
+    },
+  },
+
   [NotificationType.LEGAL_HOLD_PLACED.key]: {
     en: {
       [EMAIL]: body('Legal hold placed: {{documentTitle}}', [

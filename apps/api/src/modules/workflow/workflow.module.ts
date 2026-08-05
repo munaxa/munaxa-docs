@@ -7,6 +7,7 @@ import {
   WORKFLOW_ADMIN_REPOSITORY,
   WORKFLOW_ADMIN_SERVICE,
 } from './application/administration.ports';
+import { BulkApprovalService } from './application/bulk-approval.service';
 import { ApprovalService } from './application/approval.service';
 import { ParticipantResolver } from './application/participant-resolver';
 import {
@@ -34,6 +35,7 @@ import { PrismaWorkflowVersionReader } from './infrastructure/prisma-workflow-ve
 import { WorkflowCalendarAdapter } from './infrastructure/workflow-calendar.adapter';
 import { WorkflowDirectoryAdapter } from './infrastructure/workflow-directory.adapter';
 import { WorkflowTimerConsumer } from './infrastructure/workflow-timer.consumer';
+import { BulkApprovalController } from './presentation/bulk-approval.controller';
 import { ApprovalController } from './presentation/approval.controller';
 import { WorkflowAdminController } from './presentation/workflow-admin.controller';
 
@@ -87,7 +89,7 @@ import { WorkflowReportSource } from './infrastructure/report-source.adapter';
  */
 @Module({
   imports: [DocumentModule, IdentityModule, AdministrationModule],
-  controllers: [WorkflowAdminController, ApprovalController],
+  controllers: [WorkflowAdminController, ApprovalController, BulkApprovalController],
   providers: [
     // Phase 15: the approvals and workflow reports, composed with `approvalTaskWhere` so there is
     // still exactly one `dueAt < now` in this module, and reach-scoped through the document.
@@ -114,6 +116,11 @@ import { WorkflowReportSource } from './infrastructure/report-source.adapter';
     WorkflowTimers,
     WorkflowEngine,
     ApprovalService,
+    // Phase 16: deciding many tasks the same way. It reimplements neither of the two authorities a
+    // single decision passes — the permission is the executor's per-object `ACL_RESOLVER.resolve`
+    // against the document each task decides, and the delegation authority is the engine's own,
+    // because `apply` calls `decide` and nothing here reaches past it.
+    BulkApprovalService,
     { provide: WORKFLOW_ENGINE, useExisting: WorkflowEngine },
     { provide: APPROVAL_SERVICE, useExisting: ApprovalService },
     // Subscribes to the `workflow.timers` lane at boot, so a deadline that passes acts on itself.

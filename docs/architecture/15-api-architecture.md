@@ -51,7 +51,57 @@ GET    /api/v1/reports/exports/{id}/download        # → signed URL
 GET    /api/v1/reports/definitions                  # the caller's own saved reports
 POST   /api/v1/reports/definitions
 DELETE /api/v1/reports/definitions/{id}
+POST   /api/v1/documents/bulk/upload                # N uploaded files become N documents
+POST   /api/v1/documents/bulk/metadata              # one change, many documents
+POST   /api/v1/documents/bulk/restore
+POST   /api/v1/documents/bulk/exports               # a manifest; links are a second call
+GET    /api/v1/documents/bulk                       # the caller's own operations
+GET    /api/v1/documents/bulk/{id}
+GET    /api/v1/documents/bulk/{id}/links            # → signed URLs, minted per request
+POST   /api/v1/approval-tasks/bulk/decisions        # approval only; a rejection says why, singly
+GET    /api/v1/document-templates
+POST   /api/v1/document-templates
+GET    /api/v1/document-templates/{id}
+PATCH  /api/v1/document-templates/{id}
+DELETE /api/v1/document-templates/{id}
+POST   /api/v1/document-templates/{id}/restore
+POST   /api/v1/document-templates/{id}/documents    # a new document, from this template
+GET    /api/v1/documents/{id}/signatures
+POST   /api/v1/documents/{id}/signatures
+GET    /api/v1/documents/{id}/signatures/{sid}/verification
+POST   /api/v1/documents/{id}/signatures/{sid}/withdrawal
 ```
+
+**The bulk routes are the only ones in this API that cannot carry `@ScopedTo`** — Phase 16. That
+decorator binds *one* route parameter to *one* object so `AclGuard` can resolve its scope chain
+before the use case runs, and a bulk route has N objects in its body and no route parameter at all.
+The check is not left out: `DefaultBulkExecutor` makes it **per object**, through the same
+`ACL_RESOLVER` the guard uses, inside the transaction that writes that object — which is strictly
+stronger than the guard, because the guard resolves once *before* the use case and this resolves
+immediately before each write. `@RequirePermission` is still on every one of them, so
+`RoutePermissionRegistry` still fails the boot on a gap.
+
+**None of them answers `204`, and that is the contract rather than a preference.** A bulk
+operation's interesting half is the part that did not happen, so each returns a tally and a row per
+object whose outcome is one of four values — `APPLIED`, `REFUSED` (the caller does not reach it),
+`BLOCKED` (a rule said no) and `FAILED`. The three failures are not interchangeable: a screenful of
+`REFUSED` means somebody selected across a boundary they cannot see and the product behaved
+correctly, a screenful of `BLOCKED` means a matter is on hold, and a screenful of `FAILED` is an
+incident. `204` cannot say which.
+
+**`POST /documents/bulk/exports` produces a manifest, not an archive**, and its links are a second
+request. Phase 9's evidence bundle set the precedent — artefacts and links rather than one ZIP — and
+the reason holds harder here: every byte still leaves through the audited download path, so a
+release of five hundred documents writes five hundred `FILE_DOWNLOAD_ISSUED` rows rather than one,
+and no document's bytes are copied into a second object. The links are minted per request against
+the caller's reach *now*, because an export is the record of a release having been decided and a
+link is the release happening.
+
+**`POST /approval-tasks/bulk/decisions` accepts `APPROVED` and nothing else.** A rejection or a
+request for changes must say why, and one sentence covering forty documents is a reason for the
+batch rather than for any of them — which in a controlled-document system is the field an auditor
+reads. The single-object route takes the other two decisions and is unchanged, so `document:reject`
+is unreachable in bulk by construction.
 
 **`GET /reports/{key}` is the one endpoint in this API whose query string is not fully enumerated by
 a schema** — Phase 15. Paging is the list contract's; everything else is the report's, declared by

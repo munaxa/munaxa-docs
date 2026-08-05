@@ -33,11 +33,21 @@ import { Permission, type PermissionKey, SystemRole, type SystemRoleKey } from '
  * confer tenant-wide, which is nothing.
  */
 
-/** Everything except approval, which is never conferred by seniority (§6, first deliberate row). */
+/**
+ * Everything except approval and signature, neither of which is conferred by seniority.
+ *
+ * Approval is §6's first deliberate row and has been excluded since Phase 1: it is a `T`, held by
+ * being assigned a task. Phase 16 excludes `document:sign` for the same reason one step further
+ * out — a signature is a personal attestation about exact bytes, and the whole point of having a
+ * grant separate from `document:approve` is lost if the widest role in the tenant acquires it by
+ * default. It is an `S`: an ACL entry on the node somebody is accountable for grants it.
+ */
 const TENANT_ADMIN_PERMISSIONS: readonly PermissionKey[] = Object.freeze(
   Object.values(Permission).filter(
     (permission) =>
-      permission !== Permission.DOCUMENT_APPROVE && permission !== Permission.DOCUMENT_REJECT,
+      permission !== Permission.DOCUMENT_APPROVE &&
+      permission !== Permission.DOCUMENT_REJECT &&
+      permission !== Permission.DOCUMENT_SIGN,
   ),
 );
 
@@ -78,6 +88,10 @@ const DOCUMENT_CONTROLLER_PERMISSIONS: readonly PermissionKey[] = Object.freeze(
   Permission.SEARCH_ALL,
   Permission.REPORT_VIEW,
   Permission.REPORT_MANAGE,
+  // Phase 16. The controller is the compliance operator, and a template is a controlled starting
+  // point — the same kind of thing as a document type or a numbering rule, which this column
+  // already owns. `document:sign` is deliberately not here: see the tenant administrator's note.
+  Permission.TEMPLATE_MANAGE,
 ]);
 
 /** Reads everything in scope plus the trail, and may never mutate anything, at any scope (§6). */

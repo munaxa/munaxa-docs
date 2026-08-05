@@ -40,6 +40,22 @@ export class StorageContentGateAdapter implements DocumentContentGate {
     };
   }
 
+  async storeManifest(input: { readonly content: Buffer; readonly mimeType: string }): Promise<{
+    readonly fileObjectId: string;
+    readonly sizeBytes: number;
+    readonly checksumSha256: string;
+  }> {
+    // `storeDerived` rather than `storeStreamed`: a manifest is one line per document and is
+    // content-addressed, so two identical releases are one blob — which is the same property that
+    // makes a thumbnail free, applied to an artefact that is genuinely small.
+    const stored = await this.storage.storeDerived(input);
+    return {
+      fileObjectId: stored.id,
+      sizeBytes: stored.sizeBytes,
+      checksumSha256: stored.checksumSha256,
+    };
+  }
+
   reference(fileObjectId: string): Promise<void> {
     return this.storage.reference(asId<FileObjectId>(fileObjectId));
   }

@@ -1271,6 +1271,111 @@ export const en = {
       CLOSED_BY_DEFAULT: 'nothing grants it',
     },
   },
+  /**
+   * Bulk operations — Phase 16.
+   *
+   * The outcome names are the reason this block exists rather than a single "succeeded" string.
+   * `REFUSED`, `BLOCKED` and `FAILED` are three different things that happened to somebody's
+   * selection and call for three different responses, and a screen that translated all three as
+   * "failed" would be throwing away the distinction the API went to some trouble to keep.
+   */
+  bulk: {
+    bar: {
+      label: 'Selected documents',
+      selected: '{count} selected',
+      clear: 'Clear selection',
+    },
+    action: {
+      restore: 'Restore',
+      export: 'Export',
+      metadata: 'Edit details',
+      approve: 'Approve',
+    },
+    result: {
+      title: 'What happened to each item',
+      summary: '{applied} of {requested} applied.',
+      refusedHint: '{count} were refused: you do not have access to them.',
+      blockedHint: '{count} were blocked by a rule, such as a legal hold.',
+      failedHint: '{count} failed unexpectedly. This has been recorded.',
+      close: 'Close',
+      links: 'Download links',
+    },
+    outcome: {
+      APPLIED: 'Applied',
+      REFUSED: 'No access',
+      BLOCKED: 'Blocked',
+      FAILED: 'Failed',
+    },
+    disabled: {
+      noPermission: 'You do not have permission to do this.',
+      notDeleted: 'Only deleted documents can be restored.',
+    },
+  },
+  /** Document templates — the controlled starting points documents are created from. */
+  templates: {
+    title: 'Document templates',
+    description: 'The controlled starting points a new document can be created from.',
+    list: { searchPlaceholder: 'Search template names' },
+    column: {
+      name: 'Name',
+      documentType: 'Document type',
+      confidentiality: 'Confidentiality',
+      active: 'In use',
+    },
+    field: {
+      name: 'Name',
+      description: 'Description',
+      documentType: 'Document type',
+      category: 'Category',
+      confidentiality: 'Confidentiality',
+      defaultFolder: 'Default folder',
+      defaultFolderHint: 'Leave blank for a template that can be filed anywhere.',
+      body: 'Template file',
+      bodyHint: 'A template with no file supplies defaults but cannot start a document.',
+      active: 'Available for new documents',
+    },
+    actions: { create: 'New template', use: 'New document from this template' },
+    use: { title: 'New document from a template', submit: 'Create' },
+  },
+  /**
+   * Electronic signatures.
+   *
+   * "Signed" rather than "digitally signed", deliberately and throughout: ADR-0017 produces a
+   * Part 11 electronic signature witnessed by this product, not an eIDAS qualified one, and a
+   * label implying a certificate would be the interface asserting something nothing checked.
+   */
+  signatures: {
+    title: 'Signatures',
+    empty: 'Nobody has signed this revision.',
+    sign: 'Sign this revision',
+    field: {
+      purpose: 'I am signing as',
+      statement: 'Comment',
+      password: 'Your password',
+      passwordHint: 'Signing asks for your password again, because a signature is not a click.',
+      mfaCode: 'Authenticator code',
+    },
+    purpose: {
+      AUTHORSHIP: 'The author of this content',
+      REVIEWED: 'A reviewer, raising nothing',
+      APPROVAL: 'Approving this for release',
+      ACCEPTANCE: 'Accepting this on behalf of the recipient',
+      WITNESS: 'A witness to another signature',
+    },
+    signedBy: '{name} — {purpose}',
+    withdrawn: 'Withdrawn',
+    withdraw: { action: 'Withdraw', reason: 'Why are you withdrawing this?', submit: 'Withdraw' },
+    verify: {
+      action: 'Verify',
+      title: 'Signature verification',
+      valid: 'The signature is intact.',
+      invalid: 'The signature does not verify. This has been recorded.',
+      contentChanged: 'The signature is intact but the content it covers has changed.',
+      withdrawn: 'This signature was withdrawn by its signer.',
+      witnessedBy: 'Witnessed by {witness}',
+      statement: 'What was signed',
+    },
+  },
   recycleBin: {
     title: 'Recycle bin',
     subtitle:

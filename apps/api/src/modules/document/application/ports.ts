@@ -457,6 +457,21 @@ export interface LockRecord {
  */
 export interface DocumentContentGate {
   describe(fileObjectId: string): Promise<AttachableFile | null>;
+  /**
+   * Stores a manifest Document produced *about* documents — Phase 16's bulk export, and the one
+   * addition to a four-method port that had been stable since Phase 3.
+   *
+   * The narrowing above still holds, and this does not widen it: Document still may not create an
+   * upload, complete one, or delete a blob. What it may now do is write one derived artefact whose
+   * content it composed itself, which is the same permission the preview pipeline has for a
+   * thumbnail. The alternative was for the bulk export to reach `STORAGE_SERVICE` directly, which
+   * would hand Document the whole surface — including `abandonUploadSession` — to obtain one call.
+   */
+  storeManifest(input: { readonly content: Buffer; readonly mimeType: string }): Promise<{
+    readonly fileObjectId: string;
+    readonly sizeBytes: number;
+    readonly checksumSha256: string;
+  }>;
   reference(fileObjectId: string): Promise<void>;
   dereference(fileObjectId: string): Promise<void>;
   downloadUrl(

@@ -251,6 +251,39 @@ export const NotificationType = {
     variables: DOCUMENT_VARIABLES,
   }),
 
+  // --- Bulk operations (18 §7's storm-control row, Phase 16) --------------------------------
+
+  /**
+   * One summary for one bulk operation — the first thing in this product that produces a storm.
+   *
+   * Phase 12 built `notification_batch` and its report stated plainly that **nothing currently
+   * produces a storm**: `retention.due` was the only coalesced family, and its window is a day
+   * rather than an operation. Phase 16 is what 18 §7's row was actually written for — "bulk
+   * operations (import 5 000 documents, re-permission a subtree) emit one summary notification,
+   * never one per object".
+   *
+   * Addressed to the **requester alone**, and that is the decision rather than an omission. The
+   * obvious alternative is to tell whoever would have been told about each object — the owners of
+   * four hundred restored documents, say — and it is wrong twice over. It is a disclosure risk,
+   * because a recipient list derived from documents must pass every name through the ACL resolver
+   * (18 §8, Phase 12's central safety property) and a *summary* cannot: "412 documents were
+   * restored" says something about a set the recipient may only partly reach, and there is no
+   * honest per-recipient count without running the resolver 412 times per recipient. And it is
+   * noise: the per-object notifications those owners already receive are the ones they act on.
+   *
+   * So this tells the person who pressed the button what happened, once, with the tally — which is
+   * what they are waiting for, and is the one message in the family that discloses nothing the
+   * requester did not already cause.
+   */
+  BULK_OPERATION_COMPLETED: define({
+    key: 'bulk.operation-completed',
+    defaultChannels: BOTH,
+    mandatory: false,
+    digestible: true,
+    urgency: NotificationUrgency.NORMAL,
+    variables: ['operationKind', 'documentCount', 'appliedCount', 'refusedCount', 'operationLink'],
+  }),
+
   // --- Security and operations (18 §4 row 11, §7 row 5) -------------------------------------
 
   /** §4's "infected upload". Mandatory: a person whose file was quarantined must be told. */

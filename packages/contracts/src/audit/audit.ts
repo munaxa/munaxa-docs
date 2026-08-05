@@ -41,6 +41,8 @@ export const auditSubjectTypeSchema = z.enum([
   'EXPORT',
   /** Phase 11. Not a `USER`: a delegation is an arrangement between two of them. */
   'DELEGATION',
+  /** Phase 16. Not a `DOCUMENT`: an act over four hundred of them belongs on no one timeline. */
+  'BULK_OPERATION',
 ]);
 
 export type AuditSubjectTypeValue = z.infer<typeof auditSubjectTypeSchema>;

@@ -142,7 +142,35 @@ a document title is. The template language gained no loop; the digest gained a l
 | Provider outage | Exponential backoff, capped attempts, dead-letter queue with operator visibility; in-app delivery is unaffected because it is a database write |
 | Bounces | Recorded, repeated hard bounces suppress the address and alert an administrator. **Built in Phase 12**: `notification_suppression` is keyed by the *address* rather than by a user, because suppression is a fact about a mailbox — a corrected address is reachable again at once, and an inherited one does not inherit its predecessor's bounces. The threshold is a tenant setting; the crossing writes `NOTIFICATION_SUPPRESSED` to the trail and alerts **once** |
 | Ordering | Not guaranteed across types; each message carries the event timestamp and the UI orders by it |
-| Storm control | Bulk operations (import 5 000 documents, re-permission a subtree) emit **one summary notification**, never one per object. **Built in Phase 12** as `notification_batch`: an open window per operation that *increments*. A delayed job keyed on the batch would coalesce too and would keep the first payload, so a summary of five hundred purges would say "1". The idempotency key above does nothing here — it prevents duplicates of *one* event, and a sweep produces five hundred distinct ones |
+| Storm control | Bulk operations (import 5 000 documents, re-permission a subtree) emit **one summary notification**, never one per object. **Built in Phase 12** as `notification_batch`: an open window per operation that *increments*. A delayed job keyed on the batch would coalesce too and would keep the first payload, so a summary of five hundred purges would say "1". The idempotency key above does nothing here — it prevents duplicates of *one* event, and a sweep produces five hundred distinct ones. **First exercised in Phase 16**, which is the first thing in this product that produces a storm: `bulk.operation-completed` is the second coalesced family after `retention.due`, keyed on `bulk:{requesterId}` |
+
+### Which families are coalesced, and who a summary goes to
+
+Two, as of Phase 16. Phase 12's own report stated plainly that **nothing then produced a storm** —
+`retention.due` was the only coalesced family and its window is a *day* rather than an operation,
+because the nightly sweep has no identifier. Phase 16's bulk operations are the case the row above
+was written for.
+
+| Family | Window key | Recipients |
+| --- | --- | --- |
+| `retention.review-due` | the tenant's day | everybody holding `retention:manage` |
+| `bulk.operation-completed` | the requester | **the requester alone** |
+
+**The second row's recipient is the decision worth arguing.** The obvious alternative is to tell
+whoever would have been told about each object — the owners of four hundred restored documents —
+and it is wrong twice. It is a disclosure risk: §8 and Phase 12's `RecipientVisibilityService`
+require every name in a recipient list derived from documents to pass the ACL resolver, and a
+*summary* cannot satisfy that, because "412 documents were restored" describes a set the recipient
+may only partly reach and there is no honest per-recipient count without resolving 412 times per
+recipient. And it is noise: those people already receive the per-object notifications their own
+documents produce, which are the ones they act on. So the summary tells the person who pressed the
+button what happened, once, with the tally — the one message in the family that discloses nothing
+its recipient did not already cause.
+
+The window is keyed on the requester rather than on the operation, deliberately: six imports in a
+morning are one message, which is what coalescing is for, and an operation that exceeds
+`bulk.synchronousLimit` may be split across several requests by an operator — the window is what
+makes those one arrival.
 
 ## 8. What notifications must never do
 

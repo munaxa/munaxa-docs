@@ -153,6 +153,14 @@ export class AdministrationConfigurationAdapter implements DocumentConfiguration
     return (await this.notFoundAsNull(() => this.users.get(id))) !== null;
   }
 
+  /** The printed name and address a signature manifestation carries (§11.50). */
+  async signer(
+    id: string,
+  ): Promise<{ readonly displayName: string; readonly email: string } | null> {
+    const user = await this.notFoundAsNull(() => this.users.get(id));
+    return user === null ? null : { displayName: user.displayName, email: user.email };
+  }
+
   departmentExists(id: string): Promise<boolean> {
     return this.organization.exists(asId<AnyId>(id), ScopeType.DEPARTMENT);
   }

@@ -171,3 +171,26 @@ particular document at a particular moment, and the engine will answer it.
 immutability rule would read the same way once there were instances. It is now filled in from
 `workflow_instance`, and nothing else about the administration side changed — which was the point of
 putting it there early.
+
+## Phase 16 — bulk approval
+
+`BulkApprovalService` decides many tasks the same way, and passes **both** authorities a single
+decision passes rather than reimplementing either. The permission is the bulk executor's per-object
+`ACL_RESOLVER.resolve` against the *document* each task decides — reach is resolved at a scope node
+and a task is not one, which is why `ApprovalQueryRepository` gained `documentOfTask`. The
+delegation authority is the engine's own, because `apply` calls `WorkflowEngine.decide` and nothing
+here reaches past it: a delegation that expired between the second and third task in a batch refuses
+the third, with the engine's own reason attached.
+
+`documentOfTask` is on the *query* repository rather than the engine's, deliberately. The engine's
+`instanceIdOfTask` exists to take a row lock before deciding, and reaching for it here would lock
+every task in a batch — including the ones about to be refused — turning a permission check into a
+contention source.
+
+**Bulk approval approves, and cannot reject.** A rejection or a request for changes must say why,
+and one sentence covering forty documents is a reason for the batch rather than for any of them —
+which in a controlled-document system is exactly the field an auditor reads. `document:reject` is
+therefore unreachable in bulk by construction rather than by a check, and the single-object route is
+unchanged and one click away. A tenant can turn the whole capability off on its own
+(`feature.bulkApproval`), separately from the other four, because a quality manager who wants
+drag-select and wants every approval to be a deliberate individual act has a coherent position.

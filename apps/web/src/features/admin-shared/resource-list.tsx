@@ -83,6 +83,32 @@ export interface ResourceListProps<TRow> {
   readonly onRowActivate?: ((row: TRow) => void) | undefined;
   readonly searchPlaceholderKey?: MessageKey;
   readonly rowHeight?: number;
+  /**
+   * The bulk actions this list offers on a selection — Phase 16, and 16 §5's folder-browser row:
+   * *"drag-select, bulk actions gated by `capabilities`"*, which had been promised since Phase 0
+   * with nothing implementing it.
+   *
+   * **Absent by default, so no administered list gains a selection column it has no use for.**
+   * Selection is not free: it adds a column, a keyboard mode and a bar that covers the page's
+   * footer, and a list of confidentiality levels has nothing to do in bulk. A screen opts in by
+   * passing actions.
+   *
+   * Each action decides for itself whether it is available, from the caller's own `capabilities` —
+   * the gating 16 §5 asks for, and the reason `disabledReason` exists here as it does on a row
+   * action: an affordance that is visible and refuses when used teaches somebody the product is
+   * unreliable, while one that says why is an answer.
+   */
+  readonly bulkActions?: ((selected: readonly TRow[]) => readonly BulkAction[]) | undefined;
+}
+
+/** One action over a selection. Its own type, because it acts on many rows rather than on one. */
+export interface BulkAction {
+  readonly id: string;
+  readonly label: string;
+  readonly onSelect: (selected: readonly string[]) => void;
+  readonly destructive?: boolean;
+  /** Present when unavailable — a missing permission, a selection the action cannot take. */
+  readonly disabledReason?: string | null;
 }
 
 export interface RowAction {
@@ -115,6 +141,7 @@ export function ResourceList<TRow>({
   onRowActivate,
   searchPlaceholderKey = 'admin.list.searchPlaceholder',
   rowHeight,
+  bulkActions,
 }: ResourceListProps<TRow>): ReactNode {
   const translate = useTranslate();
   const toast = useToast();
@@ -132,6 +159,29 @@ export function ResourceList<TRow>({
   );
   const [working, setWorking] = useState(false);
   const [reason, setReason] = useState('');
+  /**
+   * The selection.
+   *
+   * Local rather than in the URL, like the column widths above and for the same reason: what
+   * somebody has ticked is a moment in their work, not a description of the page, and a shared
+   * link carrying forty identifiers would be a link that means nothing to whoever opens it.
+   *
+   * Cleared on every navigation — `state` changes when the page, the search or a filter does —
+   * because a selection that survived a filter change would let somebody act on rows they can no
+   * longer see. That is the client-side counterpart of the API's own rule: a bulk operation acts
+   * on what the caller can reach *now*.
+   */
+  const [selected, setSelected] = useState<readonly string[]>([]);
+  const selectable = bulkActions !== undefined;
+  const selectionKey = `${state.search}|${String(state.page)}|${state.deleted}|${JSON.stringify(state.filters)}`;
+  const [lastKey, setLastKey] = useState(selectionKey);
+  if (lastKey !== selectionKey) {
+    setLastKey(selectionKey);
+    if (selected.length > 0) {
+      setSelected([]);
+    }
+  }
+  const selectedRows = rows.filter((row) => selected.includes(getRowId(row)));
 
   const gridState: DataGridState = {
     sort: state.sortBy === null ? null : { columnId: state.sortBy, direction: state.sortDirection },
@@ -271,7 +321,50 @@ export function ResourceList<TRow>({
             disabled={working}
           />
         )}
+        {...(selectable && {
+          selectionMode: 'multiple' as const,
+          selectedIds: [...selected],
+          onSelectionChange: (next: readonly string[]) => {
+            setSelected([...next]);
+          },
+        })}
       />
+
+      {!selectable || selected.length === 0 ? null : (
+        <Toolbar label={translate('bulk.bar.label')}>
+          <p className="text-sm font-medium">
+            {translate('bulk.bar.selected', { count: selected.length })}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {(bulkActions?.(selectedRows) ?? []).map((action) => {
+              const blocked = action.disabledReason ?? null;
+              return (
+                <Button
+                  key={action.id}
+                  type="button"
+                  variant={action.destructive === true ? 'destructive' : 'secondary'}
+                  disabled={blocked !== null || working}
+                  {...(blocked !== null && { title: blocked })}
+                  onClick={() => {
+                    action.onSelect([...selected]);
+                  }}
+                >
+                  {action.label}
+                </Button>
+              );
+            })}
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setSelected([]);
+              }}
+            >
+              {translate('bulk.bar.clear')}
+            </Button>
+          </div>
+        </Toolbar>
+      )}
 
       <div className="flex items-center justify-between gap-4">
         <p className="text-muted-foreground text-sm">

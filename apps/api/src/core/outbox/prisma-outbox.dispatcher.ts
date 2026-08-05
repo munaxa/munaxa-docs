@@ -259,6 +259,19 @@ export function routesFor(eventType: string): readonly QueueNameKey[] {
   if (eventType.startsWith('notification.')) {
     return [QueueName.NOTIFICATIONS_DELIVER];
   }
+  if (eventType.startsWith('bulk.')) {
+    // Phase 16, and the fourth time this table needed a line rather than a derivation. The
+    // lesson Phase 11 and Phase 14 both learned the hard way — an event family whose prefix no
+    // branch matched, accumulating unrouted — is why this line ships in the same commit as the
+    // event rather than being discovered by its absence later. The integration suite asserts the
+    // routing rather than the comment.
+    //
+    // The notification lane only. A bulk operation's *effects* — the documents it restored, the
+    // tasks it decided — already publish their own events from inside each object's transaction,
+    // and those route to the search index exactly as they always have. Routing this one there
+    // too would re-project nothing, because the operation resolves to no document.
+    return [QueueName.NOTIFICATIONS_DELIVER];
+  }
   if (eventType.startsWith('retention.')) {
     // The search projection removes a purged document's entry (`retention.document-purged`
     // resolves to its document like any other event); the rest of the family rides along to the

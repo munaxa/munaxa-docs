@@ -10,11 +10,17 @@ import { RetentionModule } from '../retention/retention.module';
 import { RevisionModule } from '../revision/revision.module';
 import { FolderContentsRegistry } from '../library/application/folder-contents.port';
 import { StorageModule } from '../storage/storage.module';
+import { BulkDocumentService } from './application/bulk-document.service';
+import { BulkExportService } from './application/bulk-export.service';
 import { DefaultDocumentNumberService } from './application/document-number.service';
 import { DocumentPreviewService } from './application/document-preview.service';
 import { DefaultDocumentService } from './application/document.service';
 import { RevisionControlService } from './application/revision-control.service';
 import { DOCUMENT_CONFIGURATION } from './application/configuration.port';
+import { DOCUMENT_SIGNATURE_REPOSITORY, SIGNER_AUTHENTICATOR } from './application/signature.ports';
+import { DocumentSignatureService } from './application/signature.service';
+import { DOCUMENT_TEMPLATE_REPOSITORY } from './application/template.ports';
+import { DocumentTemplateService } from './application/template.service';
 import { DOCUMENT_PLACEMENT } from './application/placement.port';
 import {
   DOCUMENT_ACTIVITY_REPOSITORY,
@@ -29,9 +35,15 @@ import { LibraryPlacementAdapter } from './infrastructure/library-placement.adap
 import { PrismaDocumentActivityRepository } from './infrastructure/prisma-document-activity.repository';
 import { PrismaDocumentLockRepository } from './infrastructure/prisma-document-lock.repository';
 import { PrismaDocumentRepository } from './infrastructure/prisma-document.repository';
+import { PrismaDocumentSignatureRepository } from './infrastructure/prisma-signature.repository';
+import { PrismaDocumentTemplateRepository } from './infrastructure/prisma-template.repository';
+import { IdentitySignerAuthenticator } from './infrastructure/identity-signer.authenticator';
 import { DocumentFolderContentsParticipant } from './infrastructure/folder-contents.participant';
 import { RetentionDispositionAdapter } from './infrastructure/retention-disposition.adapter';
 import { StorageContentGateAdapter } from './infrastructure/storage-content-gate.adapter';
+import { BulkDocumentsController } from './presentation/bulk-documents.controller';
+import { DocumentSignaturesController } from './presentation/signatures.controller';
+import { DocumentTemplatesController } from './presentation/templates.controller';
 import { DocumentsController } from './presentation/documents.controller';
 import { DocumentPreviewController } from './presentation/document-preview.controller';
 import { RevisionControlController } from './presentation/revision-control.controller';
@@ -86,7 +98,18 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     // for why the capability is split at exactly that line.
     RetentionModule,
   ],
-  controllers: [DocumentsController, RevisionControlController, DocumentPreviewController],
+  controllers: [
+    DocumentsController,
+    RevisionControlController,
+    DocumentPreviewController,
+    // Phase 16. Three controllers rather than three more methods on `DocumentsController`, because
+    // each carries a different permission story: bulk resolves reach per object with no
+    // `@ScopedTo` to bind, templates split `template:manage` from `document:create` on one class,
+    // and signatures are `document:sign` — a grant seeded to no role at all.
+    BulkDocumentsController,
+    DocumentTemplatesController,
+    DocumentSignaturesController,
+  ],
   providers: [
     // Phase 15: three reports — the population, the same population broken down by a dimension,
     // and what has been deleted — each over `whereFor`, so each inherits the caller's reach and
@@ -104,7 +127,12 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     { provide: DOCUMENT_CONFIGURATION, useClass: AdministrationConfigurationAdapter },
     { provide: DOCUMENT_PLACEMENT, useClass: LibraryPlacementAdapter },
     { provide: DOCUMENT_CONTENT_GATE, useClass: StorageContentGateAdapter },
-    { provide: DOCUMENT_SERVICE, useClass: DefaultDocumentService },
+    // A direct provider *and* an alias, the same shape `PrismaDocumentRepository` uses above.
+    // Phase 16 needed it: three collaborators — the two bulk services and the template service —
+    // depend on the concrete class for the methods the narrow `DocumentService` port does not
+    // expose, and `useClass` alone makes the class itself unresolvable as a token.
+    DefaultDocumentService,
+    { provide: DOCUMENT_SERVICE, useExisting: DefaultDocumentService },
     { provide: DOCUMENT_NUMBER_SERVICE, useClass: DefaultDocumentNumberService },
     RevisionControlService,
     // Phase 10: the purge, implemented by the module that owns the aggregate being destroyed and
@@ -116,6 +144,22 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     // Phase 7: the preview access decisions — permission → state → confidentiality — live
     // beside the download's, because they are the same decisions about the same record.
     DocumentPreviewService,
+
+    // --- Phase 16 -----------------------------------------------------------------------------
+    //
+    // Three of the five bulk operations live here because Document owns the rows; the other two
+    // live in the modules that own theirs. None of them reimplements anything — each `apply` is a
+    // call to this module's own single-object use case, which is what keeps a bulk restore
+    // reversing exactly one cascade and a legal hold refusing regardless of permission.
+    BulkDocumentService,
+    BulkExportService,
+    { provide: DOCUMENT_TEMPLATE_REPOSITORY, useClass: PrismaDocumentTemplateRepository },
+    DocumentTemplateService,
+    { provide: DOCUMENT_SIGNATURE_REPOSITORY, useClass: PrismaDocumentSignatureRepository },
+    // Identity owns credentials and is the only interface in the product that can see a password
+    // hash, so §11.200's re-authentication is a port Document declares and Identity answers.
+    { provide: SIGNER_AUTHENTICATOR, useClass: IdentitySignerAuthenticator },
+    DocumentSignatureService,
   ],
   // `DOCUMENT_NUMBER_SERVICE` is exported for exactly one consumer: Workflow's allocator
   // adapter, which is how the engine's `DOCUMENT_NUMBER_ALLOCATOR` seam gets its binding.

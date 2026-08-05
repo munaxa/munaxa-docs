@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 15**:
+and the product is built through **Phase 16**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -245,6 +245,46 @@ and the product is built through **Phase 15**:
   would have made every export a copy of the whole tenant. "Scheduling ready" ships the lane, the
   record, the idempotent claim and the audited run, and names the phase that closes the rest rather
   than adding a fifth declared-but-unbound contract.
+
+- **Phase 16** — advanced document features. Twelve brief items that are three groups, and sorting
+  them was the first decision of the phase: OCR, watermarks, thumbnails, compare and storage
+  deduplication were built in Phases 3, 6 and 7, so what remained of them was discharging four named
+  limit rows — three of which share one blocker and stay open, because `sharp` sits in the store
+  linked into no workspace package and `@pdf-lib/fontkit` is absent from it entirely, both answered
+  with a command rather than an assumption. The fourth is partly closed by an observation rather than
+  a dependency: **rasterising a page was never what an image-only PDF needed**, because a scanned
+  page already *is* a raster — a `/DCTDecode` XObject whose stream bytes are a JPEG — so it is lifted
+  out and read with no decoding and nothing new in the lockfile. Templates and signatures appeared
+  nowhere in the architecture, and the second is the item most likely to be got wrong: "digital
+  signature" means at least four things, and [ADR-0017](./docs/architecture/adr/0017-electronic-signature-as-witnessed-attestation.md)
+  argues all four before choosing a **21 CFR Part 11 §11.50 manifestation** — printed name, instant,
+  meaning — bound under §11.70 to the revision's content digest and witnessed by the server with
+  Phase 9's own construction, explicitly **not** an eIDAS qualified signature and never called one on
+  any surface. `document:sign` is seeded to no role including the tenant administrator, which is
+  08 §6's first deliberate row applied a second time. But the phase's centre of gravity is the five
+  bulk operations, and its central safety property is that **a bulk operation is N single-object
+  decisions that happen to have been asked for together, never one decision applied to N objects**:
+  the tempting implementation resolves reach once and writes to a list the client supplied, which is
+  the fetch-then-filter 08 §7 forbids, wearing a new hat and writing rather than reading. So reach is
+  resolved *per object*, through the same `ACL_RESOLVER` that answers `AclGuard`, inside the
+  transaction that writes that object — stronger than the guard, which resolves once beforehand —
+  and two callers sending the same identifier list get different sets of applied rows. One
+  transaction per object is what makes a legal hold refuse *its own document* while the batch
+  completes, and what keeps each object's audit row committing with its own change; an operation
+  writes **N + 1** rows and never an identifier list, because a document's timeline must not skip the
+  day it was edited and "who ran the edit that touched four hundred documents" must still be
+  answerable. Nothing is reimplemented — a bulk restore is `DefaultDocumentService.restore` called N
+  times and a bulk approval is `WorkflowEngine.decide` called N times — so Phase 10's exact cascade
+  and Phase 11's delegation authority survive untouched. Bulk export diverges from the two existing
+  export mechanisms and says why: it moves bytes rather than rows, so it produces a manifest and one
+  signed link per document rather than an archive, which keeps a release of five hundred documents
+  writing five hundred `FILE_DOWNLOAD_ISSUED` rows instead of one and copies no bytes at all. And two
+  claims older phases made became true: 18 §7's storm control finally has a storm to control —
+  `bulk.operation-completed` is the second coalesced family after `retention.due`, addressed to the
+  requester alone because a *summary* cannot pass every name through the ACL resolver the way a
+  per-object notification does — and 19 §5's "per-tenant concurrency caps" stopped being false, with
+  `perTenantConcurrency` declared per lane, absent by default, and enforced on the one lane a single
+  tenant can flood.
 
 Each report says what its phase deliberately left out.
 

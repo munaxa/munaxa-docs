@@ -16,7 +16,8 @@ import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
-import { OCR_PORT, type OcrPort } from '../../../ports/ocr.port';
+import { OCR_PORT, type OcrPort, type OcrResult } from '../../../ports/ocr.port';
+import { extractReadableImages } from '../infrastructure/pdf-images';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/application/ports';
 import { ocrCompletedEvent } from '../domain/events';
 import {
@@ -76,10 +77,12 @@ export class PreviewOcrService {
       return;
     }
 
-    if (!this.ocr.supports(source.mimeType)) {
-      // An image-only PDF lands here: the engine reads rasters, and rasterising a PDF page is a
-      // rendering job this product does not perform server-side. Recorded as a debug fact, not
-      // a failure — the render state is already READY and honest about having no text.
+    const readable = this.ocr.supports(source.mimeType);
+    const isPdf = source.mimeType === 'application/pdf';
+    if (!readable && !isPdf) {
+      // A format the engine does not read and this phase cannot lift rasters out of. Recorded as
+      // a fact rather than a failure — the render state is already READY and honest about having
+      // no text.
       this.logger.info('OCR skipped: the engine does not read this format', {
         revisionId,
         mimeType: source.mimeType,
@@ -88,14 +91,19 @@ export class PreviewOcrService {
     }
 
     const bytes = await this.fetchSource(fileObjectId, source.mimeType);
-    const result = await this.ocr.extract({
-      bytes,
-      mimeType: source.mimeType,
-      languages: this.config.ocr.languages,
-      // The slow lane's own budget: OCR is allowed to be slow, which is why it has its own lane.
-      timeoutMs: queueDefinition(QueueName.DOCUMENTS_OCR).timeoutMs,
-      maxTextBytes: this.config.preview.maxTextBytes,
-    });
+    const result = readable
+      ? await this.ocr.extract({
+          bytes,
+          mimeType: source.mimeType,
+          languages: this.config.ocr.languages,
+          // The slow lane's own budget: OCR is allowed to be slow, which is why it has its lane.
+          timeoutMs: queueDefinition(QueueName.DOCUMENTS_OCR).timeoutMs,
+          maxTextBytes: this.config.preview.maxTextBytes,
+        })
+      : await this.readPdfImages(revisionId, bytes);
+    if (result === null) {
+      return;
+    }
 
     await this.uow.run(async () => {
       if (result.text.length > 0) {
@@ -135,6 +143,84 @@ export class PreviewOcrService {
         }),
       ]);
     });
+  }
+
+  /**
+   * The image-only PDF path — Phase 7's limit row, discharged as far as it honestly goes.
+   *
+   * That row said an image-only PDF is not OCR-read because "Tesseract reads rasters; rasterising
+   * PDF pages is the job the server deliberately does not do", and rasterising a *page* is still
+   * not done: it needs a canvas, a canvas in Node is a native binding, and the lockfile cannot
+   * gain one. What changed is the observation that a scanned page does not need rasterising — it
+   * *is* a raster, sitting in the file as a `/DCTDecode` XObject whose stream bytes are a JPEG.
+   * `pdf-images.ts` lifts them out without decoding anything.
+   *
+   * Pages are read in order and their text joined with a form feed, which is what a page break in
+   * plain text has meant since long before this product; the search projection treats it as
+   * whitespace and the in-document search shows the reader where a page ended. The confidence is
+   * the **mean weighted by characters**, not the mean of the pages: a fifty-page scan with one
+   * blank page must not have its confidence dragged down by a page that legitimately produced
+   * nothing, and must not have a bad page hidden by forty-nine good ones either.
+   *
+   * Answers null when there is nothing to read — no images, or none in a readable encoding — so
+   * the caller writes no `ocr_result` at all. That is deliberate: a row saying "we read this and
+   * found nothing" and the absence of a row are different claims, and only the second is true when
+   * the engine never ran.
+   */
+  private async readPdfImages(revisionId: RevisionId, pdf: Buffer): Promise<OcrResult | null> {
+    const images = await extractReadableImages(pdf, {
+      maxImages: this.config.preview.maxPages,
+      maxImageBytes: this.config.preview.maxSourceBytes,
+    });
+    if (images.length === 0) {
+      this.logger.info('OCR skipped: this PDF carries no directly readable page images', {
+        revisionId,
+      });
+      return null;
+    }
+
+    const budget = queueDefinition(QueueName.DOCUMENTS_OCR).timeoutMs;
+    const started = Date.now();
+    const pages: string[] = [];
+    let weighted = 0;
+    let characters = 0;
+    let engine = this.ocr.engine;
+    let engineVersion = '';
+
+    for (const image of images) {
+      const remaining = budget - (Date.now() - started);
+      if (remaining <= 0) {
+        // The lane's budget is for the whole document, not per page. Stopping with what has been
+        // read beats being killed with nothing — a fifty-page scan that OCRs forty pages is forty
+        // pages more searchable than one whose job was cut off.
+        this.logger.warn('OCR stopped at the lane budget with pages remaining', {
+          revisionId,
+          pagesRead: pages.length,
+          pagesTotal: images.length,
+        });
+        break;
+      }
+      const page = await this.ocr.extract({
+        bytes: image.bytes,
+        mimeType: image.mimeType,
+        languages: this.config.ocr.languages,
+        timeoutMs: remaining,
+        maxTextBytes: this.config.preview.maxTextBytes,
+      });
+      pages.push(page.text);
+      weighted += page.confidence * page.text.length;
+      characters += page.text.length;
+      engine = page.engine;
+      engineVersion = page.engineVersion;
+    }
+
+    return {
+      text: pages.join('\f'),
+      language: this.config.ocr.languages,
+      confidence: characters === 0 ? 0 : weighted / characters,
+      engine,
+      engineVersion,
+    };
   }
 
   private async fetchSource(fileObjectId: FileObjectId, mimeType: string): Promise<Buffer> {

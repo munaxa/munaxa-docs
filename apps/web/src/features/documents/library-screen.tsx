@@ -6,7 +6,7 @@ import { type ReactNode, useState } from 'react';
 
 import { Badge, Button, Switch, formatFileSize, useToast } from '@munaxa/ui';
 
-import type { DocumentSummary, Folder, Library } from '@edms/contracts';
+import type { BulkOperationResult, DocumentSummary, Folder, Library } from '@edms/contracts';
 import { formatFor } from '@edms/domain';
 
 import { useTranslate } from '../../app/providers';
@@ -19,6 +19,8 @@ import {
   useListNavigation,
 } from '../admin-shared';
 import { deleteDocument, requestDownload, restoreDocument, setFavorite } from './actions';
+import { bulkExport, bulkRestore } from './bulk-actions';
+import { BulkMetadataDialog, BulkResultDialog } from './bulk-panel';
 import { FolderTree } from './folder-tree';
 import { type DocumentTypeChoice, UploadDialog } from './upload-dialog';
 
@@ -72,6 +74,7 @@ export function LibraryScreen({
   users,
   departments,
   canCreate,
+  canBulk,
 }: {
   readonly rows: readonly DocumentSummary[];
   readonly total: number;
@@ -87,6 +90,19 @@ export function LibraryScreen({
   readonly users: readonly Choice[];
   readonly departments: readonly Choice[];
   readonly canCreate: boolean;
+  /**
+   * What this caller may do in bulk — 16 §5's *"bulk actions gated by `capabilities`"*.
+   *
+   * Resolved on the server from the caller's own grants and passed down, rather than inferred in
+   * the browser from what happens to be on screen. The API decides again, per object, when the
+   * request arrives; this is what keeps a button that would certainly be refused from being
+   * offered at all.
+   */
+  readonly canBulk: {
+    readonly edit: boolean;
+    readonly restore: boolean;
+    readonly download: boolean;
+  };
 }): ReactNode {
   const translate = useTranslate();
   const router = useRouter();
@@ -95,6 +111,8 @@ export function LibraryScreen({
   const { refresh, setFilter } = useListNavigation(state);
   const run = useAction(state);
   const [adding, setAdding] = useState<'UPLOAD' | 'SCAN' | null>(null);
+  const [bulkResult, setBulkResult] = useState<BulkOperationResult | null>(null);
+  const [bulkEditing, setBulkEditing] = useState<readonly string[] | null>(null);
 
   const includeSubfolders = state.filters.underFolderId !== undefined;
 
@@ -163,6 +181,64 @@ export function LibraryScreen({
               },
             },
           ]}
+          /**
+           * The folder browser's bulk actions, which 16 §5 has promised since Phase 0.
+           *
+           * Each is gated twice and the two gates are not the same. Here, on the caller's
+           * tenant-wide grant, so an affordance nobody could use is not offered; and at the API,
+           * per object, against the caller's reach — which is the one that decides. That is why a
+           * bulk restore of forty documents can come back with thirty-eight applied and two
+           * refused: this screen cannot know which two, and it does not guess.
+           */
+          bulkActions={(selected) => {
+            const ids = selected.map((row) => row.id);
+            const deletedOnly = selected.every((row) => row.deletedAt !== null);
+            return [
+              {
+                id: 'metadata',
+                label: translate('bulk.action.metadata'),
+                disabledReason: canBulk.edit ? null : translate('bulk.disabled.noPermission'),
+                onSelect: () => {
+                  setBulkEditing(ids);
+                },
+              },
+              {
+                id: 'export',
+                label: translate('bulk.action.export'),
+                disabledReason: canBulk.download ? null : translate('bulk.disabled.noPermission'),
+                onSelect: () => {
+                  void bulkExport(ids).then((answer) => {
+                    if (!answer.ok) {
+                      toast.error(answer.detail ?? translate(`error.${answer.code}`));
+                      return;
+                    }
+                    setBulkResult(answer.value);
+                  });
+                },
+              },
+              {
+                id: 'restore',
+                label: translate('bulk.action.restore'),
+                // Two different reasons for the same disabled button, and saying which is the
+                // difference between "you cannot" and "not these".
+                disabledReason: !canBulk.restore
+                  ? translate('bulk.disabled.noPermission')
+                  : deletedOnly
+                    ? null
+                    : translate('bulk.disabled.notDeleted'),
+                onSelect: () => {
+                  void bulkRestore(ids).then((answer) => {
+                    if (!answer.ok) {
+                      toast.error(answer.detail ?? translate(`error.${answer.code}`));
+                      return;
+                    }
+                    setBulkResult(answer.value);
+                    refresh();
+                  });
+                },
+              },
+            ];
+          }}
           filters={
             <div className="flex flex-wrap items-center gap-3">
               {selectedFolderId !== null && (
@@ -252,6 +328,30 @@ export function LibraryScreen({
           departments={departments}
           onClose={() => setAdding(null)}
           onSaved={refresh}
+        />
+      )}
+
+      {bulkEditing === null ? null : (
+        <BulkMetadataDialog
+          ids={bulkEditing}
+          categories={categories}
+          onClose={() => {
+            setBulkEditing(null);
+          }}
+          onDone={(result) => {
+            setBulkEditing(null);
+            setBulkResult(result);
+            refresh();
+          }}
+        />
+      )}
+
+      {bulkResult === null ? null : (
+        <BulkResultDialog
+          result={bulkResult}
+          onClose={() => {
+            setBulkResult(null);
+          }}
         />
       )}
     </div>
