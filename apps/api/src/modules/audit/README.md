@@ -4,9 +4,9 @@
 
 | | |
 | --- | --- |
-| **Owns** | AuditEvent, the hash chain, evidence export |
-| **Depends on** | — (written by every module through the audit port) |
-| **Binds in core** | `AUDIT_WRITER` — it owns the chain, so it owns the only way to append to it. |
+| **Owns** | AuditEvent, the hash chain, the read path, verification, evidence export |
+| **Depends on** | Storage (bytes for a bundle, signed URLs), Library (through `ACL_RESOLVER`) |
+| **Binds in core** | `AUDIT_WRITER` and `READ_AUDIT_BUFFER` — it owns the chain, so it owns the only two ways to append to it. |
 
 ## Layers
 
@@ -104,8 +104,66 @@ The constraint that follows is worth stating plainly: **an activity feed can nev
 something the audit trail does not contain.** A feature that wants to surface an event writes
 an audit event — and then it is evidence too.
 
+## The read path — Phase 9
+
+Everything that *reads* the chain, and the two things reading it forced the write path to admit.
+
+```text
+timeline ──▶ ACL_RESOLVER.resolve(subject) ──▶ listForSubject()   one decision, whole page
+search   ──▶ audit:view ─────────────────────▶ search()          crosses subjects; the grant is the filter
+verify   ──▶ checkpoint.latest() ──▶ sliceBySequence() ──▶ verifyChain() ──▶ checkpoint.write()
+export   ──▶ collect + verify ──▶ StoragePort.put (streamed) ──▶ signed manifest
+```
+
+### The timeline is filtered at the subject, not per row
+
+An audit row carries `(subject_type, subject_id)` and no scope chain, and a `SEARCH` row carries the
+*actor's own user id* — the first subject in the product that is not a domain object. There is
+nothing on a row to push a predicate against.
+
+So the decision is resolved once, at the subject, before the query: a timeline names one object,
+whether the caller may see it is one question, and it goes to `ACL_RESOLVER` — the same port and
+binding Phase 8 bound for search. Every row on the page is about that object, so one decision covers
+the page exactly.
+
+A per-row lookup would have been wrong even where it worked. **Audit outlives its subject**: a
+purged document's trail remains, deliberately. Resolving each row's object would silently hide the
+history of a thing that no longer exists, which is the history that matters most.
+
+### Two digests, and a manifest that says which
+
+`chain_hash_version` is on every row. Phase 1's digest covered nine fields; Phase 9's covers every
+column but the hashes. Old rows are **not** rehashed — the table refuses `UPDATE` to every role,
+which is the property the design exists for — so verification dispatches on the row's own version
+and an evidence bundle's manifest states, per version in its range, exactly which columns that
+version's hash attests. A bundle that listed every column beside a v1 hash would overclaim, and an
+evidence bundle that overclaims is worse than none.
+
+### Checkpoints live where the chain does not
+
+Object storage, signed with a key held in neither the database nor the bucket. A checkpoint beside
+the events it attests would be rewritten by the same access that rewrote them. The signature is also
+what makes *resuming* safe: a pass starts from the last checkpoint, and the store refuses one whose
+signature does not recompute — so the resume point is an authenticated claim rather than a marker an
+attacker could move past rows they had altered.
+
+### Read auditing is buffered
+
+`READ_AUDIT_BUFFER` — 13 §5's requirement, true of the code since Phase 9. A flush takes the
+per-tenant lock once and chains the whole batch under it, so a hundred views cost one lock. The
+instant recorded is when somebody looked, not when the flush ran. Nothing is dropped: a failed flush
+retains and retries, and past the hard bound `record` writes synchronously, which is Phase 1's
+behaviour — slower, never lossy. A **print** is not buffered; 13 exempts `VIEWED` and nothing else.
+
+### The lane, and the schedule
+
+`AuditLaneConsumer` drains `audit.export` and declares `audit.verify-chain` as a *named* cron
+schedule in the broker, so every instance that boots declares the same one and there is one firing
+rather than one per instance. It runs in the API process behind `queue.consumersEnabled`, which is
+where every consumer since Phase 4 lives.
+
 ## Still to build
 
-Reading the trail, the scheduled verification job with signed checkpoints, and evidence export
-— all Phase 9, which owns that capability. `AuditService` in `application/ports.ts` is
-deliberately still unbound, and the events above are not published yet.
+Monthly range partitions and cold-storage tiering (13 §6): deferred with a stated trigger — Phase 10's
+retention, or the first tenant past tens of millions of rows. Delivery of the `audit.chain-broken`
+alert is Phase 12's; the events above are published to the outbox and routed nowhere until it exists.

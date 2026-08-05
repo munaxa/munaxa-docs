@@ -19,6 +19,7 @@ import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import {
   ContentNotScannedError,
   NotFoundError,
+  StorageUnavailableError,
   UnsupportedContentError,
   ValidationError,
 } from '../../../core/errors/application-errors';
@@ -28,7 +29,13 @@ import { ANTIVIRUS_PORT, type AntivirusPort } from '../../../ports/antivirus.por
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { STORAGE_PORT, type StoragePort } from '../../../ports/storage.port';
 import { StorageAudit } from '../domain/audit-actions';
-import { blobKeyFor, derivedKeyFor, stagingKeyFor } from '../domain/content-key';
+import {
+  blobKeyFor,
+  derivedKeyFor,
+  evidenceKeyFor,
+  evidencePrefixFor,
+  stagingKeyFor,
+} from '../domain/content-key';
 import {
   fileObjectCreatedEvent,
   fileQuarantinedEvent,
@@ -175,8 +182,12 @@ export class DefaultStorageService implements StorageService {
           method: target.method,
           headers: target.headers,
           expiresAt: target.expiresAt,
+          // Only the parts a client can actually PUT. Every part of a presigned target has a
+          // URL; the ones without are the server-driven write's, which never reach a caller.
           parts:
-            target.parts?.map((part) => ({ partNumber: part.partNumber, url: part.url })) ?? null,
+            target.parts?.flatMap((part) =>
+              part.url === undefined ? [] : [{ partNumber: part.partNumber, url: part.url }],
+            ) ?? null,
           alreadyStored: null,
         },
         // Audited *before* the URL reaches the caller — the record of who was handed a capability
@@ -472,6 +483,75 @@ export class DefaultStorageService implements StorageService {
         }),
       };
     });
+  }
+
+  /**
+   * An artefact streamed straight to the store, never held whole.
+   *
+   * The write happens *before* the transaction, not inside it, and that is the one thing worth
+   * reading carefully here. A multi-minute upload inside a database transaction would hold a
+   * connection and its snapshot open for the duration, which at the `audit.export` lane's
+   * fifteen-minute budget is long enough to matter to every other writer in the tenant. The
+   * ordering is safe because the failure it risks is benign in exactly one direction: bytes in
+   * the store with no row are unreferenced and expire with their prefix, while a row with no
+   * bytes would be a bundle somebody could ask for and never receive.
+   */
+  async storeStreamed(input: {
+    bundleId: string;
+    name: string;
+    body: AsyncIterable<Uint8Array>;
+    mimeType: string;
+  }): Promise<FileObjectRecord> {
+    const stored = await this.storage.put(evidenceKeyFor(input.bundleId, input.name), input.body, {
+      contentType: input.mimeType,
+    });
+    const checksumSha256 = stored.checksumSha256;
+    if (checksumSha256 === null) {
+      // Every adapter computes it while streaming, so reaching here means a driver was added
+      // that does not — and a file object with no digest is one nothing can ever verify.
+      throw new StorageUnavailableError('The artefact was stored without a digest.');
+    }
+
+    return this.writer.write<FileObjectRecord>(async () => {
+      const id = this.writer.clock.nextId();
+      await this.files.insert({
+        id,
+        // The store's own answer for the size, and our own for the digest — computed over the
+        // bytes as they went past rather than read back, because reading it back would attest
+        // what the store returned rather than what was written.
+        checksumSha256,
+        sizeBytes: stored.sizeBytes,
+        mimeType: input.mimeType,
+        storageKey: stored.key,
+        storageDriver: this.storage.driver,
+        // Made by the product from bytes that were already in the database. Nothing to scan.
+        scanStatus: ScanStatus.SKIPPED,
+        scanner: null,
+        scanThreat: null,
+        derived: true,
+      });
+      const record = await this.require(asId<FileObjectId>(id));
+      return {
+        result: record,
+        change: this.uploaded(id, AdministrativeOperation.CREATED, {
+          derived: true,
+          streamed: true,
+          sizeBytes: stored.sizeBytes,
+          mimeType: input.mimeType,
+        }),
+      };
+    });
+  }
+
+  /**
+   * Where a bundle's artefacts live.
+   *
+   * Storage answers this rather than the caller building it, for the reason no caller builds any
+   * other key here: a key assembled outside this module is a second place the layout is written
+   * down, and the boundary lint would have to be argued with rather than obeyed.
+   */
+  evidencePrefix(bundleId: string): string {
+    return evidencePrefixFor(bundleId);
   }
 
   // --- Internals ---------------------------------------------------------------------------

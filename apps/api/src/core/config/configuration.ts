@@ -185,6 +185,57 @@ export const configSchema = z
     PREVIEW_MAX_ARCHIVE_EXPANSION_RATIO: z.coerce.number().int().min(2).default(200),
     PREVIEW_MAX_PIXELS: z.coerce.number().int().min(65_536).default(40_000_000),
 
+    /**
+     * Audit reading, verification and evidence export (`13-audit-architecture.md` §§4–6).
+     *
+     * The buffer's three bounds are one policy read three ways: flush when either the soft
+     * count or the interval is reached, and *never* exceed the hard bound — past it `record`
+     * writes synchronously rather than dropping, because §7's "silently drop on failure" is
+     * the one thing an audit trail may not do. The hard bound is therefore how much evidence a
+     * process may hold un-durable, and the honest way to read it is "how much would a crash
+     * lose": at the default, a thousand views.
+     */
+    AUDIT_READ_BUFFER_SIZE: z.coerce.number().int().min(1).max(100_000).default(200),
+    AUDIT_READ_BUFFER_MAX: z.coerce.number().int().min(1).max(1_000_000).default(1_000),
+    AUDIT_READ_FLUSH_INTERVAL_MS: z.coerce.number().int().min(100).max(300_000).default(2_000),
+
+    /**
+     * The key the daily checkpoint is signed with.
+     *
+     * §4 requires checkpoints to live "in a separate store so an attacker with database access
+     * alone cannot rewrite history undetected". The store is object storage; the *signature* is
+     * what makes the separation mean something, because an attacker who reaches the bucket as
+     * well still cannot forge a checkpoint without this. It is therefore held where neither the
+     * database nor the bucket is — in the deployment's own secret material.
+     *
+     * Optional in the schema and required in production, like every other real provider: a
+     * development environment without one verifies the chain and records no checkpoint, and
+     * says so rather than writing an unsigned one.
+     */
+    AUDIT_CHECKPOINT_SECRET: z.string().min(32).optional(),
+
+    /** Events read per pass while verifying, and the ceiling on one pass's work. */
+    AUDIT_VERIFY_BATCH_SIZE: z.coerce.number().int().min(100).max(100_000).default(5_000),
+    /**
+     * The most one verification pass walks.
+     *
+     * A first pass over a seven-year trail would otherwise hold the lane for hours. Each pass
+     * checkpoints where it stopped and the next resumes there, so a deployment catches up over
+     * a few nights and then settles into verifying one day at a time.
+     */
+    AUDIT_VERIFY_MAX_EVENTS: z.coerce.number().int().min(1_000).default(200_000),
+
+    /** Events read per batch while an evidence bundle streams to storage. */
+    AUDIT_EXPORT_BATCH_SIZE: z.coerce.number().int().min(100).max(50_000).default(2_000),
+
+    /**
+     * How much of a streamed object is held in memory before it is sent.
+     *
+     * The multipart minimum at every S3-compatible store is 5 MiB, which is the floor rather
+     * than the default; above it, this is the only memory an export of any size costs.
+     */
+    STORAGE_STREAM_PART_BYTES: z.coerce.number().int().min(5_242_880).default(8_388_608),
+
     RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
     RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).default(300),
 
@@ -314,6 +365,18 @@ export const configSchema = z
         message: 'The OpenAPI explorer is not served in production.',
       });
     }
+    if (config.AUDIT_CHECKPOINT_SECRET === undefined) {
+      // Without it the daily pass still verifies and still alerts, but it records nothing an
+      // auditor can hold against a later reading of the table — which is the whole of §4's
+      // "an attacker with database access alone cannot rewrite history undetected". A
+      // production deployment that boots without one would look identical to one that had it,
+      // and would only be found to differ during the incident it exists for.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUDIT_CHECKPOINT_SECRET'],
+        message: 'Audit checkpoints must be signed in production.',
+      });
+    }
   });
 
 export type RawConfig = z.infer<typeof configSchema>;
@@ -379,6 +442,8 @@ export interface AppConfig {
     readonly forcePathStyle: boolean;
     readonly localRoot: string;
     readonly publicUrl: string | null;
+    /** The chunk a streamed write sends at a time — the only memory a large artefact costs. */
+    readonly streamPartBytes: number;
   };
   readonly providers: {
     readonly search: RawConfig['SEARCH_DRIVER'];
@@ -399,6 +464,17 @@ export interface AppConfig {
   };
   readonly office: {
     readonly libreofficePath: string;
+  };
+  /** Reading, verifying and exporting the trail (`13-audit-architecture.md` §§4–6). */
+  readonly audit: {
+    readonly readBufferSize: number;
+    readonly readBufferMax: number;
+    readonly readFlushIntervalMs: number;
+    /** Null in a deployment that has not been given one; no key, no checkpoint. */
+    readonly checkpointSecret: string | null;
+    readonly verifyBatchSize: number;
+    readonly verifyMaxEvents: number;
+    readonly exportBatchSize: number;
   };
   /** The render sandbox's resource caps (`14-preview-architecture.md` §5). */
   readonly preview: {
@@ -508,6 +584,16 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       forcePathStyle: raw.STORAGE_FORCE_PATH_STYLE,
       localRoot: raw.STORAGE_LOCAL_ROOT,
       publicUrl: raw.STORAGE_PUBLIC_URL ?? null,
+      streamPartBytes: raw.STORAGE_STREAM_PART_BYTES,
+    },
+    audit: {
+      readBufferSize: raw.AUDIT_READ_BUFFER_SIZE,
+      readBufferMax: Math.max(raw.AUDIT_READ_BUFFER_MAX, raw.AUDIT_READ_BUFFER_SIZE),
+      readFlushIntervalMs: raw.AUDIT_READ_FLUSH_INTERVAL_MS,
+      checkpointSecret: raw.AUDIT_CHECKPOINT_SECRET ?? null,
+      verifyBatchSize: raw.AUDIT_VERIFY_BATCH_SIZE,
+      verifyMaxEvents: raw.AUDIT_VERIFY_MAX_EVENTS,
+      exportBatchSize: raw.AUDIT_EXPORT_BATCH_SIZE,
     },
     providers: {
       search: raw.SEARCH_DRIVER,

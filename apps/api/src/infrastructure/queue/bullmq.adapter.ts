@@ -125,6 +125,45 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
     }
   }
 
+  /**
+   * Declares recurring work, once for the whole deployment.
+   *
+   * A *scheduler* rather than a delayed job re-enqueuing itself: the schedule lives in Redis
+   * under its name, so every instance that boots upserts the same declaration and there is one
+   * firing rather than one per instance. That is the property `ScheduledJob.lockKey` describes,
+   * obtained without a lock — there was only ever one pass to run.
+   *
+   * UTC, explicitly. A cron expression evaluated in the process's local zone fires at different
+   * instants on differently configured hosts, and "the daily verification ran twice on the day
+   * the clocks changed" is a defect nobody finds by reading code.
+   */
+  async schedule<TPayload extends object>(
+    queue: string,
+    name: string,
+    cron: string,
+    payload: TPayload,
+  ): Promise<void> {
+    const definition = queueDefinition(queue as QueueNameKey);
+    await this.producer(queue).upsertJobScheduler(
+      name,
+      { pattern: cron, tz: 'UTC' },
+      {
+        name: queue,
+        data: payload,
+        opts: {
+          attempts: definition.retry.attempts,
+          backoff: { type: definition.retry.backoff, delay: definition.retry.backoffMs },
+          removeOnComplete: { age: 604_800, count: 100 },
+          removeOnFail: { age: 2_592_000 },
+        },
+      },
+    );
+  }
+
+  async unschedule(queue: string, name: string): Promise<void> {
+    await this.producer(queue).removeJobScheduler(name);
+  }
+
   async depth(queue: string): Promise<QueueDepth> {
     const counts = await this.producer(queue).getJobCounts(
       'waiting',

@@ -99,6 +99,28 @@ function spyAdapter(answerKey?: string): StoragePort & { keys: string[] } {
       keys.push(key);
       return Promise.resolve();
     },
+    put: async (key, body) => {
+      keys.push(key);
+      let sizeBytes = 0;
+      for await (const chunk of body) {
+        sizeBytes += chunk.byteLength;
+      }
+      return {
+        key: answerKey ?? key,
+        sizeBytes,
+        contentType: 'application/json',
+        checksumSha256: null,
+        lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
+      };
+    },
+    read: (key) => {
+      keys.push(key);
+      return Promise.resolve(null);
+    },
+    list: (prefix) => {
+      keys.push(prefix);
+      return Promise.resolve(answerKey === undefined ? [] : [answerKey]);
+    },
   };
 }
 
@@ -124,6 +146,19 @@ describe('scoping storage to the ambient tenant', () => {
     });
 
     expect(adapter.keys).toEqual(Array(4).fill('acme/revisions/2026/report.pdf'));
+  });
+
+  it('scopes a listing prefix, so no tenant can enumerate another by asking for everything', async () => {
+    // The one call where an *absent* argument would otherwise mean "the whole bucket". The
+    // checkpoint store asks for `audit/checkpoints/`; what reaches the adapter must be the
+    // tenant's own.
+    const adapter = spyAdapter('acme/audit/checkpoints/000.json');
+    const storage = new TenantScopedStorage(adapter, registry);
+
+    const keys = await runWithContext(contextFor(ACME), () => storage.list('audit/checkpoints/'));
+
+    expect(adapter.keys).toEqual(['acme/audit/checkpoints/']);
+    expect(keys).toEqual(['audit/checkpoints/000.json']);
   });
 
   it('gives two tenants different keys for the same logical object', async () => {

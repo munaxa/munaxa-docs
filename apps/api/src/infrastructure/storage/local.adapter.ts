@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, open, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, resolve, sep } from 'node:path';
+import {
+  copyFile,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { dirname, relative, resolve, sep } from 'node:path';
 
 import type { StorageDriverKey } from '@edms/domain';
 
@@ -143,6 +153,78 @@ export class LocalStorageAdapter implements StoragePort {
       checksumSha256: await this.digest(path),
       lastModifiedAt: stats.mtime,
     };
+  }
+
+  /**
+   * A streamed write, landing on a partial name and renamed into place.
+   *
+   * The same discipline as every other write here, for the same reason: an export interrupted
+   * half-way must leave a `.partial` the sweeper removes, never an object that reads as a complete
+   * bundle and is a truncated one. Evidence that is silently short is worse than evidence that is
+   * absent.
+   */
+  async put(
+    key: StorageKey,
+    body: AsyncIterable<Uint8Array>,
+    options: { readonly contentType: string },
+  ): Promise<BlobMetadata> {
+    const partial = this.partialPathFor(key);
+    await mkdir(dirname(partial), { recursive: true });
+    const hash = createHash('sha256');
+    let sizeBytes = 0;
+    const handle = await open(partial, 'w');
+    try {
+      for await (const chunk of body) {
+        hash.update(chunk);
+        sizeBytes += chunk.byteLength;
+        await handle.write(chunk);
+      }
+    } catch (cause) {
+      await handle.close();
+      await rm(partial, { force: true });
+      throw new StorageUnavailableError('The artefact could not be written.', { cause });
+    }
+    await handle.close();
+    await rename(partial, this.pathFor(key));
+
+    return {
+      key,
+      sizeBytes,
+      contentType: options.contentType,
+      checksumSha256: hash.digest('hex'),
+      lastModifiedAt: this.options.now(),
+    };
+  }
+
+  async read(key: StorageKey): Promise<Buffer | null> {
+    try {
+      return await readFile(this.pathFor(key));
+    } catch (cause) {
+      if (isMissing(cause)) {
+        return null;
+      }
+      throw new StorageUnavailableError('The artefact could not be read.', { cause });
+    }
+  }
+
+  async list(prefix: string): Promise<readonly StorageKey[]> {
+    const root = this.pathFor(prefix.endsWith('/') ? prefix.slice(0, -1) : prefix);
+    let entries;
+    try {
+      entries = await readdir(root, { recursive: true, withFileTypes: true });
+    } catch (cause) {
+      // A prefix nothing has been written under is an empty listing, not a failure — the first
+      // verification pass of a deployment's life reaches exactly this.
+      if (isMissing(cause)) {
+        return [];
+      }
+      throw new StorageUnavailableError('The storage directory could not be listed.', { cause });
+    }
+    const base = prefix.endsWith('/') ? prefix : `${prefix}/`;
+    return entries
+      .filter((entry) => entry.isFile() && !entry.name.endsWith(PARTIAL_SUFFIX))
+      .map((entry) => `${base}${relative(root, resolve(entry.parentPath, entry.name))}`)
+      .sort();
   }
 
   async copy(from: StorageKey, to: StorageKey): Promise<void> {

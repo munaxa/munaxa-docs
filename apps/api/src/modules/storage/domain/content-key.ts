@@ -67,6 +67,39 @@ export function stagingKeyFor(uploadSessionId: string): string {
   return `staging/${uploadSessionId}`;
 }
 
+/**
+ * Where an evidence bundle's objects go.
+ *
+ * Deliberately **not** content-addressed, which is the one place in this file that rule is set
+ * aside and it is worth saying why. Content addressing buys deduplication and a digest that names
+ * the object before it is written; an evidence bundle is unique by construction — a range, a set of
+ * filters and an instant — so the deduplication can never hit, and the digest is not known until
+ * the last row has streamed past. Naming the object after the export instead means the write can
+ * start before the content exists, which is exactly what the `audit.export` lane requires.
+ *
+ * One prefix per export, so the bundle's parts are a listing and retention removes it in one
+ * operation — the same reasoning that gives derived artefacts their own root.
+ */
+export function evidenceKeyFor(exportId: string, name: string): string {
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
+    // The names are this product's own — `events.jsonl`, `manifest.json` — never a person's
+    // input. Refusing anything else keeps it that way rather than trusting that it stays so.
+    throw new Error('An evidence artefact name may only contain lowercase, digits, dot and dash.');
+  }
+  return `${evidencePrefixFor(exportId)}/${name}`;
+}
+
+/** The prefix one bundle's artefacts share. Retention removes a bundle as one listing. */
+export function evidencePrefixFor(exportId: string): string {
+  if (!/^[0-9a-fA-F-]{36}$/.test(exportId)) {
+    throw new Error('An evidence key can only be derived from an export identifier.');
+  }
+  return `${EVIDENCE_ROOT}/${exportId}`;
+}
+
+/** Where evidence bundles go. Its own root, so retention can tier and purge them as a class. */
+const EVIDENCE_ROOT = 'evidence';
+
 /** True for a key this product could have produced. Used when reading a key back from a row. */
 export function isContentKey(key: string): boolean {
   return /^(?:blobs|derived)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/.test(key);

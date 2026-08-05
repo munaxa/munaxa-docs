@@ -51,6 +51,14 @@ export interface S3AdapterOptions {
   readonly now: () => Date;
   /** Injected so a test can assert what was sent without standing up a server. */
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * How much of a streamed write is held before a part is sent.
+   *
+   * Deployment-tunable rather than fixed, because it is the only memory a server-produced
+   * artefact of any size costs, and the right number depends on how many exports a deployment
+   * runs at once — not on anything this adapter knows.
+   */
+  readonly streamPartBytes?: number;
 }
 
 /** Above this, an upload is offered as multipart so a large transfer can resume. */
@@ -198,6 +206,118 @@ export class S3StorageAdapter implements StoragePort {
     };
   }
 
+  /**
+   * A streamed write, as a multipart upload the API drives itself.
+   *
+   * This is the one place bytes the *product* made pass through the process, and they pass through
+   * a part at a time: the iterable is accumulated to `streamPartBytes`, that part is sent, and the
+   * buffer is released. Memory is one part regardless of the artefact's size, which is what the
+   * `audit.export` lane means by "streamed to storage rather than held in memory".
+   *
+   * Multipart even for a small object, deliberately. A single `PUT` would need the length in
+   * advance to sign, and an evidence bundle's length is not known until it has been produced —
+   * so a size-conditional branch here would be a second code path exercised only by the small
+   * case, which is the case that never fails. One path, always taken.
+   *
+   * An interrupted upload leaves parts the bucket's own lifecycle rule expires; the object itself
+   * never appears, because it only exists once the completion is accepted. That is the same
+   * property the filesystem adapter gets from writing to a `.partial` name.
+   */
+  async put(
+    key: StorageKey,
+    body: AsyncIterable<Uint8Array>,
+    options: { readonly contentType: string },
+  ): Promise<BlobMetadata> {
+    const partSize = this.options.streamPartBytes ?? MULTIPART_PART_SIZE_BYTES;
+    const uploadId = await this.beginMultipart(key, options.contentType);
+    const hash = createHash('sha256');
+    const parts: UploadPart[] = [];
+    let pending: Uint8Array[] = [];
+    let pendingBytes = 0;
+    let sizeBytes = 0;
+
+    const sendPart = async (): Promise<void> => {
+      const part = Buffer.concat(pending, pendingBytes);
+      pending = [];
+      pendingBytes = 0;
+      parts.push({
+        partNumber: parts.length + 1,
+        uploadId,
+        etag: await this.uploadPart(key, uploadId, parts.length + 1, part),
+      });
+    };
+
+    try {
+      for await (const chunk of body) {
+        hash.update(chunk);
+        sizeBytes += chunk.byteLength;
+        pending.push(chunk);
+        pendingBytes += chunk.byteLength;
+        if (pendingBytes >= partSize) {
+          await sendPart();
+        }
+      }
+      // The last part, and the only one allowed below the store's minimum. An empty artefact
+      // still gets one, because a multipart upload with no parts is refused.
+      if (pendingBytes > 0 || parts.length === 0) {
+        await sendPart();
+      }
+      await this.finishMultipart(key, uploadId, parts);
+    } catch (cause) {
+      await this.abortMultipart(key, uploadId);
+      throw cause instanceof StorageUnavailableError
+        ? cause
+        : new StorageUnavailableError('The artefact could not be written.', { cause });
+    }
+
+    return {
+      key,
+      sizeBytes,
+      contentType: options.contentType,
+      // The digest computed on the way past, not read back from the store: asking the store what
+      // it holds and then attesting that answer would attest the store rather than the bytes.
+      checksumSha256: hash.digest('hex'),
+      lastModifiedAt: this.options.now(),
+    };
+  }
+
+  async read(key: StorageKey): Promise<Buffer | null> {
+    const response = await this.send('GET', key);
+    if (response.status === 404) {
+      return null;
+    }
+    this.refuseFailure(response, 'read');
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  /** Every key under a prefix, following the store's continuation token to the end. */
+  async list(prefix: string): Promise<readonly StorageKey[]> {
+    const keys: StorageKey[] = [];
+    let token: string | undefined;
+
+    do {
+      const response = await this.sendToBucket({
+        'list-type': '2',
+        prefix,
+        ...(token === undefined ? {} : { 'continuation-token': token }),
+      });
+      this.refuseFailure(response, 'list');
+      const xml = await response.text();
+      for (const match of xml.matchAll(/<Key>([^<]*)<\/Key>/g)) {
+        const key = match[1];
+        if (key !== undefined) {
+          keys.push(decodeXmlText(key));
+        }
+      }
+      token =
+        elementText(xml, 'IsTruncated') === 'true'
+          ? (elementText(xml, 'NextContinuationToken') ?? undefined)
+          : undefined;
+    } while (token !== undefined);
+
+    return keys.sort();
+  }
+
   async copy(from: StorageKey, to: StorageKey): Promise<void> {
     // Server-side: the bytes never leave the store, so copying a 2 GB drawing costs the API
     // nothing but the round trip. The source is given as a bucket-qualified path because that is
@@ -257,6 +377,43 @@ export class S3StorageAdapter implements StoragePort {
     return uploadId;
   }
 
+  /** One part of a server-driven multipart upload. Returns the entity tag the store answered. */
+  private async uploadPart(
+    key: StorageKey,
+    uploadId: string,
+    partNumber: number,
+    part: Buffer,
+  ): Promise<string> {
+    const response = await this.send(
+      'PUT',
+      key,
+      {},
+      { partNumber: String(partNumber), uploadId },
+      part,
+    );
+    this.refuseFailure(response, 'write');
+    const etag = response.headers.get('etag');
+    if (etag === null) {
+      throw new StorageUnavailableError('Object storage did not acknowledge a part.');
+    }
+    return etag;
+  }
+
+  /**
+   * Abandons a multipart upload whose stream failed.
+   *
+   * Failures here are swallowed: the caller is already throwing about something that matters
+   * more, and a bucket lifecycle rule expires abandoned parts anyway. Replacing a real error with
+   * "and the cleanup also failed" would lose the diagnosis.
+   */
+  private async abortMultipart(key: StorageKey, uploadId: string): Promise<void> {
+    try {
+      await this.send('DELETE', key, {}, { uploadId });
+    } catch {
+      // Deliberately ignored — see above.
+    }
+  }
+
   private async finishMultipart(
     key: StorageKey,
     uploadId: string,
@@ -298,7 +455,7 @@ export class S3StorageAdapter implements StoragePort {
     key: StorageKey,
     extraHeaders: Readonly<Record<string, string>> = {},
     query: Readonly<Record<string, string>> = {},
-    body?: string,
+    body?: string | Buffer,
   ): Promise<Response> {
     const payloadHash =
       body === undefined ? EMPTY_PAYLOAD_HASH : createHash('sha256').update(body).digest('hex');
@@ -320,11 +477,45 @@ export class S3StorageAdapter implements StoragePort {
       return await this.fetch(`${this.origin}${path}${search ? `?${search}` : ''}`, {
         method,
         headers: { ...headers },
-        ...(body !== undefined && { body }),
+        ...(body !== undefined && {
+          body: typeof body === 'string' ? body : new Uint8Array(body),
+        }),
       });
     } catch (cause) {
       // A store that cannot be reached is a 503 with a retry hint, never a 500 that reads as a
       // defect in this product (`11-storage-architecture.md` §8).
+      throw new StorageUnavailableError('Object storage could not be reached.', { cause });
+    }
+  }
+
+  /**
+   * A request against the bucket rather than an object — the listing, and only the listing.
+   *
+   * Separate from `send` because `pathFor` always names a key, and the bucket's own path differs
+   * between the two addressing styles: `/bucket` under path style and `/` under virtual host.
+   * Folding that into the key-signing helper would put a "when the key is empty" branch in the
+   * one method every object operation goes through.
+   */
+  private async sendToBucket(query: Readonly<Record<string, string>>): Promise<Response> {
+    const path = this.options.forcePathStyle ? `/${this.options.bucket}` : '/';
+    const headers = signRequest({
+      credentials: this.options.credentials,
+      region: this.options.region,
+      service: 's3',
+      at: this.options.now(),
+      method: 'GET',
+      host: this.host,
+      path,
+      query,
+      headers: {},
+      payloadHash: EMPTY_PAYLOAD_HASH,
+    });
+    try {
+      return await this.fetch(`${this.origin}${path}?${new URLSearchParams(query).toString()}`, {
+        method: 'GET',
+        headers: { ...headers },
+      });
+    } catch (cause) {
       throw new StorageUnavailableError('Object storage could not be reached.', { cause });
     }
   }
@@ -341,7 +532,22 @@ export class S3StorageAdapter implements StoragePort {
   }
 }
 
-/** The one XML element this adapter reads. A parser dependency for a single tag is not worth it. */
+/**
+ * The five XML entities a listing can contain.
+ *
+ * A key legitimately holds `&` — a document title never reaches a key, but a tenant prefix could
+ * — and a listing that returned `&amp;` in a key would address an object that does not exist.
+ */
+function decodeXmlText(value: string): string {
+  return value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&');
+}
+
+/** The XML elements this adapter reads. A parser dependency for a handful of tags is not worth it. */
 function elementText(xml: string, tag: string): string | null {
   const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml);
   return match?.[1] ?? null;

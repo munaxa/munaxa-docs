@@ -122,6 +122,8 @@ export class FakeLock implements LockPort {
  *  without running a worker. */
 export class RecordingQueue implements QueuePort {
   readonly enqueued: { queue: string; payload: unknown; options: JobOptions }[] = [];
+  /** The recurring declarations, so a test can assert a schedule was declared exactly once. */
+  readonly scheduled: { queue: string; name: string; cron: string; payload: unknown }[] = [];
 
   enqueue<TPayload extends object>(
     queue: string,
@@ -155,5 +157,33 @@ export class RecordingQueue implements QueuePort {
       delayed: 0,
       failed: 0,
     });
+  }
+
+  schedule<TPayload extends object>(
+    queue: string,
+    name: string,
+    cron: string,
+    payload: TPayload,
+  ): Promise<void> {
+    // Upserted, exactly as the broker does: every instance declares the same schedule and there
+    // is one of it, which is the property that replaces a lock around a timer.
+    const existing = this.scheduled.findIndex(
+      (entry) => entry.queue === queue && entry.name === name,
+    );
+    const declaration = { queue, name, cron, payload };
+    if (existing === -1) {
+      this.scheduled.push(declaration);
+    } else {
+      this.scheduled[existing] = declaration;
+    }
+    return Promise.resolve();
+  }
+
+  unschedule(queue: string, name: string): Promise<void> {
+    const index = this.scheduled.findIndex((entry) => entry.queue === queue && entry.name === name);
+    if (index !== -1) {
+      this.scheduled.splice(index, 1);
+    }
+    return Promise.resolve();
   }
 }

@@ -56,6 +56,7 @@ export function DocumentScreen({
   preview,
   approvals,
   revisions,
+  audit,
 }: {
   readonly document: Document;
   /** Candidate destinations for a move. Within the document's own library. */
@@ -91,6 +92,14 @@ export function DocumentScreen({
    * and, as with Phase 4 and Phase 6, nothing else this screen knows had to change.
    */
   readonly preview?: ReactNode;
+  /**
+   * The document's own audit timeline — Audit's feature, passed in like the other three.
+   *
+   * A slot rather than a fetch, and a *suspended* one at the page: this screen renders it wherever
+   * it arrives, and the trail being slow to read never holds up the record it is about
+   * (`16-frontend-architecture.md` §7).
+   */
+  readonly audit?: ReactNode;
 }): ReactNode {
   const translate = useTranslate();
   const router = useRouter();
@@ -393,6 +402,8 @@ export function DocumentScreen({
       {approvals}
 
       {revisions}
+
+      {audit}
 
       <p>
         <Button

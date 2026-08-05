@@ -61,6 +61,22 @@ export class UnconfiguredStorageAdapter implements StoragePort {
     return Promise.reject(this.failure());
   }
 
+  put(
+    _key: StorageKey,
+    _body: AsyncIterable<Uint8Array>,
+    _options: { readonly contentType: string },
+  ): Promise<BlobMetadata> {
+    return Promise.reject(this.failure());
+  }
+
+  read(_key: StorageKey): Promise<Buffer | null> {
+    return Promise.reject(this.failure());
+  }
+
+  list(_prefix: string): Promise<readonly StorageKey[]> {
+    return Promise.reject(this.failure());
+  }
+
   private failure(): ProviderNotConfiguredError {
     return new ProviderNotConfiguredError('Object storage', 'STORAGE_DRIVER');
   }

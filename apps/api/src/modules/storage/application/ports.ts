@@ -159,6 +159,32 @@ export interface StorageService {
    * it from quota and purges it with its source.
    */
   storeDerived(input: { content: Buffer; mimeType: string }): Promise<FileObjectRecord>;
+
+  /**
+   * Stores an artefact the API produced *and never held whole* — an evidence bundle.
+   *
+   * The difference from `storeDerived` is the `Buffer`, and it is not cosmetic. A thumbnail is
+   * kilobytes and content-addressed, so holding it is free and hashing it first is what names it.
+   * A seven-year evidence export is hundreds of megabytes and unique by construction, so holding
+   * it would contradict the `audit.export` lane's own description — "streamed to storage rather
+   * than held in memory" — and content-addressing it would buy a deduplication that can never hit.
+   *
+   * The key is therefore supplied by the caller rather than derived from a digest that is not
+   * known until the last byte, and the digest is computed on the way past and returned. The row is
+   * `derived`, so it is excluded from quota and purged with the export it belongs to, and it is
+   * `SKIPPED` by the scanner for the same reason a thumbnail is: the product made it.
+   */
+  storeStreamed(input: {
+    /** The bundle these bytes belong to. Storage derives the key; no caller builds one. */
+    bundleId: string;
+    /** The artefact's name within the bundle — `events.jsonl`, `manifest.json`. */
+    name: string;
+    body: AsyncIterable<Uint8Array>;
+    mimeType: string;
+  }): Promise<FileObjectRecord>;
+
+  /** The prefix a bundle's artefacts live under, for the record that describes it. */
+  evidencePrefix(bundleId: string): string;
 }
 
 export interface IssuedUploadTarget {

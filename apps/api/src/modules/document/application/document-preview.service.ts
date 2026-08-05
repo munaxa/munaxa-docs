@@ -1,7 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
+  ActorChannel,
   type AnyId,
+  AuditOutcome,
   AuditSubjectType,
   type DocumentId,
   type RevisionId,
@@ -11,6 +13,7 @@ import {
 } from '@edms/domain';
 import type { PreviewContent, PreviewManifest, PreviewText } from '@edms/contracts';
 
+import { READ_AUDIT_BUFFER, type ReadAuditBuffer } from '../../../core/audit/read-audit.port';
 import { SETTINGS_READER, type SettingsReader } from '../../../core/settings/settings.port';
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
 import { ForbiddenError, NotFoundError } from '../../../core/errors/application-errors';
@@ -44,7 +47,8 @@ import {
  * level demands, never the original file.
  *
  * Issuance is audited: a view through the existing `DOCUMENT_VIEWED` action — gated by
- * `audit.readEventsAboveRank`, its first consumer — and a print through 13 §2's `PRINTED` row,
+ * `audit.readEventsAboveRank`, its first consumer, and since Phase 9 written through 13 §5's
+ * buffer rather than inline — and a print through 13 §2's `PRINTED` row, synchronously and
  * unconditionally, because 13 says prints always are. The `open()` use case keeps writing
  * `VIEWED` for the record being opened; this writes it for content actually served, which is
  * the fact a confidentiality level's "audit on read" is about.
@@ -58,6 +62,7 @@ export class DocumentPreviewService {
     @Inject(REVISION_WRITER) private readonly revisions: RevisionWriter,
     @Inject(USER_DIRECTORY) private readonly users: UserDirectory,
     @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
+    @Inject(READ_AUDIT_BUFFER) private readonly readAudit: ReadAuditBuffer,
     private readonly preview: PreviewQueryService,
   ) {}
 
@@ -188,15 +193,51 @@ export class DocumentPreviewService {
     if (!audited) {
       return this.writer.read(build);
     }
-    return this.writer.write<PreviewContent>(async () => {
-      const content = await build();
-      return {
-        result: content,
-        change: {
-          action:
-            purpose === 'print' ? DocumentAudit.DOCUMENT_PRINTED : DocumentAudit.DOCUMENT_VIEWED,
-          subjectType: AuditSubjectType.DOCUMENT,
-          subjectId: asId<AnyId>(documentId),
+
+    // A print is a synchronous, transactional write; a view goes to the buffer. That is not an
+    // inconsistency but 13 §5's own split: `VIEWED` is the one event the specification exempts
+    // from synchronous writing because "it must not cost a transaction per page view", and a
+    // print is rare, deliberate, and the thing a confidentiality level most wants a hard record
+    // of. Phase 9 makes the exemption real; until then every page turn took the tenant's audit
+    // advisory lock.
+    if (purpose === 'print') {
+      return this.writer.write<PreviewContent>(async () => {
+        const content = await build();
+        return {
+          result: content,
+          change: {
+            action: DocumentAudit.DOCUMENT_PRINTED,
+            subjectType: AuditSubjectType.DOCUMENT,
+            subjectId: asId<AnyId>(documentId),
+            operation: AdministrativeOperation.UPDATED,
+            after: {
+              preview: true,
+              revisionId,
+              served: content.url !== null,
+              watermark: level.watermark,
+            },
+          },
+        };
+      });
+    }
+
+    const content = await this.writer.read(build);
+    const context = requireContext();
+    await this.readAudit.record(
+      {
+        tenantId: context.tenantId,
+        userId: context.userId,
+        channel: ActorChannel.WEB,
+        correlationId: context.correlationId,
+        ipAddress: null,
+        userAgent: null,
+      },
+      {
+        action: DocumentAudit.DOCUMENT_VIEWED,
+        subjectType: AuditSubjectType.DOCUMENT,
+        subjectId: asId<AnyId>(documentId),
+        outcome: AuditOutcome.SUCCESS,
+        payload: {
           operation: AdministrativeOperation.UPDATED,
           after: {
             preview: true,
@@ -205,8 +246,9 @@ export class DocumentPreviewService {
             watermark: level.watermark,
           },
         },
-      };
-    });
+      },
+    );
+    return content;
   }
 
   /** 14 §4's parameters: who is looking, at which controlled document. */

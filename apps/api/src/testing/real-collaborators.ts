@@ -3,6 +3,14 @@ import { AdministeredWriter } from '../core/persistence/administered-writer';
 import { RecordStamps } from '../core/persistence/record-stamps';
 import { PrismaOutboxWriter } from '../core/outbox/prisma-outbox.writer';
 import type { UnitOfWork } from '../core/prisma/unit-of-work';
+import type { ReadAuditBuffer } from '../core/audit/read-audit.port';
+import { AccessDenialRecorder } from '../core/authorization/access-denial.recorder';
+import { AuditExportService } from '../modules/audit/application/audit-export.service';
+import { AuditReadService } from '../modules/audit/application/audit-read.service';
+import { AuditVerificationService } from '../modules/audit/application/audit-verification.service';
+import { BufferedReadAuditWriter } from '../modules/audit/infrastructure/buffered-read-audit.writer';
+import { PrismaAuditExportRepository } from '../modules/audit/infrastructure/prisma-audit-export.repository';
+import { StorageCheckpointStore } from '../modules/audit/infrastructure/storage-checkpoint.store';
 import { ChainedAuditWriter } from '../modules/audit/infrastructure/chained-audit.writer';
 import { PrismaAuditRepository } from '../modules/audit/infrastructure/prisma-audit.repository';
 import { DefaultOrganizationService } from '../modules/organization/application/organization.service';
@@ -132,6 +140,7 @@ export function realWriteStack(
 ): {
   readonly stamps: RecordStamps;
   readonly audit: ChainedAuditWriter;
+  readonly readAudit: BufferedReadAuditWriter;
   readonly outbox: PrismaOutboxWriter;
   readonly writer: AdministeredWriter;
 } {
@@ -140,9 +149,49 @@ export function realWriteStack(
   return {
     stamps,
     audit,
+    readAudit: realReadAuditBuffer(clock, unitOfWork, audit),
     outbox: new PrismaOutboxWriter(stamps),
     writer: new AdministeredWriter(unitOfWork, audit, stamps),
   };
+}
+
+/**
+ * The real read-audit buffer, flushed by the test rather than by its timer.
+ *
+ * A double would defeat the point: what these suites assert about `VIEWED` is that a buffered
+ * event is *still hash-chained and still contiguous* when it lands, and only the real flush
+ * against a real database can answer that. The interval is set beyond any test's lifetime so
+ * nothing flushes behind the assertions' back; a suite calls `flush()` when it wants the rows.
+ */
+export function realReadAuditBuffer(
+  clock: ClockPort,
+  unitOfWork: UnitOfWork,
+  audit: ChainedAuditWriter,
+): BufferedReadAuditWriter {
+  return new BufferedReadAuditWriter(
+    new PrismaAuditRepository(),
+    audit,
+    unitOfWork,
+    clock,
+    {
+      audit: {
+        readBufferSize: 1_000,
+        readBufferMax: 10_000,
+        readFlushIntervalMs: 3_600_000,
+      },
+    } as AppConfig,
+    silentLogger(),
+  );
+}
+
+/** Logs nowhere. A suite's output is its assertions, not a service's info lines. */
+function silentLogger(): Logger {
+  return {
+    info: () => undefined,
+    warn: () => undefined,
+    error: () => undefined,
+    debug: () => undefined,
+  } as unknown as Logger;
 }
 
 /**
@@ -202,7 +251,7 @@ export interface DocumentLibraryOptions {
  * isolation assertions about the filesystem rather than about a wrapper.
  */
 export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLibraryStack {
-  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const { stamps, outbox, readAudit, writer } = realWriteStack(options.clock, options.unitOfWork);
 
   const localStorage = new LocalStorageAdapter({
     root: options.storageRoot,
@@ -249,6 +298,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     // that does nothing is honest about that rather than pretending to render.
     { generate: () => Promise.resolve() },
     outbox,
+    readAudit,
     writer,
   );
 
@@ -498,6 +548,18 @@ export function realPreviewStack(options: PreviewStackOptions): PreviewStack {
 export function realDocumentPreview(options: {
   clock: ClockPort;
   unitOfWork: UnitOfWork;
+  /**
+   * The read-audit buffer to record `VIEWED` into.
+   *
+   * Passed in rather than created here so a suite can *flush* it: since Phase 9 a view is buffered
+   * (13 §5), so a test asserting that a view was recorded has to say when the batch lands. One
+   * built here would be one the test could not reach, and the assertion would be about nothing.
+   *
+   * Typed as the core port rather than the class, so a suite under `modules/preview/` can hold one
+   * without importing the audit module's internals — which the boundary lint forbids, for tests as
+   * much as for code.
+   */
+  readAudit?: ReadAuditBuffer;
   storage: DefaultStorageService;
   storagePort: StoragePort;
   config: AppConfig;
@@ -505,7 +567,9 @@ export function realDocumentPreview(options: {
   users: Pick<UserAdminService, 'get'>;
   directory: UserDirectory;
 }): DocumentPreviewService {
-  const { stamps, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const stack = realWriteStack(options.clock, options.unitOfWork);
+  const { stamps, writer } = stack;
+  const readAudit = options.readAudit ?? stack.readAudit;
   const settings = {
     get: (definition: { defaultValue: unknown }) => Promise.resolve(definition.defaultValue),
   } as never;
@@ -520,6 +584,7 @@ export function realDocumentPreview(options: {
     new PrismaRevisionWriter(stamps, new PrismaOutboxWriter(stamps)),
     options.directory,
     settings,
+    readAudit,
     realPreviewQuery(options),
   );
 }
@@ -572,6 +637,9 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     },
     depth: (queueName) =>
       Promise.resolve({ queue: queueName, waiting: 0, active: 0, delayed: 0, failed: 0 }),
+    // The engine declares no schedules; these exist so the double still satisfies the port.
+    schedule: () => Promise.resolve(),
+    unschedule: () => Promise.resolve(),
   };
 
   const routingRepository = new PrismaApprovalRoutingRepository(stamps);
@@ -756,6 +824,103 @@ export function realSearchStack(options: SearchStackOptions): SearchStack {
     index,
     source,
     rebuildRepository,
+    enqueuedJobs,
+  };
+}
+
+// --- Phase 9: audit and compliance -------------------------------------------------------------
+//
+// The same boundary reason once more, and the assertions are as database-shaped as they get: a
+// chain that verifies over rows a *real* writer appended under a *real* advisory lock, a tampered
+// row the table itself refuses, a gap the sequence makes visible, a timeline the real resolver
+// refuses, and a bundle whose manifest digests match bytes that genuinely went to a filesystem.
+//
+// The checkpoint store is deliberately the real one over a real filesystem adapter. A double would
+// answer from the same belief as the code, and the property under test — that a checkpoint written
+// *outside* the database is signed and refused when forged — is exactly the one a double erases.
+
+export interface AuditStackOptions {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config: AppConfig;
+  readonly storage: DefaultStorageService;
+  readonly storagePort: StoragePort;
+}
+
+export interface AuditStack {
+  readonly repository: PrismaAuditRepository;
+  readonly writer: ChainedAuditWriter;
+  readonly readAudit: BufferedReadAuditWriter;
+  readonly read: AuditReadService;
+  readonly verification: AuditVerificationService;
+  readonly exports: AuditExportService;
+  readonly exportRepository: PrismaAuditExportRepository;
+  readonly checkpoints: StorageCheckpointStore;
+  readonly acl: PrismaAclResolver;
+  /** What an export request handed the lane. */
+  readonly enqueuedJobs: { readonly queue: string; readonly jobId: string }[];
+}
+
+export function realAuditStack(options: AuditStackOptions): AuditStack {
+  const { audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const repository = new PrismaAuditRepository();
+  const acl = new PrismaAclResolver(options.unitOfWork);
+  const logger = silentLogger();
+  const denials = new AccessDenialRecorder(audit, logger);
+
+  const checkpoints = new StorageCheckpointStore(options.storagePort, options.config, logger);
+  const verification = new AuditVerificationService(
+    repository,
+    checkpoints,
+    outbox,
+    options.unitOfWork,
+    options.clock,
+    options.config,
+    logger,
+  );
+
+  const enqueuedJobs: AuditStack['enqueuedJobs'] = [];
+  const queue = {
+    enqueue: (queueName: string, _payload: object, jobOptions: { jobId: string }) => {
+      enqueuedJobs.push({ queue: queueName, jobId: jobOptions.jobId });
+      return Promise.resolve({
+        queue: queueName,
+        jobId: jobOptions.jobId,
+        availableAt: options.clock.now(),
+      });
+    },
+    cancel: () => Promise.resolve(true),
+    depth: (queueName: string) =>
+      Promise.resolve({ queue: queueName, waiting: 0, active: 0, delayed: 0, failed: 0 }),
+    schedule: () => Promise.resolve(),
+    unschedule: () => Promise.resolve(),
+  } satisfies QueuePort;
+
+  const exportRepository = new PrismaAuditExportRepository();
+
+  return {
+    repository,
+    writer: audit,
+    readAudit: realReadAuditBuffer(options.clock, options.unitOfWork, audit),
+    read: new AuditReadService(repository, acl, denials, writer),
+    verification,
+    exportRepository,
+    exports: new AuditExportService(
+      exportRepository,
+      repository,
+      checkpoints,
+      options.storage,
+      queue,
+      outbox,
+      options.unitOfWork,
+      options.clock,
+      options.config,
+      logger,
+      verification,
+      writer,
+    ),
+    checkpoints,
+    acl,
     enqueuedJobs,
   };
 }
