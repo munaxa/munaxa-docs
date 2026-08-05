@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 8**:
+and the product is built through **Phase 9**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -110,11 +110,21 @@ and the product is built through **Phase 8**:
   normalisation in the query path, keyset pagination, saved and recent searches, the audited
   `search:all` bypass, and the resumable shadow-table rebuild that never empties a live index.
 
-Audit & compliance is Phase 9, and each report says what its phase deliberately left out.
+- **Phase 9** — audit and compliance. The half of the audit architecture that reads: `AUDIT_SERVICE`
+  bound at last, the document timeline filtered at its subject through the resolver Phase 8 bound
+  rather than by a second predicate, the audit search behind `audit:view`, the chain's digest widened
+  to cover the reason, the delegate and the sequence — versioned rather than backdated, because the
+  table refuses the `UPDATE` that would rehash it — signed daily checkpoints kept in a store the
+  database cannot reach, the verification job finally firing on a named schedule, read auditing
+  buffered as 13 §5 had specified since Phase 0, evidence bundles streamed to storage with a manifest
+  that states exactly what each row's digest attests, and `ACCESS_DENIED` given the writer 08 §7 has
+  required since Phase 1.
+
+Soft delete and retention are Phase 10, and each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-8-search.md`](./docs/reports/phase-8-search.md); the original gate is
+[`phase-9-audit-compliance.md`](./docs/reports/phase-9-audit-compliance.md); the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

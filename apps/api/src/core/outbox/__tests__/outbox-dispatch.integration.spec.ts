@@ -61,6 +61,9 @@ const queue: QueuePort = {
   cancel: () => Promise.resolve(true),
   depth: (queueName) =>
     Promise.resolve({ queue: queueName, waiting: 0, active: 0, delayed: 0, failed: 0 }),
+  // The dispatcher never declares a schedule; these exist so the double still satisfies the port.
+  schedule: () => Promise.resolve(),
+  unschedule: () => Promise.resolve(),
 };
 
 function placement(): TenantPlacement {

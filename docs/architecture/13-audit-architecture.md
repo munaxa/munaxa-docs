@@ -25,9 +25,42 @@
 | Permission | `ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN`, `ROLE_ASSIGNED`, `ROLE_PERMISSION_CHANGED`, `ACCESS_DENIED` |
 | Delegation | `DELEGATION_CREATED`, `DELEGATION_USED`, `DELEGATION_REVOKED`, `DELEGATION_EXPIRED` |
 | Retention | `SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED` |
-| Security | `LOGIN_SUCCEEDED`, `LOGIN_FAILED`, `MFA_ENROLLED`, `MFA_FAILED`, `PASSWORD_CHANGED`, `SESSION_REVOKED`, `SIGNED_URL_ISSUED`, `SCAN_INFECTED`, `INTEGRITY_MISMATCH` |
+| Security | `LOGIN_SUCCEEDED`, `LOGIN_FAILED`, `MFA_ENROLLED`, `MFA_FAILED`, `PASSWORD_CHANGED`, `SESSION_REVOKED`, `FILE_DOWNLOAD_ISSUED`, `FILE_SCANNED`, `INTEGRITY_MISMATCH` |
 | Administration | `SETTING_CHANGED`, `TYPE_CHANGED`, `FIELD_CHANGED`, `POLICY_CHANGED`, `USER_CREATED`, `USER_CHANGED`, `USER_DISABLED`, `ORG_CHANGED`, `LIBRARY_CHANGED`, `FOLDER_CHANGED` |
+| Document (Phase 3) | `DOCUMENT_CHANGED`, `DOCUMENT_MOVED`, `DOCUMENT_VIEWED`, `DOCUMENT_PRINTED`, `FILE_UPLOADED` |
+| Workflow (Phase 4) | `SUBMITTED`, `STAGE_ACTIVATED`, `APPROVED`, `REJECTED`, `CHANGES_REQUESTED`, `ESCALATED`, `AUTO_APPROVED`, `WITHDRAWN`, `WORKFLOW_PAUSED`, `TIMER_FIRED`, `ROUTING_CHANGED` |
+| Revision (Phase 6) | `CHECKED_OUT`, `CHECKED_IN`, `CHECKOUT_CANCELLED`, `CHECKOUT_FORCED`, `PUBLISHED`, `SUPERSEDED`, `RESTORED_FROM` |
+| Numbering (Phase 5) | `NUMBER_RESERVED`, `NUMBER_ASSIGNED`, `NUMBER_VOIDED` |
+| Search (Phase 8) | `SEARCH_PERFORMED`, `SEARCH_REBUILD_REQUESTED` |
 | Export | `AUDIT_EXPORTED`, `REPORT_EXPORTED`, `BULK_DOWNLOAD` |
+
+**The table above is the whole catalogue, and Phase 9 is where it became so.** The rows from
+`Document (Phase 3)` down were previously only in the per-phase addenda at the foot of this
+document, which meant the one table a compliance report reads did not name most of the actions the
+product writes. The addenda remain — they carry the *reasoning* for each split — and the table now
+carries the vocabulary.
+
+`SIGNED_URL_ISSUED` was renamed to **`FILE_DOWNLOAD_ISSUED`**, and `SCAN_INFECTED` to
+**`FILE_SCANNED`**, to match the code rather than the other way round. Phase 3 wrote both actions
+under those names and the catalogue was never reconciled, so a filter written from this document
+would have matched nothing. The code's names are also the better ones: a download URL is issued for
+a *file*, and a scan is recorded whatever its verdict — `SCAN_INFECTED` could not express a clean
+scan, which is most of them.
+
+### Which rows still have no writer, and whose they are
+
+| Rows | Owner |
+| --- | --- |
+| `ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN` | The phase that builds ACL entries |
+| `DELEGATION_*` (4 rows) | Phase 11 — delegation |
+| `SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED` | Phase 10 — soft delete and retention |
+| `MFA_ENROLLED`, `MFA_FAILED`, `SESSION_REVOKED` | Phase 14 — security |
+| `REPORT_EXPORTED` | Phase 15 — reporting |
+| `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability |
+| `INTEGRITY_MISMATCH` | Phase 18 — the integrity sweep that would detect one |
+
+Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
+A row here with no owner is an oversight; a row with an owner is a schedule.
 
 The catalogue names **one action per area**, not one per resource and verb. A company, an entity, a
 branch and a department all write `ORG_CHANGED`; a library created, renamed, deleted or restored writes
@@ -86,7 +119,9 @@ graph LR
   chain at that point and every point after it.
 - A daily job verifies the chain, records a signed checkpoint (`sequence`, `hash`, timestamp), and
   alerts on any break. Checkpoints are written to a separate store so an attacker with database
-  access alone cannot rewrite history undetected.
+  access alone cannot rewrite history undetected. Built in Phase 9 — see the section at the foot of
+  this document for the store, the key and why resuming from a checkpoint is only sound because it
+  is signed.
 - Database grants: the application role has `INSERT` and `SELECT` on `audit_event` and **no
   `UPDATE` or `DELETE`**. A `BEFORE UPDATE OR DELETE` trigger raises unconditionally, so even the
   migration role cannot quietly alter a row.
@@ -114,7 +149,9 @@ does not — that is the property the whole design exists to guarantee.
 
 Read auditing (`VIEWED`) is the one exception to synchronous writing: it is buffered and flushed in
 batches, because it must not cost a transaction per page view. Buffered events are still
-hash-chained, and a flush failure raises an alert.
+hash-chained, and a flush failure raises an alert. Phase 9 is where this became true of the code;
+until then every audited view took the tenant's audit advisory lock inline. A **print** is not
+exempt — §2's prints are audited unconditionally and synchronously.
 
 ## 6. Reading, retention and export
 
@@ -127,7 +164,9 @@ hash-chained, and a flush failure raises an alert.
 | SIEM | Optional per-tenant streaming of security events to an external sink |
 
 Retention: audit is kept for the tenant's compliance period (default 7 years), partitioned monthly,
-and moved to cold storage after 12 months. **Audit is never deleted with its subject**; when a
+and moved to cold storage after 12 months. **Partitioning is not built** — Phase 9 added the action
+index this section's audit search needs and deferred the partitions with a stated trigger; see the
+foot of this document. **Audit is never deleted with its subject**; when a
 document is purged, its audit trail remains, with the document number preserved so the record is
 still meaningful.
 
@@ -237,3 +276,122 @@ as a decision's audit row against its domain event.
 
 **What is deliberately not audited: saved and recent searches.** One person's shortcuts are
 facts about a menu, exactly as favourites are (Phase 3's row above).
+
+## Phase 9 — what the read path made true, and what it made honest
+
+Phase 1 built the write path and the chain. Phase 9 builds everything that *reads* them, and in
+doing so it had to settle four things this document asserted and the code did not do. Each is
+recorded here because the document, not the code, was the thing that had to change in two of them.
+
+### The digest was widened, and versioned rather than backdated
+
+Phase 1's digest covered nine fields — event id, tenant, instant, actor, action, subject type,
+subject id, outcome and payload — and left seven uncovered: `sequence`, `channel`, `reason`,
+`on_behalf_of_id`, `correlation_id`, `ip_address` and `user_agent`. Three of those are evidence in
+their own right. A confidentiality level can *require* a stated reason for access (08 §4); a
+delegation puts a second identity on an act; and the sequence is the entire argument that nothing
+was removed from the end. An evidence bundle claiming to prove them would have claimed more than
+the chain proved.
+
+So `chain_hash_version` is now a column, `2` covers every field but the hashes themselves, and new
+appends are written under it. **Existing rows keep the digest they were written with**, because
+they cannot be rehashed: `audit_event` refuses `UPDATE` to every role including the owner, and that
+refusal is the property the whole design exists for. Verification dispatches on the row's own
+version, and an evidence bundle's manifest states, per version present in its range, exactly which
+columns that version's hash attests. The cost is a permanent branch in the verifier and a bundle
+that says two different things about two halves of a long trail — which is the honest description
+of what a widened digest can offer a table nobody may edit.
+
+### Checkpoints exist, outside the database, signed
+
+§4 promised a daily signed checkpoint "written to a separate store so an attacker with database
+access alone cannot rewrite history undetected", and there was no table, no key and no store. There
+is now no table either, deliberately: a checkpoint beside the events it attests is rewritten by the
+same access that rewrote them. The store is **object storage**, keyed so that lexicographic order
+is chronological order, and the checkpoint is signed with `AUDIT_CHECKPOINT_SECRET` — held in the
+deployment's own secret material, in neither the database nor the bucket. Production refuses to
+boot without one.
+
+The signature is what makes resuming safe. A pass resumes from the last checkpoint rather than from
+genesis, and the store refuses to return a checkpoint whose signature does not recompute — so
+"start from sequence 84,213 with digest 9c2f…" is an authenticated claim rather than a note an
+attacker could move.
+
+### The verification job runs, on the lane the catalogue already gave it
+
+`audit.verify-chain` was in `SCHEDULE` with a cron expression and nothing to fire it. It now fires:
+`QueuePort.schedule` upserts a **named** cron schedule in the broker, so every instance that boots
+declares the same one and there is one firing rather than one per instance — strictly stronger than
+the lock around a timer that `ScheduledJob.lockKey` anticipated, because there was only ever one
+pass to run. The firing is tenant-less and fans out one job per tenant, since each tenant has its
+own database and its own chain.
+
+It consumes in the **API process**, behind `queue.consumersEnabled`, which is where every consumer
+since Phase 4 lives. `apps/worker` composes none of the domain modules, so moving this there would
+mean composing them twice or having one flag mean two different things in two processes.
+
+A pass is bounded by `AUDIT_VERIFY_MAX_EVENTS` and checkpoints wherever it stopped, so a deployment
+meeting seven years of trail on its first night catches up over several and then verifies one day
+at a time.
+
+### Read auditing is buffered, as §5 always said it was
+
+§5 has said since Phase 0 that `VIEWED` "is buffered and flushed in batches, because it must not
+cost a transaction per page view". It was not: every audited view took
+`pg_advisory_xact_lock(hashtext(tenant))` inline, and `audit.readEventsAboveRank` defaults to `0`,
+so *every* view did. A document everybody reads throttled every approval, upload and publication in
+the same organisation.
+
+`READ_AUDIT_BUFFER` is the buffer. Flushes take the lock once and chain the whole batch under it,
+so a hundred views cost one lock and the chain cannot tell the difference afterwards. `occurredAt`
+is captured when somebody looked, not when the flush ran. Nothing is dropped: a failed flush
+retains its batch and retries, and past the hard bound `record` writes synchronously — Phase 1's
+behaviour, slower rather than lossy, which is the only degradation §7 permits.
+
+**A print stays synchronous.** §5 exempts `VIEWED` and nothing else, prints are rare and deliberate,
+and a print is the act a confidentiality level most wants a hard record of.
+
+### Reading, and how a timeline is filtered
+
+§6's "filtered to what the caller may see" has one shape the row model supports. An audit row
+carries `(subject_type, subject_id)` and no scope chain, and since Phase 8 a `SEARCH` row carries
+the *actor's own user id* as its subject — the first subject in the product that is not a domain
+object. So the decision is resolved **once, at the subject**, before the query: a timeline names one
+object, whether the caller may see that object is one question, and it is asked of `ACL_RESOLVER` —
+the same port and binding Phase 8 bound for search. Every row on the page is about that object, so
+one decision covers the page exactly.
+
+A per-row lookup would also have been wrong where it worked. Audit outlives its subject (§1): a
+purged document's trail remains, deliberately. A filter resolving each row's object would silently
+hide the history of a thing that no longer exists, which is the history that matters most.
+
+The **audit search** crosses subjects, so there is no object to resolve; `audit:view` gates it, and
+that grant *is* the filter. Narrowing an auditor's search by document ACLs would produce an auditor
+who cannot audit — the opposite of the row §5 of 08 writes for them.
+
+### Volume: what this phase does, and what it defers
+
+§6 specifies 7 years, monthly range partitions and cold storage after 12 months. This phase adds
+**an index on `(tenant_id, action, occurred_at)`** — §6's own audit search filters by action first,
+and without it that query is a sequential scan of the trail — and it does **not** partition.
+
+Partitioning is deferred on purpose rather than forgotten. Converting `audit_event` to a partitioned
+table is a rewrite of the one table that may not be rewritten while the application is writing to
+it, the retention that would detach a partition is Phase 10's, and the immutability trigger already
+leaves DDL uncovered so that a detach will work when it arrives. Doing it now would mean building
+the mechanism a month before anything could use it, against a table whose size no deployment has yet.
+The trigger for doing it is Phase 10 or the first tenant whose trail passes tens of millions of rows,
+whichever comes first.
+
+### The export
+
+§6's signed bundle exists: `events.jsonl`, `events.csv`, `manifest.json` and `manifest.sig` under
+one prefix in storage, produced on the `audit.export` lane, downloaded through signed URLs, and
+audited three times — the request, the outcome, and every issuance of the links. The rows stream:
+`StoragePort.put` writes an artefact a part at a time, so the lane's own description ("streamed to
+storage rather than held in memory") is true rather than aspirational.
+
+It is a prefix of objects rather than one archive. A ZIP would mean either a compression dependency
+and a second assembly pass — precisely the in-memory hold the lane forbids — or hand-rolling an
+archive format nobody asked for. The manifest is the bundle's entry point, and the auditor gets four
+links instead of one.

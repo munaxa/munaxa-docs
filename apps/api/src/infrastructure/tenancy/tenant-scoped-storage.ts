@@ -77,6 +77,33 @@ export class TenantScopedStorage implements StoragePort {
     await this.inner.delete(await this.scope(key));
   }
 
+  async put(
+    key: StorageKey,
+    body: AsyncIterable<Uint8Array>,
+    options: { readonly contentType: string },
+  ): Promise<BlobMetadata> {
+    const metadata = await this.inner.put(await this.scope(key), body, options);
+    return { ...metadata, key: await this.unscope(metadata.key) };
+  }
+
+  async read(key: StorageKey): Promise<Buffer | null> {
+    return this.inner.read(await this.scope(key));
+  }
+
+  /**
+   * A listing, scoped at both ends.
+   *
+   * The prefix is scoped on the way in so one tenant cannot enumerate another's objects by
+   * asking for an empty prefix — which is the one call in this port where an *absent* argument
+   * would otherwise mean "everything". The keys are unscoped on the way out, so a caller sees
+   * `audit/checkpoints/…` and never learns where its own bytes physically live.
+   */
+  async list(prefix: string): Promise<readonly StorageKey[]> {
+    const scoped = await this.scope(prefix.endsWith('/') ? prefix.slice(0, -1) : prefix);
+    const keys = await this.inner.list(`${scoped}/`);
+    return Promise.all(keys.map((key) => this.unscope(key)));
+  }
+
   /**
    * The tenant's prefix, plus the caller's key.
    *

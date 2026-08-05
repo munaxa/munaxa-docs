@@ -210,3 +210,36 @@ projection's) are two methods of one class over one domain vocabulary
 entries, the walk, deny precedence, `@ScopedTo` on object routes, capabilities in responses and
 §8's cache remain the ACL phase's — they extend this binding rather than replace anything that
 now calls it.
+
+## 10. What Phase 9 added
+
+Two rows of §7 stopped being aspirations.
+
+**`ACCESS_DENIED` has a writer.** The Audit row of §7 — "every denied attempt on an existing object
+is audited" — had none: `writeStandalone` was written in Phase 1 for exactly this caller and nothing
+in `core/authorization/` had ever called it. `AccessDenialRecorder` is that caller, and it is one
+recorder with two call sites — `AclGuard` and the audit timeline's own refusal — because a refusal
+recorded differently in two places is a compliance report that has to know which path denied it.
+
+The "on an *existing* object" condition is a security condition: a trail that separated "denied"
+from "absent" would answer, for whoever later reads it, the existence question the `404` withholds.
+It cannot arise today, because `PrismaAclResolver` decides from the caller's role grants without
+consulting the object at all (§9) — a refusal is a fact about the caller and carries no information
+about whether the identifier names anything. When the walk arrives and decisions become
+object-dependent, the condition starts to matter, and it matters in the recorder rather than in each
+guard.
+
+**A second call site for the resolver, and why it is not a second predicate.** An audit timeline is
+"filtered to what the caller may see" (13 §6), and the audit row model has no scope to push a
+`visibilityFilter` against — a row carries `(subject_type, subject_id)`, and a `SEARCH` row carries
+the actor's own user id. So the timeline resolves the *subject* once, through `ACL_RESOLVER.resolve`,
+before the query runs: one object, one question, one decision covering the whole page. That is the
+same port, binding and algorithm §9 recorded, asked at a third call site rather than reimplemented —
+which is what this section exists to require.
+
+The audit **search** is not filtered by ACLs at all, and that is deliberate rather than an omission.
+It crosses every subject in the tenant, so there is no object to resolve; §6's `audit:view` gates
+it, and that grant is the filter. Narrowing an auditor's search by document ACLs would produce an
+auditor who cannot audit — the opposite of the row §5 writes for them. The matrix's one `S` on
+`audit:view`, the library manager's, is a scoped grant and arrives with the ACL entries; until then
+the resolver answers it as the tenant-level grant it currently is.

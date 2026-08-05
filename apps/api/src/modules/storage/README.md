@@ -84,6 +84,26 @@ upload; nothing can pretend the gate ran. The rule is enforced again by a databa
 (`infra/sql/post-migrate/03-content-gate.sql`), because the use case is not the only thing that ever
 writes these rows.
 
+### The server-side half — Phase 9
+
+Three methods on `StoragePort` exist for bytes that have **no client**: `put`, `read` and `list`.
+The presigned handshake above exists so a *client's* bytes never pass through the API; these exist
+because there is no browser to presign a target for an evidence bundle the server assembled from
+its own trail, or for a signed checkpoint.
+
+`put` **streams**, and that is why it arrived rather than `storeDerived` being reused. A thumbnail
+is kilobytes, content-addressed, and holding it is free — hashing it first is what names it. A
+seven-year evidence export is hundreds of megabytes and unique by construction, so holding it would
+contradict the `audit.export` lane's own description ("streamed to storage rather than held in
+memory") and content-addressing it would buy a deduplication that can never hit. The filesystem
+adapter pipes to a `.partial` and renames; the S3 adapter drives a multipart upload itself, a part
+at a time, so memory is one part whatever the artefact's size.
+
+`evidenceKeyFor` is the third root in `content-key.ts`, and the one place content addressing is set
+aside — with the reason written beside it. `TenantScopedStorage` scopes all three new methods,
+including the *listing prefix*: it is the one call in this port where an absent argument would
+otherwise mean "the whole bucket".
+
 ### Deliberate limits
 
 | Limit | Why | Unblocked by |
@@ -92,3 +112,5 @@ writes these rows.
 | No Azure Blob or GCS adapter | Neither has a customer. Adding one is a class and a `case` in the composition root, which is the claim the port makes | The phase that needs one |
 | Multipart completion trusts the client's entity tags | The API never sees the bytes, so it cannot compute them. The store checks them itself and a wrong one fails the completion | Nothing — this is correct |
 | No quota accounting | Entitlements are Phase 21's, and a quota with nothing to read is a constant | `POLICY_EVALUATOR` |
+| `put` is not resumable | A server-produced artefact has one producer and one attempt; a failed stream aborts the multipart and the job retries from the beginning | The first artefact large enough for a restart to cost real time |
+| `read` has no size bound | No object store enforces one on a `GET`, and its only caller reads a few hundred bytes of signed checkpoint | A second caller, which would be the moment to add one |

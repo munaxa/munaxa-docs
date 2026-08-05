@@ -28,6 +28,12 @@
  * own permissions, and a level only ever narrows. It also widens the compare contract's
  * `text.state`, which Phase 6 shipped as `UNAVAILABLE` with exactly this filling-in in mind.
  *
+ * Phase 9 adds `audit/` — the trail's read surface, its verification status and its evidence
+ * exports. The shape worth noticing is `chainHashVersion` travelling beside `hash` on every entry:
+ * it is what says how much that digest proves, because rows written before Phase 9 attest nine
+ * fields and rows written since attest every column but the hashes themselves. A client that
+ * rendered "verified" identically for both would be overstating the older half of the trail.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -57,3 +63,4 @@ export * from './documents/revision-control';
 export * from './documents/preview';
 export * from './workflow/approval';
 export * from './search/search';
+export * from './audit/audit';

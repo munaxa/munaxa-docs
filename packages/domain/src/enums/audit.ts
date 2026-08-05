@@ -22,6 +22,14 @@ export const AuditSubjectType = {
   FILE: 'FILE',
   /** A search or an index operation — the Phase 8 additions: an audited `search:all` query, a rebuild. */
   SEARCH: 'SEARCH',
+  /**
+   * An evidence bundle — the Phase 9 addition.
+   *
+   * An export is not a `DOCUMENT`: it is an artefact *about* documents, with its own identifier,
+   * its own retention and its own download. Filing `AUDIT_EXPORTED` under the document type would
+   * put a row in the timeline of whichever document happened to be first in the range.
+   */
+  EXPORT: 'EXPORT',
 } as const;
 
 export type AuditSubjectTypeKey = (typeof AuditSubjectType)[keyof typeof AuditSubjectType];

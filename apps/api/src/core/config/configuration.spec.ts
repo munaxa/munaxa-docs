@@ -53,6 +53,7 @@ describe('loadConfig', () => {
       STORAGE_BUCKET: 'edms-prod',
       MAIL_DRIVER: 'SMTP',
       AV_DRIVER: 'ICAP',
+      AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       CORS_ORIGINS: 'https://docs.munaxa.com,https://admin.munaxa.com',
     });
     expect(config.isProduction).toBe(true);
@@ -176,6 +177,7 @@ describe('describing which tenants this deployment serves', () => {
         STORAGE_DRIVER: 'LOCAL',
         MAIL_DRIVER: 'SMTP',
         AV_DRIVER: 'ICAP',
+        AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       }),
     ).toThrowError(ConfigurationError);
   });
@@ -190,7 +192,34 @@ describe('describing which tenants this deployment serves', () => {
       STORAGE_DRIVER: 'LOCAL',
       MAIL_DRIVER: 'SMTP',
       AV_DRIVER: 'ICAP',
+      AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
     });
     expect(config.storage.driver).toBe('LOCAL');
+  });
+
+  it('refuses production without a key to sign audit checkpoints with', () => {
+    // A checkpoint nobody signed is a row an attacker with the bucket can rewrite, which is
+    // exactly the reading 13 §4 exists to prevent. Boot rather than incident is where that is
+    // worth discovering.
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'production',
+        OPENAPI_ENABLED: 'false',
+        STORAGE_DRIVER: 'LOCAL',
+        MAIL_DRIVER: 'SMTP',
+        AV_DRIVER: 'ICAP',
+      }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('buffers read auditing by default, and never past the hard bound', () => {
+    const config = loadConfig({ ...baseEnv, AUDIT_READ_BUFFER_SIZE: '500' });
+    // The hard bound is raised to meet a soft threshold above it rather than being silently
+    // the smaller of the two: a buffer that flushed at 500 and fell back to synchronous writes
+    // at 200 would never buffer anything.
+    expect(config.audit.readBufferMax).toBe(1_000);
+    expect(config.audit.readFlushIntervalMs).toBe(2_000);
+    expect(config.audit.checkpointSecret).toBeNull();
   });
 });

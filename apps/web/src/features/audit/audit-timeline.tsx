@@ -1,0 +1,124 @@
+import type { ReactNode } from 'react';
+
+import { Badge, Card } from '@munaxa/ui';
+
+import type { AuditEntry, AuditPage } from '@edms/contracts';
+import type { MessageKey } from '@edms/i18n';
+
+import { adminGet } from '../../lib/admin/api';
+import { getTranslator } from '../../lib/server-i18n';
+
+/**
+ * The document timeline — `16-frontend-architecture.md` §2's `documents/[id]/audit`, rendered on
+ * the record page rather than as a screen of its own.
+ *
+ * ## Why it is a server component that fetches inside itself
+ *
+ * §7's row for record pages is "shell first, preview and audit stream in", and that only works if
+ * the audit fetch is *not* in the page's own `Promise.all`. A component that awaits its own data
+ * suspends on its own, so the shell — the number, the title, the actions — paints while the trail
+ * is still being read, and a slow audit query delays nothing a person is waiting for. Putting the
+ * fetch in the page would make the whole record page as slow as its slowest panel, which is the
+ * shape §7 exists to avoid.
+ *
+ * ## Why a refusal renders nothing rather than an error
+ *
+ * The API answers a timeline the caller may not see with `404`, deliberately — the existence of a
+ * trail is itself an answer. So the panel treats every failure the same way: it is absent. That is
+ * the same posture the preview panel takes, and it is the only one consistent with an API that
+ * refuses by pretending not to exist.
+ */
+export async function AuditTimeline({
+  subjectType,
+  subjectId,
+  limit = 20,
+}: {
+  readonly subjectType: 'DOCUMENT' | 'REVISION' | 'FOLDER' | 'LIBRARY';
+  readonly subjectId: string;
+  readonly limit?: number;
+}): Promise<ReactNode> {
+  const translate = await getTranslator();
+  const page = await adminGet<AuditPage>(
+    `/audit/timeline/${subjectType}/${subjectId}?page=1&pageSize=${String(limit)}`,
+  ).catch(() => null);
+
+  if (page === null) {
+    return null;
+  }
+
+  return (
+    <Card>
+      <h2>{translate('audit.timelineTitle')}</h2>
+      <p>{translate('audit.timelineHint')}</p>
+
+      {page.data.length === 0 ? (
+        <p>{translate('audit.empty')}</p>
+      ) : (
+        <ol>
+          {page.data.map((entry) => (
+            <li key={entry.id}>
+              <AuditRow entry={entry} translate={translate} />
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {page.meta.hasMore && (
+        <p>
+          {translate('audit.showingRecent', {
+            count: page.data.length,
+            total: page.meta.total,
+          })}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+export type Translate = (
+  key: MessageKey,
+  values?: Readonly<Record<string, string | number>>,
+) => string;
+
+/**
+ * One event.
+ *
+ * **The action code is rendered verbatim, not translated.** `DOCUMENT_APPROVED` is the audit
+ * catalogue's own vocabulary (13 §2): it is what an auditor filters by, what an evidence export
+ * contains, and what a compliance report groups on. Translating it would give the same event two
+ * names — one on a screen and one in the bundle — and make a person's screenshot unmatchable to
+ * the row it came from.
+ *
+ * **The digest is shown with its version.** The version is what says how much the digest proves: a
+ * row written before the widening attests nine fields, one written since attests every column but
+ * the hashes. Rendering both identically would tell a reader the older half of their trail is
+ * verified to a standard it is not.
+ */
+export function AuditRow({
+  entry,
+  translate,
+}: {
+  readonly entry: AuditEntry;
+  readonly translate: Translate;
+}): ReactNode {
+  return (
+    <>
+      <span>{new Date(entry.occurredAt).toISOString().replace('T', ' ').slice(0, 19)}</span>{' '}
+      <strong>{entry.action}</strong>{' '}
+      {entry.outcome !== 'SUCCESS' && (
+        <Badge tone={entry.outcome === 'DENIED' ? 'warning' : 'danger'}>
+          {translate(entry.outcome === 'DENIED' ? 'audit.outcome.denied' : 'audit.outcome.failed')}
+        </Badge>
+      )}
+      {entry.reason !== null && <em> — {entry.reason}</em>}
+      <br />
+      <small>
+        {translate('audit.sequence', { sequence: entry.sequence })} ·{' '}
+        {translate('audit.digest', {
+          digest: entry.hash.slice(0, 12),
+          version: entry.chainHashVersion,
+        })}
+      </small>
+    </>
+  );
+}

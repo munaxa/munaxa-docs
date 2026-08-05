@@ -1,7 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
+  ActorChannel,
   type AnyId,
+  AuditOutcome,
   AuditSubjectType,
   type DocumentId,
   DocumentOrigin,
@@ -26,6 +28,7 @@ import {
   ValidationError,
 } from '../../../core/errors/application-errors';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
+import { READ_AUDIT_BUFFER, type ReadAuditBuffer } from '../../../core/audit/read-audit.port';
 import {
   AdministeredWriter,
   AdministrativeOperation,
@@ -104,6 +107,7 @@ export class DefaultDocumentService {
     @Inject(REVISION_WRITER) private readonly revisions: RevisionWriter,
     @Inject(DOCUMENT_THUMBNAILER) private readonly thumbnails: DocumentThumbnailer,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
+    @Inject(READ_AUDIT_BUFFER) private readonly readAudit: ReadAuditBuffer,
     private readonly writer: AdministeredWriter,
   ) {}
 
@@ -123,31 +127,54 @@ export class DefaultDocumentService {
    * Separate from `get` on purpose. A list that rendered twenty rows has not been *opened* twenty
    * times, and a "recent documents" list built from every read would be a list of whatever the
    * screen last drew. Only an explicit open counts.
+   *
+   * The view goes to the **read-audit buffer** rather than into this transaction — Phase 9's
+   * change, and 13 §5's requirement since Phase 0. Writing it inline took the tenant's audit
+   * advisory lock on every page view, so a document everybody reads throttled every approval and
+   * publication in the same organisation. It is still hash-chained; it is chained a batch at a
+   * time under one lock instead of one row at a time under a hundred.
+   *
+   * Losing the atomicity with the "recent" row is the deliberate part: a read is not a change, and
+   * an event whose whole content is "somebody looked" has nothing it must commit *with*.
    */
   async open(id: string): Promise<DocumentRow> {
-    return this.writer.write<DocumentRow>(async () => {
-      const document = await this.require(id, false);
+    const document = await this.writer.read(async () => {
+      const row = await this.require(id, false);
       const { userId } = requireContext();
       if (userId !== null) {
         await this.activity.recordView(userId, id, this.writer.clock.now());
       }
-      return {
-        result: document,
-        change: {
-          action: DocumentAudit.DOCUMENT_VIEWED,
-          subjectType: AuditSubjectType.DOCUMENT,
-          subjectId: asId<AnyId>(id),
+      return row;
+    });
+
+    const context = requireContext();
+    await this.readAudit.record(
+      {
+        tenantId: context.tenantId,
+        userId: context.userId,
+        channel: ActorChannel.WEB,
+        correlationId: context.correlationId,
+        ipAddress: null,
+        userAgent: null,
+      },
+      {
+        action: DocumentAudit.DOCUMENT_VIEWED,
+        subjectType: AuditSubjectType.DOCUMENT,
+        subjectId: asId<AnyId>(id),
+        outcome: AuditOutcome.SUCCESS,
+        // The confidentiality level is in the payload because it is what decides whether this
+        // event had to be written at all: levels that demand audit-on-read are the reason the
+        // action exists, and a report filtering for them needs the level, not a join.
+        payload: {
           operation: AdministrativeOperation.UPDATED,
-          // The confidentiality level is in the payload because it is what decides whether this
-          // event had to be written at all: levels that demand audit-on-read are the reason the
-          // action exists, and a report filtering for them needs the level, not a join.
           after: {
             confidentialityId: document.confidentialityId,
             confidentialityRank: document.confidentialityRank,
           },
         },
-      };
-    });
+      },
+    );
+    return document;
   }
 
   listRecent(userId: UserId, request: DocumentListRequest): Promise<Page<RecentRow>> {

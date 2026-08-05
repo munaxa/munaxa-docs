@@ -58,8 +58,19 @@ enum AuditSubjectType {
   SESSION
   FILE
   SEARCH
+  EXPORT
 
   @@map("audit_subject_type")
+}
+
+/// Where an evidence bundle has got to (`13-audit-architecture.md` §6).
+enum AuditExportState {
+  REQUESTED
+  RUNNING
+  COMPLETED
+  FAILED
+
+  @@map("audit_export_state")
 }
 
 enum ActorChannel {
@@ -128,6 +139,7 @@ model Tenant {
   savedSearches         SavedSearch[]
   recentSearches        RecentSearch[]
   searchRebuilds        SearchRebuild[]
+  auditExports          AuditExport[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -173,6 +185,15 @@ model AuditEvent {
   userAgent     String?          @map("user_agent")
   hash          String           @db.Char(64)
   previousHash  String           @map("previous_hash") @db.Char(64)
+  /// Which field set this row's digest covers (`core/audit/hash-chain.ts`).
+  ///
+  /// `1` is Phase 1's nine fields; `2` adds `sequence`, `channel`, `on_behalf_of_id`, `reason`,
+  /// `correlation_id`, `ip_address` and `user_agent`. Stamped per row rather than assumed per
+  /// deployment because rows written under the older digest cannot be rehashed — the table
+  /// refuses `UPDATE` to every role, owner included, which is precisely the property that makes
+  /// the trail worth having. Verification dispatches on this, and an evidence bundle's manifest
+  /// reports it, so a bundle never claims to attest a field the digest did not cover.
+  chainHashVersion Int           @default(1) @map("chain_hash_version") @db.SmallInt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
@@ -188,7 +209,49 @@ model AuditEvent {
   @@index([tenantId, occurredAt], map: "ix_audit_occurred")
   /// Ties an event back to the request that produced it, across API, worker and logs.
   @@index([correlationId], map: "ix_audit_correlation")
+  /// The audit search of §6 filters by action first — "every ACCESS_DENIED last quarter" is the
+  /// question it exists to answer, and without this it is a sequential scan of the trail.
+  @@index([tenantId, action, occurredAt(sort: Desc)], map: "ix_audit_action")
   @@map("audit_event")
+}
+
+/// An evidence bundle (`13-audit-architecture.md` §6).
+///
+/// The row is the request and its outcome; the bundle itself is a set of objects in storage,
+/// listed in `artefacts` with the digest of each. It is deliberately *not* audit data — it is a
+/// job, it is mutable, and it is soft-deletable by retention like any other derived artefact.
+/// What is immutable is the trail it was made from, and the manifest's signature is what ties
+/// this row to that.
+model AuditExport {
+  id            String           @id @db.Uuid
+  tenantId      String           @map("tenant_id") @db.Uuid
+  state         AuditExportState @default(REQUESTED)
+  /// The range the bundle covers, and the filters narrowing it. Both are in the manifest too.
+  fromDate      DateTime         @map("from_date") @db.Timestamptz(6)
+  toDate        DateTime         @map("to_date") @db.Timestamptz(6)
+  filters       Json             @default("{}")
+  /// Who asked. Never null: an export is always somebody's act, never the system's.
+  requestedById String           @map("requested_by_id") @db.Uuid
+  requestedAt   DateTime         @map("requested_at") @db.Timestamptz(6)
+  eventCount    Int              @default(0) @map("event_count")
+  /// The storage prefix the bundle's objects live under, and what they are.
+  storagePrefix String?          @map("storage_prefix")
+  artefacts     Json             @default("[]")
+  /// The verification the bundle carries: whether the range chained, and where it did not.
+  chainIntact   Boolean?         @map("chain_intact")
+  brokenAtId    String?          @map("broken_at_id") @db.Uuid
+  completedAt   DateTime?        @map("completed_at") @db.Timestamptz(6)
+  /// Operator-readable, set exactly when the state is FAILED.
+  error         String?
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?          @map("created_by") @db.Uuid
+  updatedAt     DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?          @map("updated_by") @db.Uuid
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, requestedAt(sort: Desc)], map: "ix_audit_export_tenant")
+  @@map("audit_export")
 }
 
 /// The transactional outbox.

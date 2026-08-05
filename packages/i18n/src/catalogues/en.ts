@@ -52,6 +52,7 @@ export const en = {
     documents: 'Documents',
     approvals: 'Approvals',
     search: 'Search',
+    audit: 'Audit',
   },
   /**
    * Administration.
@@ -952,6 +953,61 @@ export const en = {
     runSaved: 'Run',
     recentTitle: 'Recent searches',
     recentEmpty: 'No recent searches',
+  },
+  /**
+   * Audit and compliance.
+   *
+   * The action codes themselves are deliberately absent: `DOCUMENT_APPROVED` is the audit
+   * catalogue's own vocabulary (13 §2), it is what an evidence export contains and what a
+   * compliance report groups on, and translating it would give one event two names.
+   */
+  audit: {
+    title: 'Audit trail',
+    subtitle:
+      'Every recorded event, hash-chained and append-only. Filter, then export the evidence.',
+    timelineTitle: 'History',
+    timelineHint: 'Everything recorded about this document, newest first.',
+    empty: 'Nothing has been recorded yet',
+    promptTitle: 'Ask the trail a question',
+    promptHint: 'Choose an action, a person, an outcome or a date range to begin.',
+    resultsCount: '{count} of {total} events',
+    showingRecent: 'Showing the {count} most recent of {total} events',
+    sequence: 'Sequence {sequence}',
+    digest: 'Digest {digest}… (v{version})',
+    outcome: {
+      success: 'Succeeded',
+      denied: 'Denied',
+      failed: 'Failed',
+    },
+    filter: {
+      action: 'Action',
+      anyAction: 'Any action',
+      outcome: 'Outcome',
+      anyOutcome: 'Any outcome',
+      actor: 'Person',
+      correlation: 'Request id',
+      from: 'From',
+      to: 'To',
+      apply: 'Apply',
+    },
+    export: {
+      title: 'Evidence exports',
+      hint: 'A signed bundle of the events above, written to storage and downloaded by link.',
+      request: 'Export this range',
+      requesting: 'Requesting…',
+      requested: 'The export was requested. It will appear below when it is ready.',
+      failed: 'The export could not be requested.',
+      none: 'No exports yet',
+      download: 'Download',
+      events: '{count} events',
+      chainBroken: 'Chain broken in this range',
+      state: {
+        requested: 'Requested',
+        running: 'Producing',
+        completed: 'Ready',
+        failed: 'Failed',
+      },
+    },
   },
   error: {
     VALIDATION_FAILED: 'Some of the details are not valid.',

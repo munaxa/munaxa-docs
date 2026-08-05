@@ -15,14 +15,15 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 8 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 9 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
 revision control that publishes what was approved and produces the next controlled version, the
 preview pipeline that shows a controlled document without handing its bytes over, and the search
 that finds a document by its number, its words and its people without ever disclosing one the
-caller may not see. Its
+caller may not see, and the read half of the audit trail — the timeline, the audit search, the
+daily verification with its signed checkpoints, and the evidence bundle. Its
 map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
@@ -82,6 +83,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 9 — audit & compliance
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 9 — Audit & Compliance](./reports/phase-9-audit-compliance.md) | The audit architecture's read half made real: the digest widened and versioned rather than backdated, the timeline filtered at its subject through the resolver Phase 8 bound, signed checkpoints kept outside the database they attest, the daily verification finally firing on a named schedule, read auditing buffered as §5 always claimed, the streamed evidence bundle and its honest manifest, `ACCESS_DENIED` given the writer it never had, and the event catalogue reconciled with the code — what the phase costs, and what it deliberately does not do |
 
 ### Phase 8 — search
 

@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { Suspense, type ReactNode } from 'react';
 
 import type {
   Category,
@@ -18,6 +18,7 @@ import { DomainError, ErrorCode, Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { ApprovalPanel } from '../../../../features/approvals/approval-panel';
+import { AuditTimeline } from '../../../../features/audit/audit-timeline';
 import { DocumentScreen } from '../../../../features/documents/document-screen';
 import { PreviewPanel } from '../../../../features/preview/preview-panel';
 import { RevisionPanel } from '../../../../features/revisions/revision-panel';
@@ -39,6 +40,11 @@ import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/
  * on this page rather than a page of its own for one reason: "who must agree before this becomes
  * official, and where has it got to" is a question about *this document*, and answering it somewhere
  * else would make somebody navigate away from the thing they are deciding about.
+ *
+ * The audit timeline is the one panel deliberately *not* in that round of requests. Phase 9 added
+ * it inside a `Suspense` boundary, fetching its own data, which is what `16 §7`'s "shell first,
+ * preview and audit stream in" actually requires: awaited beside the document, a slow trail query
+ * would delay the number, the title and every action on the page. Suspended, it delays nothing.
  */
 export default async function DocumentPage({
   params,
@@ -164,6 +170,11 @@ export default async function DocumentPage({
           canReject={access.permissions.includes(Permission.DOCUMENT_REJECT)}
           canManage={access.permissions.includes(Permission.WORKFLOW_MANAGE)}
         />
+      }
+      audit={
+        <Suspense fallback={null}>
+          <AuditTimeline subjectType="DOCUMENT" subjectId={documentId} />
+        </Suspense>
       }
       revisions={
         <RevisionPanel

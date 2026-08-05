@@ -21,10 +21,19 @@ async function bootstrap(): Promise<void> {
     void app.close();
   });
 
-  // Consumers and the scheduler are registered by the phases that add jobs; the lanes,
-  // retry policies and dead-letter routing they will use are already defined in queues.ts.
+  // Every consumer this product has runs in the API process, gated on `QUEUE_CONSUMERS_ENABLED`:
+  // the outbox dispatcher and workflow timers from Phase 4, preview and OCR from Phase 7, the
+  // search index from Phase 8, and the audit export lane and its verification schedule from
+  // Phase 9. That is where the domain modules are composed, and composing them a second time here
+  // would mean a flag that means "consume everything" in one process and "consume some of it" in
+  // another.
+  //
+  // This process therefore exists as the seam rather than as the consumer: a deployment that wants
+  // background work off the request path sets the flag false on its API instances and runs the
+  // consumers here, and the day that happens is the day this file composes `WorkerModule` with the
+  // domain modules rather than being changed in shape.
   console.warn(
-    `Worker started. Queues: ${QUEUES.length}, scheduled jobs: ${SCHEDULE.length}. No consumers are registered in Phase 0.5.`,
+    `Worker started. Queues: ${QUEUES.length}, scheduled jobs: ${SCHEDULE.length}. Consumers run in the API process, by configuration.`,
   );
 }
 

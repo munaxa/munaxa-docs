@@ -39,6 +39,28 @@ export interface QueuePort {
   /** Cancels a scheduled job — a deadline that moved, a document that was withdrawn. */
   cancel(queue: string, jobId: string): Promise<boolean>;
   depth(queue: string): Promise<QueueDepth>;
+  /**
+   * Declares recurring work: this payload, on this lane, on this cron expression, forever.
+   *
+   * Named rather than identified by payload, and upserted rather than added, because every
+   * instance that boots declares the same schedule and there must be one firing rather than
+   * one per instance. That is what `ScheduledJob.lockKey` in `@edms/domain` describes, and
+   * expressing it as a *named* schedule in the broker is stronger than a lock around a timer:
+   * a lock keeps two processes from running the same pass at the same moment, while a named
+   * schedule means there was only ever one pass to run (`02-backend-architecture.md` §8).
+   *
+   * The cron expression is the catalogue's, in the catalogue's five-field form, evaluated in
+   * UTC — the same instant everywhere, which is the only reading that survives a deployment
+   * spanning regions.
+   */
+  schedule<TPayload extends object>(
+    queue: string,
+    name: string,
+    cron: string,
+    payload: TPayload,
+  ): Promise<void>;
+  /** Removes a schedule this process previously declared — for a lane that lost its handler. */
+  unschedule(queue: string, name: string): Promise<void>;
 }
 
 /**

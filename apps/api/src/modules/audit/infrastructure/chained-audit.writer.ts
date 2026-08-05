@@ -4,7 +4,7 @@ import { type AnyId, asId } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import type { AuditActor, AuditEntry, AuditWriter } from '../../../core/audit/audit-writer.port';
-import { chainHash } from '../../../core/audit/hash-chain';
+import { CURRENT_CHAIN_HASH_VERSION, chainHash } from '../../../core/audit/hash-chain';
 import {
   UNIT_OF_WORK,
   type UnitOfWork,
@@ -29,6 +29,11 @@ import { AUDIT_REPOSITORY, type AuditRepository } from '../application/ports';
  * `previousHash`; and the sequence is allocated as `tail + 1` rather than from a PostgreSQL
  * sequence, which would gap on rollback and make a deletion indistinguishable from an
  * ordinary abort (`docs/architecture/13-audit-architecture.md` §4).
+ *
+ * Phase 9 widened what the digest covers and stamped the version on every row. New appends are
+ * written under the current version; rows written before it keep verifying against the field set
+ * they were written under, because the table refuses the `UPDATE` that would rehash them — which
+ * is the property that makes the trail evidence in the first place (`core/audit/hash-chain.ts`).
  */
 @Injectable()
 export class ChainedAuditWriter implements AuditWriter {
@@ -64,23 +69,12 @@ export class ChainedAuditWriter implements AuditWriter {
     const tail = await this.repository.lockAndReadTail();
     const occurredAt = this.clock.now();
     const eventId = uuidv7(occurredAt.getTime());
+    const sequence = tail.sequence + 1n;
 
-    const hash = chainHash(tail.hash, {
+    const material = {
       eventId,
       tenantId: actor.tenantId,
-      occurredAt,
-      actorId: actor.userId,
-      action: entry.action,
-      subjectType: entry.subjectType,
-      subjectId: entry.subjectId,
-      outcome: entry.outcome,
-      payload: entry.payload,
-    });
-
-    await this.repository.append({
-      id: asId<AnyId>(eventId),
-      tenantId: actor.tenantId,
-      sequence: tail.sequence + 1n,
+      sequence,
       occurredAt,
       actorId: actor.userId,
       onBehalfOfId: entry.onBehalfOfId ?? null,
@@ -94,8 +88,28 @@ export class ChainedAuditWriter implements AuditWriter {
       correlationId: actor.correlationId,
       ipAddress: actor.ipAddress,
       userAgent: actor.userAgent,
-      hash,
+    };
+
+    await this.repository.append({
+      id: asId<AnyId>(eventId),
+      tenantId: actor.tenantId,
+      sequence,
+      occurredAt,
+      actorId: actor.userId,
+      onBehalfOfId: entry.onBehalfOfId ?? null,
+      channel: actor.channel,
+      action: entry.action,
+      subjectType: entry.subjectType,
+      subjectId: entry.subjectId,
+      outcome: entry.outcome,
+      payload: entry.payload,
+      reason: entry.reason ?? null,
+      correlationId: actor.correlationId,
+      ipAddress: actor.ipAddress,
+      userAgent: actor.userAgent,
+      hash: chainHash(tail.hash, material, CURRENT_CHAIN_HASH_VERSION),
       previousHash: tail.hash,
+      chainHashVersion: CURRENT_CHAIN_HASH_VERSION,
     });
   }
 }

@@ -20,6 +20,7 @@ import {
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
+import type { ReadAuditBuffer } from '../../../core/audit/read-audit.port';
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
@@ -28,10 +29,13 @@ import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
   type PreviewStack,
+  realAuditWriter,
   realDocumentLibrary,
   realDocumentPreview,
   realPreviewStack,
+  realReadAuditBuffer,
 } from '../../../testing/real-collaborators';
+
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import type { DocumentPreviewService } from '../../document/application/document-preview.service';
 import { decodePreviewToken } from '../domain/preview-stream-token';
@@ -76,6 +80,8 @@ let appConfig: AppConfig;
 let library: DocumentLibraryStack;
 let preview: PreviewStack;
 let access: DocumentPreviewService;
+/** The buffer a served view lands in, held so this suite can decide when the batch is written. */
+let readAudit: ReadAuditBuffer;
 let owner: PrismaClient;
 
 let rootFolderId: string;
@@ -309,9 +315,11 @@ beforeAll(async () => {
         }),
     },
   });
+  readAudit = realReadAuditBuffer(clock, unitOfWork, realAuditWriter(clock, unitOfWork));
   access = realDocumentPreview({
     clock,
     unitOfWork,
+    readAudit,
     storage: library.storage,
     storagePort: library.storagePort,
     config: appConfig,
@@ -657,6 +665,11 @@ describe('serving: permission → state → confidentiality', () => {
   });
 
   it('audits the served view through DOCUMENT_VIEWED, above the read-audit rank', async () => {
+    // Buffered since Phase 9 (13 §5): a view must not cost a transaction, and must not cost the
+    // tenant's audit advisory lock, per page turn. Still written, still hash-chained — the flush
+    // is when, not whether.
+    await readAudit.flush();
+
     const events = await owner.auditEvent.findMany({
       where: { tenantId: TENANT, action: 'DOCUMENT_VIEWED', subjectId: documentId },
     });

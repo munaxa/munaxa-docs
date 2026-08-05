@@ -69,6 +69,16 @@ const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
     permission: Permission.DOCUMENT_VIEW,
   },
   {
+    // Phase 9. `audit:view` — the trail-wide grant, which 08 §6 gives the tenant administrator,
+    // the document controller and the auditor. Narrower than the library and search rows on
+    // purpose: this screen crosses every document in the tenant, which is the auditor's question
+    // rather than the reader's, and a reader's own timelines live on the record page instead.
+    id: 'audit',
+    href: '/audit' as Route,
+    labelKey: 'nav.audit',
+    permission: Permission.AUDIT_VIEW,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',
