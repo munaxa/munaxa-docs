@@ -15,7 +15,7 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 14 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 15 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
@@ -35,7 +35,10 @@ a row of it, and the permission model itself made real at last — ACL entries o
 walk over the materialised paths, deny winning at any level, a folder that can stop inheriting while
 the administrators accountable for it still reach through, a list and its total that omit what the
 caller may not see rather than hiding it, a screen that says which node decided and why, and a second
-factor on the way in. Its map is
+factor on the way in, and the reports that finally ask about the whole rather than about one record —
+ten of them, each gated on the permission that already governs the surface it summarises and each
+scoped by the caller's own reach, exported to CSV, to a real Excel format and to PDF through a
+queued job that runs under the requester's reach rather than the consumer's absent one. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -95,6 +98,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 15 — enterprise reporting
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 15 — Enterprise Reporting](./reports/phase-15-reporting.md) | The last Phase 0.5 module whose contracts shipped and were never implemented, bound at last — and bound so it cannot become the door around four phases of narrowing. Why a report never widens the audience of the surface it summarises, and why that made `document:restore`, `retention:manage` and `audit:view` conditions rather than alternatives; why the rows are scoped by the *module that owns the table* rather than by a query in this one, and what materialised read models and the search index would each have cost; the Excel decision and the three answers not taken; why the export runs under the requester's reach and reads their roles at the instant it runs; why "scheduling ready" ships the seam and names the phase that closes it; what a report cell may never translate; the two defects the tests found; what the phase costs, and what it deliberately does not do |
 
 ### Phase 14 — enterprise security
 

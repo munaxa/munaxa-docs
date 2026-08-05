@@ -44,7 +44,7 @@ app/
     │   └── audit/                the document timeline
     ├── search/                   results, facets, saved searches
     ├── notifications/            the notification centre: inbox, per-user preferences, quiet hours
-    ├── reports/
+    ├── reports/                     the report catalogue, its parameters, its charts and its exports
     ├── admin/                    types · fields · numbering · workflows · retention ·
     │                             confidentiality · libraries · users · roles · settings
     └── recycle-bin/
@@ -79,6 +79,22 @@ the API against the permission that already governs the screen it summarises, an
 may not see is **absent rather than zero** — those are different answers, and collapsing them would
 make the first screen everybody opens a daily report on how much exists in the parts of the tenant
 they cannot see into. No navigation row was added: `nav.home` already pointed here.
+
+**`reports/` exists** — Phase 15, and it is the last route 16 §2 named in Phase 0 with nothing
+behind it. One screen rather than one per report: the report list, the parameter form and the
+columns are all built from the descriptor the API serves beside the rows, so a report added to the
+catalogue appears here with no change to the client. It sits outside `admin/` for the reason
+`notifications/` does — `admin/` is where somebody *configures* the tenant, and a report configures
+nothing — and its navigation row is gated on `report:view`, which is the floor: most reports need a
+second permission, resolved per report by the API, and **a report the caller may not run is absent
+from the screen rather than listed and refused**.
+
+Charts arrive here, and only here. Phase 13 declined them because "nothing on this screen has a
+time axis; the trends that would earn one are Phase 15's" — which is still true of eight of this
+phase's ten reports. Two are drawn: a horizontal bar chart for the dimension breakdown, whose
+category axis is **reversed in Arabic** because a bar chart reads from the axis outward and the axis
+moves; and a line chart for approvals per month, which is **not** reversed, because a period axis is
+chronological rather than typographic. The table renders beside both, always.
 
 `notifications/` was added by Phase 12 and is deliberately **outside `admin/`**. 18 §5's
 preferences are per *user* — which channels, which digest, which quiet hours — and Administration

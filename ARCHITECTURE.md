@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 14**:
+and the product is built through **Phase 15**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -219,12 +219,39 @@ and the product is built through **Phase 14**:
   truth is: TOTP is enrolled, proved, challenged at sign-in and recorded, with WebAuthn and the role
   policy deferred to 17 rather than half-built here.
 
+- **Phase 15** — enterprise reporting. The last Phase 0.5 module whose contracts shipped and were
+  never implemented — four files, a bare `@Module({})`, and a `REPORT_DEFINITION_REPOSITORY` with no
+  table behind it. Its `ports.ts` had already decided the two things that mattered, and neither was
+  re-decided: every row is permission-scoped to the caller *in SQL*, which only Phase 14's
+  `visibilityFilter` regions made expressible, and large exports are queued rather than streamed from
+  a request. What the phase had to decide is that **a report is the first thing in this product
+  designed to aggregate across everything**, and four phases of narrowing run through it: Phase 8's
+  predicate in the query, Phase 13's tile that is absent rather than zero, Phase 14's document absent
+  from a list *and its total*. So a catalogue entry's permissions are a **conjunction** — the deleted
+  report requires `document:restore` because that is where ADR-0010 put the recycle bin, the expired
+  report `retention:manage`, the audit report `audit:view` — and **a report never widens the audience
+  of the surface it summarises**. Its rows are scoped by the module that owns the table, over the
+  predicate that module's own list is built from, so `whereFor` and `approvalTaskWhere` are called
+  rather than reimplemented; materialised read models and the search index were both weighed and both
+  rejected, and the report says what each would have cost. The audit report is a projection over the
+  audit module's *own* reader rather than a second query beside it, because 08 §10's decision that
+  the trail is not ACL-filtered has exactly one place it can live. Exports go to CSV — with the
+  formula neutralisation that uniform quoting does not give — to **SpreadsheetML 2003**, which is a
+  real Excel format and is honestly not XLSX because a ZIP writer would end the streaming this lane
+  exists for, and to PDF, which is lossy for Arabic and *counts and reports* every character its font
+  could not encode. And an export runs under the **requester's** reach, with their roles read at the
+  instant it runs rather than snapshotted when it was asked for — because a consumer's context has no
+  user in it and `visibilityCondition` answers a subject-less caller with an empty predicate, which
+  would have made every export a copy of the whole tenant. "Scheduling ready" ships the lane, the
+  record, the idempotent claim and the audited run, and names the phase that closes the rest rather
+  than adding a fifth declared-but-unbound contract.
+
 Each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-14-security.md`](./docs/reports/phase-14-security.md);
+[`phase-15-reporting.md`](./docs/reports/phase-15-reporting.md);
 the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

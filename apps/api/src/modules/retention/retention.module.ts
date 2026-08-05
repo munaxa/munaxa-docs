@@ -19,6 +19,8 @@ import {
 
 import { RetentionDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
 import { DASHBOARD_RETENTION_METRICS } from '../dashboard/application/ports';
+import { REPORT_RETENTION_SOURCE } from '../reporting/application/ports';
+import { RetentionReportSource } from './infrastructure/report-source.adapter';
 /**
  * Retention — How long must it be kept, and what happens then?
  *
@@ -36,6 +38,9 @@ import { DASHBOARD_RETENTION_METRICS } from '../dashboard/application/ports';
  */
 @Module({
   providers: [
+    // Phase 15: the expired-documents report, behind `retention:manage` as well as `report:view`
+    // — the disposition queue's own gate, so a report cannot be the looser of two doors.
+    { provide: REPORT_RETENTION_SOURCE, useClass: RetentionReportSource },
     // Phase 13: the disposition queue's depth and the live-hold count, each behind its own
     // permission at the composing service — see `dashboard-metrics.adapter.ts`.
     { provide: DASHBOARD_RETENTION_METRICS, useClass: RetentionDashboardMetrics },
@@ -47,6 +52,7 @@ import { DASHBOARD_RETENTION_METRICS } from '../dashboard/application/ports';
     { provide: RETENTION_SCHEDULER, useClass: RetentionSchedulerService },
   ],
   exports: [
+    REPORT_RETENTION_SOURCE,
     DASHBOARD_RETENTION_METRICS,
     RETENTION_SCHEDULE_REPOSITORY,
     LEGAL_HOLD_REPOSITORY,

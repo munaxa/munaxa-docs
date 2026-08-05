@@ -111,8 +111,17 @@ decision — it asks the authorization service.
 | Audit | AuditEvent, hash chain, export | — (written by everyone via the audit service) |
 | Notification | Template, message, delivery, preference, digest | Identity |
 | Retention | Retention run, legal hold, disposition, purge | Document, Storage |
-| Reporting | Read models, exports, scheduling | Search, Audit, Workflow |
+| Reporting | The report catalogue, saved definitions, exports | Document, Workflow, Storage, Identity, Organization, Retention, Audit |
 | Dashboard | Composition over other modules' read models — owns no data of its own | Document, Workflow, Storage, Identity, Organization, Retention, Notification |
+
+**Reporting's row was corrected by Phase 15**, and both halves of it were wrong in the same way the
+dashboard's Phase 0.5 row was. *Ownership:* it does not own "read models" — it owns a catalogue of
+reports in code, a saved definition (parameters, never a query), and an export job. Every figure it
+serves is an aggregate over a table another module owns, issued by that module over the predicate
+its own list is built from. *Dependencies:* **Search is not one**. The index holds documents and
+nothing else, so seven of the ten reports could not be answered from it, and the three that could
+would be answered from a projection that is only eventually consistent with the record. What the
+capability needed was every module that owns rows a report is about.
 
 ## 4. Ports and dependency injection
 

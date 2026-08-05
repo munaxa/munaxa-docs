@@ -50,6 +50,11 @@ import {
   DASHBOARD_DELEGATION_METRICS,
   DASHBOARD_PEOPLE_METRICS,
 } from '../dashboard/application/ports';
+import { REPORT_PEOPLE_SOURCE, REPORT_SUBJECT_READER } from '../reporting/application/ports';
+import {
+  IdentityReportSource,
+  IdentityReportSubjectReader,
+} from './infrastructure/report-source.adapter';
 /**
  * Identity — Who is this person, and what may they do anywhere?
  *
@@ -81,6 +86,11 @@ import {
     DelegationController,
   ],
   providers: [
+    // Phase 15: the users report, and — separately — whose reach a queued export runs under.
+    // The second is read at the moment the export runs rather than snapshotted when it was asked
+    // for, which is Phase 11's rule applied to a queue.
+    { provide: REPORT_PEOPLE_SOURCE, useClass: IdentityReportSource },
+    { provide: REPORT_SUBJECT_READER, useClass: IdentityReportSubjectReader },
     // Phase 13: account counts for the administrator tile, and Phase 11's deferred delegation
     // card — both answered by the module that owns the tables, never read from the dashboard.
     { provide: DASHBOARD_PEOPLE_METRICS, useClass: IdentityDashboardMetrics },
@@ -112,6 +122,8 @@ import {
     { provide: ACCESS_TOKEN_ISSUER, useExisting: JwtTokenService },
   ],
   exports: [
+    REPORT_PEOPLE_SOURCE,
+    REPORT_SUBJECT_READER,
     DASHBOARD_PEOPLE_METRICS,
     DASHBOARD_DELEGATION_METRICS,
     AUTHENTICATION_SERVICE,

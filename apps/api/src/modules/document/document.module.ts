@@ -38,6 +38,8 @@ import { RevisionControlController } from './presentation/revision-control.contr
 import { DocumentDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
 import { DASHBOARD_DOCUMENT_METRICS } from '../dashboard/application/ports';
 
+import { REPORT_DOCUMENT_SOURCE } from '../reporting/application/ports';
+import { DocumentReportSource } from './infrastructure/report-source.adapter';
 /**
  * Document — What is this document, in the business's terms?
  *
@@ -86,6 +88,10 @@ import { DASHBOARD_DOCUMENT_METRICS } from '../dashboard/application/ports';
   ],
   controllers: [DocumentsController, RevisionControlController, DocumentPreviewController],
   providers: [
+    // Phase 15: three reports — the population, the same population broken down by a dimension,
+    // and what has been deleted — each over `whereFor`, so each inherits the caller's reach and
+    // the total that omits what it omits.
+    { provide: REPORT_DOCUMENT_SOURCE, useClass: DocumentReportSource },
     // Phase 13: what the dashboard needs from Document, answered over this module's own list
     // predicate — see `dashboard-metrics.adapter.ts`.
     { provide: DASHBOARD_DOCUMENT_METRICS, useClass: DocumentDashboardMetrics },
@@ -114,6 +120,7 @@ import { DASHBOARD_DOCUMENT_METRICS } from '../dashboard/application/ports';
   // `DOCUMENT_NUMBER_SERVICE` is exported for exactly one consumer: Workflow's allocator
   // adapter, which is how the engine's `DOCUMENT_NUMBER_ALLOCATOR` seam gets its binding.
   exports: [
+    REPORT_DOCUMENT_SOURCE,
     DOCUMENT_SERVICE,
     DOCUMENT_NUMBER_SERVICE,
     DOCUMENT_DISPOSITION,

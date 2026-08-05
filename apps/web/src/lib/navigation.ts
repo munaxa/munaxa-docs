@@ -109,6 +109,20 @@ const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
     permission: Permission.NOTIFICATION_MANAGE,
   },
   {
+    // Phase 15. `report:view` — 08 §6 gives it to the tenant administrator, the document controller
+    // and the auditor outright and marks it `S` for the library manager, the author and the
+    // approver, which Phase 14 made expressible for the first time. It is the *floor* rather than
+    // the whole gate: most reports require a second permission, resolved per report by the API, and
+    // one the caller cannot run is absent from the screen rather than listed and refused. Gating
+    // this row on the widest of the second permissions would hide the whole section from somebody
+    // who may run one report, which is the mistake `anyOf` exists to avoid — and `report:view` is
+    // held by everybody who may run any of them, so it is the right single row.
+    id: 'reports',
+    href: '/reports' as Route,
+    labelKey: 'nav.reports',
+    permission: Permission.REPORT_VIEW,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',

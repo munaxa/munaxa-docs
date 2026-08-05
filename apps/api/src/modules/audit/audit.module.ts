@@ -23,6 +23,8 @@ import { PrismaAuditRepository } from './infrastructure/prisma-audit.repository'
 import { StorageCheckpointStore } from './infrastructure/storage-checkpoint.store';
 import { AuditController } from './presentation/audit.controller';
 
+import { REPORT_AUDIT_SOURCE } from '../reporting/application/ports';
+import { AuditReportSource } from './infrastructure/report-source.adapter';
 /**
  * Audit — What happened, when, by whom — provably?
  *
@@ -51,6 +53,9 @@ import { AuditController } from './presentation/audit.controller';
   imports: [StorageModule],
   controllers: [AuditController],
   providers: [
+    // Phase 15: the audit report — a projection over `AuditReadService.search`, never a second
+    // query beside it, and behind `audit:view` as well as `report:view`.
+    { provide: REPORT_AUDIT_SOURCE, useClass: AuditReportSource },
     { provide: AUDIT_REPOSITORY, useClass: PrismaAuditRepository },
     { provide: AUDIT_EXPORT_REPOSITORY, useClass: PrismaAuditExportRepository },
     { provide: AUDIT_WRITER, useClass: ChainedAuditWriter },
@@ -70,6 +75,7 @@ import { AuditController } from './presentation/audit.controller';
     AuditLaneConsumer,
   ],
   exports: [
+    REPORT_AUDIT_SOURCE,
     AUDIT_WRITER,
     AUDIT_REPOSITORY,
     ACTIVITY_READER,

@@ -121,3 +121,24 @@ pre-release afterthought. Scenarios, thresholds and the harness live in `edms/in
 folder listing at 1M documents, search under concurrency, 100 parallel uploads, 500 approvals per
 minute, and a full-tenant index rebuild. Every phase records its measured numbers against the table
 in §1, and a regression against the previous phase blocks the release.
+
+## Phase 15 — what a report costs, and what bounds it
+
+Reporting is the first capability in this product designed to aggregate across everything, so its
+costs are stated rather than assumed.
+
+| Claim | Bound | How it is held |
+| --- | --- | --- |
+| A report page is a bounded number of queries, independent of the tenant's size | 2–4 per page | Every report is one `findMany` plus one `count` over the same predicate, plus at most two lookups that resolve a *page's* identifiers to names in one statement each. Nothing is per row |
+| A report's total obeys its own predicate | — | The `count` takes the same `where` the page does. A total computed without the ACL predicate would leak how much exists that the caller cannot see (08 §7) |
+| An export costs one page of memory, whatever its size | `REPORTING_EXPORT_BATCH_SIZE` rows | CSV and the spreadsheet stream: a page is read, rendered and written, and the next replaces it. The generator is what makes it constant-memory, not the batch size |
+| An export is bounded, and says when the bound bit | `REPORTING_EXPORT_MAX_ROWS` | `truncated` on the record, on the wire and in the audit row. A spreadsheet cut off at a round number looks exactly like a complete one |
+| A PDF is bounded harder, because it cannot stream | `REPORTING_PDF_MAX_ROWS` | A PDF's cross-reference table states the byte offset of every object, so it is assembled whole. That is the format, not the library |
+| The trend report reads a bounded slice | 50,000 instances | The one query in the phase that could scan a large table. It is bucketed in the process rather than by `date_trunc`, because a raw query cannot take the Prisma reach predicate and hand-writing its SQL would be a second implementation of the ACL walk |
+
+**Nothing is cached**, and that is Phase 13's decision extended by one reason. Its reason: a stale
+figure is one somebody acts on. The extra one: a report is permission-scoped, so a cache key would
+have to include the caller's whole reach — `VisibilityFilter.fingerprint` exists precisely so that
+is expressible, which makes it a temptation rather than an impossibility. It is refused anyway,
+because the resolver already caches the *filter* (08 §8) where it is invalidated correctly, and
+caching the rows would mean a second thing to invalidate on every document change in the tenant.

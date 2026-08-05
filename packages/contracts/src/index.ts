@@ -58,6 +58,15 @@
  * collapsing them would make the first screen of the product a report on how much exists in the
  * parts of the tenant somebody cannot see into.
  *
+ * Phase 15 adds `reporting/` — the reports of 15 §1's `GET /reports/{key}`. The shape worth
+ * noticing is that a report *descriptor* travels with every page: the columns a client renders come
+ * from the same catalogue the query was built from, so a report cannot serve one column set and
+ * export another. The second is `format: 'SPREADSHEET_XML'` rather than `'XLSX'` — this product has
+ * no spreadsheet library and can add none, so what it produces is SpreadsheetML 2003, which Excel
+ * opens natively and which genuinely is not XLSX. A wire value called `XLSX` would be the product
+ * asserting a container it never wrote. And an export carries `truncated` and `substitutions`,
+ * because a spreadsheet cut off at a round number looks exactly like a complete one.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -93,3 +102,4 @@ export * from './audit/audit';
 export * from './retention/retention';
 export * from './notifications/notification';
 export * from './dashboard/dashboard';
+export * from './reporting/reporting';

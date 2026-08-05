@@ -14,6 +14,8 @@ import { OrganizationController } from './presentation/organization.controller';
 
 import { OrganizationDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
 import { DASHBOARD_ORGANIZATION_METRICS } from '../dashboard/application/ports';
+import { REPORT_ORGANIZATION_SOURCE } from '../reporting/application/ports';
+import { OrganizationReportSource } from './infrastructure/report-source.adapter';
 /**
  * Organisation — Where in the business does this belong?
  *
@@ -35,6 +37,8 @@ import { DASHBOARD_ORGANIZATION_METRICS } from '../dashboard/application/ports';
 @Module({
   controllers: [OrganizationController],
   providers: [
+    // Phase 15: the departments report — counts of people, never their names.
+    { provide: REPORT_ORGANIZATION_SOURCE, useClass: OrganizationReportSource },
     // Phase 13: the department count behind the administrator tile.
     { provide: DASHBOARD_ORGANIZATION_METRICS, useClass: OrganizationDashboardMetrics },
     { provide: SCOPE_REPOSITORY, useClass: PrismaScopeRepository },
@@ -42,6 +46,11 @@ import { DASHBOARD_ORGANIZATION_METRICS } from '../dashboard/application/ports';
     { provide: SCOPE_ADMIN_REPOSITORY, useClass: PrismaScopeAdminRepository },
     { provide: SCOPE_ADMIN_SERVICE, useClass: ScopeAdminService },
   ],
-  exports: [DASHBOARD_ORGANIZATION_METRICS, ORGANIZATION_SERVICE, SCOPE_REPOSITORY],
+  exports: [
+    DASHBOARD_ORGANIZATION_METRICS,
+    REPORT_ORGANIZATION_SOURCE,
+    ORGANIZATION_SERVICE,
+    SCOPE_REPOSITORY,
+  ],
 })
 export class OrganizationModule {}

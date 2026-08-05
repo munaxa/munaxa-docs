@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { attestedFields, isChainHashVersion } from '../../../core/audit/hash-chain';
 
@@ -284,24 +284,11 @@ export function verifyManifestSignature(body: string, signature: string, secret:
 /**
  * A digest accumulated over bytes as they stream past.
  *
- * The manifest has to state the digest of an artefact the process never held in one piece, so it
- * is computed on the way through rather than by reading the object back — which would also mean
- * trusting the store to return what it was given.
+ * Moved to `core/persistence/stream-digest.ts` by Phase 15 and re-exported here, so every call
+ * site in this module and its unit test are unchanged. It was the one thing in this file with
+ * nothing to do with evidence — it hashes bytes — and a report export needs the same accumulator
+ * to state what it wrote. The module boundary lint forbids reaching into another module's
+ * `domain/`, correctly: a reporting service importing an *evidence bundle* would depend on this
+ * phase's vocabulary rather than on a hash. That file records the rest of the reasoning.
  */
-export class StreamDigest {
-  private readonly hash = createHash('sha256');
-  private bytes = 0;
-
-  update(chunk: Uint8Array): void {
-    this.hash.update(chunk);
-    this.bytes += chunk.byteLength;
-  }
-
-  get sizeBytes(): number {
-    return this.bytes;
-  }
-
-  digest(): string {
-    return this.hash.digest('hex');
-  }
-}
+export { StreamDigest } from '../../../core/persistence/stream-digest';
