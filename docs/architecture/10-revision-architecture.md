@@ -191,3 +191,35 @@ partial diff. A format with no words (a drawing, an exhausted render) is honestl
 `UNAVAILABLE`, and a side read by OCR is flagged as the inference it is. The Approval layer of
 §4's table remains unbuilt, deliberately — the approval timeline already answers it on its own
 screen.
+
+## Phase 10 — §7's storage impact, finally accounted for
+
+§7 has said since Phase 0 that a revision holds a reference on its blob and that storage is
+reclaimed when the count reaches zero. The first half was true from Phase 3; the second could not
+happen, and the reason was here rather than in Storage.
+
+**A document's delete released one reference and its revisions held the rest.** Phase 3's `remove`
+dereferenced the *latest* revision — correct when a document had exactly one, which was every
+document Phase 3 could produce — and Phase 6 then gave documents as many revisions as anybody
+wanted without revisiting it. So a document with four revisions gave back one reference on delete,
+three blobs stayed at a count of one forever, and the sweep that reclaims at zero had nothing to
+reclaim. It was invisible because nothing swept.
+
+**The delete now cascades over the revision set**, stamped with the document's own
+`delete_cascade_id`, giving back each row's reference — and the restore reverses exactly that
+cascade. Two properties of the revision model make the cascade non-trivial, and both are asserted
+in the integration suite:
+
+- A `DISCARDED` revision has **already** given its reference back, at the moment the check-out was
+  cancelled. The cascade must take its row and leave its (absent) reference alone, or a restore
+  would re-take a reference nothing holds and the blob would be permanently un-reclaimable.
+- A revision deleted by an earlier cascade carries that cascade's identifier, not this one's. The
+  restore is by identifier rather than by "everything deleted under this document", so history
+  somebody removed deliberately stays removed — the same rule §5 states for restore never
+  rewinding, applied to deletion.
+
+**Ordinals are still never re-used and history still has no gaps.** A soft-deleted revision keeps
+its ordinal (`uq_revision_ordinal` is deliberately not partial on `deleted_at`), so a restored
+document's history is the history it had. A purge removes the revision rows outright — but by then
+the document is gone too, and what remains is the audit trail, which is not this document's to
+describe.

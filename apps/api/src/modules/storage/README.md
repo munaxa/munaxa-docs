@@ -114,3 +114,30 @@ otherwise mean "the whole bucket".
 | No quota accounting | Entitlements are Phase 21's, and a quota with nothing to read is a constant | `POLICY_EVALUATOR` |
 | `put` is not resumable | A server-produced artefact has one producer and one attempt; a failed stream aborts the multipart and the job retries from the beginning | The first artefact large enough for a restart to cost real time |
 | `read` has no size bound | No object store enforces one on a `GET`, and its only caller reads a few hundred bytes of signed checkpoint | A second caller, which would be the moment to add one |
+
+## Phase 10 — the bytes finally leave
+
+`listUnreferenced` has carried the comment "only retention calls this, and only at a reference
+count of zero" since Phase 3, and had no caller. `StoragePort.delete` was reachable and uncalled
+outside the upload path. `StorageBlobReaper` is the caller: it binds Retention's `BLOB_REAPER`,
+and it is the only code in the product that removes an object from storage.
+
+Two things in it are decisions rather than plumbing.
+
+**The reference count is re-checked inside the deleting transaction, with the row taken
+`FOR UPDATE`.** The listing ran earlier, in somebody else's snapshot; a revision attaching the blob
+between the two would have moved the count off zero, and deleting the object then is precisely how
+a live document loses its content. The re-check is raw SQL because Prisma cannot express
+`FOR UPDATE`, and it is the one place in this module that needed to.
+
+**The grace period is why this is not simply "delete at zero".** A delete and the restore that
+undoes it are separated by however long somebody takes to notice, so `retention.blobGraceDays`
+(default 7) holds the bytes after the last reference goes. It is measured from `updated_at`, which
+moves with every reference adjustment — so "unchanged since the cutoff at a count of zero" means
+"at zero at least that long", without a second timestamp column nothing else would read.
+
+`expireUploadSessions` is the other half: `storage.sweep-upload-sessions` has been in the schedule
+catalogue since Phase 0.5 with nothing to fire it, and it now expires abandoned sessions *and*
+removes their staging objects. Removing the object is best-effort per session and logged when it
+fails — most abandoned sessions never wrote a byte, so "nothing to delete" is the common answer and
+not a fault; a store that is genuinely refusing deletes is what the log makes visible.
