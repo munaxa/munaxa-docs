@@ -32,16 +32,30 @@ export const GENESIS_HASH = '0'.repeat(64);
 
 /** The Phase 1 digest: nine fields, and the seven `CHAIN_HASH_V2` adds left uncovered. */
 export const CHAIN_HASH_V1 = 1;
-/** The Phase 9 digest: every column that carries a fact, `hash` and `previousHash` excepted. */
+/** The Phase 9 digest: every column that carried a fact when Phase 9 wrote it. */
 export const CHAIN_HASH_V2 = 2;
+/**
+ * The Phase 17 digest: v2 plus `apiClientId`.
+ *
+ * Widened for the same reason and by the same mechanism Phase 9 used, which is why this is three
+ * lines rather than a redesign. `api_client_id` records *which credential* took an action — the
+ * first question an incident asks — and a column the digest does not cover is a column somebody
+ * with write access can change without breaking anything. Phase 9's own words apply unchanged: a
+ * bundle that claimed to attest it would be claiming more than the chain proved.
+ *
+ * Versioned rather than retrospective, again, and for the reason that has not changed: the table
+ * refuses `UPDATE` to every role including the owner, so rows written under v1 and v2 cannot be
+ * rehashed and must keep verifying against the field set they were written under.
+ */
+export const CHAIN_HASH_V3 = 3;
 
 /** What a new append is written with. Reading dispatches on the row's own stamp, never this. */
-export const CURRENT_CHAIN_HASH_VERSION = CHAIN_HASH_V2;
+export const CURRENT_CHAIN_HASH_VERSION = CHAIN_HASH_V3;
 
-export type ChainHashVersion = typeof CHAIN_HASH_V1 | typeof CHAIN_HASH_V2;
+export type ChainHashVersion = typeof CHAIN_HASH_V1 | typeof CHAIN_HASH_V2 | typeof CHAIN_HASH_V3;
 
 export function isChainHashVersion(value: number): value is ChainHashVersion {
-  return value === CHAIN_HASH_V1 || value === CHAIN_HASH_V2;
+  return value === CHAIN_HASH_V1 || value === CHAIN_HASH_V2 || value === CHAIN_HASH_V3;
 }
 
 export interface ChainedEventInput {
@@ -61,6 +75,8 @@ export interface ChainedEventInput {
   readonly correlationId: string;
   readonly ipAddress: string | null;
   readonly userAgent: string | null;
+  /** The API key the request arrived on — Phase 17. Null for every human request. */
+  readonly apiClientId: string | null;
 }
 
 /**
@@ -71,6 +87,9 @@ export interface ChainedEventInput {
  * the one failure mode an evidence bundle cannot have.
  */
 export function attestedFields(version: ChainHashVersion): readonly string[] {
+  if (version === CHAIN_HASH_V3) {
+    return V3_FIELDS;
+  }
   return version === CHAIN_HASH_V2 ? V2_FIELDS : V1_FIELDS;
 }
 
@@ -97,6 +116,8 @@ const V2_FIELDS: readonly string[] = Object.freeze([
   'ipAddress',
   'userAgent',
 ]);
+
+const V3_FIELDS: readonly string[] = Object.freeze([...V2_FIELDS, 'apiClientId']);
 
 /**
  * Canonical serialisation: field order fixed here rather than taken from object key order,
@@ -144,7 +165,7 @@ export function chainHash(
     event.outcome,
     canonicalize(event.payload),
   ];
-  if (version === CHAIN_HASH_V2) {
+  if (version === CHAIN_HASH_V2 || version === CHAIN_HASH_V3) {
     material.push(
       event.sequence.toString(),
       event.channel,
@@ -154,6 +175,11 @@ export function chainHash(
       event.ipAddress ?? '',
       event.userAgent ?? '',
     );
+  }
+  // Appended rather than interleaved, exactly as v2 appended to v1: a fourth version extends the
+  // material without moving a byte of what came before, so every existing row keeps verifying.
+  if (version === CHAIN_HASH_V3) {
+    material.push(event.apiClientId ?? '');
   }
   return createHash('sha256').update(material.join('|'), 'utf8').digest('hex');
 }

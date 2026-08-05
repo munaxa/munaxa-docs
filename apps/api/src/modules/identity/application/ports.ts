@@ -526,3 +526,67 @@ export interface DelegationService {
     readonly at: Date;
   }): Promise<readonly DelegationRecord[]>;
 }
+
+export const FEDERATED_USER_REPOSITORY = Symbol('FederatedUserRepository');
+
+/**
+ * Reads and writes the four columns Phase 17 added to `user`, and nothing else.
+ *
+ * A separate interface from `UserRepository` and from `CredentialRepository` for the reason those
+ * two are separate from each other: this is the only one that can *create a person without an
+ * administrator having asked for it*, which is a capability worth being able to find every caller
+ * of. `UserAdminService` is where an administrator creates somebody, and nothing here grows into
+ * it — there is no update, no delete, no list.
+ */
+export interface FederatedUserRepository {
+  /**
+   * The account this assertion belongs to, by external subject first and by address second.
+   *
+   * Both, in that order, and the order is the whole of it. **The subject is the identity**: a
+   * person who changes their email address at the provider is the same person, and matching on
+   * address alone would provision them a second account. The address is the *fallback*, and it
+   * exists so that a tenant switching on federation binds its existing accounts to the provider on
+   * each person's first federated sign-in rather than duplicating all of them.
+   *
+   * The address fallback is safe only because the assertion is a verified ID token from the
+   * provider that owns the domain: an attacker cannot claim `ada@acme.com` at a provider that
+   * answers for `acme.com` without controlling that account.
+   */
+  findByExternalIdentity(
+    providerId: AnyId,
+    externalId: string,
+    emailNormalized: string,
+  ): Promise<UserId | null>;
+
+  /** Binds an existing local account to the provider on its holder's first federated sign-in. */
+  linkToProvider(
+    id: UserId,
+    providerId: AnyId,
+    externalId: string,
+    displayName: string,
+    at: Date,
+  ): Promise<void>;
+
+  /**
+   * Creates a person from a verified assertion — 17 §2's JIT provisioning.
+   *
+   * `roleKeys` are the pre-mapped ones and are resolved to this tenant's roles here; a key that
+   * matches no role is **dropped rather than created**, because a provider that could bring a new
+   * role into existence would be a provider that decides this tenant's permission model.
+   *
+   * No password hash is written, and `identity_source` is `FEDERATED` — which together are what
+   * make "this account has no password because it federates" distinguishable from "this account
+   * has no password because nobody has accepted the invitation", a distinction the product could
+   * not make before this phase.
+   */
+  provision(input: {
+    readonly id: UserId;
+    readonly email: string;
+    readonly emailNormalized: string;
+    readonly displayName: string;
+    readonly providerId: AnyId;
+    readonly externalId: string;
+    readonly roleKeys: readonly string[];
+    readonly at: Date;
+  }): Promise<void>;
+}

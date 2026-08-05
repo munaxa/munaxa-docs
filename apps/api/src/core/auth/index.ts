@@ -1,4 +1,5 @@
 export * from './access-token';
+export * from './api-key.authenticator';
 export * from './auth.module';
 export * from './authentication.guard';
 export * from './authentication.middleware';

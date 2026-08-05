@@ -10,6 +10,7 @@ export * from './cache.port';
 export * from './clock.port';
 export * from './notification.port';
 export * from './ocr.port';
+export * from './outbound-http.port';
 export * from './preview.port';
 export * from './queue.port';
 export * from './search.port';

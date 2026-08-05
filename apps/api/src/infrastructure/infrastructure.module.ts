@@ -3,10 +3,12 @@ import { Global, Module } from '@nestjs/common';
 import { API_PREFIX } from '@edms/contracts';
 
 import { APP_CONFIG, type AppConfig } from '../core/config';
+import { LOGGER, type Logger } from '../core/observability/logger';
 import { ANTIVIRUS_PORT } from '../ports/antivirus.port';
 import { CACHE_PORT } from '../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
 import { NOTIFICATION_PORT, type NotificationPort } from '../ports/notification.port';
+import { OUTBOUND_HTTP_PORT } from '../ports/outbound-http.port';
 import { QUEUE_CONSUMER, QUEUE_PORT } from '../ports/queue.port';
 import { OCR_PORT, type OcrPort } from '../ports/ocr.port';
 import { INDEX_PORT, SEARCH_PORT, type IndexPort } from '../ports/search.port';
@@ -15,6 +17,7 @@ import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-reg
 import { RedisCacheAdapter } from './cache/redis-cache.adapter';
 import { BullMqQueueAdapter } from './queue/bullmq.adapter';
 import { SystemClockAdapter } from './clock/system-clock.adapter';
+import { AllowListedHttpAdapter } from './providers/allow-listed-http.adapter';
 import { ResendMailAdapter } from './providers/resend-mail.adapter';
 import { TesseractOcrAdapter } from './providers/tesseract-ocr.adapter';
 import {
@@ -289,6 +292,18 @@ function requireBucket(config: AppConfig): string {
     { provide: OCR_PORT, useFactory: ocrAdapterFor, inject: [APP_CONFIG] },
     { provide: NOTIFICATION_PORT, useFactory: mailAdapterFor, inject: [APP_CONFIG] },
     { provide: ANTIVIRUS_PORT, useClass: UnconfiguredAntivirusAdapter },
+    // Phase 17: the only thing in the product that may reach a tenant-chosen address, and the
+    // whole of 17 §6's SSRF row. One binding, so there is no second way out.
+    {
+      // A factory rather than `useClass`, because the adapter's last two constructor arguments are
+      // the network itself — `fetch` and the DNS resolver — defaulted to the globals so that
+      // production wiring names neither, and injectable by a test so that a suite asserting the
+      // SSRF checks never opens a socket. Nest cannot supply a defaulted parameter it has no token
+      // for, so the two are left to their defaults here.
+      provide: OUTBOUND_HTTP_PORT,
+      useFactory: (config: AppConfig, log: Logger) => new AllowListedHttpAdapter(config, log),
+      inject: [APP_CONFIG, LOGGER],
+    },
   ],
   exports: [
     CLOCK_PORT,
@@ -301,6 +316,7 @@ function requireBucket(config: AppConfig): string {
     INDEX_PORT,
     OCR_PORT,
     NOTIFICATION_PORT,
+    OUTBOUND_HTTP_PORT,
     ANTIVIRUS_PORT,
   ],
 })

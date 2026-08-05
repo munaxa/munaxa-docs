@@ -171,6 +171,10 @@ function toEntry(event: AuditEventRecord): WireAuditEntry {
     payload: event.payload,
     reason: event.reason,
     correlationId: event.correlationId,
+    // Unlike `ipAddress` below, this *is* on the wire: it names a credential the tenant issued
+    // rather than a person's location, and "which of our integrations did that" is a question the
+    // administrator reading this screen is the right person to be asking.
+    apiClientId: event.apiClientId,
     hash: event.hash,
     previousHash: event.previousHash,
     chainHashVersion: event.chainHashVersion,

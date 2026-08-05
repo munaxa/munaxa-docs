@@ -40,6 +40,8 @@ export interface AuditEventRecord {
   readonly correlationId: string;
   readonly ipAddress: string | null;
   readonly userAgent: string | null;
+  /** Which API key the request arrived on — Phase 17. Null for every human request. */
+  readonly apiClientId: AnyId | null;
   readonly hash: string;
   readonly previousHash: string;
   /** Which field set this row's digest covers (`core/audit/hash-chain.ts`). */

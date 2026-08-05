@@ -70,7 +70,60 @@ GET    /api/v1/documents/{id}/signatures
 POST   /api/v1/documents/{id}/signatures
 GET    /api/v1/documents/{id}/signatures/{sid}/verification
 POST   /api/v1/documents/{id}/signatures/{sid}/withdrawal
+GET    /api/v1/auth/federation?email=…                 # public: password box, or a redirect
+POST   /api/v1/auth/federation/callback                # public: the provider's code, for a session
+GET    /api/v1/admin/api-clients
+POST   /api/v1/admin/api-clients                       # 201 with the secret, once and only here
+GET    /api/v1/admin/api-clients/{id}
+DELETE /api/v1/admin/api-clients/{id}                  # revokes; answers the row, never 204
+GET    /api/v1/admin/webhooks
+POST   /api/v1/admin/webhooks                          # 201 with the signing secret, once
+GET    /api/v1/admin/webhooks/{id}
+PATCH  /api/v1/admin/webhooks/{id}
+DELETE /api/v1/admin/webhooks/{id}
+GET    /api/v1/admin/webhooks/{id}/deliveries          # what was sent, and what became of it
+GET    /api/v1/admin/identity-provider                 # at most one per tenant, so no {id}
+PUT    /api/v1/admin/identity-provider
+DELETE /api/v1/admin/identity-provider
+GET    /api/v1/admin/audit-sink
+PUT    /api/v1/admin/audit-sink
+DELETE /api/v1/admin/audit-sink
+GET    /api/v1/audit/stream?afterSequence=…            # the SIEM pull cursor; audit:export
+GET    /api/openapi.json                               # the schema, unversioned and served in production
 ```
+
+**Phase 17's routes carry two permissions, and the split is the point.** Everything under
+`/admin/` above is `integration:manage` — one key for four resources, because they are not four
+independent decisions: whoever may mint a key may mint one bound to an auditor, and whoever may
+point a webhook at a URL can exfiltrate the same events a sink would carry. But
+`GET /audit/stream` is **`audit:export`**, because an administrator who may point the trail at a
+collector is not thereby somebody who may read it, and a collector polling the cursor is not
+somebody who may reconfigure where it goes.
+
+**There is no `PATCH /admin/api-clients/{id}`, and the absence is deliberate.** A key's scopes and
+its subject are what its holder was told they had; changing either silently changes what a running
+integration can do, and the failure surfaces as somebody's nightly job starting to `403` with
+nothing in their own logs to explain it. Revoke and mint is one more step and is a fact both sides
+can see. `DELETE` **revokes** rather than deletes and answers the row, because "which keys existed,
+for whom, and when were they withdrawn" is what an access review reads.
+
+**A secret appears in exactly one response per resource and in no request that reads one.** The
+`POST` bodies above are the only place an API key or a webhook signing secret exists outside its
+holder's hands; there is no endpoint by which either can be asked for again, and no read schema in
+`@edms/contracts` has a field for one.
+
+**`GET /audit/stream` is keyset by `sequence` rather than paged**, and that is the whole reason the
+integration is worth having. `audit_event.sequence` is per-tenant, monotonic and gap-free, so a
+collector that has stored N and receives N+2 *knows* it missed one — a stronger completeness
+guarantee than a timestamp window, and one an offset could not give because it answers differently
+depending on when it is asked.
+
+**A machine caller presents its key in the same `Authorization: Bearer` header a person's access
+token uses**, told apart by the key's own `mdk.` prefix. A second header would mean every client
+library, proxy and CORS allow-list learns a second name for "the credential", and a request
+carrying both would need a precedence rule nobody would remember. A key is resolved on *every*
+request — it exchanges for no session and no token — which is what makes revoking one immediate
+rather than effective within an access token's lifetime.
 
 **The bulk routes are the only ones in this API that cannot carry `@ScopedTo`** — Phase 16. That
 decorator binds *one* route parameter to *one* object so `AclGuard` can resolve its scope chain
@@ -200,10 +253,39 @@ sequenceDiagram
 - Every mutating route carries `@RequirePermission(...)`; a route without one fails a boot-time
   assertion. Public routes are explicitly marked and carry a comment saying why.
 
+**A machine caller is a delegated subject** — [ADR-0018](./adr/0018-machine-identity-as-a-delegated-subject.md),
+Phase 17. An API key is bound to a person when it is minted and acts as that person, so
+`RequestContext.userId` is never absent and every reach predicate in the product is unchanged. Its
+effective permissions are the *intersection* of that person's tenant-wide grants with the key's
+scopes, both read at authentication rather than snapshotted — so removing a role removes it from
+every key bound to them on the next call.
+
+A key exchanges for **no session and no token**. It is presented and resolved on every request,
+which is what makes a revocation immediate rather than effective within an access token's lifetime.
+`sessionId` is null for such a request, and `ActorChannel.API` and `audit_event.api_client_id` are
+what the trail records — the second attested by chain hash version 3, because "which credential did
+this" is the first question an incident asks and an answer only a payload carries is one somebody
+with write access can change.
+
 ## 6. Documentation and contracts
 
-- **OpenAPI** is generated from controllers and DTO decorators, served at `/api/docs` in non-production
-  and emitted as a build artifact.
+- **The OpenAPI document and the OpenAPI explorer are two things**, and Phase 17 split them. The
+  *explorer* is an interactive surface that enumerates every route and offers a "try it" button
+  against the running deployment; it stays at `/api/docs`, and configuration still refuses to boot
+  with `OPENAPI_ENABLED` in production. The *document* is a contract — what an SDK is generated
+  from, what a customer's integration team reads, and what §8's compatibility rule is diffed
+  against between releases — and it is served at `/api/openapi.json` **in every environment**,
+  production included. Refusing to publish it there meant the one deployment whose contract anybody
+  cares about was the one that would not state it.
+- **The document describes the route surface, not yet the body shapes**, and that limit is
+  deliberate rather than unfinished. It is built from what Nest already knows — routes, methods,
+  parameters — and **not** from a hand-maintained `@ApiProperty` decorator set on DTO classes,
+  because every contract is already a zod schema in `@edms/contracts` and §6's next line says those
+  are the source of truth. A decorator set beside them would be a second definition of each shape,
+  diverging the first time somebody edited one and not the other. Closing it means a
+  zod-to-JSON-Schema projection over the existing schemas — one derivation, not a second source —
+  and Phase 17's report names it as the seam rather than shipping a fifth declared-but-unbound
+  contract.
 - `@edms/contracts` is the TypeScript source of truth shared by API and web; the typed client is
   generated from it, so a contract change that breaks a consumer breaks the build — which is the
   point of the monorepo.

@@ -13,6 +13,8 @@ import { RETENTION_EVENT_TYPES } from '../modules/retention/domain/events';
 import { REVISION_EVENT_TYPES } from '../modules/revision/domain/events';
 import { STORAGE_EVENT_TYPES } from '../modules/storage/domain/events';
 import { WORKFLOW_EVENT_TYPES } from '../modules/workflow/domain/events';
+import { webhookSubscribes } from '@edms/domain';
+
 import { routesFor } from '../core/outbox/prisma-outbox.dispatcher';
 
 /**
@@ -128,7 +130,38 @@ describe('the outbox routing table', () => {
     expect(routesFor('revision.published')).not.toContain(QueueName.NOTIFICATIONS_DELIVER);
   });
 
-  it('routes an event nothing publishes nowhere, rather than guessing', () => {
-    expect(routesFor('invented.event')).toEqual([]);
+  /**
+   * Phase 17's change, and the reason the assertion below reverses.
+   *
+   * The table's default was `[]`, which is what made forgetting a family *silent*: `delegation.*`
+   * routed nowhere from Phase 11 until Phase 12 found it, and `library.*` until Phase 14. For
+   * every consumer before this one the consequence was partial — some re-projections missed, some
+   * messages missed — and somebody eventually noticed a document was not findable.
+   *
+   * A webhook subscriber has no such signal. An integration built on "tell me when anything
+   * happens" that silently receives nothing from one family cannot discover the gap at all,
+   * because absence is indistinguishable from quiet. So the default is now the webhook lane, and
+   * the next phase that adds an event family gets webhooks without touching `routesFor`.
+   */
+  it('routes an event nothing publishes to the webhook lane rather than nowhere', () => {
+    expect(routesFor('invented.event')).toEqual([QueueName.WEBHOOKS_DELIVER]);
+  });
+
+  it('sends every family — including the deliberately unrouted ones — to the webhook lane', () => {
+    // The assertion that makes "a webhook subscriber wants everything" true rather than intended.
+    // It covers `DELIBERATELY_UNROUTED` as well, because those are unrouted *for the search index
+    // and the notification lane*: a `library.acl-changed` that reaches no integration is still a
+    // fact an integration asked to be told about.
+    for (const eventType of PUBLISHED) {
+      expect(routesFor(eventType), eventType).toContain(QueueName.WEBHOOKS_DELIVER);
+    }
+  });
+
+  it('narrows per endpoint rather than in this table', () => {
+    // The table sends everything; `webhookSubscribes` decides what each endpoint receives. That
+    // keeps the narrowing where an administrator can change it without a release, and keeps this
+    // function from being the place a family goes missing for a third time.
+    expect(webhookSubscribes(['document'], 'document.published')).toBe(true);
+    expect(webhookSubscribes(['document'], 'library.acl-changed')).toBe(false);
   });
 });

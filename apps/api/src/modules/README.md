@@ -35,6 +35,19 @@ models. The rule is enforced by `apps/api/eslint.config.mjs`, not merely written
 | [retention](./retention/README.md) | How long must it be kept, and what happens then? |
 | [reporting](./reporting/README.md) | What is the state of the whole? |
 | [dashboard](./dashboard/README.md) | What needs my attention right now? |
+| [integration](./integration/README.md) | How does this tenant connect to other systems? |
+
+## Where a machine caller lives
+
+Phase 17 added `integration/`, and the split between it and `identity/` is worth stating because
+the obvious grouping is wrong. **API clients and the tenant's identity provider are Identity's**:
+they answer "who is this and what may they do anywhere", which is Identity's own question, and both
+need its credential and session repositories. **Webhooks and the audit sink are Integration's**:
+they are about what a *system on the other end* receives.
+
+One permission — `integration:manage` — gates all four across the two modules, because they are one
+administrative surface even though they are two modules' data. 08 §2's test is whether a permission
+is a decision somebody can be trusted with separately, and this one is not.
 
 ## Where "Security" lives
 

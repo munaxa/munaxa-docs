@@ -40,7 +40,36 @@ returns recipients.
 | Email | Phase 12 — built, hosted provider only | Behind `NotificationPort`. The hosted adapter exists; **SMTP does not**, and `MAIL_DRIVER=SMTP` is refused at boot rather than failing at the first send. Bounces are recorded and suppress the address |
 | Digest | Phase 12 — built | Hourly, daily or weekly rollup per user, replacing individual **emails** for types the user has digested. In-app is never digested: §3's first row calls it authoritative |
 | Push (web/mobile) | Future | The port and the message model already accommodate it; no code is written in anticipation |
-| Webhook | Phase 17 | Per-tenant outbound webhooks for integration, signed, retried, and audited |
+| Webhook | Phase 17 — built, and **not on this path** | Per-tenant outbound webhooks, signed, retried and audited. `NotificationChannel.WEBHOOK` is a value nothing uses; see below |
+
+### The webhook channel binds, and it binds outside this module
+
+[ADR-0019](./adr/0019-webhooks-are-not-notifications.md). Phase 17 built the row above and
+deliberately did **not** write a `NotificationPort` adapter for the `WEBHOOK` channel, because §8's
+central safety property — *no recipient list derived from a document reaches a renderer without
+every name in it passing the ACL resolver* — is a statement about **people**. A notification is
+addressed to a person, and "may this human be told that this document exists" is a permission
+question with a subject. An endpoint is not a user, holds no roles, appears in no ACL entry, and has
+no reach to resolve.
+
+Riding this path would have meant either inventing a subject for the endpoint so the walk had
+something to check — load-bearing fiction in a disclosure decision — or writing
+`if (channel !== WEBHOOK)` inside the one code path whose whole value is that it has no exceptions.
+
+Everything else confirms it. A notification has preferences, quiet hours, a digest frequency, a
+locale and a rendered template; none means anything for an endpoint. A webhook has a signature, a
+replay window, a visible retry schedule and a dead-letter state; none means anything for a person.
+
+So webhooks live in `modules/integration/` with their own tables, lane and retries, and
+**`NotificationChannel.WEBHOOK` is a value nothing will ever use**. It is not removed: it sits in a
+PostgreSQL enum that `notification_preference.channels` is an array of, and dropping a value from
+an enum a column depends on is a migration with no benefit at the end of it. This paragraph is the
+correction; the enum is left alone.
+
+One consequence is a gap rather than a decision, and it is recorded as such in Phase 17's report:
+**no notification is produced when an endpoint disables itself after twenty consecutive failures.**
+The disablement is on the row, in the trail and on the screen — but nobody is told, and closing that
+means reaching back into the path this ADR just separated from.
 
 ## 4. Event → notification map
 

@@ -61,13 +61,15 @@ munaxa-docs/
 └── infra/          # compose stack, database roles, RLS
 ```
 
-> A mobile client is named in the Phase 0 design and is not built: no phase before 17 needs
-> one, and an empty app would only be a directory to maintain.
+> A mobile client is named in the Phase 0 design and is not built. Phase 17 was the phase that
+> would have needed one, and it did not: what the brief asked for is a *machine-callable* API, and
+> what that needs is a credential model rather than a client. An empty app would still only be a
+> directory to maintain.
 
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 16**:
+and the product is built through **Phase 17**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -295,3 +297,37 @@ Each phase's report records what it left owing, in `docs/reports/`. The most rec
 [`phase-15-reporting.md`](./docs/reports/phase-15-reporting.md);
 the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).
+
+- **Phase 17** — the integration platform, and the phase whose first decision was that its eleven
+  brief items are four groups. **SSO, LDAP, Azure AD and Google Workspace are not four
+  integrations**: 17 §2 had already decided the shape, and Entra ID and Google Workspace are OIDC
+  providers differing in a discovery URL and a claim name — both columns — so building three
+  adapters would have been building one adapter three times. LDAP is a wire protocol needing a
+  dependency the lockfile cannot gain, and "Microsoft 365" is not authentication at all but a
+  *content* integration; both are named rather than half-built. Verification is hand-written over
+  `node:crypto` and contains **no cryptography** — Node imports a JWK and verifies RS256 and ES256
+  natively — so what is written is four comparisons a reader can check by eye, which is why it is
+  not the trade Phase 14 refused for CBOR and this phase refuses for XML-DSig. But the phase's
+  centre of gravity is a caller that is not a person, and its central safety property is that
+  **`RequestContext.userId` is the subject of every reach decision in this product**:
+  `visibilityCondition` answers a subject-less caller with an *empty predicate*, which is every
+  document in the tenant, so a machine token authenticating as nobody would have turned every list
+  route into a full tenant dump with nothing logging an error and every `403` passing.
+  [ADR-0018](./docs/architecture/adr/0018-machine-identity-as-a-delegated-subject.md) makes a key a
+  **delegated subject** — bound to a person, narrowed by scopes that can only intersect, both read
+  at authentication rather than snapshotted — so not one caller of `ACL_RESOLVER` changed and the
+  suite proves it by giving two keys the same list request and different totals. A key nameable in
+  an ACL entry was the refused alternative, on Phase 11's exact reasoning about delegation. Webhooks
+  are their own delivery path and
+  [ADR-0019](./docs/architecture/adr/0019-webhooks-are-not-notifications.md) argues why: Phase 12's
+  central safety property is a per-person ACL walk and an endpoint is not a person, so
+  `NotificationChannel.WEBHOOK` is a value nothing will ever use and 18 §3 now says so. The envelope
+  carries identity and never content, the timestamp is inside the signed string so a replay window
+  is enforceable, and a dead delivery keeps its bytes. The outbox routing table's **default**
+  changed from nowhere to the webhook lane — the first consumer for which a dropped family is total
+  rather than partial, and the defect that table has had twice. 13 §6's SIEM row is discharged for
+  three phases at once, in both shapes, over a sequence that is gap-free by construction. And 17
+  §6's SSRF row stopped being unfalsifiable: three of the phase's four capabilities are structurally
+  "post this to wherever the customer says", so `OUTBOUND_HTTP_PORT` is the only outbound path, with
+  an operator-owned allow-list that is **empty by default**, every resolved address checked, the
+  connection pinned to the address that was checked, and no redirects at all.

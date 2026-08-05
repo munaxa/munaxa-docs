@@ -29,6 +29,7 @@ const event = (id: string, sequence: bigint, action = 'DOCUMENT_PUBLISHED') => (
   correlationId: 'correlation-1',
   ipAddress: null,
   userAgent: null,
+  apiClientId: null,
 });
 
 function chain(count: number, version: ChainHashVersion = CHAIN_HASH_V2): ChainLink[] {

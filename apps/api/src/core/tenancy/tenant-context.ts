@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import type { PermissionKey, TenantId, UserId } from '@edms/domain';
+import type { ActorChannelKey, AnyId, PermissionKey, TenantId, UserId } from '@edms/domain';
 
 import { UnauthenticatedError } from '../errors/application-errors';
 
@@ -32,6 +32,31 @@ export interface RequestContext {
   /** Forces re-evaluation when a role or permission changes mid-session. */
   readonly permissionVersion: number;
   readonly locale: string;
+  /**
+   * How this actor reached the system — Phase 17, and the field that finally writes
+   * `ActorChannel.API`.
+   *
+   * That value has been in the enum and in the database's `actor_channel` type since Phase 0.5 and
+   * **nothing had ever written it**: every audit actor in the product was constructed with a
+   * literal `'WEB'`, including the ones built by scheduled jobs. The channel was a guess in four
+   * places rather than a fact in one, which is what this field replaces.
+   *
+   * Optional so that nothing constructing a context has to be changed to keep behaving as it did:
+   * absent means `WEB`, which is what the literal said. What sets it deliberately is the API-key
+   * authenticator (`API`), the lane consumers (`WORKER`) and provisioning (`SYSTEM`).
+   */
+  readonly channel?: ActorChannelKey;
+  /**
+   * Which API key this request arrived on, when it arrived on one.
+   *
+   * Recorded beside the actor rather than instead of them, because both facts matter and neither
+   * substitutes for the other. `userId` stays the *person* the key acts as —
+   * [ADR-0018](../../../../../docs/architecture/adr/0018-machine-identity-as-a-delegated-subject.md)
+   * — so every reach decision in the product is unchanged and no predicate has to learn what a
+   * machine is. This is what makes "which of our seventeen integrations downloaded that" a
+   * question the trail can answer, rather than "somebody's service account did".
+   */
+  readonly apiClientId?: AnyId;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

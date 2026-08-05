@@ -46,12 +46,28 @@ app/
     ├── notifications/            the notification centre: inbox, per-user preferences, quiet hours
     ├── reports/                     the report catalogue, its parameters, its charts and its exports
     ├── admin/                    types · fields · numbering · workflows · retention ·
-    │                             confidentiality · libraries · users · roles · settings
+    │                             confidentiality · libraries · users · roles · settings ·
+    │                             api-clients · webhooks
     └── recycle-bin/
 ```
 
 Route groups map to shells, not to features. The document record page is a **tabbed record
 workspace**: identity and actions stay fixed while tabs change, so a user never loses their place.
+
+**`admin/api-clients` and `admin/webhooks` are under System, not People** — Phase 17. A key acts
+*as* a person, which makes it tempting to file beside users; but what an administrator is doing on
+those two screens is connecting this tenant to another system, and the neighbours that make that
+legible are the settings and the notification templates rather than the directory. Both are behind
+one permission (`integration:manage`) because they are one administrative surface: whoever may mint
+a key may mint one bound to an auditor, and whoever may point a webhook at a URL can exfiltrate the
+same events a key would read.
+
+Two things on those screens are unusual and both are deliberate. **A minted credential is shown
+once**, in a dialogue that says so and is dismissible only by a deliberate act — it exists in that
+response and in no other, so a form that quietly discarded it would leave somebody with an
+integration they cannot configure. And **an API client has no edit form**: changing a key's subject
+or scopes silently changes what a running integration can do, and the failure surfaces as somebody's
+nightly job starting to `403` with nothing in their own logs to explain it.
 
 **`(auth)/mfa` is enrolment, not the challenge** — Phase 14. The challenge lives on the sign-in
 form, and that is a decision rather than a shortcut: a challenge on its own page would need either

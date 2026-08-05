@@ -52,6 +52,20 @@ export const AuditSubjectType = {
    * this arrangement" a query on one subject.
    */
   DELEGATION: 'DELEGATION',
+  /**
+   * An integration — the Phase 17 addition: an API client, a webhook endpoint, an identity
+   * provider, an audit sink.
+   *
+   * One subject type for four resources, unlike the three additions above, and the difference is
+   * worth stating. `EXPORT`, `BULK_OPERATION` and `DELEGATION` each earned their own type because
+   * each has a *timeline somebody reads* — "everything decided under this arrangement", "what did
+   * that import touch". An integration's four resources have one audience and one question
+   * between them: what did the administrator change about how this tenant connects to other
+   * systems. `CONFIGURATION` was the near miss and is wrong for the opposite reason — it would put
+   * "somebody minted an API key that can read every document this person can" in the same stream
+   * as "somebody changed the digest hour", and the first is a security event.
+   */
+  INTEGRATION: 'INTEGRATION',
 } as const;
 
 export type AuditSubjectTypeKey = (typeof AuditSubjectType)[keyof typeof AuditSubjectType];

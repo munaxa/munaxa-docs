@@ -291,6 +291,7 @@ function toLink(event: AuditEventRecord): ChainLink {
       correlationId: event.correlationId,
       ipAddress: event.ipAddress,
       userAgent: event.userAgent,
+      apiClientId: event.apiClientId,
     },
   };
 }
