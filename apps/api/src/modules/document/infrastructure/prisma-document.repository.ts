@@ -441,13 +441,22 @@ export class PrismaDocumentRepository implements DocumentRepository {
     );
 
     const allowed = filter.allowedRegions.map((region) => regionCondition(region));
-    const denied = filter.deniedRegions.map((region) => regionCondition(region));
+    const denied = filter.deniedRegions
+      .map((region) => regionCondition(region))
+      .filter((condition) => !isUnconditional(condition));
+
+    // An **unconditional** allowed region — the tenant-level role grant with no inheritance break
+    // to cut out of it — is not `OR: [{}]`. Prisma does not read an empty object inside an `OR` as
+    // "everything"; it reads it as a branch with no condition and drops it, so a caller who could
+    // see the whole tenant would see nothing. The unconditional case is the overwhelming majority
+    // of requests, so it is spelled as the absence of an allow clause rather than as a branch.
+    const unconditional = allowed.some(isUnconditional);
     return {
-      // No allowed region at all is the closed default, and `OR: []` in Prisma matches *nothing*,
-      // which is the answer wanted. Spelling it as an impossible predicate instead would be one
-      // refactor away from being dropped as dead weight.
       AND: [
-        allowed.length === 0 ? { id: NO_SUCH_ID } : { OR: allowed },
+        // No allowed region at all is the closed default, spelled as a predicate that matches
+        // nothing rather than as an omitted clause — an omitted clause is one refactor away from
+        // reading as "no restriction", which is the wrong direction for this file to fail in.
+        ...(unconditional ? [] : [allowed.length === 0 ? { id: NO_SUCH_ID } : { OR: allowed }]),
         ...(denied.length === 0 ? [] : [{ NOT: { OR: denied } }]),
       ],
     };
@@ -724,6 +733,11 @@ function toRow(row: JoinedRow, _actorId: string | null): DocumentRow {
  * tenant filter and RLS are still there, above it. That is the tenant-level role grant, and it is
  * the branch almost every request in almost every tenant takes.
  */
+/** `{}` is Prisma's "no condition", and the one shape that must never sit inside an `OR`. */
+function isUnconditional(condition: Prisma.DocumentWhereInput): boolean {
+  return Object.keys(condition).length === 0;
+}
+
 function regionCondition(region: VisibilityRegion): Prisma.DocumentWhereInput {
   const bases: Prisma.DocumentWhereInput[] = [];
   if (region.tenantWide) {

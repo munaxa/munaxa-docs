@@ -127,6 +127,7 @@ import { PostgresIndexAdapter } from '../infrastructure/search/postgres-index.ad
 import { PostgresSearchAdapter } from '../infrastructure/search/postgres-search.adapter';
 import { TenantScopedSearch } from '../infrastructure/tenancy/tenant-scoped-search';
 import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
+import { DefaultPermissionService } from '../modules/library/application/permission.service';
 import { PrismaAclRepository } from '../modules/library/infrastructure/prisma-acl.repository';
 import { PrismaScopeChainReader } from '../modules/library/infrastructure/prisma-scope-chain.reader';
 import { DefaultSearchService } from '../modules/search/application/search.service';
@@ -599,6 +600,58 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
  * cold-cache equivalence sets `ACL_CACHE_TTL_SECONDS=0` in its config, and one that wants to assert
  * invalidation can inspect this instance.
  */
+/**
+ * The write half of the ACL model, over the same collaborators the container binds.
+ *
+ * Assembled here rather than in the suite for the reason every other stack is: the boundary lint
+ * forbids a test in one module reaching into another module's `infrastructure/`, and an ACL suite
+ * composing itself would have to reach into two.
+ *
+ * The resolver is shared with whatever else the suite builds, and that is deliberate — the service
+ * refuses an edit on a node the caller cannot itself reach, and it asks the *same* resolver the
+ * guard would. Two instances would let a suite pass with a privilege-escalation check that never
+ * saw the entries the test had just written.
+ */
+export function realPermissions(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+  readonly resolver?: PrismaAclResolver;
+}): {
+  readonly permissions: DefaultPermissionService;
+  readonly resolver: PrismaAclResolver;
+  readonly chains: PrismaScopeChainReader;
+  readonly cache: CachePort;
+  readonly enqueuedJobs: {
+    readonly queue: string;
+    readonly jobId: string;
+    readonly payload: unknown;
+  }[];
+} {
+  const cache = options.cache ?? new FakeCache(options.clock);
+  const resolver = options.resolver ?? realAclResolver({ ...options, cache });
+  const stamps = new RecordStamps(options.clock);
+  const { outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const chains = new PrismaScopeChainReader(new PrismaScopeRepository());
+  const enqueuedJobs: { queue: string; jobId: string; payload: unknown }[] = [];
+
+  return {
+    permissions: new DefaultPermissionService(
+      new PrismaAclRepository(stamps),
+      chains,
+      resolver,
+      cache,
+      outbox,
+      writer,
+    ),
+    resolver,
+    chains,
+    cache,
+    enqueuedJobs,
+  };
+}
+
 export function realDocumentRepository(options: {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
