@@ -51,16 +51,39 @@ scan, which is most of them.
 
 | Rows | Owner |
 | --- | --- |
-| `ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN` | The phase that builds ACL entries |
+| ~~`ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN`~~ | Phase 14 — written |
 | ~~`DELEGATION_CREATED`, `DELEGATION_USED`, `DELEGATION_REVOKED`, `DELEGATION_EXPIRED`~~ | Phase 11 — written |
 | ~~`SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED`~~ | Phase 10 — written |
-| `MFA_ENROLLED`, `MFA_FAILED`, `SESSION_REVOKED` | Phase 14 — security |
+| ~~`MFA_ENROLLED`, `MFA_FAILED`~~ | Phase 14 — written |
 | `REPORT_EXPORTED` | Phase 15 — reporting |
 | `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability |
 | `INTEGRITY_MISMATCH` | Phase 18 — the integrity sweep that would detect one |
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
 A row here with no owner is an oversight; a row with an owner is a schedule.
+
+**`SESSION_REVOKED` was already written, and this table was wrong about it.** Phase 14 went looking
+for it as one of its three and found two call sites in `authentication.service.ts`, both from Phase
+1's refresh-replay detection — a captured refresh token kills the family, and it says so in the
+trail. The row was listed as owed because nobody had checked, which is the failure mode a table of
+owners has and a test does not. Phase 14 adds a third call site (enrolling or removing a second
+factor ends every session) rather than the first.
+
+**Phase 14's five, and where each is written.** `ACL_GRANTED` and `ACL_REVOKED` are Library's, from
+`DefaultPermissionService`, filed against the **node** rather than the subject — "what has happened
+to this folder's permissions" is a timeline question and "what has this person been granted" is a
+payload search, and filing it the other way would make the first one a scan. `INHERITANCE_BROKEN` is
+Library's too, and is written **only in the direction ADR-0005 names**: restoring inheritance is a
+`FOLDER_CHANGED`, because breaking it is the operation that hides content from the people
+accountable for it and restoring it is the operation that stops doing so. A compliance filter that
+exists to find concealment should not have to exclude half its own rows.
+
+`MFA_ENROLLED` and `MFA_FAILED` are Identity's. `MFA_ENROLLED` covers **both directions**, with the
+direction in the payload, which is this catalogue's own convention and is also the honest shape:
+enrolling and un-enrolling answer one question — "what factors does this account have, and since
+when" — from two sides. `MFA_FAILED` is separate from `LOGIN_FAILED` for the opposite reason: they
+answer *different* questions, and collapsing them would hide the only signal that says a password
+has leaked while the factor is holding.
 
 **Phase 12's one, and why the group has one rather than several.** `NOTIFICATION_SUPPRESSED` is
 added to the Security group and written by the delivery service when repeated hard bounces suppress

@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 13**:
+and the product is built through **Phase 14**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -188,12 +188,43 @@ and the product is built through **Phase 13**:
   caller's own; Phase 10's disposition and hold figures; Phase 11's delegation widget, including the
   "who is covering for whom" clause, by declining it; and Phase 12's unread badge.
 
+- **Phase 14** — enterprise security. The ACL phase, and the one the product had been deferring to by
+  name since Phase 8. `acl_entry` is the table ADR-0005 has described since Phase 0 and nothing had:
+  08 §3's steps 3–5 have found nothing since the resolver was bound, because what they read did not
+  exist. They read it now, and the model is unchanged — capability from roles, reach from entries,
+  both required. `PrismaAclResolver` is **extended rather than rebuilt**, which was the test the
+  phase set itself: its four methods keep their signatures and not one caller of `ACL_RESOLVER`
+  changed, while the answers behind them became object-dependent for the first time. Behind them are
+  the chain assembled from ADR-0014's materialised paths at one query per *table* rather than per
+  ancestor, deny winning at any level, and a folder that may stop inheriting — truncating the chain
+  for **both** effects (ADR-0016), because a break that stopped grants and let refusals through
+  would be a flag whose behaviour an administrator cannot read off the screen. `*:manage` and
+  `audit:*` cross it regardless, so nobody can hide a subtree from the people accountable for it.
+  `@ScopedTo` went onto the object routes, so `AclGuard` fires for the first time in the product's
+  life and Phase 9's `ACCESS_DENIED` is finally reached — and making it fire found a defect six
+  phases old: a token carries role *keys* and the resolver was comparing them against UUIDs, matching
+  nothing, invisible because nothing that could observe a grant had ever run with a non-empty role
+  list. The document list gained the predicate inside `whereFor` rather than in its service, which
+  is what made Phase 13's promise true — its counts inherited the filter in the same commit and
+  `dashboard.service.ts` did not change — so a document the caller cannot reach is *absent* from the
+  list and from its total rather than fetched and hidden. 08 §8's cache arrives with the walk exactly
+  as the resolver's own comment predicted, invalidated by prefix inside the transaction that changed
+  an answer; an ACL change re-projects the affected search subtree one page at a time rather than
+  rebuilding an index that must never be emptied. ADR-0005 asked for one mitigation by name and
+  `Decision.decidedAt` had carried the field unread since Phase 0.5 — the permissions screen now
+  shows, for any user and object, the effective permission *and the node that decided it*, with the
+  chain rendered whether or not anything is broken, because an over-broad allow is loud and a deny
+  that inherits too far is silent. And `user.mfa_enrolled` — read by the auth response and the admin
+  view since Phase 1, written by nothing — stopped being a boolean that answers "no" whatever the
+  truth is: TOTP is enrolled, proved, challenged at sign-in and recorded, with WebAuthn and the role
+  policy deferred to 17 rather than half-built here.
+
 Each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-13-dashboard.md`](./docs/reports/phase-13-dashboard.md);
+[`phase-14-security.md`](./docs/reports/phase-14-security.md);
 the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

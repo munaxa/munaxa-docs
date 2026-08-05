@@ -101,7 +101,7 @@ decision — it asks the authorization service.
 | Identity | User, Role, RolePermission, session, MFA | — |
 | Organization | Company, Entity, Branch, Department | Identity |
 | Administration | Settings, DocumentType, Category, NumberingRule, RetentionPolicy, ConfidentialityLevel, MetadataField | Organization |
-| Library | Library, Folder, ACL entries on both | Organization, Administration |
+| Library | Library, Folder, ACL entries on both, `folder.inherit_acl` | Organization, Administration |
 | Document | Document, DocumentMetadataValue, Tag, Link, Lock (check-out) | Library, Administration |
 | Revision | DocumentRevision, revision compare, restore | Document, Storage |
 | Workflow | WorkflowDefinition/Version, Instance, Stage, ApprovalTask, Delegation, Escalation | Document, Identity |

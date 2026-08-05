@@ -121,6 +121,16 @@ decision warrants, and it documents a subject the resolver deliberately does not
 for ACL purposes. Administrative permissions (`*:manage`, `audit:*`) are never blocked this way —
 otherwise a user could hide a subtree from the administrators responsible for it.
 
+"Stops the walk" had two readings until something had to choose, and Phase 14 chose:
+[ADR-0016](./adr/0016-inheritance-break-truncates-the-chain.md) records that a break truncates the
+chain for **both** effects. The effective chain begins at the deepest breaking folder; entries above
+it are not collected, and neither is step 6's tenant-level role grant. Letting a `DENY` cross a break
+that an `ALLOW` cannot would make the flag a one-way valve, and "this folder does not inherit
+permissions" would be a false sentence with no true one a checkbox could say instead.
+
+Which permissions are exempt is `survivesBrokenInheritance()` in `@edms/domain` — one definition,
+written in Phase 1, with no caller until Phase 14.
+
 ## 4. Confidentiality and state modifiers
 
 These **subtract only**; they never grant.
@@ -216,13 +226,20 @@ Three deliberate rows:
 | Point | Mechanism |
 | --- | --- |
 | Route | `@RequirePermission(Permission.X)` on every mutating endpoint; a route without one fails a boot-time assertion |
-| Object | `AclGuard` resolves the scope chain for the target id before the use case runs |
+| Object | `AclGuard` resolves the scope chain for the target id before the use case runs, on every route carrying `@ScopedTo` |
 | Query | List endpoints filter by a permission predicate pushed into SQL — never fetch-then-filter, which leaks totals and pagination |
 | Search | The index carries the ACL fingerprint; results are filtered before scoring ([12](./12-search-architecture.md)) |
 | UI | `usePermission()` reads the server-provided capability set for the current object and hides affordances; it decides nothing |
 | Audit | Every denied attempt on an existing object is audited as `ACCESS_DENIED` |
 
-**Cross-scope reads return `404`, not `403`**, so existence is not leaked.
+**Cross-scope reads return `404`, not `403`**, so existence is not leaked. A chain that cannot be
+assembled — because the object does not exist, or because an ancestor was removed — produces the
+same refusal as a chain that resolves to a denial, which is what makes the two indistinguishable
+from outside.
+
+The UI row is a rule about *direction*, not about effort: a screen may hide anything it likes, and
+it may decide nothing. A button hidden by inferring from a status is a second implementation of a
+permission; a button hidden because the server said `false` is a rendering.
 
 ## 8. Caching
 
@@ -230,6 +247,23 @@ Resolved decisions are cached per `(userId, scopeId, permission)` in Redis with 
 invalidated by event: an ACL change, role change, delegation change, department membership change,
 or document move publishes an invalidation. The cache is an optimisation only — a cold cache
 produces the same answer.
+
+**Phase 14 built it, and it caches three things rather than one.** The *decision*, on §8's own key.
+The *chain*, per `(tenant, scope)` — the expensive half and the half that changes least, since a
+folder's ancestry changes only when somebody moves it. And the *visibility filter*, per
+`(user, roles, permission)`, which matters more than the decision cache does: a dashboard asks for it
+once per widget and a list once per count, so an uncached filter repeats the same six reads across
+one request rather than across one session.
+
+Invalidation is **by prefix, inside the transaction that caused it** — `acl:<tenant>:` — rather than
+by TTL alone. A cache keyed by node cannot express "and everything under it" without walking the
+tree it was added to avoid walking, and an entry on a company changes answers about documents six
+levels below it. The TTL is the backstop for what prefix invalidation cannot see: another process's
+write to shared ancestry.
+
+`ACL_CACHE_TTL_SECONDS=0` disables it entirely, which is the switch to reach for when an
+authorisation answer is under investigation. That a cold cache gives the same answer as a warm one
+is asserted in `acl.integration.spec.ts` rather than asserted *to*.
 
 ## 9. What Phase 8 built
 
@@ -277,3 +311,77 @@ it, and that grant is the filter. Narrowing an auditor's search by document ACLs
 auditor who cannot audit — the opposite of the row §5 writes for them. The matrix's one `S` on
 `audit:view`, the library manager's, is a scoped grant and arrives with the ACL entries; until then
 the resolver answers it as the tenant-level grant it currently is.
+
+## 11. What Phase 14 built
+
+The entries, the walk, deny precedence, `@ScopedTo` on object routes, capabilities in responses and
+§8's cache — the six things §9 listed as "the ACL phase's". They **extend** what Phase 8 bound
+rather than replacing it: `PrismaAclResolver` keeps its four method signatures, and `AclGuard`, the
+dashboard, search's query side and search's projection all call exactly what they called before.
+
+### The entries
+
+`acl_entry` is ADR-0005's table, built for the first time. Steps 3–5 of §3 have found nothing since
+Phase 8 because what they read did not exist; they read it now, and the model is unchanged —
+capability from `role_permission`, reach from here, both required.
+
+Three properties are structural rather than validated. `uq_acl_entry` means one subject holds at most
+one effect per permission per node, so the walk never breaks a tie *at* a node — every tie it
+resolves is between nodes, which is where deny-wins applies and where it is auditable by inspection.
+`scope_id` is never null, so a `TENANT` entry needs no special case. And the table carries **no
+`deleted_at`**: a revoked entry has no reader, and its record is the `ACL_REVOKED` audit event, which
+is append-only and hash-chained.
+
+### The walk, and what it costs
+
+`acl-walk.ts` is the decision as arithmetic over a chain that has already been read, so the same
+rules are asserted without a database and the two call sites that must agree — a direct read and the
+index's materialised subjects — are one implementation. `PrismaScopeChainReader` assembles the chain:
+at worst five reads, one per *table* the tree crosses, and never one per ancestor. That is what
+ADR-0014's materialised paths buy, and the resolver caches the result so twenty permission questions
+about one document — which is what `capabilitiesFor` is — cost one chain read.
+
+### `@ScopedTo`, and what it found
+
+Phase 9 recorded that `ACCESS_DENIED` was "wired but unreached": `AclGuard` was composed as a global
+guard, `AccessDenialRecorder` wrote the row, and `@ScopedTo` was used by **zero routes**. It is now
+on every object route — documents, previews, revisions, the approval endpoints that name a document,
+libraries and folders — and the guard fires.
+
+Making it fire found a defect six phases old. A JWT carries `roles` as role **keys**;
+`role_permission.role_id` and `acl_entry.subject_id` are UUIDs. `PrismaAclResolver` had compared the
+two directly since Phase 8 and matched nothing, which was invisible because nothing that could
+*observe* a grant ran with a non-empty role list. It is resolved in one place —
+`AclRepository.roleIdsFor` — rather than at each of the six call sites.
+
+### The query side
+
+The document list consumes `visibilityFilter`, inside `PrismaDocumentRepository.whereFor` rather than
+in the service. That placement is the whole of how Phase 13's claim came true: the dashboard's counts
+are built from that function, so they inherited the predicate in the same commit and
+`dashboard.service.ts` did not change. A document the caller cannot reach is **absent** from the list
+and from its total.
+
+[ADR-0016](./adr/0016-inheritance-break-truncates-the-chain.md) records the shape:
+`VisibilityFilter` carries subject tokens for the index *and* regions for a relational list, both
+produced by one resolution.
+
+### Capabilities, and the screen
+
+`capabilitiesFor` was already consumed by Phase 13. What Phase 14 adds is the reader ADR-0005 asked
+for by name — `documents/[documentId]/permissions/`, showing the **effective** permission and the
+**node that decided it**. `Decision.decidedAt` had carried that field since Phase 0.5 with nothing
+reading it.
+
+### What was deliberately left
+
+**Step 8 is not applied in the resolver.** State and confidentiality remain where Phase 6 and Phase 7
+put them — in the use cases that perform the acts they modify. Folding them into `resolve` would make
+every refusal a `404`, and "you may not print this document" would become "this document does not
+exist" for somebody holding `document:print` who is looking at it. §4's modifiers subtract from what
+an *act* may do, not from whether an object may be reached.
+
+**The matrix's `S` rows are now expressible and are not seeded.** `document:view` marked `S` for
+`AUTHOR` means "only where explicitly granted on a node", and an entry can now say that. What the
+Phase 1 seed grants is unchanged, because changing it would silently narrow every existing tenant on
+deploy. The `S` is what an administrator may now build, not what they are given.

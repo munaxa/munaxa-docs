@@ -15,7 +15,7 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 13 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 14 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
@@ -30,7 +30,12 @@ survives it, and the delegation that lets one person decide another's approvals 
 ever moving — a routing overlay whose trail names both people and the arrangement that authorised
 them, and the notifications that finally tell people any of it happened: an inbox, an email, a
 digest, quiet hours, a suppression when an address stops accepting mail, and one summary where a
-sweep would otherwise have sent five hundred. Its map is
+sweep would otherwise have sent five hundred, the dashboard that composes all of it without owning
+a row of it, and the permission model itself made real at last — ACL entries on the scope tree, the
+walk over the materialised paths, deny winning at any level, a folder that can stop inheriting while
+the administrators accountable for it still reach through, a list and its total that omit what the
+caller may not see rather than hiding it, a screen that says which node decided and why, and a second
+factor on the way in. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -85,10 +90,17 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0013](./architecture/adr/0013-operator-console-as-separate-surface.md) | Cross-tenant operations live in a separate, fully audited console |
 | [0014](./architecture/adr/0014-materialised-path-as-text.md) | The scope tree's ancestry is a materialised path stored as `text` |
 | [0015](./architecture/adr/0015-database-per-tenant.md) | One database, storage location and search index per tenant; where each lives is a placement resolved through a registry |
+| [0016](./architecture/adr/0016-inheritance-break-truncates-the-chain.md) | An inheritance break truncates the ACL chain, for both effects; the list predicate is regions |
 
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 14 — enterprise security
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 14 — Enterprise Security](./reports/phase-14-security.md) | The ACL phase: the entries ADR-0005 described in Phase 0 and nothing had, the walk over the materialised paths, deny precedence, and `@ScopedTo` on the object routes — so `AclGuard` fires for the first time and Phase 9's `ACCESS_DENIED` is finally reached. The resolver **extended, not rebuilt**: four method signatures unchanged and not one caller touched. Why an inheritance break truncates the chain for *both* effects rather than only for grants; how a relational list gets a predicate the search index's token arrays cannot give it, and why putting it in the repository is what made Phase 13's inherited-counts claim true; what an ACL change costs the search index and what the index serves in the meantime; why MFA is TOTP and not WebAuthn, and why its policy half went to 17; why Share is declined and who owns each reading of it — and the defect six phases old that only firing the guard could find |
 
 ### Phase 13 — dashboard
 
