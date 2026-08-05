@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Permission } from '@edms/domain';
+import { Permission, type UserId, asId } from '@edms/domain';
 
 import { AppModule } from '../app.module';
 import { ACL_RESOLVER, type AclResolver } from '../core/authorization';
@@ -21,7 +21,7 @@ import {
 import { runWithContext, type RequestContext } from '../core/tenancy/tenant-context';
 import { RedisCacheAdapter } from '../infrastructure/cache/redis-cache.adapter';
 import { JwtTokenService } from '../modules/identity/infrastructure/jwt.token-service';
-import { aTenantId, aUserId } from '../testing/factories';
+import { aTenantId } from '../testing/factories';
 
 /**
  * The composition root's own test: does the container resolve, and are the defaults the safe
@@ -83,8 +83,15 @@ describe('application composition', () => {
     const moduleRef = await compile();
     const resolver = moduleRef.get<AclResolver>(ACL_RESOLVER);
 
+    // A subject with **no identity at all** — no user, no roles. Phase 14 narrowed the fast path
+    // that answers this without touching a database, and narrowing it was the point: a person with
+    // no role can now hold reach through an ACL entry naming them personally, so "roles are empty"
+    // stopped being sufficient grounds to refuse without looking. What is still sufficient is
+    // having nobody to look up, which is what this asserts — and asserting it here, with no
+    // database and no request context behind the composition, is what makes it a statement about
+    // the *default direction* rather than about a query's result.
     const decision = await resolver.resolve(
-      { userId: aUserId(), roleIds: [], departmentIds: [], delegationIds: [] },
+      { userId: asId<UserId>(''), roleIds: [], departmentIds: [], delegationIds: [] },
       { type: 'DOCUMENT', id: aTenantId() },
       Permission.DOCUMENT_VIEW,
     );

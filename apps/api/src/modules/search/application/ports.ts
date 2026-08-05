@@ -148,6 +148,21 @@ export interface SearchSource {
   documentIdForRevision(revisionId: RevisionId): Promise<DocumentId | null>;
   /** Findable document ids in id order, after the cursor — the rebuild's enumeration. */
   findableIdsAfter(cursor: DocumentId | null, limit: number): Promise<readonly DocumentId[]>;
+  /**
+   * Findable document ids beneath one scope node, in id order, after the cursor.
+   *
+   * Phase 14's addition, and the answer to the phase's second risk. An ACL change high on the tree
+   * changes the materialised `acl_subjects` of every entry beneath it, and a stale `acl_subjects`
+   * is a search result somebody may not see — or one they should. This is the enumeration that
+   * bounds a **targeted reprojection**: the same batching the rebuild uses, over a subtree rather
+   * than over the tenant, so an entry on a folder costs that folder's documents rather than the
+   * tenant's.
+   */
+  findableIdsUnderScope(
+    scope: { readonly type: string; readonly id: string },
+    cursor: DocumentId | null,
+    limit: number,
+  ): Promise<readonly DocumentId[]>;
   /** Resolve a `type:` field query's code to the type id, case-insensitively. */
   typeIdByCode(code: string): Promise<string | null>;
 }

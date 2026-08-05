@@ -1,10 +1,10 @@
 import { Controller, Get, HttpStatus, Param, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
 
-import { Permission } from '@edms/domain';
+import { Permission, ScopeType } from '@edms/domain';
 import type { PreviewContent, PreviewManifest, PreviewText } from '@edms/contracts';
 
-import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { DocumentPreviewService } from '../application/document-preview.service';
 
 /**
@@ -27,12 +27,14 @@ export class DocumentPreviewController {
 
   @Get(':id/preview')
   @RequirePermission(Permission.DOCUMENT_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   manifest(@Param('id') id: string): Promise<PreviewManifest> {
     return this.previews.manifest(id);
   }
 
   @Get(':id/revisions/:revisionId/preview')
   @RequirePermission(Permission.DOCUMENT_VIEW, Permission.DOCUMENT_HISTORY_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   revisionManifest(
     @Param('id') id: string,
     @Param('revisionId') revisionId: string,
@@ -43,12 +45,14 @@ export class DocumentPreviewController {
   /** The viewing artefact's URL — 200 when ready, 202 with status while the queue works. */
   @Post(':id/preview/content')
   @RequirePermission(Permission.DOCUMENT_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async content(@Param('id') id: string, @Res() response: Response): Promise<void> {
     respond(response, await this.previews.viewContent(id));
   }
 
   @Post(':id/revisions/:revisionId/preview/content')
   @RequirePermission(Permission.DOCUMENT_VIEW, Permission.DOCUMENT_HISTORY_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async revisionContent(
     @Param('id') id: string,
     @Param('revisionId') revisionId: string,
@@ -63,6 +67,7 @@ export class DocumentPreviewController {
    */
   @Post(':id/preview/print')
   @RequirePermission(Permission.DOCUMENT_VIEW, Permission.DOCUMENT_PRINT)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async print(@Param('id') id: string, @Res() response: Response): Promise<void> {
     respond(response, await this.previews.printContent(id));
   }
@@ -70,12 +75,14 @@ export class DocumentPreviewController {
   /** The extracted text: the viewer's text pane, its in-document search, and nothing more. */
   @Get(':id/preview/text')
   @RequirePermission(Permission.DOCUMENT_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   text(@Param('id') id: string): Promise<PreviewText | null> {
     return this.previews.text(id);
   }
 
   @Get(':id/revisions/:revisionId/preview/text')
   @RequirePermission(Permission.DOCUMENT_VIEW, Permission.DOCUMENT_HISTORY_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   revisionText(
     @Param('id') id: string,
     @Param('revisionId') revisionId: string,

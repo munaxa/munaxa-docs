@@ -14,9 +14,9 @@ import {
   publishDocumentSchema,
   restoreRevisionSchema,
 } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { Permission, ScopeType } from '@edms/domain';
 
-import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { RevisionControlService } from '../application/revision-control.service';
 import { DOCUMENT_NUMBER_SERVICE } from '../application/ports';
@@ -47,6 +47,7 @@ export class RevisionControlController {
    */
   @Post(':id/checkout')
   @RequirePermission(Permission.DOCUMENT_CHECKOUT)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async checkOut(@Param('id') id: string): Promise<Document> {
     return this.toResponse(await this.control.checkOut(id));
   }
@@ -57,6 +58,7 @@ export class RevisionControlController {
    */
   @Post(':id/checkout/cancel')
   @RequirePermission(Permission.DOCUMENT_CHECKOUT)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async cancel(@Param('id') id: string): Promise<Document> {
     return this.toResponse(await this.control.cancelCheckOut(id));
   }
@@ -64,6 +66,7 @@ export class RevisionControlController {
   /** Checks new content in: revision n+1, in DRAFT, beneath the still-effective published one. */
   @Post(':id/checkin')
   @RequirePermission(Permission.DOCUMENT_CHECKIN)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async checkIn(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(checkInDocumentSchema)) body: CheckInDocumentBody,
@@ -106,6 +109,7 @@ export class RevisionControlController {
    */
   @Post(':id/force-checkin')
   @RequirePermission(Permission.DOCUMENT_FORCE_CHECKIN)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async forceCheckIn(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(forceCheckInSchema)) body: ForceCheckInBody,
@@ -121,6 +125,7 @@ export class RevisionControlController {
    */
   @Post(':id/publish')
   @RequirePermission(Permission.DOCUMENT_PUBLISH)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async publish(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(publishDocumentSchema)) body: PublishDocumentBody,
@@ -141,6 +146,7 @@ export class RevisionControlController {
    */
   @Post(':id/revisions/:revisionId/restore')
   @RequirePermission(Permission.DOCUMENT_CHECKOUT)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async restore(
     @Param('id') id: string,
     @Param('revisionId') revisionId: string,
@@ -158,6 +164,7 @@ export class RevisionControlController {
    */
   @Post(':id/revisions/:revisionId/content')
   @RequirePermission(Permission.DOCUMENT_HISTORY_VIEW, Permission.DOCUMENT_DOWNLOAD)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async revisionContent(
     @Param('id') id: string,
     @Param('revisionId') revisionId: string,

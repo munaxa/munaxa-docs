@@ -6,10 +6,18 @@ import { redirect } from 'next/navigation';
 import { signIn } from '../../../lib/auth';
 
 /** Why the last attempt failed, or null before the first attempt and after a successful one. */
-export type SignInRejection = 'REJECTED' | 'UNAVAILABLE';
+export type SignInRejection = 'REJECTED' | 'UNAVAILABLE' | 'MFA_REQUIRED';
 
 export interface SignInFormState {
   readonly reason: SignInRejection | null;
+  /**
+   * True once the API has said a code is owed — the form renders the code field from here on.
+   *
+   * Kept in the form's state rather than by navigating to `(auth)/mfa` as a separate page, because
+   * a separate page would need the password again or a token standing in for it. The route exists;
+   * see `(auth)/mfa/page.tsx` for what it is for and why this is not it.
+   */
+  readonly mfaRequired?: boolean;
 }
 
 export const EMPTY_FORM_STATE: SignInFormState = { reason: null };
@@ -29,14 +37,25 @@ export async function signInAction(
   const email = textField(formData, 'email').trim();
   const password = textField(formData, 'password');
   const tenant = textField(formData, 'tenant').trim().toLowerCase();
+  const mfaCode = textField(formData, 'mfaCode').trim();
 
   if (email.length === 0 || password.length === 0) {
     return { reason: 'REJECTED' };
   }
 
-  const outcome = await signIn({ email, password, ...(tenant ? { tenant } : {}) });
+  const outcome = await signIn({
+    email,
+    password,
+    ...(tenant ? { tenant } : {}),
+    ...(mfaCode ? { mfaCode } : {}),
+  });
   if (!outcome.ok) {
-    return { reason: outcome.reason };
+    // The code field, once asked for, stays: a wrong code must not send somebody back to a form
+    // that has forgotten it was ever wanted.
+    return {
+      reason: outcome.reason,
+      mfaRequired: outcome.reason === 'MFA_REQUIRED' || mfaCode !== '',
+    };
   }
 
   // Outside the try/catch above and after the cookies are written: `redirect` works by

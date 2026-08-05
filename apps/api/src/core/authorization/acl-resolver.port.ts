@@ -5,8 +5,8 @@ import type { Capabilities } from '@edms/contracts';
  * The single place an authorisation decision is made.
  *
  * The algorithm it implements is fixed by `docs/architecture/08-permission-model.md` §3:
- * collect the caller's subjects (user, roles, departments, active delegations), walk the
- * scope chain from the object up to the tenant, and let **deny win at any level**. Absent an
+ * collect the caller's subjects (user, roles, departments — never a delegation, see §3), walk
+ * the scope chain from the object up to the tenant, and let **deny win at any level**. Absent an
  * entry, the answer is no — closed by default. State and confidentiality modifiers may only
  * subtract from the result, never add to it.
  *
@@ -82,4 +82,43 @@ export interface VisibilityFilter {
   readonly deniedScopeIds: readonly AnyId[];
   readonly unrestricted: boolean;
   readonly fingerprint: string;
+  /**
+   * The same decision, shaped for a **relational** list rather than for the search index.
+   *
+   * Phase 8 gave this filter one shape because it had one consumer: the index compares two arrays
+   * of tokens, and `subjectIds` is the caller's side of that comparison. A document list has no
+   * materialised token column to compare against — it has `document`, `folder.path` and
+   * `folder.library_id` — so Phase 14 adds the regions rather than making the list maintain a
+   * second materialisation of the walk. **Both are computed by one resolution**, in one call, so
+   * the two can no more disagree than the index and a direct read can.
+   *
+   * A region is a set of containers the caller reaches, minus the folder subtrees that break
+   * inheritance below the node that granted it. The predicate a consumer builds is
+   * `(any allowed region) AND NOT (any denied region)` — deny-wins, expressed as SQL.
+   */
+  readonly allowedRegions: readonly VisibilityRegion[];
+  readonly deniedRegions: readonly VisibilityRegion[];
+}
+
+/**
+ * One container the caller reaches, or is refused, and what is cut out of it.
+ *
+ * Deliberately shaped in the *library's* vocabulary — libraries, folder paths, document ids —
+ * rather than in scope refs. A consumer holding a scope ref would have to resolve an `ENTITY`
+ * to the libraries beneath it to write a `WHERE`, which is the walk leaking into every list that
+ * filters by it. The resolver does that resolution once, where the scope tree already is.
+ */
+export interface VisibilityRegion {
+  /** The whole tenant: the tenant-level role grant, or an entry on the tenant node itself. */
+  readonly tenantWide: boolean;
+  readonly libraryIds: readonly string[];
+  /** Materialised folder paths; each covers that folder and everything beneath it. */
+  readonly folderPaths: readonly string[];
+  readonly documentIds: readonly string[];
+  /**
+   * Folder subtrees this region does not reach, because a folder between its node and them sets
+   * `inherit_acl = false`. Empty for a region rooted at a document, and — for an administrative
+   * permission — empty everywhere, since a break never blocks one.
+   */
+  readonly excludedFolderPaths: readonly string[];
 }

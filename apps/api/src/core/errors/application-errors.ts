@@ -24,6 +24,18 @@ export class ForbiddenError extends DomainError {
   }
 }
 
+/**
+ * The password was accepted and the account has a second factor that has not been presented.
+ *
+ * `401` like every other authentication outcome, with its own code in the body — see
+ * `ErrorCode.MFA_REQUIRED` for why it is distinguishable and why that is not a disclosure.
+ */
+export class MfaRequiredError extends DomainError {
+  constructor() {
+    super(ErrorCode.MFA_REQUIRED, 'A verification code from your authenticator is required.');
+  }
+}
+
 export class UnauthenticatedError extends DomainError {
   constructor(reason = 'Authentication is required.') {
     super(ErrorCode.UNAUTHENTICATED, reason);

@@ -53,6 +53,7 @@ export function DocumentScreen({
   canMove,
   canDownload,
   canAssignNumber,
+  canManagePermissions,
   preview,
   approvals,
   revisions,
@@ -72,6 +73,15 @@ export function DocumentScreen({
   readonly canDownload: boolean;
   /** `numbering:manage` — manual assignment is a document controller's act, not an edit. */
   readonly canAssignNumber?: boolean;
+  /**
+   * `document:permission:manage` — Phase 14's link to the permissions screen.
+   *
+   * A server-provided boolean like every other affordance on this screen, rather than a guess from
+   * the status or from a role name: 08 §7's UI row says the server computes this and the client
+   * renders from it. Hiding the link is a courtesy either way — the route re-checks, and so does
+   * every endpoint behind it.
+   */
+  readonly canManagePermissions?: boolean;
   /**
    * The document's approval, rendered by Workflow's own feature and passed in.
    *
@@ -206,6 +216,17 @@ export function DocumentScreen({
           {canEdit && (
             <Button type="button" variant="outline" onClick={() => setEditing(true)}>
               {translate('documents.actions.edit')}
+            </Button>
+          )}
+          {canManagePermissions === true && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                router.push(`/documents/${document.id}/permissions` as Route);
+              }}
+            >
+              {translate('documents.actions.permissions')}
             </Button>
           )}
         </div>

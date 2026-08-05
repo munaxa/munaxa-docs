@@ -24,6 +24,7 @@ import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
+import { seedRoleGrant } from '../../../testing/acl-seed';
 import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
@@ -298,6 +299,17 @@ beforeAll(async () => {
       },
     });
   }
+
+  // Phase 14: the role the context claims, seeded so the resolver can find it. Before the ACL
+  // walk existed, `roles: ['TENANT_ADMIN']` named nothing and was never resolved; now the document
+  // list is filtered by what the caller actually holds, and a caller holding nothing sees nothing.
+  await seedRoleGrant(owner, {
+    tenantId: TENANT,
+    roleId: uuidv7(),
+    key: 'TENANT_ADMIN',
+    userIds: [ALICE, BOB],
+    now: FIXED_NOW,
+  });
 
   // The configuration a document is assembled from — Phase 2's work, consumed here.
   const library = await as(() =>

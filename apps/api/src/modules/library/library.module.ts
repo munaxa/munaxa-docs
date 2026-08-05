@@ -8,12 +8,17 @@ import {
 } from './application/administration.ports';
 import { FolderContentsRegistry } from './application/folder-contents.port';
 import { LibraryAdminService } from './application/library-admin.service';
+import { DefaultPermissionService } from './application/permission.service';
+import { ACL_REPOSITORY, PERMISSION_SERVICE, SCOPE_CHAIN_READER } from './application/ports';
+import { PrismaAclRepository } from './infrastructure/prisma-acl.repository';
 import { PrismaAclResolver } from './infrastructure/prisma-acl.resolver';
 import { PrismaLibraryAdminRepository } from './infrastructure/prisma-library-admin.repository';
+import { PrismaScopeChainReader } from './infrastructure/prisma-scope-chain.reader';
 import {
   FolderAdminController,
   LibraryAdminController,
 } from './presentation/library-admin.controller';
+import { PermissionsController } from './presentation/permissions.controller';
 
 /**
  * Library — Where do documents live, and who may reach into that place?
@@ -45,11 +50,16 @@ import {
 @Global()
 @Module({
   imports: [OrganizationModule],
-  controllers: [LibraryAdminController, FolderAdminController],
+  controllers: [LibraryAdminController, FolderAdminController, PermissionsController],
   providers: [
     { provide: LIBRARY_ADMIN_REPOSITORY, useClass: PrismaLibraryAdminRepository },
     { provide: LIBRARY_ADMIN_SERVICE, useClass: LibraryAdminService },
     { provide: ACL_RESOLVER, useClass: PrismaAclResolver },
+    // Phase 14: the entries the resolver has been walking a chain of since Phase 8 without ever
+    // finding one, the reader that assembles the chain, and the service that edits both.
+    { provide: ACL_REPOSITORY, useClass: PrismaAclRepository },
+    { provide: SCOPE_CHAIN_READER, useClass: PrismaScopeChainReader },
+    { provide: PERMISSION_SERVICE, useClass: DefaultPermissionService },
     // Phase 10: the slot the folder-delete cascade reaches its documents through. Declared here,
     // filled by Document at boot — a registry rather than a binding, because Document already
     // imports this module and plain DI cannot express the inversion without a cycle (see
@@ -59,6 +69,6 @@ import {
   // Phase 3: a document sits in a folder, and Document resolves the folder through this service
   // rather than by reading the tree. The folder tree is the chain the ACL resolver walks, and a
   // second reader of it would be a second opinion about who can see what.
-  exports: [LIBRARY_ADMIN_SERVICE, ACL_RESOLVER, FolderContentsRegistry],
+  exports: [LIBRARY_ADMIN_SERVICE, ACL_RESOLVER, PERMISSION_SERVICE, FolderContentsRegistry],
 })
 export class LibraryModule {}

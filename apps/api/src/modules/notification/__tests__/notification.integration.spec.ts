@@ -241,6 +241,14 @@ beforeAll(async () => {
     });
   }
 
+  // Phase 14: the walk is object-dependent, so the document the recipient filter asks about has to
+  // exist. Before the ACL entries and the chain, `resolve` answered from the caller's role grants
+  // without consulting the object at all — which is exactly what `AccessDenialRecorder`'s comment
+  // says stops being true when the walk arrives. A recipient list filtered against a document id
+  // naming nothing would now refuse everybody, so this suite seeds the real chain: a tenant-owned
+  // library, its root folder, and the document in it.
+  await seedDocumentChain();
+
   stack = realNotifications({ clock, unitOfWork, config: appConfig, documents });
   strict = realNotifications({
     clock,
@@ -250,6 +258,85 @@ beforeAll(async () => {
     settings: { [Settings.NOTIFICATION_BOUNCE_THRESHOLD.key]: 1 },
   });
 }, 90_000);
+
+/** The smallest chain the ACL walk can cross: tenant → library → root folder → document. */
+async function seedDocumentChain(): Promise<void> {
+  const libraryId = uuidv7();
+  const folderId = uuidv7();
+  const numberingRuleId = uuidv7();
+  const confidentialityId = uuidv7();
+  const documentTypeId = uuidv7();
+
+  await owner.library.create({
+    data: {
+      id: libraryId,
+      tenantId: TENANT,
+      code: 'LIB',
+      name: 'Quality',
+      ownerScopeType: 'TENANT',
+      rootFolderId: null,
+      updatedAt: clock.now(),
+    },
+  });
+  await owner.folder.create({
+    data: {
+      id: folderId,
+      tenantId: TENANT,
+      libraryId,
+      name: 'Root',
+      // The folder's own id, because that is what a materialised path is: `pathFor(null, id)`.
+      // A label here would make the chain reader look up a folder called "root".
+      path: folderId,
+      isRoot: true,
+      updatedAt: clock.now(),
+    },
+  });
+  await owner.library.update({ where: { id: libraryId }, data: { rootFolderId: folderId } });
+  await owner.confidentialityLevel.create({
+    data: {
+      id: confidentialityId,
+      tenantId: TENANT,
+      code: 'INTERNAL',
+      name: 'Internal',
+      rank: 1,
+      updatedAt: clock.now(),
+    },
+  });
+  await owner.numberingRule.create({
+    data: {
+      id: numberingRuleId,
+      tenantId: TENANT,
+      key: 'default',
+      name: 'Default',
+      segments: [],
+      updatedAt: clock.now(),
+    },
+  });
+  await owner.documentType.create({
+    data: {
+      id: documentTypeId,
+      tenantId: TENANT,
+      code: 'PROC',
+      name: 'Procedure',
+      numberingRuleId,
+      defaultConfidentialityId: confidentialityId,
+      updatedAt: clock.now(),
+    },
+  });
+  await owner.document.create({
+    data: {
+      id: DOCUMENT,
+      tenantId: TENANT,
+      folderId,
+      documentTypeId,
+      confidentialityId,
+      title: 'Supplier Audit Procedure',
+      status: 'DRAFT',
+      ownerUserId: ADA,
+      updatedAt: clock.now(),
+    },
+  });
+}
 
 beforeEach(() => {
   now = new Date('2026-08-05T09:00:00.000Z');

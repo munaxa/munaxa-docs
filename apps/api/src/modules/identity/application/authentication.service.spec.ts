@@ -23,6 +23,7 @@ import type {
   SessionContext,
   TenantDirectory,
 } from './authentication.ports';
+import type { MfaService } from './mfa.ports';
 import { DefaultAuthenticationService } from './authentication.service';
 import type {
   CredentialRepository,
@@ -171,6 +172,22 @@ describe('DefaultAuthenticationService', () => {
       debug: vi.fn(),
     } as unknown as Logger;
 
+    /**
+     * The second factor, stubbed to "nobody is enrolled".
+     *
+     * The real one is `DefaultMfaService` and it has its own suite. What this file is about is the
+     * password path, and an enrolment-free stub is the honest shape for it: every assertion below is
+     * about an account with one factor, which is what almost every account has.
+     */
+    const noMfa = {
+      statusFor: () =>
+        Promise.resolve({ enrolled: false, pending: false, recoveryCodesRemaining: 0 }),
+      begin: () => Promise.reject(new Error('not used')),
+      confirm: () => Promise.reject(new Error('not used')),
+      challenge: () => Promise.resolve(true),
+      isRequired: () => Promise.resolve(false),
+      remove: () => Promise.resolve(),
+    } as unknown as MfaService;
     service = new DefaultAuthenticationService(
       credentials,
       sessions,
@@ -182,6 +199,7 @@ describe('DefaultAuthenticationService', () => {
       unitOfWork,
       audit,
       logger,
+      noMfa,
     );
   });
 

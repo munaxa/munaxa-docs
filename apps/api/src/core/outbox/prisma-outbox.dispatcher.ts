@@ -233,6 +233,24 @@ export function routesFor(eventType: string): readonly QueueNameKey[] {
   if (eventType.startsWith('document.')) {
     return [QueueName.SEARCH_INDEX, QueueName.NOTIFICATIONS_DELIVER];
   }
+  if (eventType.startsWith('library.')) {
+    // **Phase 14's addition, and the third time this table needed extending rather than deriving.**
+    //
+    // `library.acl-changed` and `library.folder-moved` both change the answer the search index has
+    // materialised for every document beneath a node — the first because the entries changed, the
+    // second because the chain did. Neither routed anywhere before this phase: `library.*` matched
+    // no prefix, exactly as `delegation.*` did not in Phase 11, and for the same reason — the
+    // aggregate is `library` and so is the event type, but nothing here had a line for it.
+    //
+    // `library.created` rides along and resolves to no document, which the consumer drops with a
+    // log. That is the same trade the `audit.` and `retention.` branches already make: a per-event
+    // table would be more precise and one more thing to forget.
+    //
+    // Not the notification lane. Nobody is told that permissions changed — 18 §4 names no such
+    // message, and a notification saying "you can now see forty documents" would be a disclosure
+    // decided by a template rather than by the resolver.
+    return [QueueName.SEARCH_INDEX];
+  }
   if (eventType.startsWith('preview.')) {
     // The search projection consumes `preview.ocr-completed` in Phase 8; the lane is where it
     // will look.

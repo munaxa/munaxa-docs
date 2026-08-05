@@ -7,6 +7,9 @@ import {
   REFRESH_TOKEN_FACTORY,
   TENANT_DIRECTORY,
 } from './application/authentication.ports';
+import { DefaultMfaService } from './application/mfa.service';
+import { MFA_REPOSITORY, MFA_SERVICE } from './application/mfa.ports';
+import { PrismaMfaRepository } from './infrastructure/prisma-mfa.repository';
 import { DefaultAuthenticationService } from './application/authentication.service';
 import {
   CREDENTIAL_REPOSITORY,
@@ -36,6 +39,7 @@ import { RegistryTenantDirectory } from './infrastructure/registry-tenant.direct
 import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
 import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
+import { MfaController } from './presentation/mfa.controller';
 import { AuthController } from './presentation/auth.controller';
 import { DelegationController } from './presentation/delegation.controller';
 import { RoleAdminController, UserAdminController } from './presentation/identity-admin.controller';
@@ -69,13 +73,23 @@ import {
  * may know about a person: an address and a name.
  */
 @Module({
-  controllers: [AuthController, UserAdminController, RoleAdminController, DelegationController],
+  controllers: [
+    AuthController,
+    MfaController,
+    UserAdminController,
+    RoleAdminController,
+    DelegationController,
+  ],
   providers: [
     // Phase 13: account counts for the administrator tile, and Phase 11's deferred delegation
     // card — both answered by the module that owns the tables, never read from the dashboard.
     { provide: DASHBOARD_PEOPLE_METRICS, useClass: IdentityDashboardMetrics },
     { provide: DASHBOARD_DELEGATION_METRICS, useClass: IdentityDashboardDelegationMetrics },
     { provide: AUTHENTICATION_SERVICE, useClass: DefaultAuthenticationService },
+    // Phase 14: the second factor. `user.mfa_enrolled` has been read by the auth response and the
+    // admin view since Phase 1 and written by nothing; these two bindings are what write it.
+    { provide: MFA_REPOSITORY, useClass: PrismaMfaRepository },
+    { provide: MFA_SERVICE, useClass: DefaultMfaService },
     { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
     { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
     { provide: TENANT_DIRECTORY, useClass: RegistryTenantDirectory },

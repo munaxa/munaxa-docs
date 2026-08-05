@@ -20,6 +20,15 @@ export const ErrorCode = {
   UNSUPPORTED_CONTENT: 'UNSUPPORTED_CONTENT',
   CONTENT_NOT_SCANNED: 'CONTENT_NOT_SCANNED',
   TENANT_READ_ONLY: 'TENANT_READ_ONLY',
+  /**
+   * The password was right and a second factor is owed — Phase 14.
+   *
+   * Its own code rather than `UNAUTHENTICATED`, because it is the one authentication outcome a
+   * client must be able to act on differently: it renders the code field. `UNAUTHENTICATED` means
+   * "start again"; this means "you are halfway". It is only ever returned *after* the password has
+   * been verified, so it discloses nothing about which addresses hold accounts.
+   */
+  MFA_REQUIRED: 'MFA_REQUIRED',
   DEPENDENCY_UNAVAILABLE: 'DEPENDENCY_UNAVAILABLE',
   INTERNAL: 'INTERNAL',
 } as const;

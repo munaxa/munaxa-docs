@@ -17,6 +17,7 @@ import { PrismaSessionRepository } from '../infrastructure/prisma-session.reposi
 import { RegistryTenantDirectory } from '../infrastructure/registry-tenant.directory';
 import { RandomRefreshTokenFactory } from '../infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import type { MfaService } from '../application/mfa.ports';
 import type { AuditWriter } from '../../../core/audit/audit-writer.port';
 import { FakeClock } from '../../../testing/fake-ports';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
@@ -77,6 +78,22 @@ const auditWriter: AuditWriter = {
   write: () => Promise.resolve(),
   writeStandalone: () => Promise.resolve(),
 };
+/**
+ * The second factor, stubbed to "nobody is enrolled".
+ *
+ * The real one is `DefaultMfaService` and it has its own suite. What this file is about is the
+ * password path, and an enrolment-free stub is the honest shape for it: every assertion below is
+ * about an account with one factor, which is what almost every account has.
+ */
+const noMfa = {
+  statusFor: () => Promise.resolve({ enrolled: false, pending: false, recoveryCodesRemaining: 0 }),
+  begin: () => Promise.reject(new Error('not used')),
+  confirm: () => Promise.reject(new Error('not used')),
+  challenge: () => Promise.resolve(true),
+  isRequired: () => Promise.resolve(false),
+  remove: () => Promise.resolve(),
+} as unknown as MfaService;
+
 const service = new DefaultAuthenticationService(
   new PrismaCredentialRepository(),
   new PrismaSessionRepository(clock),
@@ -88,6 +105,7 @@ const service = new DefaultAuthenticationService(
   unitOfWork,
   auditWriter,
   logger,
+  noMfa,
 );
 
 const context = {

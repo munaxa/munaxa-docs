@@ -245,6 +245,41 @@ written by something.
 `approval_task.delegation_id` restricts — so the delegation a decision was taken under is still
 identifiable years later, which is what an investigation into a revoked delegation needs.
 
+## Phase 14 — the second factor
+
+`user.mfa_enrolled` shipped in Phase 1, read by the auth response and the admin view and **written by
+nothing** — a boolean that had answered "no" for thirteen phases whatever the truth was. It is now
+derived, written in the same transaction that confirms an enrolment, so nothing that reads it had to
+learn a new column.
+
+`domain/totp.ts` is RFC 6238, written rather than installed, and the file says why: the lockfile
+cannot gain a dependency here, and TOTP is the one factor for which that is acceptable — HMAC-SHA1
+over a counter, with an RFC that specifies every line, asserted against the RFC's own published
+vectors. **WebAuthn is not**, and 17 §2's other half is deferred rather than hand-rolled.
+
+Five properties cost something on purpose, and `application/mfa.service.ts` states each: enrolment is
+two steps and the first grants nothing; a consumed time step cannot be consumed again; consecutive
+failures stop the factor; recovery codes are single-use and are the only way past a lost
+authenticator; and enrolling or removing ends every session.
+
+The secret is sealed at rest with AES-256-GCM under a key derived from the signing secret, which is
+defence against a database disclosure and **not** against a compromised application — see
+`infrastructure/prisma-mfa.repository.ts` for what that does and does not buy.
+
+The challenge is on `/auth/login` rather than at an endpoint of its own, because a two-call flow
+would have to carry a token between the calls proving the password was right — a credential with a
+lifetime and a revocation story, minted for one purpose, of exactly the kind that gets reused.
+
+Two of 13 §2's three rows are written here for the first time: `MFA_ENROLLED` (both directions, the
+direction in the payload) and `MFA_FAILED` (separate from `LOGIN_FAILED`, because "knows the
+password and not the factor" is the only signal that says a password has leaked). The third,
+`SESSION_REVOKED`, was **already** written by Phase 1's replay detection; this adds a third call
+site.
+
 ## Still to build
 
-MFA enrolment, and its three audit actions, which are Phase 14's.
+**WebAuthn**, and the *policy* half of 17 §2 — "required by policy for `TENANT_ADMIN`,
+`DOCUMENT_CONTROLLER` and `AUDITOR`". `isRequired` answers only whether *this person* has enrolled;
+refusing a sign-in from somebody who holds one of those roles and has not enrolled is a lock-out of
+exactly the accounts that administer the tenant, on the deployment where nobody has enrolled yet. It
+belongs with 17's federation work, where an operator can be given a way out.

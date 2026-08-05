@@ -4,9 +4,10 @@
 
 | | |
 | --- | --- |
-| **Owns** | Library, Folder, ACL entries on both |
+| **Owns** | Library, Folder, ACL entries on both, `folder.inherit_acl` |
 | **Depends on** | Organization, Administration |
 | **Binds in core** | `ACL_RESOLVER` — the ACL entries live here, so the resolution algorithm lives with them. |
+| **Exports** | `LIBRARY_ADMIN_SERVICE`, `ACL_RESOLVER`, `PERMISSION_SERVICE`, `FolderContentsRegistry` |
 
 ## Layers
 
@@ -123,3 +124,34 @@ outbox event could not have given it.
 Unfilled, the registry deletes nothing and says nothing. That is honest rather than lax: a
 composition with no documents in it genuinely has none to cascade to, which is exactly this
 module's own integration suite.
+
+### Phase 14 — the entries, and the walk
+
+The paragraph above ends "no `acl_entry` table, no walk, no deny precedence". All three arrived, and
+`PrismaAclResolver` was **extended rather than rebuilt**: its four methods have the signatures they
+had, and every caller of the port — `AclGuard`, the dashboard, search's query side, search's
+projection, the audit timeline, the notification recipient walk — calls what it called before.
+
+Four things are new in this module.
+
+`domain/acl-walk.ts` is the decision as arithmetic over a chain that has already been read: the
+truncation an inheritance break causes ([ADR-0016](../../../../../docs/architecture/adr/0016-inheritance-break-truncates-the-chain.md)),
+deny-precedence, and the two token arrays an index entry stores. Pure, so the rules are asserted
+without a database and the direct read and the index cannot become two implementations.
+
+`infrastructure/prisma-scope-chain.reader.ts` assembles the chain — at worst five reads, one per
+*table* the tree crosses, never one per ancestor.
+
+`infrastructure/prisma-acl.repository.ts` is `acl_entry`, read the two ways the product asks about it
+(a chain, a subject) and written the one way it is edited (replace a node's set, and report the
+diff so the two audit actions can be written from it).
+
+`application/permission.service.ts` is the write side and the explanation ADR-0005 required. It
+refuses an edit on a node the editor cannot itself reach — asked of the same resolver, because
+holding `document:permission:manage` somewhere would otherwise let somebody grant themselves reach
+everywhere.
+
+`folder.inherit_acl` finally has a reader, and a writer that is **not** the folder edit form: it is
+under `/scopes/folder/{id}/permissions/inheritance`, gated on `document:permission:manage` rather
+than `folder:manage`, so somebody who may rename folders cannot quietly detach one from the tenant's
+grants.

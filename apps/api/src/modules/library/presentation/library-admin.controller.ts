@@ -29,10 +29,10 @@ import {
   updateFolderSchema,
   updateLibrarySchema,
 } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { Permission, ScopeType } from '@edms/domain';
 import type { Page } from '@edms/utils';
 
-import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { IfMatch } from '../../../core/http/admin-request';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { LIBRARY_ADMIN_SERVICE } from '../application/administration.ports';
@@ -60,6 +60,7 @@ export class LibraryAdminController {
   }
 
   @Get(':id')
+  @ScopedTo('id', ScopeType.LIBRARY)
   async get(@Param('id') id: string): Promise<Library> {
     return toLibrary(await this.libraries.getLibrary(id));
   }
@@ -73,6 +74,7 @@ export class LibraryAdminController {
   }
 
   @Patch(':id')
+  @ScopedTo('id', ScopeType.LIBRARY)
   async update(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateLibrarySchema)) body: UpdateLibraryBody,
@@ -82,12 +84,14 @@ export class LibraryAdminController {
   }
 
   @Delete(':id')
+  @ScopedTo('id', ScopeType.LIBRARY)
   @HttpCode(HttpStatus.NO_CONTENT)
   async remove(@Param('id') id: string, @IfMatch() version: number | undefined): Promise<void> {
     await this.libraries.deleteLibrary(id, version);
   }
 
   @Post(':id/restore')
+  @ScopedTo('id', ScopeType.LIBRARY)
   @HttpCode(HttpStatus.NO_CONTENT)
   async restore(@Param('id') id: string, @IfMatch() version: number | undefined): Promise<void> {
     await this.libraries.restoreLibrary(id, version);
@@ -108,6 +112,7 @@ export class FolderAdminController {
   }
 
   @Get(':id')
+  @ScopedTo('id', ScopeType.FOLDER)
   async get(@Param('id') id: string): Promise<Folder> {
     return toFolder(await this.libraries.getFolder(id));
   }
@@ -121,6 +126,7 @@ export class FolderAdminController {
   }
 
   @Patch(':id')
+  @ScopedTo('id', ScopeType.FOLDER)
   async update(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateFolderSchema)) body: UpdateFolderBody,
@@ -130,6 +136,7 @@ export class FolderAdminController {
   }
 
   @Post(':id/move')
+  @ScopedTo('id', ScopeType.FOLDER)
   async move(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(moveFolderSchema)) body: MoveFolderBody,
@@ -145,6 +152,7 @@ export class FolderAdminController {
    * nothing is a cascade nobody can confirm went as expected.
    */
   @Delete(':id')
+  @ScopedTo('id', ScopeType.FOLDER)
   async remove(
     @Param('id') id: string,
     @IfMatch() version: number | undefined,
@@ -153,6 +161,7 @@ export class FolderAdminController {
   }
 
   @Post(':id/restore')
+  @ScopedTo('id', ScopeType.FOLDER)
   async restore(
     @Param('id') id: string,
     @IfMatch() version: number | undefined,

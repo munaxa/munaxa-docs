@@ -79,6 +79,7 @@ export * from './identity/delegation';
 export * from './admin/configuration';
 export * from './admin/numbering';
 export * from './admin/library';
+export * from './admin/permissions';
 export * from './admin/workflow';
 export * from './admin/approval-routing';
 export * from './admin/settings';

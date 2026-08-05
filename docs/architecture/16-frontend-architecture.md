@@ -53,6 +53,24 @@ app/
 Route groups map to shells, not to features. The document record page is a **tabbed record
 workspace**: identity and actions stay fixed while tabs change, so a user never loses their place.
 
+**`(auth)/mfa` is enrolment, not the challenge** — Phase 14. The challenge lives on the sign-in
+form, and that is a decision rather than a shortcut: a challenge on its own page would need either
+the password again or a short-lived token standing in for it, and that token is a credential with a
+lifetime and a revocation story minted for one purpose — exactly the kind that gets reused. One post
+spends the password and the code together and issues nothing until both are right. What the route
+holds instead is setting a factor up, seeing how many recovery codes are left, and taking it away;
+it sits under `(auth)` because it is about getting in rather than about working, and the shell
+around it has no navigation for somebody who may have just been told their account is at risk.
+
+**`documents/[documentId]/permissions/` exists** — Phase 14, and it is a mitigation rather than a
+convenience. ADR-0005 accepted deny-precedence on the grounds that it is auditable by inspection and
+wrote the price down as a requirement: the UI shows, for any user and object, the effective
+permission and the node that decided it. It renders two tables — what this node says, and what one
+person actually holds here — deliberately not merged, because an administrator looking at a single
+editable matrix deletes a row believing it was the grant when the grant is four levels above. The
+chain renders whether or not anything is broken, because an over-broad `ALLOW` is loud and a `DENY`
+that inherits too far is silent.
+
 **The administrator dashboard is a panel on `page.tsx`, not a screen under `admin/`** — Phase 13.
 `admin/` is where somebody *configures* the tenant, and a page of counts configures nothing; an
 administrator is also a person with drafts and an inbox, and putting the tenant's health one

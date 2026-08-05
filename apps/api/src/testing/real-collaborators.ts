@@ -127,6 +127,9 @@ import { PostgresIndexAdapter } from '../infrastructure/search/postgres-index.ad
 import { PostgresSearchAdapter } from '../infrastructure/search/postgres-search.adapter';
 import { TenantScopedSearch } from '../infrastructure/tenancy/tenant-scoped-search';
 import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
+import { DefaultPermissionService } from '../modules/library/application/permission.service';
+import { PrismaAclRepository } from '../modules/library/infrastructure/prisma-acl.repository';
+import { PrismaScopeChainReader } from '../modules/library/infrastructure/prisma-scope-chain.reader';
 import { DefaultSearchService } from '../modules/search/application/search.service';
 import { SavedSearchService } from '../modules/search/application/saved-search.service';
 import { SearchProjectionService } from '../modules/search/application/search-projection.service';
@@ -151,6 +154,8 @@ import { OrganizationDashboardMetrics } from '../modules/organization/infrastruc
 import { RetentionDashboardMetrics } from '../modules/retention/infrastructure/dashboard-metrics.adapter';
 import { StorageDashboardMetrics } from '../modules/storage/infrastructure/dashboard-metrics.adapter';
 import { WorkflowDashboardMetrics } from '../modules/workflow/infrastructure/dashboard-metrics.adapter';
+import type { CachePort } from '../ports/cache.port';
+import { FakeCache } from './fake-ports';
 /**
  * Real collaborators, wired the way the container wires them.
  *
@@ -343,7 +348,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     writer,
   );
 
-  const documentRepository = new PrismaDocumentRepository(stamps);
+  const documentRepository = realDocumentRepository(options);
   const documents = new DefaultDocumentService(
     documentRepository,
     new PrismaDocumentActivityRepository(documentRepository),
@@ -481,6 +486,12 @@ export interface EnqueuedTimerJob {
 export interface WorkflowEngineOptions {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
+  /**
+   * Phase 14: every document repository now carries the resolver, which reads its bounds here.
+   * Optional, because a suite about approval routing has no opinion about the ACL cache — see
+   * `UNCACHED_ACL_CONFIG`, which is what it gets.
+   */
+  readonly config?: AppConfig;
   readonly documents: DefaultDocumentService;
   readonly configuration: ConfigurationService;
   /**
@@ -543,7 +554,7 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
   } as never;
 
   const control = new RevisionControlService(
-    new PrismaDocumentRepository(stamps),
+    realDocumentRepository(options),
     new PrismaDocumentLockRepository(stamps),
     new PrismaRevisionWriter(stamps, outbox),
     new StorageContentGateAdapter(options.storage),
@@ -576,6 +587,119 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
 // rows that do not duplicate under redelivery, derived blobs under the derived/ prefix and
 // excluded from the source's accounting — so the stack is composed here from the real
 // repositories, the real renderers and the real storage service, with only the queue recorded.
+
+/**
+ * The real ACL resolver, with the real walk behind it.
+ *
+ * Phase 14 gave `PrismaAclResolver` four collaborators where it had one, and five call sites in this
+ * file constructed it by hand. One factory instead, so a suite cannot accidentally assemble a
+ * resolver over a *different* chain reader or a warm cache and then assert a permission answer from
+ * it — which would be a suite testing something other than the product.
+ *
+ * The cache defaults to a `FakeCache` over the suite's own clock, so a test that wants to assert
+ * cold-cache equivalence sets `ACL_CACHE_TTL_SECONDS=0` in its config, and one that wants to assert
+ * invalidation can inspect this instance.
+ */
+/**
+ * The write half of the ACL model, over the same collaborators the container binds.
+ *
+ * Assembled here rather than in the suite for the reason every other stack is: the boundary lint
+ * forbids a test in one module reaching into another module's `infrastructure/`, and an ACL suite
+ * composing itself would have to reach into two.
+ *
+ * The resolver is shared with whatever else the suite builds, and that is deliberate — the service
+ * refuses an edit on a node the caller cannot itself reach, and it asks the *same* resolver the
+ * guard would. Two instances would let a suite pass with a privilege-escalation check that never
+ * saw the entries the test had just written.
+ */
+export function realPermissions(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+  readonly resolver?: PrismaAclResolver;
+}): {
+  readonly permissions: DefaultPermissionService;
+  readonly resolver: PrismaAclResolver;
+  readonly chains: PrismaScopeChainReader;
+  readonly cache: CachePort;
+  readonly enqueuedJobs: {
+    readonly queue: string;
+    readonly jobId: string;
+    readonly payload: unknown;
+  }[];
+} {
+  const cache = options.cache ?? new FakeCache(options.clock);
+  const resolver = options.resolver ?? realAclResolver({ ...options, cache });
+  const stamps = new RecordStamps(options.clock);
+  const { outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const chains = new PrismaScopeChainReader(new PrismaScopeRepository());
+  const enqueuedJobs: { queue: string; jobId: string; payload: unknown }[] = [];
+
+  return {
+    permissions: new DefaultPermissionService(
+      new PrismaAclRepository(stamps),
+      chains,
+      resolver,
+      cache,
+      outbox,
+      writer,
+    ),
+    resolver,
+    chains,
+    cache,
+    enqueuedJobs,
+  };
+}
+
+export function realDocumentRepository(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+}): PrismaDocumentRepository {
+  return new PrismaDocumentRepository(new RecordStamps(options.clock), realAclResolver(options));
+}
+
+export function realAclResolver(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+}): PrismaAclResolver {
+  const stamps = new RecordStamps(options.clock);
+  return new PrismaAclResolver(
+    options.unitOfWork,
+    new PrismaAclRepository(stamps),
+    new PrismaScopeChainReader(new PrismaScopeRepository()),
+    options.cache ?? new FakeCache(options.clock),
+    withAclDefaults(options.config),
+  );
+}
+
+/**
+ * The suite's config, with an `acl` section if it did not state one.
+ *
+ * Merged rather than substituted, because most suites hand these factories a hand-built partial
+ * `AppConfig` carrying only the two or three sections they care about — and a resolver that
+ * silently used a *whole* different config than the rest of the stack would be the subtlest
+ * possible way for a suite to stop testing the product.
+ */
+function withAclDefaults(config: AppConfig | undefined): AppConfig {
+  const base = config ?? ({} as AppConfig);
+  return { ...base, acl: base.acl ?? UNCACHED_ACL };
+}
+
+/**
+ * The resolver's configuration for a suite that has not stated one: **the cache off**.
+ *
+ * Deliberately not the production default. A suite that seeds an ACL entry and then asserts what a
+ * caller sees must be asking the database, not a decision this process cached thirty seconds ago
+ * under a different set of rows — and the difference between those two is invisible in a green
+ * build. The suites that assert the cache is *correct* pass a config with a TTL and a `FakeCache`
+ * they can inspect, which is the only way to test a cache without also testing through it.
+ */
+const UNCACHED_ACL: AppConfig['acl'] = { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 };
 
 export interface PreviewStackOptions {
   readonly clock: ClockPort;
@@ -701,7 +825,7 @@ export function realDocumentPreview(options: {
   } as never;
   return new DocumentPreviewService(
     writer,
-    new PrismaDocumentRepository(stamps),
+    realDocumentRepository(options),
     new AdministrationConfigurationAdapter(
       options.configuration,
       realOrganizationService(),
@@ -797,7 +921,7 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     issuance === null
       ? null
       : new DefaultDocumentNumberService(
-          new PrismaDocumentRepository(stamps),
+          realDocumentRepository(options),
           new AdministrationConfigurationAdapter(
             options.configuration,
             realOrganizationService(),
@@ -886,7 +1010,7 @@ export function realSearchStack(options: SearchStackOptions): SearchStack {
   const { stamps, audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
 
   const source = new PrismaSearchSourceReader(options.unitOfWork);
-  const acl = new PrismaAclResolver(options.unitOfWork);
+  const acl = realAclResolver(options);
   const index = new PostgresIndexAdapter(options.clock);
   const engine = new TenantScopedSearch(new PostgresSearchAdapter(), options.registry);
   const rebuildRepository = new PrismaSearchRebuildRepository(stamps);
@@ -992,7 +1116,7 @@ export interface AuditStack {
 export function realAuditStack(options: AuditStackOptions): AuditStack {
   const { audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const repository = new PrismaAuditRepository();
-  const acl = new PrismaAclResolver(options.unitOfWork);
+  const acl = realAclResolver(options);
   const logger = silentLogger();
   const denials = new AccessDenialRecorder(audit, logger);
 
@@ -1307,11 +1431,7 @@ export function realNotifications(options: {
     options.unitOfWork,
     logger,
   );
-  const visibility = new RecipientVisibilityService(
-    new PrismaAclResolver(options.unitOfWork),
-    directory,
-    logger,
-  );
+  const visibility = new RecipientVisibilityService(realAclResolver(options), directory, logger);
   const events = new NotificationEventService(
     notifications,
     batches,
@@ -1374,14 +1494,16 @@ export interface DashboardStack {
 export function realDashboard(options: {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
+  /** Phase 14: the resolver reads its cache TTL and its walk bounds from here. */
+  readonly config?: AppConfig;
   readonly delegations?: DashboardDelegationMetrics | null;
   readonly notifications?: DashboardNotificationMetrics | null;
   /** Overridden by the suite that asserts a failing source degrades one card, not the page. */
   readonly documentMetrics?: DashboardDocumentMetrics;
 }): DashboardStack {
   const stamps = new RecordStamps(options.clock);
-  const documents = new PrismaDocumentRepository(stamps);
-  const acl = new PrismaAclResolver(options.unitOfWork);
+  const documents = realDocumentRepository(options);
+  const acl = realAclResolver(options);
 
   const dashboard = new DefaultDashboardService(
     options.unitOfWork,

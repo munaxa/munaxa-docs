@@ -13,6 +13,31 @@ export const SecurityAudit = {
   LOGIN_FAILED: 'LOGIN_FAILED',
   SESSION_REVOKED: 'SESSION_REVOKED',
   PASSWORD_CHANGED: 'PASSWORD_CHANGED',
+  /**
+   * A second factor was enrolled, or removed — Phase 14's, and one of the two rows 13 §2's
+   * ownership table attributes to this phase.
+   *
+   * **One action for both directions**, with the direction in the payload, which is the catalogue's
+   * own convention ("one action per area, the operation in the payload"). It is also the honest
+   * shape here: enrolling and un-enrolling are the same question asked from two sides — "what
+   * factors does this account have, and since when" — and a second action would make the second
+   * half of that a payload filter over the first.
+   *
+   * `MFA_DISABLED` was considered and rejected for that reason and one more: §2 names
+   * `MFA_ENROLLED` and does not name a counterpart, and growing the catalogue's vocabulary in the
+   * code before the document is how the two drift.
+   */
+  MFA_ENROLLED: 'MFA_ENROLLED',
+  /**
+   * A challenge was refused — 13 §2's other row for this phase.
+   *
+   * Written for a wrong code, a replayed one, and an attempt against an enrolment already locked
+   * out by repeated failures; the reason code distinguishes them and the code that was tried is
+   * never recorded. Separate from `LOGIN_FAILED` because they answer different questions: the first
+   * is "somebody does not know the password", the second is "somebody knows the password and not
+   * the factor", and collapsing them would hide the only signal that says a password has leaked.
+   */
+  MFA_FAILED: 'MFA_FAILED',
 } as const;
 
 export type SecurityAuditAction = (typeof SecurityAudit)[keyof typeof SecurityAudit];

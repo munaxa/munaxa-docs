@@ -1,9 +1,9 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 
 import type { RevisionCompare, RevisionHistory, RevisionHistoryEntry } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { Permission, ScopeType } from '@edms/domain';
 
-import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { ValidationError } from '../../../core/errors/application-errors';
 import type { RevisionHistoryRow } from '../application/ports';
 import { RevisionQueryService } from '../application/revision-query.service';
@@ -25,6 +25,7 @@ export class RevisionsController {
   /** The timeline: every revision ever, oldest first, discarded ones included and saying so. */
   @Get('documents/:id/revisions')
   @RequirePermission(Permission.DOCUMENT_HISTORY_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async history(@Param('id') id: string): Promise<RevisionHistory> {
     const rows = await this.revisions.history(id);
     return { documentId: id, revisions: rows.map(toEntry) };
@@ -38,6 +39,7 @@ export class RevisionsController {
    */
   @Get('documents/:id/revisions/compare')
   @RequirePermission(Permission.DOCUMENT_HISTORY_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async compare(
     @Param('id') id: string,
     @Query('from') from?: string,

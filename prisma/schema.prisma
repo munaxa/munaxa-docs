@@ -150,6 +150,9 @@ model Tenant {
   legalHolds               LegalHold[]
   documentTombstones       DocumentTombstone[]
   delegations              Delegation[]
+  aclEntries               AclEntry[]
+  mfaEnrolments            MfaEnrolment[]
+  mfaRecoveryCodes         MfaRecoveryCode[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -400,6 +403,7 @@ model User {
   recentSearches          RecentSearch[]
   delegationsGiven        Delegation[]             @relation("DelegationDelegator")
   delegationsReceived     Delegation[]             @relation("DelegationDelegate")
+  mfaEnrolment            MfaEnrolment?
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -3074,4 +3078,157 @@ model Delegation {
   /// The nightly sweep: which live delegations have run out. Partial, on `ACTIVE` rows only.
   @@index([tenantId, endsAt], map: "ix_delegation_expiry")
   @@map("delegation")
+}
+
+// --- Access control (Phase 14) -----------------------------------------------------------------
+
+/// The node types an ACL entry may sit on — `08-permission-model.md` §3's chain, in full.
+///
+/// A separate enum from `LibraryOwnerScope`, which is deliberately narrower: a library hangs from
+/// an organisation node, while an entry may be granted anywhere on the chain the walk crosses,
+/// including the library, the folder and the document itself.
+enum AclScopeType {
+  TENANT
+  COMPANY
+  ENTITY
+  DEPARTMENT
+  LIBRARY
+  FOLDER
+  DOCUMENT
+
+  @@map("acl_scope_type")
+}
+
+/// Who an entry names. Never a delegation — `08-permission-model.md` §3 records at length why
+/// Phase 11 removed that clause rather than the resolver gaining a subject: a delegation that
+/// could be named here would be the permission grant 07 §4 says it must never be.
+enum AclSubjectType {
+  USER
+  ROLE
+  DEPARTMENT
+
+  @@map("acl_subject_type")
+}
+
+/// `DENY` wins at any level, regardless of how specific a lower `ALLOW` is (ADR-0005).
+enum AclEffect {
+  ALLOW
+  DENY
+
+  @@map("acl_effect")
+}
+
+/// One grant of *reach*: this subject, this permission, this node, allow or deny.
+///
+/// The table ADR-0005 has described since Phase 0 and nothing had. Capability still comes from
+/// roles — `role_permission` — and reach comes from here; both must be satisfied, which is why an
+/// entry carries no notion of "grants the permission": it says where a permission the caller
+/// already holds does or does not apply.
+///
+/// **Rows are never updated in place beyond their effect.** A grant and a revocation are two
+/// audited acts (`ACL_GRANTED`, `ACL_REVOKED`), and the revocation deletes the row rather than
+/// soft-deleting it: a dead ACL entry has no reader, and keeping one would mean every resolution
+/// query carrying a `deleted_at IS NULL` on the hottest path in the product. What survives a
+/// revocation is the audit event, which is append-only and hash-chained and is where "who could
+/// see this in March" is answered.
+///
+/// **The unique constraint is the whole of "no duplicate grants".** One subject may hold at most
+/// one entry per permission per node, so `ALLOW` and `DENY` for the same triple cannot coexist and
+/// the walk never has to break a tie at one node. Ties *between* nodes are ADR-0005's deny-wins.
+///
+/// `scope_id` is the tenant's own id for a `TENANT` entry, so the column is never null and the
+/// index never has to special-case the root.
+model AclEntry {
+  id          String         @id @db.Uuid
+  tenantId    String         @map("tenant_id") @db.Uuid
+  scopeType   AclScopeType   @map("scope_type")
+  scopeId     String         @map("scope_id") @db.Uuid
+  subjectType AclSubjectType @map("subject_type")
+  subjectId   String         @map("subject_id") @db.Uuid
+  /// A key from `@edms/domain`'s catalogue. A permission that is not in it does not exist.
+  permission  String
+  effect      AclEffect
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?  @map("updated_by") @db.Uuid
+  version   Int      @default(1)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, scopeType, scopeId, subjectType, subjectId, permission], map: "uq_acl_entry")
+  /// The walk's own index: every entry on these nodes, for these subjects. The resolver's single
+  /// query filters on `scope_id IN (…)` and `subject_id IN (…)`, and this serves the first half —
+  /// a chain is at most seven nodes, so the second half is a cheap filter over a tiny result.
+  @@index([tenantId, scopeId, permission], map: "ix_acl_entry_scope")
+  /// "Where does this subject reach", which is what `visibilityFilter` asks once per request and
+  /// what the permissions screen asks for one user.
+  @@index([tenantId, subjectId, permission], map: "ix_acl_entry_subject")
+  @@map("acl_entry")
+}
+
+/// A TOTP authenticator enrolled by one person (Phase 14).
+///
+/// Separate from `user` because a secret is not an attribute of a person the way a display name is:
+/// `user` is read by the directory, the admin list and every recipient walk, and a secret on it
+/// would be one careless `select: *` away from a payload. `user.mfa_enrolled` stays where it is and
+/// becomes *derived* — the column the auth response and the admin view already read, now written by
+/// something.
+///
+/// **Only one row per user may be `confirmed`.** Enrolment is two steps — a secret is issued, then
+/// proved — and an unconfirmed row grants nothing: the challenge only ever reads a confirmed one.
+/// A second enrolment attempt replaces the pending row, which is what "start again" means when
+/// somebody loses the authenticator app mid-setup.
+///
+/// The secret is stored encrypted with a key derived from the application's own signing secret;
+/// `05-database-design.md` has no column-encryption facility and adding one for a single column
+/// would be a wider change than this phase warrants — see the phase report's decision on it.
+model MfaEnrolment {
+  id             String    @id @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  userId         String    @unique @map("user_id") @db.Uuid
+  /// The base32 TOTP secret, sealed. Never returned by any read path but the one that issues it.
+  secret         String
+  /// Null until the enrolling person has proved they hold the authenticator.
+  confirmedAt    DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  /// The last time-step this enrolment successfully consumed, so a captured code cannot be
+  /// replayed inside its own window. Null until the first successful verification.
+  lastStep       BigInt?   @map("last_step")
+  /// How many consecutive failures since the last success — the input to the lock-out the
+  /// authentication service already applies to passwords.
+  failedAttempts Int       @default(0) @map("failed_attempts")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?  @map("updated_by") @db.Uuid
+  version   Int      @default(1)
+
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user          User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+  recoveryCodes MfaRecoveryCode[]
+
+  @@map("mfa_enrolment")
+}
+
+/// One single-use recovery code, hashed exactly the way a password is.
+///
+/// Hashed rather than stored, for the reason `credential.password_hash` is: a recovery code is a
+/// second password, and a database read that discloses one bypasses the factor it exists to back
+/// up. `used_at` rather than a delete, because "which of my codes have I burned" is a question the
+/// person enrolling asks, and a row count is the honest answer.
+model MfaRecoveryCode {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  enrolmentId String    @map("enrolment_id") @db.Uuid
+  codeHash    String    @map("code_hash")
+  usedAt      DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  enrolment MfaEnrolment @relation(fields: [enrolmentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, enrolmentId, usedAt], map: "ix_mfa_recovery_code_live")
+  @@map("mfa_recovery_code")
 }

@@ -13,11 +13,23 @@ import type { AnyId, PermissionKey, UserId } from '@edms/domain';
  * an untyped overlap between them would let a role id grant a user of the same digits.
  *
  * `grant:<permission>` is the one token that is not an identity. It says "anyone whose
- * tenant-level role grant covers this permission", which in this generation — before ACL
- * entries exist to say anything narrower — is the entire reach question, answered the same way
- * a direct read answers it. When the ACL phase builds entries and the walk, entries below a
- * node that breaks inheritance stop carrying the grant token and start carrying explicit
- * subject tokens; the predicate, and everything above it, does not change.
+ * tenant-level role grant covers this permission", which before ACL entries existed to say
+ * anything narrower was the entire reach question, answered the same way a direct read answers
+ * it. The paragraph that stood here predicted what would happen when the ACL phase arrived:
+ * *"entries below a node that breaks inheritance stop carrying the grant token and start
+ * carrying explicit subject tokens; the predicate, and everything above it, does not change."*
+ *
+ * **Phase 14 built it, and the prediction held.** `indexSubjectsFromEntries` in `acl-walk.ts`
+ * adds `grant:<permission>` when — and only when — the effective chain still reaches the tenant,
+ * and adds an explicit `user:` / `role:` / `department:` token for every entry on that chain. The
+ * caller side (`callerSubjectTokens`, below) is byte-for-byte what it was; the engine's predicate
+ * in `postgres-search.adapter.ts` is what it was; `12 §3`'s contract — an entry's `allowSubjects`
+ * overlap a caller's `subjectIds` exactly when `resolve` would allow that caller — is what it was.
+ * The one thing the phase had to add on this side is nothing at all, which is the strongest
+ * evidence available that Phase 8 cut the seam in the right place.
+ *
+ * What did change is that `denySubjects` is now sometimes non-empty. It was always in the shape and
+ * the adapter always excluded on it; there was simply nothing to put in it before entries existed.
  */
 export function userSubjectToken(userId: UserId): string {
   return `user:${userId}`;
@@ -54,13 +66,14 @@ export function callerSubjectTokens(input: {
 }
 
 /**
- * The subjects an index entry materialises for one permission, in this generation.
+ * The subjects an index entry materialises when nothing on its chain says anything narrower.
  *
- * No ACL entry exists yet, so every scope chain resolves to the same answer a direct read
- * enforces: the tenant-level role grant, closed by default. The entry therefore allows exactly
- * the grant token and denies nobody. When entries exist, this becomes the walk's output for
- * the document's chain — and an ACL change re-projects the affected subtree, which is what
- * `library.acl-changed` is declared for.
+ * Phase 8's whole answer, and still the answer for the overwhelming majority of documents: a
+ * tenant with no ACL entry on a document's chain materialises the grant token and denies nobody,
+ * which is what a direct read enforces. `indexSubjectsFromEntries` in `acl-walk.ts` is the general
+ * case and produces exactly this when the entry list is empty and the chain reaches the tenant —
+ * asserted in `acl-walk.spec.ts` rather than left as a claim, because the two agreeing is what
+ * stops a tenant that has never opened the permissions screen from being re-indexed differently.
  */
 export function indexAclSubjects(permission: PermissionKey): {
   readonly allowSubjects: readonly string[];

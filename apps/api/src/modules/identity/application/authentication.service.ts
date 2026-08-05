@@ -15,7 +15,7 @@ import {
   type AuditActor,
   type AuditWriter,
 } from '../../../core/audit/audit-writer.port';
-import { UnauthenticatedError } from '../../../core/errors/application-errors';
+import { MfaRequiredError, UnauthenticatedError } from '../../../core/errors/application-errors';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
@@ -37,6 +37,7 @@ import {
   TENANT_DIRECTORY,
   type TenantDirectory,
 } from './authentication.ports';
+import { MFA_SERVICE, type MfaService } from './mfa.ports';
 import {
   CREDENTIAL_REPOSITORY,
   type CredentialRepository,
@@ -84,6 +85,7 @@ export class DefaultAuthenticationService implements AuthenticationService {
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(MFA_SERVICE) private readonly mfa: MfaService,
   ) {}
 
   async signIn(command: SignInCommand): Promise<AuthenticationResult> {
@@ -96,6 +98,28 @@ export class DefaultAuthenticationService implements AuthenticationService {
 
       if (!accepted || !credential) {
         return { kind: 'rejected', reason: this.rejectionReason(credential) } as const;
+      }
+
+      // **The second factor, between the password and the session.** Phase 14's addition, and the
+      // order is the whole of it: the challenge is only asked after the password is verified, so
+      // "does this address have MFA" is not a question an unauthenticated caller can ask, and no
+      // session exists until both factors are satisfied.
+      //
+      // A missing code and a wrong one are told apart, which is deliberate and is not a leak: at
+      // this point the caller has already proved the password, so "a code is required" tells them
+      // nothing they could not learn by holding the account. Collapsing the two would mean a client
+      // could not distinguish "prompt for a code" from "that code was wrong" — and would prompt
+      // with an unexplained failure.
+      if (await this.mfa.isRequired(credential.id)) {
+        if (command.mfaCode === undefined || command.mfaCode === '') {
+          return { kind: 'mfa-required' } as const;
+        }
+        if (!(await this.mfa.challenge(credential.id, command.mfaCode))) {
+          // `MFA_FAILED` is already in the trail — the challenge writes it. This path returns a
+          // rejection so the outer handler writes `LOGIN_FAILED` beside it: the account holder
+          // failed to sign in *and* failed a factor, and an investigation asks both questions.
+          return { kind: 'rejected', reason: 'BAD_MFA_CODE' } as const;
+        }
       }
 
       const now = this.clock.now();
@@ -139,6 +163,13 @@ export class DefaultAuthenticationService implements AuthenticationService {
 
     if (outcome.kind === 'issued') {
       return outcome.result;
+    }
+    if (outcome.kind === 'mfa-required') {
+      // Its own error code, so the client renders the code field rather than "those credentials
+      // were not accepted" — which would be untrue and would train people to retype a correct
+      // password. Nothing is issued, and nothing is recorded as a failure: not presenting a code
+      // that has not been asked for yet is not an attempt.
+      throw new MfaRequiredError();
     }
 
     this.logger.warn('Sign-in rejected', {

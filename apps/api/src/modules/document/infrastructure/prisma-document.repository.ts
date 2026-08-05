@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
+import { Permission, type AnyId, asId } from '@edms/domain';
 import type {
   CategoryId,
   DocumentId,
@@ -16,6 +17,11 @@ import type {
 } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
+import {
+  ACL_RESOLVER,
+  type AclResolver,
+  type VisibilityRegion,
+} from '../../../core/authorization/acl-resolver.port';
 import { VersionConflictError } from '../../../core/errors/application-errors';
 import {
   RecordStamps,
@@ -53,10 +59,25 @@ import type {
  * **Favourites are joined per caller, not per tenant.** `isFavorite` is one person's answer, so the
  * join carries the acting user — and a list rendered for two people is two different lists in that
  * one column.
+ *
+ * **The ACL predicate is in `whereFor`, not in the service** — Phase 14's addition, and the reason
+ * is Phase 13's report. The dashboard's counts are built from *this function*, so putting the
+ * predicate here is what makes its claim true: the counts inherit the ACL filter "in the same commit
+ * and without `dashboard.service.ts` changing". Putting it in `DefaultDocumentService.list` would
+ * have filtered the list and left every count beside it describing a different set of rows — which
+ * is exactly the divergence 08 §7's Query row exists to prevent, arriving through the one door
+ * nobody was watching.
+ *
+ * It is pushed into SQL rather than applied after the fetch, for §7's stated reason: fetch-then-
+ * filter leaks totals, facet counts and page boundaries. A document the caller may not reach is
+ * **absent** from the list and from its total, not present-and-hidden.
  */
 @Injectable()
 export class PrismaDocumentRepository implements DocumentRepository {
-  constructor(private readonly stamps: RecordStamps) {}
+  constructor(
+    private readonly stamps: RecordStamps,
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
+  ) {}
 
   async findById(id: DocumentId, includeDeleted: boolean): Promise<DocumentRow | null> {
     const row = await requireTransaction().document.findFirst({
@@ -361,6 +382,7 @@ export class PrismaDocumentRepository implements DocumentRepository {
 
     return {
       tenantId,
+      ...(await this.visibilityCondition()),
       deletedAt: deletedCondition(request.deleted),
       ...(request.folderId !== undefined && { folderId: request.folderId }),
       ...(subtree !== null && {
@@ -387,6 +409,56 @@ export class PrismaDocumentRepository implements DocumentRepository {
         locks: { some: liveLockOf(this.actorId() ?? NO_SUCH_ID, this.stamps.now()) },
       }),
       OR: searchConditions(request.search, ['title', 'description', 'documentNumber']),
+    };
+  }
+
+  /**
+   * 08 §7's Query row: the caller's reach, as a `WHERE`.
+   *
+   * Resolved through `ACL_RESOLVER` — the same implementation that answers `AclGuard` and that
+   * materialises the search index's `acl_subjects` — so a document present in this list is one a
+   * direct read would return, and one absent from it is one a direct read would `404`.
+   *
+   * **A system run is not filtered, and that is not a hole.** `userId` is null only for the outbox
+   * consumers and the schedules, which have no reach question to answer: the search projection
+   * materialises an entry's answer *for everybody*, so filtering its source read by the reach of a
+   * caller that does not exist would produce an index that shows nobody anything. Row-level
+   * security is still the boundary on that path, as it is on every other.
+   */
+  private async visibilityCondition(): Promise<Prisma.DocumentWhereInput> {
+    const context = requireContext();
+    if (context.userId === null) {
+      return {};
+    }
+    const filter = await this.acl.visibilityFilter(
+      {
+        userId: asId(context.userId),
+        roleIds: context.roles.map((role) => asId<AnyId>(role)),
+        departmentIds: [],
+        delegationIds: [],
+      },
+      Permission.DOCUMENT_VIEW,
+    );
+
+    const allowed = filter.allowedRegions.map((region) => regionCondition(region));
+    const denied = filter.deniedRegions
+      .map((region) => regionCondition(region))
+      .filter((condition) => !isUnconditional(condition));
+
+    // An **unconditional** allowed region — the tenant-level role grant with no inheritance break
+    // to cut out of it — is not `OR: [{}]`. Prisma does not read an empty object inside an `OR` as
+    // "everything"; it reads it as a branch with no condition and drops it, so a caller who could
+    // see the whole tenant would see nothing. The unconditional case is the overwhelming majority
+    // of requests, so it is spelled as the absence of an allow clause rather than as a branch.
+    const unconditional = allowed.some(isUnconditional);
+    return {
+      AND: [
+        // No allowed region at all is the closed default, spelled as a predicate that matches
+        // nothing rather than as an omitted clause — an omitted clause is one refactor away from
+        // reading as "no restriction", which is the wrong direction for this file to fail in.
+        ...(unconditional ? [] : [allowed.length === 0 ? { id: NO_SUCH_ID } : { OR: allowed }]),
+        ...(denied.length === 0 ? [] : [{ NOT: { OR: denied } }]),
+      ],
     };
   }
 
@@ -646,5 +718,58 @@ function toRow(row: JoinedRow, _actorId: string | null): DocumentRow {
         selectValues: value.selectValues,
       },
     })),
+  };
+}
+
+/**
+ * One `VisibilityRegion`, as a document predicate.
+ *
+ * A region is a container minus the folder subtrees that break inheritance below the node granting
+ * it. The exclusions are why this is not simply "folder path starts with": a grant on a library
+ * reaches every folder in it *except* the ones that stopped inheriting, and expressing that as
+ * `IN (allowed folders)` would mean enumerating a tenant's folder tree on every list.
+ *
+ * `tenantWide` produces an empty object, which Prisma reads as "no additional condition" — the
+ * tenant filter and RLS are still there, above it. That is the tenant-level role grant, and it is
+ * the branch almost every request in almost every tenant takes.
+ */
+/** `{}` is Prisma's "no condition", and the one shape that must never sit inside an `OR`. */
+function isUnconditional(condition: Prisma.DocumentWhereInput): boolean {
+  return Object.keys(condition).length === 0;
+}
+
+function regionCondition(region: VisibilityRegion): Prisma.DocumentWhereInput {
+  const bases: Prisma.DocumentWhereInput[] = [];
+  if (region.tenantWide) {
+    bases.push({});
+  }
+  if (region.libraryIds.length > 0) {
+    bases.push({ folder: { libraryId: { in: [...region.libraryIds] } } });
+  }
+  for (const path of region.folderPaths) {
+    bases.push({ folder: { OR: [{ path }, { path: { startsWith: `${path}.` } }] } });
+  }
+  if (region.documentIds.length > 0) {
+    bases.push({ id: { in: [...region.documentIds] } });
+  }
+  if (bases.length === 0) {
+    return { id: NO_SUCH_ID };
+  }
+  const base: Prisma.DocumentWhereInput =
+    bases.length === 1 ? (bases[0] as Prisma.DocumentWhereInput) : { OR: bases };
+  if (region.excludedFolderPaths.length === 0) {
+    return base;
+  }
+  return {
+    AND: [
+      base,
+      {
+        NOT: {
+          OR: region.excludedFolderPaths.map((path) => ({
+            folder: { OR: [{ path }, { path: { startsWith: `${path}.` } }] },
+          })),
+        },
+      },
+    ],
   };
 }
