@@ -57,6 +57,7 @@ enum AuditSubjectType {
   CONFIGURATION
   SESSION
   FILE
+  SEARCH
 
   @@map("audit_subject_type")
 }
@@ -124,6 +125,9 @@ model Tenant {
   approvalGroups        ApprovalGroup[]
   workingCalendars      WorkingCalendar[]
   documentLocks         DocumentLock[]
+  savedSearches         SavedSearch[]
+  recentSearches        RecentSearch[]
+  searchRebuilds        SearchRebuild[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -318,6 +322,8 @@ model User {
   workflowComments        WorkflowComment[]
   approvalGroups          ApprovalGroupMember[]
   documentLocks           DocumentLock[]
+  savedSearches           SavedSearch[]
+  recentSearches          RecentSearch[]
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -2327,4 +2333,232 @@ model WorkingCalendarHoliday {
   @@unique([calendarId, day], map: "uq_working_calendar_holiday")
   @@index([tenantId, calendarId, day], map: "ix_working_calendar_holiday")
   @@map("working_calendar_holiday")
+}
+
+// ── Phase 8 — search ─────────────────────────────────────────────────────────────────────────
+
+/// Where an index entry's body text came from.
+///
+/// `TEXT` is the file's own words, read from its text layer; `OCR` is what an engine read off
+/// pixels. The distinction survives into the index because a hit found through a low-confidence
+/// OCR read is presented as an inference, not as the document's words — the same honesty rule
+/// the compare API follows (`14-preview-architecture.md` §6).
+enum SearchContentSource {
+  TEXT
+  OCR
+
+  @@map("search_content_source")
+}
+
+enum SearchRebuildState {
+  RUNNING
+  COMPLETED
+  FAILED
+
+  @@map("search_rebuild_state")
+}
+
+/// The search read model — one row per findable document (`12-search-architecture.md` §2).
+///
+/// Never authoritative and rebuildable from source at any time (ADR-0008). The `tsv` column and
+/// the GIN/opclass indexes over it live in raw SQL because Prisma cannot express them — the
+/// same reason `uq_document_lock_live` lives in its migration. Every read and write of this
+/// table goes through the search adapters as SQL; the model exists so the schema stays the one
+/// description of the database, and so tests can count rows without hand-writing queries.
+///
+/// **Deliberately no foreign keys beyond the tenant.** A read model references nothing
+/// authoritatively: a `RESTRICT` edge to `document` would let a projection block a purge, and a
+/// `CASCADE` edge would make removal implicit where the projection is the recorded remover.
+/// The projection deletes the row when the document stops being findable, and a rebuild
+/// reconciles anything a crash left behind.
+///
+/// `acl_subjects` / `acl_deny_subjects` are computed by the same resolver the API uses
+/// (`08-permission-model.md` §7) — one implementation, two call sites, so the index can never
+/// disagree with a direct read. `acl_hash` fingerprints that computation for staleness checks.
+model SearchIndexEntry {
+  documentId          String              @id @map("document_id") @db.Uuid
+  tenantId            String              @map("tenant_id") @db.Uuid
+  titleRaw            String              @map("title_raw")
+  /// The assigned document number, exactly as issued — matched by prefix, never stemmed.
+  numberExact         String?             @map("number_exact")
+  /// Weighted lexemes: A number+title, B filename+metadata, C description, D body.
+  tsv                 Unsupported("tsvector")
+  /// Tenant-defined metadata values keyed by field id, for display and `meta.<fieldId>` filters.
+  metadata            Json                @default("{}")
+  documentTypeId      String              @map("document_type_id") @db.Uuid
+  categoryId          String?             @map("category_id") @db.Uuid
+  status              DocumentStatus
+  confidentialityRank Int                 @map("confidentiality_rank") @db.SmallInt
+  entityId            String?             @map("entity_id") @db.Uuid
+  branchId            String?             @map("branch_id") @db.Uuid
+  departmentId        String?             @map("department_id") @db.Uuid
+  libraryId           String              @map("library_id") @db.Uuid
+  folderId            String              @map("folder_id") @db.Uuid
+  folderPath          String              @map("folder_path")
+  ownerId             String              @map("owner_id") @db.Uuid
+  /// Everyone who decided an approval task on this document, for `approver:` queries.
+  approverIds         String[]            @map("approver_ids") @db.Uuid
+  revisionOrdinal     Int?                @map("revision_ordinal")
+  revisionLabel       String?             @map("revision_label")
+  filename            String?
+  /// Detected per revision, never per tenant (`12-search-architecture.md` §4).
+  language            String
+  /// The indexed text, stored so highlighting reads what was matched. Capped by configuration.
+  body                String
+  bodySource          SearchContentSource? @map("body_source")
+  /// True while the preview pipeline has not yet answered for the current revision — the
+  /// materialisation of `preview_render.state`, refreshed by the events that change it, never
+  /// a second status of its own (`12-search-architecture.md` §4).
+  contentPending      Boolean             @map("content_pending")
+  /// True when the body is an OCR read below the confidence threshold.
+  lowConfidence       Boolean             @default(false) @map("low_confidence")
+  documentCreatedAt   DateTime            @map("document_created_at") @db.Timestamptz(6)
+  documentUpdatedAt   DateTime            @map("document_updated_at") @db.Timestamptz(6)
+  publishedAt         DateTime?           @map("published_at") @db.Timestamptz(6)
+  effectiveFrom       DateTime?           @map("effective_from") @db.Date
+  aclSubjects         String[]            @map("acl_subjects")
+  aclDenySubjects     String[]            @map("acl_deny_subjects")
+  aclHash             String              @map("acl_hash")
+  indexedAt           DateTime            @map("indexed_at") @db.Timestamptz(6)
+  /// The document's own optimistic-lock version as of projection, for staleness detection.
+  sourceVersion       Int                 @map("source_version")
+
+  @@index([tenantId, status], map: "ix_search_entry_status")
+  @@index([tenantId, documentTypeId], map: "ix_search_entry_type")
+  @@index([tenantId, folderPath], map: "ix_search_entry_folder_path")
+  @@index([tenantId, ownerId], map: "ix_search_entry_owner")
+  @@index([tenantId, documentUpdatedAt(sort: Desc)], map: "ix_search_entry_updated")
+  @@map("search_index_entry")
+}
+
+/// The rebuild's build target — identical shape, swapped in when a rebuild completes.
+///
+/// A full rebuild writes here while readers keep answering from `search_index_entry`, then the
+/// two tables trade names in one transaction (`12-search-architecture.md` §6). No reader ever
+/// sees a half-built index, and no truncate ever empties the live one. Between swaps this table
+/// is scratch: the next rebuild truncates it on start.
+model SearchIndexEntryShadow {
+  documentId          String              @id @map("document_id") @db.Uuid
+  tenantId            String              @map("tenant_id") @db.Uuid
+  titleRaw            String              @map("title_raw")
+  numberExact         String?             @map("number_exact")
+  tsv                 Unsupported("tsvector")
+  metadata            Json                @default("{}")
+  documentTypeId      String              @map("document_type_id") @db.Uuid
+  categoryId          String?             @map("category_id") @db.Uuid
+  status              DocumentStatus
+  confidentialityRank Int                 @map("confidentiality_rank") @db.SmallInt
+  entityId            String?             @map("entity_id") @db.Uuid
+  branchId            String?             @map("branch_id") @db.Uuid
+  departmentId        String?             @map("department_id") @db.Uuid
+  libraryId           String              @map("library_id") @db.Uuid
+  folderId            String              @map("folder_id") @db.Uuid
+  folderPath          String              @map("folder_path")
+  ownerId             String              @map("owner_id") @db.Uuid
+  approverIds         String[]            @map("approver_ids") @db.Uuid
+  revisionOrdinal     Int?                @map("revision_ordinal")
+  revisionLabel       String?             @map("revision_label")
+  filename            String?
+  language            String
+  body                String
+  bodySource          SearchContentSource? @map("body_source")
+  contentPending      Boolean             @map("content_pending")
+  lowConfidence       Boolean             @default(false) @map("low_confidence")
+  documentCreatedAt   DateTime            @map("document_created_at") @db.Timestamptz(6)
+  documentUpdatedAt   DateTime            @map("document_updated_at") @db.Timestamptz(6)
+  publishedAt         DateTime?           @map("published_at") @db.Timestamptz(6)
+  effectiveFrom       DateTime?           @map("effective_from") @db.Date
+  aclSubjects         String[]            @map("acl_subjects")
+  aclDenySubjects     String[]            @map("acl_deny_subjects")
+  aclHash             String              @map("acl_hash")
+  indexedAt           DateTime            @map("indexed_at") @db.Timestamptz(6)
+  sourceVersion       Int                 @map("source_version")
+
+  @@index([tenantId, status], map: "ix_search_entry_shadow_status")
+  @@index([tenantId, documentTypeId], map: "ix_search_entry_shadow_type")
+  @@index([tenantId, folderPath], map: "ix_search_entry_shadow_folder_path")
+  @@index([tenantId, ownerId], map: "ix_search_entry_shadow_owner")
+  @@index([tenantId, documentUpdatedAt(sort: Desc)], map: "ix_search_entry_shadow_updated")
+  @@map("search_index_entry_shadow")
+}
+
+/// One person's named, re-runnable search.
+///
+/// Per user: a saved search is a private shortcut, exactly as a favourite is. The phase design
+/// names sharing by ACL (`12-search-architecture.md` §5); that waits for the phase that builds
+/// ACL entries, because a sharing model invented before the grants exist would be a second
+/// permission system.
+model SavedSearch {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  ownerUserId String    @map("owner_user_id") @db.Uuid
+  name        String
+  /// The query text exactly as the user typed it, field syntax included.
+  query       String
+  /// Structured filters beside the text, in the wire shape the search endpoint takes.
+  filters     Json      @default("{}")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+  version     Int       @default(1)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+
+  /// One name per owner among live rows — partial, in the migration; Prisma cannot express it.
+  @@index([tenantId, ownerUserId, updatedAt(sort: Desc)], map: "ix_saved_search_owner")
+  @@map("saved_search")
+}
+
+/// One person's recent queries, newest first, capped by configuration.
+///
+/// Telemetry-shaped like `document_view`: no soft delete, no version, pruned rather than
+/// curated. A repeated identical search refreshes its row instead of stacking duplicates —
+/// `query_hash` is the digest of the normalised query and filters that makes "identical"
+/// cheap to enforce.
+model RecentSearch {
+  id         String   @id @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  query      String
+  filters    Json     @default("{}")
+  queryHash  String   @map("query_hash")
+  searchedAt DateTime @map("searched_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId, queryHash], map: "uq_recent_search_query")
+  @@index([tenantId, userId, searchedAt(sort: Desc)], map: "ix_recent_search_user")
+  @@map("recent_search")
+}
+
+/// One rebuild run, which is what makes the rebuild resumable.
+///
+/// The cursor is the last document id the run projected into the shadow table; a resumed run
+/// continues from it instead of starting over. One `RUNNING` row per tenant — partial unique,
+/// in the migration — because two concurrent rebuilds would interleave into one shadow table.
+model SearchRebuild {
+  id               String             @id @db.Uuid
+  tenantId         String             @map("tenant_id") @db.Uuid
+  state            SearchRebuildState @default(RUNNING)
+  /// Keyset cursor into `document`, in id order. Null before the first batch.
+  cursorDocumentId String?            @map("cursor_document_id") @db.Uuid
+  documentsIndexed Int                @default(0) @map("documents_indexed")
+  startedAt        DateTime           @map("started_at") @db.Timestamptz(6)
+  completedAt      DateTime?          @map("completed_at") @db.Timestamptz(6)
+  /// Operator-readable, set exactly when the state is FAILED.
+  error            String?
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String?            @map("created_by") @db.Uuid
+  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?            @map("updated_by") @db.Uuid
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, startedAt(sort: Desc)], map: "ix_search_rebuild_tenant")
+  @@map("search_rebuild")
 }

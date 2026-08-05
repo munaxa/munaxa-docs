@@ -61,6 +61,14 @@ const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
     permission: Permission.DOCUMENT_VIEW,
   },
   {
+    // Phase 8. `document:view`, the same reasoning as the library: search is how a reader finds
+    // what they may read, and everything narrower is the ACL predicate's inside the query.
+    id: 'search',
+    href: '/search' as Route,
+    labelKey: 'nav.search',
+    permission: Permission.DOCUMENT_VIEW,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',

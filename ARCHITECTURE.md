@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 7**:
+and the product is built through **Phase 8**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -103,11 +103,18 @@ and the product is built through **Phase 7**:
   API's text state fills in from extracted text; and the document screen gains the modular viewer
   with zoom, rotate, page navigation, in-document search, fullscreen and gated print.
 
-Search is Phase 8, and each report says what its phase deliberately left out.
+- **Phase 8** — search. The `search.index` lane Phase 0.5 declared and Phase 7 filled is finally
+  consumed: a coalescing consumer, an idempotent projection into the weighted per-tenant index,
+  the permission predicate pushed into the query before scoring — computed by the first real
+  `ACL_RESOLVER` binding, one implementation serving both the index and the API — Arabic
+  normalisation in the query path, keyset pagination, saved and recent searches, the audited
+  `search:all` bypass, and the resumable shadow-table rebuild that never empties a live index.
+
+Audit & compliance is Phase 9, and each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-7-document-preview.md`](./docs/reports/phase-7-document-preview.md); the original gate is
+[`phase-8-search.md`](./docs/reports/phase-8-search.md); the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

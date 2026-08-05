@@ -25,3 +25,4 @@ export * from './enums/notification';
 export * from './enums/retention';
 export * from './enums/storage';
 export * from './enums/workflow';
+export * from './search-text';

@@ -23,6 +23,23 @@ The dependency rule points inward, and it is enforced by `eslint.config.mjs` at 
 not merely described here. Other modules call this one through its **application service** or
 react to its **events** — never through its repositories or its Prisma models.
 
+## Phase 8 — the resolver binds
+
+`ACL_RESOLVER` is no longer the deny-all placeholder: this module now binds
+`PrismaAclResolver`, resolving `08-permission-model.md` §3 over what genuinely exists — the
+tenant-level role grant, closed by default. Search forced the seam: the index materialises
+`acl_subjects` "computed by the same pure resolver the API uses", and a resolver that denies
+everything cannot serve an index anybody may see. The subject vocabulary lives in
+`domain/acl-subjects.ts` (typed `user:` / `role:` / `department:` / `grant:` tokens), and the
+module is `@Global` for the same reason `AuditModule` is: the port is declared in `core/`,
+whose own guard asks it, and core may not import a module to reach the implementation.
+
+What has **not** changed: no `acl_entry` table, no walk, no deny precedence — there is still
+nothing to grant *on a node*. The phase that builds grants extends this resolver and its
+domain functions, re-projects the index, and changes nothing above the port. Until then a
+folder's `inherit_acl` continues to be stored and never consulted, and the folder-delete
+contents check keeps waiting for the phase that makes the consequence real.
+
 ## Events published
 
 | Type | Meaning |

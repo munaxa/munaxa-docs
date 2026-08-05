@@ -196,3 +196,17 @@ Resolved decisions are cached per `(userId, scopeId, permission)` in Redis with 
 invalidated by event: an ACL change, role change, delegation change, department membership change,
 or document move publishes an invalidation. The cache is an optimisation only — a cold cache
 produces the same answer.
+
+## 9. What Phase 8 built
+
+`ACL_RESOLVER` binds its first real implementation — `PrismaAclResolver`, in the Library
+module — because the search index must materialise `acl_subjects` from "the same pure resolver
+the API uses" (12 §3) and a deny-all placeholder cannot serve an index anybody may see. It
+resolves §3's algorithm over what genuinely exists: no ACL entry table yet, so steps 3–5 find
+nothing, every decision falls through to step 6's tenant-level role grant, and step 7 keeps it
+closed by default. `visibilityFilter` (the query-side call site) and `aclSubjectsFor` (the
+projection's) are two methods of one class over one domain vocabulary
+(`library/domain/acl-subjects.ts`), so §7's Query and Search rows can no longer diverge. The
+entries, the walk, deny precedence, `@ScopedTo` on object routes, capabilities in responses and
+§8's cache remain the ACL phase's — they extend this binding rather than replace anything that
+now calls it.

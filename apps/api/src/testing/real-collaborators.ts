@@ -74,6 +74,20 @@ import { RevisionControlService } from '../modules/document/application/revision
 import { PrismaDocumentLockRepository } from '../modules/document/infrastructure/prisma-document-lock.repository';
 import { RevisionQueryService } from '../modules/revision/application/revision-query.service';
 import { PrismaRevisionQueryRepository } from '../modules/revision/infrastructure/prisma-revision-query.repository';
+import { PostgresIndexAdapter } from '../infrastructure/search/postgres-index.adapter';
+import { PostgresSearchAdapter } from '../infrastructure/search/postgres-search.adapter';
+import { TenantScopedSearch } from '../infrastructure/tenancy/tenant-scoped-search';
+import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
+import { DefaultSearchService } from '../modules/search/application/search.service';
+import { SavedSearchService } from '../modules/search/application/saved-search.service';
+import { SearchProjectionService } from '../modules/search/application/search-projection.service';
+import { SearchRebuildService } from '../modules/search/application/search-rebuild.service';
+import { PrismaSearchSourceReader } from '../modules/search/infrastructure/prisma-search-source.reader';
+import {
+  PrismaRecentSearchRepository,
+  PrismaSavedSearchRepository,
+  PrismaSearchRebuildRepository,
+} from '../modules/search/infrastructure/prisma-search.repositories';
 
 /**
  * Real collaborators, wired the way the container wires them.
@@ -633,5 +647,115 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     issuance,
     enqueued,
     cancelled,
+  };
+}
+
+// --- Phase 8: search --------------------------------------------------------------------------
+//
+// The same boundary reason, at its sharpest: nearly everything the search suite asserts is a
+// property of the database — a permission predicate refusing rows inside the query, facet
+// counts that cannot leak, tsvector matches across Arabic spellings, a rebuild swapping under
+// a live reader. So the stack is the real resolver, the real projection, the real PostgreSQL
+// adapters under the real tenant scoping, with only the queue recorded.
+
+export interface SearchStackOptions {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config: AppConfig;
+  readonly registry: TenantRegistry;
+  readonly storage: DefaultStorageService;
+  readonly storagePort: StoragePort;
+}
+
+export interface SearchStack {
+  readonly search: DefaultSearchService;
+  /** The scoped engine itself, for asserting the tenant-overwrite behaviour directly. */
+  readonly engine: TenantScopedSearch;
+  readonly projection: SearchProjectionService;
+  readonly rebuilds: SearchRebuildService;
+  readonly savedSearches: SavedSearchService;
+  readonly acl: PrismaAclResolver;
+  readonly index: PostgresIndexAdapter;
+  readonly source: PrismaSearchSourceReader;
+  readonly rebuildRepository: PrismaSearchRebuildRepository;
+  /** What a rebuild request handed the lane. */
+  readonly enqueuedJobs: {
+    readonly queue: string;
+    readonly jobId: string;
+    readonly payload: unknown;
+  }[];
+}
+
+export function realSearchStack(options: SearchStackOptions): SearchStack {
+  const { stamps, audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+
+  const source = new PrismaSearchSourceReader(options.unitOfWork);
+  const acl = new PrismaAclResolver(options.unitOfWork);
+  const index = new PostgresIndexAdapter(options.clock);
+  const engine = new TenantScopedSearch(new PostgresSearchAdapter(), options.registry);
+  const rebuildRepository = new PrismaSearchRebuildRepository(stamps);
+  const previews = realPreviewQuery(options);
+
+  const projection = new SearchProjectionService(
+    source,
+    acl,
+    index,
+    rebuildRepository,
+    outbox,
+    options.unitOfWork,
+    options.config,
+    previews,
+    stamps,
+  );
+
+  const enqueuedJobs: SearchStack['enqueuedJobs'] = [];
+  const queue = {
+    enqueue: (queueName: string, payload: object, jobOptions: { jobId: string }) => {
+      enqueuedJobs.push({ queue: queueName, jobId: jobOptions.jobId, payload });
+      return Promise.resolve({
+        queue: queueName,
+        jobId: jobOptions.jobId,
+        availableAt: options.clock.now(),
+      });
+    },
+    cancel: () => Promise.resolve(false),
+    depth: () => Promise.resolve({ queue: '', waiting: 0, active: 0, delayed: 0, failed: 0 }),
+  } as never;
+
+  return {
+    search: new DefaultSearchService(
+      engine,
+      acl,
+      source,
+      new PrismaRecentSearchRepository(),
+      audit,
+      options.unitOfWork,
+      options.config,
+      stamps,
+    ),
+    projection,
+    rebuilds: new SearchRebuildService(
+      rebuildRepository,
+      source,
+      index,
+      queue,
+      outbox,
+      options.unitOfWork,
+      options.config,
+      projection,
+      writer,
+    ),
+    savedSearches: new SavedSearchService(
+      new PrismaSavedSearchRepository(stamps),
+      new PrismaRecentSearchRepository(),
+      options.config,
+      writer,
+    ),
+    engine,
+    acl,
+    index,
+    source,
+    rebuildRepository,
+    enqueuedJobs,
   };
 }

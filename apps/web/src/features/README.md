@@ -19,8 +19,8 @@ feature's internals**, which `eslint.config.mjs` enforces. A shared piece moves 
 `features/shared/` on its *third* consumer, not its second: extracting earlier produces an
 abstraction shaped by two accidents.
 
-Planned features, one per capability the workspace exposes: `revisions`,
-`approvals`, `search`, `audit`, `reports` and `notifications`. Each arrives with the phase that builds
+Planned features, one per capability the workspace exposes: `audit`, `reports` and
+`notifications`. Each arrives with the phase that builds
 its screens ([16-frontend-architecture.md](../../../../docs/architecture/16-frontend-architecture.md)
 §3).
 
@@ -56,6 +56,19 @@ rather than an exception to it. The browser PUTs straight to storage over a pres
 carries no session, names one object and expires in minutes — which is what keeps a 2 GB drawing out
 of a framework whose request bodies are bounded in megabytes. The access token never leaves the
 server.
+
+## Built: search
+
+| Feature | Screens |
+| --- | --- |
+| `search` | The search screen — query bar with field syntax, facet rail, keyset "load more", saved and recent searches |
+
+The one shape worth noticing: pagination is a **keyset cursor**, so only the first page lives
+in the URL; further pages are appended through a server action (`continueSearch`), because a
+cursor names "after what I have" and putting it in the URL would make refresh show page four
+alone. Highlights arrive as segmented spans and are rendered as text — never as markup. A hit
+whose content is still being extracted says so (`contentPending`), and an OCR-read hit is
+badged as an inference, the same honesty rule the preview viewer follows.
 
 `admin-shared` is the `features/shared/` of the README's rule, and it earned the place: every export
 in it has between four and eighteen consumers. Three shapes are genuinely repeated —

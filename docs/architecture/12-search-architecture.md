@@ -127,3 +127,37 @@ Because everything goes through `SearchPort`, migrating means writing `OpenSearc
 dual-writing during backfill, comparing results on a sample, and flipping a configuration value.
 No use case and no controller changes. This is the entire reason for the port
 ([ADR-0008](./adr/0008-postgres-first-search.md)).
+
+## 8. What Phase 8 built
+
+This document was written in Phase 0; Phase 8 made it real, and this section records where the
+built thing is and the three places it deliberately differs in mechanism while keeping the
+contract.
+
+§2's diagram runs: the outbox fans `document.*`, `revision.*` and `preview.*` onto
+`search.index` (Phase 7's routing, unchanged), and the lane's first consumer translates each
+event to the document it concerns and coalesces per document through a debounce-bucketed,
+deterministic job id — §6's "multiple changes produce one projection", enforced by the queue
+rather than by bookkeeping. The projection rebuilds the entry whole from current truth, so
+redelivery is idempotent by construction. `search_index_entry` carries §2's shape, including
+`acl_subjects` / `acl_deny_subjects` / `acl_hash` computed by `ACL_RESOLVER` — the resolver's
+first real binding, forced by this phase precisely so the index and a direct read answer from
+one implementation. In this generation that resolution is the tenant-level role grant
+materialised as a `grant:document:view` subject token; when the ACL phase builds entries and
+the walk, the resolver widens, the affected entries re-project, and §3's SQL does not change.
+
+§3 is implemented to the letter: the predicate runs inside the query before scoring, facet
+counts and totals are computed after it, `search:all` bypasses the ACL clause only and is
+audited (`SEARCH_PERFORMED`), and cross-checking at open time is the document endpoints' own
+gating, unchanged. §4's "content indexing pending" is served from `preview_render.state`
+materialised into the entry at projection time and refreshed by the `preview.*` events — a
+projection of the one status, not a second one. Arabic follows §4 exactly: normalisation in
+`@edms/domain`'s `search-text.ts`, both spellings indexed, the normalised form queried, the
+`arabic` configuration for stemming, language detected per revision by script counting.
+
+The three mechanism differences, each recorded in the Phase 8 report: the rebuild's swap is an
+atomic tenant-scoped `DELETE`+`INSERT` transaction rather than a table rename (the application
+role does not own the tables, and a rename in a shared-database installation would swap every
+tenant at once); did-you-mean is deferred with `pg_trgm` (an extension is installer surface,
+and nothing yet measures the need); and saved-search sharing waits for ACL entries to exist,
+because a sharing model invented before grants would be a second permission system.

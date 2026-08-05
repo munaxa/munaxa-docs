@@ -1,11 +1,13 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 
+import { ACL_RESOLVER } from '../../core/authorization/acl-resolver.port';
 import { OrganizationModule } from '../organization/organization.module';
 import {
   LIBRARY_ADMIN_REPOSITORY,
   LIBRARY_ADMIN_SERVICE,
 } from './application/administration.ports';
 import { LibraryAdminService } from './application/library-admin.service';
+import { PrismaAclResolver } from './infrastructure/prisma-acl.resolver';
 import { PrismaLibraryAdminRepository } from './infrastructure/prisma-library-admin.repository';
 import {
   FolderAdminController,
@@ -15,13 +17,20 @@ import {
 /**
  * Library — Where do documents live, and who may reach into that place?
  *
- * **Owns:** Library, Folder, ACL entries on both
+ * **Owns:** Library, Folder, ACL entries on both, the ACL resolver
  * **Depends on:** Organization, Administration
  *
- * `ACL_RESOLVER` — the ACL entries live here, so the resolution algorithm lives with them. Still
- * unbound: Phase 2 builds the tree a grant is *made on*, not the grants or the walk. Until the
- * resolver arrives, `DENY_ALL` is what answers object-level questions, which is the correct answer
- * to give while there is nothing to grant.
+ * `ACL_RESOLVER` — the ACL entries live here, so the resolution algorithm lives with them.
+ * Phase 8 binds the first real resolver, because the search index must materialise its
+ * `acl_subjects` from "the same pure resolver the API uses" and a resolver that denies
+ * everything cannot serve an index anybody may see. What it resolves is what genuinely exists —
+ * the tenant-level role grant, closed by default; the entries and the walk arrive with the
+ * phase that builds grants, extending this binding rather than replacing anything above it
+ * (see `infrastructure/prisma-acl.resolver.ts`).
+ *
+ * The module is `@Global` for the same reason `AuditModule` is: the port is declared in
+ * `core/` because core's own `AclGuard` asks it, and core may not import a module — so the
+ * owning module carries the binding to it, exactly as Audit carries `AUDIT_WRITER`.
  *
  * Phase 0.5 established this module's contracts. Phase 2 builds the place: libraries owned by exactly
  * one organisation node, each created with its root folder in one transaction, and a folder tree with
@@ -32,16 +41,18 @@ import {
  * `ORGANIZATION_SERVICE` before it is written. That is a call to another module's *application
  * service*, which is the only legal direction — never into its repositories or its Prisma models.
  */
+@Global()
 @Module({
   imports: [OrganizationModule],
   controllers: [LibraryAdminController, FolderAdminController],
   providers: [
     { provide: LIBRARY_ADMIN_REPOSITORY, useClass: PrismaLibraryAdminRepository },
     { provide: LIBRARY_ADMIN_SERVICE, useClass: LibraryAdminService },
+    { provide: ACL_RESOLVER, useClass: PrismaAclResolver },
   ],
   // Phase 3: a document sits in a folder, and Document resolves the folder through this service
   // rather than by reading the tree. The folder tree is the chain the ACL resolver walks, and a
   // second reader of it would be a second opinion about who can see what.
-  exports: [LIBRARY_ADMIN_SERVICE],
+  exports: [LIBRARY_ADMIN_SERVICE, ACL_RESOLVER],
 })
 export class LibraryModule {}

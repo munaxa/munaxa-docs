@@ -57,6 +57,23 @@ export interface AclResolver {
     subject: AuthorizationSubject,
     permission: PermissionKey,
   ): Promise<VisibilityFilter>;
+
+  /**
+   * The subject sets an index entry materialises for one scope and permission — the search
+   * projection's call site of the same resolution `visibilityFilter` answers the query side
+   * with. One implementation, two call sites, so the index can never disagree with a direct
+   * read (`docs/architecture/12-search-architecture.md` §3). An entry's `allowSubjects` must
+   * overlap a caller's `VisibilityFilter.subjectIds` exactly when `resolve` would allow that
+   * caller to view the scope.
+   */
+  aclSubjectsFor(scope: ScopeRef, permission: PermissionKey): Promise<IndexAclSubjects>;
+}
+
+/** What the projection writes into `acl_subjects` / `acl_deny_subjects` / `acl_hash`. */
+export interface IndexAclSubjects {
+  readonly allowSubjects: readonly string[];
+  readonly denySubjects: readonly string[];
+  readonly fingerprint: string;
 }
 
 /** The resolved subject fingerprint a query is filtered by, and the index is keyed on. */
