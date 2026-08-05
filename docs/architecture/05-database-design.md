@@ -190,9 +190,65 @@ CREATE INDEX ix_document_updated    ON document (tenant_id, updated_at DESC) WHE
 | Reads | Every query filters `deleted_at IS NULL` by default, in the Prisma extension |
 | Recycle bin | A permission-gated view of `deleted_at IS NOT NULL` within the retention window |
 | Restore | Clears `deleted_at`, revalidates uniqueness (name collisions are resolved by rename, never by overwrite), audited |
-| Cascade | Deleting a folder soft-deletes its subtree; each affected row records the originating `cascade_id` so restore is exact |
-| Purge | Only the retention worker, only when no legal hold exists, only after the policy's period. Purge removes rows and decrements `file_object.ref_count`; blobs with `ref_count = 0` are deleted from storage |
+| Cascade | Deleting a folder soft-deletes its subtree — folders, the documents in them and those documents' revisions; each affected row records the originating `cascade_id` so restore is exact |
+| Purge | Only the retention worker, only when no legal hold exists, only after the policy's period. Purge removes rows and decrements `file_object.ref_count`; blobs with `ref_count = 0` are deleted from storage after a grace period |
 | Audit | **Never soft-deleted, never purged with the document.** Audit outlives its subject |
+
+### Phase 10 — one answer to what a delete reaches
+
+Until Phase 10 there was no single one. Phase 3's document delete released the reference on the
+*latest* revision and left every earlier one counted; Phase 2's folder delete cascaded over folders
+and stopped at the documents inside them; Phase 6 created revisions nothing ever detached. Three
+modules each decided locally, and the three decisions did not compose: a document with four
+revisions gave back one reference, so its blobs could never reach zero and the sweep that reclaims
+at zero could never reclaim anything.
+
+The answer is **`DOCUMENT_DELETION_RULES` in `@edms/domain`** — one table naming every relation a
+document's deletion reaches, what a delete does to it, what a purge does, and why. It is pure data
+so the purge, the cascade and the integration suite read the same rows: the suite asserts row
+counts per relation *from* the table, which is what stops it drifting into documentation.
+
+| Relation | On delete | On purge |
+| --- | --- | --- |
+| `document`, `document_revision` | Cascaded, one `delete_cascade_id`, references given back | Removed |
+| `document_metadata_value`, `document_favorite`, `document_view`, `document_lock` | Untouched — only reachable through the document, which is already filtered | Removed |
+| `preview_artifact`, `preview_render`, `ocr_result` | Untouched — a restored document shows the preview it had | Dereferenced, then removed with their revisions |
+| `search_index_entry` | Removed by the projection, through the outbox | Removed |
+| `retention_schedule`, `legal_hold` | Untouched — the schedule is what says when the delete stops being reversible | Removed |
+| `workflow_instance` | Untouched | Removed — the approval *evidence* is the audit trail |
+| `number_reservation` | Untouched | **Retained**, its pointers severed: the number is never re-issued (ADR-0004) |
+| `audit_event` | Untouched | **Retained** — and the table refuses `DELETE` to every role, so this is enforced rather than intended |
+
+Two columns arrive with it: `document.delete_reason` (mandatory, shown in the recycle bin, and
+written to the trail's own `reason` column where Phase 9's widened digest attests it) and
+`delete_cascade_id` on both `document` and `document_revision`, the same mechanism `folder` has
+carried since Phase 2.
+
+### Phase 10 — `document_tombstone`
+
+| Table | Notes |
+| --- | --- |
+| `document_tombstone` | What a purged document leaves behind: its number, title, type name, folder path, when it was deleted and when it was destroyed. No `deleted_at` — a tombstone the recycle bin could hide would be a headstone somebody could bury — and deliberately **no foreign keys** to `document`, `retention_schedule`, `retention_policy` or `document_type`, every one of which it is designed to outlive |
+
+It exists because of a constraint rather than a preference. §6 of [13](./13-audit-architecture.md)
+requires a purged document's trail to remain "with the document number preserved so the record is
+still meaningful", and `02-audit-immutability.sql` makes that enforceable: `audit_event` refuses
+`DELETE` to every role including the owner, so the trail *will* outlive the row. What it cannot do
+is grow a number it never carried — the events written before Phase 10 were hashed with the
+payloads they have, and rewriting one is the single operation this product will not perform on that
+table. So the number is copied where the purge does not reach.
+
+### Phase 10 — the indexes each question actually needs
+
+Every index this phase adds is **partial**, and for one reason: in a library of any age the rows
+these questions are about are a rounding error against the rows they are not.
+
+| Index | Predicate | Question |
+| --- | --- | --- |
+| `ix_document_deleted` | `deleted_at IS NOT NULL` | The recycle bin, newest first. A full index on `deleted_at` would index the whole library to answer a question about the thousandth of it that is deleted |
+| `ix_retention_schedule_due` | `state IN ('PENDING','IN_REVIEW')` | §3's `ix (tenant_id, due_at) WHERE state = 'PENDING'`, widened by one state — a schedule waiting for a reviewer is still due |
+| `uq_retention_schedule_live` | `state IN ('PENDING','IN_REVIEW','SUSPENDED')` | One live schedule per `(document, trigger)`. What makes a redelivered trigger update a row rather than queue a duplicate the sweep would execute twice |
+| `ix_legal_hold_live` | `released_at IS NULL` | "Is this held" — asked by every delete and every disposition; a released hold answers no |
 
 ## 5. Revision strategy
 

@@ -11,6 +11,7 @@ import {
   Settings,
   asId,
   calendarDay,
+  RetentionTrigger,
 } from '@edms/domain';
 
 import {
@@ -25,6 +26,7 @@ import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.po
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
 import { SETTINGS_READER, type SettingsReader } from '../../../core/settings/settings.port';
 import { requireContext } from '../../../core/tenancy/tenant-context';
+import { RETENTION_SCHEDULER, type RetentionScheduler } from '../../retention/application/ports';
 import { RevisionControlAudit } from '../domain/audit-actions';
 import {
   documentCheckedInEvent,
@@ -89,6 +91,7 @@ export class RevisionControlService {
     @Inject(DOCUMENT_CONFIGURATION) private readonly configuration: DocumentConfiguration,
     @Inject(DOCUMENT_SERVICE) private readonly service: DefaultDocumentService,
     @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
+    @Inject(RETENTION_SCHEDULER) private readonly retention: RetentionScheduler,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     private readonly writer: AdministeredWriter,
   ) {}
@@ -418,6 +421,17 @@ export class RevisionControlService {
         metadataSnapshot: snapshotOf(document),
       });
       await this.documents.setCurrentRevision(asId<DocumentId>(id), document.latestRevisionId);
+
+      // Publication may start the record's retention clock: the frozen policy's ON_PUBLISH
+      // trigger, evaluated now and copied onto the schedule (ADR-0010 §7). Joins this
+      // transaction, so a publish that rolls back leaves no schedule behind.
+      await this.retention.onTrigger({
+        documentId: asId<DocumentId>(id),
+        trigger: RetentionTrigger.ON_PUBLISH,
+        at: now,
+        policyId: document.retentionPolicyId,
+        documentNumber: document.documentNumber,
+      });
 
       await this.outbox.publish([
         documentPublishedEvent(asId<AnyId>(id), {

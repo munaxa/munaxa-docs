@@ -11,6 +11,7 @@ import {
   DocumentStatus,
   type DocumentStatusKey,
   MetadataDataType,
+  RetentionTrigger,
   RevisionStatus,
   ScanStatus,
   ScopeType,
@@ -24,6 +25,7 @@ import {
   DuplicateError,
   ForbiddenError,
   InvalidTransitionError,
+  LegalHoldError,
   NotFoundError,
   ValidationError,
 } from '../../../core/errors/application-errors';
@@ -43,13 +45,24 @@ import {
 } from '../../organization/application/ports';
 import { DocumentAudit } from '../domain/audit-actions';
 import { implementedTransitionsFrom, isFrozen, isLegalTransition } from '../domain/lifecycle';
-import { documentCreatedEvent, documentDeletedEvent, documentMovedEvent } from '../domain/events';
+import {
+  documentCreatedEvent,
+  documentDeletedEvent,
+  documentMovedEvent,
+  documentRestoredEvent,
+} from '../domain/events';
 import {
   type MetadataInputValue,
   coerceMetadata,
   readMetadata,
   referenceFieldsIn,
 } from '../domain/metadata';
+import {
+  LEGAL_HOLD_SERVICE,
+  RETENTION_SCHEDULER,
+  type LegalHoldService,
+  type RetentionScheduler,
+} from '../../retention/application/ports';
 import {
   DOCUMENT_ACTIVITY_REPOSITORY,
   DOCUMENT_CONTENT_GATE,
@@ -106,6 +119,8 @@ export class DefaultDocumentService {
     @Inject(DOCUMENT_CONTENT_GATE) private readonly content: DocumentContentGate,
     @Inject(REVISION_WRITER) private readonly revisions: RevisionWriter,
     @Inject(DOCUMENT_THUMBNAILER) private readonly thumbnails: DocumentThumbnailer,
+    @Inject(LEGAL_HOLD_SERVICE) private readonly holds: LegalHoldService,
+    @Inject(RETENTION_SCHEDULER) private readonly retention: RetentionScheduler,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(READ_AUDIT_BUFFER) private readonly readAudit: ReadAuditBuffer,
     private readonly writer: AdministeredWriter,
@@ -427,53 +442,105 @@ export class DefaultDocumentService {
   }
 
   /**
-   * Soft-deletes a document.
+   * Soft-deletes a document, with the three rules Phase 10 added to Phase 3's shape.
    *
-   * The blob's reference is given back here, and that is the only thing that happens to the bytes.
+   * **A reason is mandatory.** Stored on the row — the recycle bin shows it beside the entry —
+   * and written to the trail's own `reason` column, where the widened digest attests it.
+   *
+   * **A legal hold refuses absolutely** (ADR-0010 §5). Not a permission failure: nothing the
+   * caller could be granted would let this through, and the error says so.
+   *
+   * **The delete cascades over every live revision**, stamped with one cascade identifier, and
+   * gives back each revision's blob reference — not merely the latest, which was Phase 3's shape
+   * and meant a document with four revisions returned one reference and its blobs could never
+   * reach zero. `DOCUMENT_DELETION_RULES` in `@edms/domain` is the whole table, and the restore
+   * reverses exactly this cascade.
+   *
    * Nothing is deleted from storage: retention decides that later, at a reference count of zero,
    * after a grace period. A delete that removed bytes would make the recycle bin a lie
-   * ([ADR-0010](../../../../../docs/architecture/adr/0010-soft-delete-and-retention.md)).
-   *
-   * The document number, if one had been assigned, stays reserved forever — which is why its unique
-   * constraint is the one in this schema that is *not* partial on `deleted_at`.
+   * ([ADR-0010](../../../../../docs/architecture/adr/0010-soft-delete-and-retention.md)). The
+   * document number, if one had been assigned, stays reserved forever.
    */
-  async remove(id: string, expectedVersion: number | undefined): Promise<void> {
+  async remove(id: string, expectedVersion: number | undefined, reason: string): Promise<void> {
+    const stated = squish(reason);
+    if (stated.length === 0) {
+      throw new ValidationError('A reason is required.', [
+        { field: 'reason', message: 'required' },
+      ]);
+    }
+
     await this.writer.write(async () => {
       const current = await this.require(id, false);
       requireVersion(expectedVersion, current.version);
-      this.refuseWhenFrozen(current);
+      this.refuseWhenFrozenForDelete(current);
 
-      await this.documents.setDeleted(asId<DocumentId>(id), current.version, true);
-      if (current.latestRevision !== null) {
-        await this.content.dereference(current.latestRevision.file.fileObjectId);
+      const holds = await this.holds.listFor(asId<DocumentId>(id));
+      const live = holds.filter((hold) => hold.releasedAt === null);
+      if (live.length > 0) {
+        throw new LegalHoldError(id, live.length);
       }
+
+      const cascadeId = this.writer.clock.nextId();
+      await this.documents.setDeleted(asId<DocumentId>(id), current.version, true, {
+        reason: stated,
+        cascadeId,
+      });
+      const revisions = await this.revisions.cascadeDelete(id, cascadeId);
+      for (const revision of revisions) {
+        if (revision.referenced) {
+          await this.content.dereference(revision.fileObjectId);
+        }
+      }
+
+      // The delete may start a clock: the frozen policy's ON_DELETE trigger, or — for a draft
+      // that was never numbered — the recycle-bin window, which is what finally makes "drafts may
+      // be permanently deleted" true without a purge button.
+      await this.retention.onTrigger({
+        documentId: asId<DocumentId>(id),
+        trigger: RetentionTrigger.ON_DELETE,
+        at: this.writer.clock.now(),
+        policyId: current.retentionPolicyId,
+        documentNumber: current.documentNumber,
+      });
+
       await this.outbox.publish([
         documentDeletedEvent(asId<AnyId>(id), {
           documentId: id,
           deletedBy: this.requireActor(),
-          // Null: deleting a document deletes one document. The cascade identifier exists for the
-          // folder delete that takes a subtree with it, and stamping a lone delete with one would
-          // make a later restore of that folder resurrect this document too.
-          cascadeId: null,
+          cascadeId,
           previousStatus: current.status,
         }),
       ]);
 
       return {
         result: undefined,
-        change: this.changed(
-          id,
-          AdministrativeOperation.DELETED,
-          { deletedAt: null },
-          {
-            title: current.title,
-            documentNumber: current.documentNumber,
-          },
-        ),
+        change: {
+          ...this.changed(
+            id,
+            AdministrativeOperation.DELETED,
+            { deletedAt: null },
+            {
+              title: current.title,
+              documentNumber: current.documentNumber,
+              cascadeId,
+              revisionsCascaded: revisions.length,
+            },
+          ),
+          reason: stated,
+        },
       };
     });
   }
 
+  /**
+   * Restores a deleted document — to the state it was deleted from, never a higher one.
+   *
+   * The revisions come back by the delete's own cascade identifier, so a restore returns exactly
+   * what that delete took: a revision discarded before the delete stays discarded, and a document
+   * deleted on its own is not resurrected by restoring the folder deleted after it. The schedule
+   * the delete wrote is withdrawn — and only that one; deleting and restoring a published record
+   * must not reset the clock its publication started.
+   */
   async restore(id: string, expectedVersion: number | undefined): Promise<void> {
     await this.writer.write(async () => {
       const current = await this.require(id, true);
@@ -495,10 +562,31 @@ export class DefaultDocumentService {
         ]);
       }
 
+      const cascadeId = await this.documents.cascadeIdOf(asId<DocumentId>(id));
       await this.documents.setDeleted(asId<DocumentId>(id), current.version, false);
-      if (current.latestRevision !== null) {
+
+      if (cascadeId !== null) {
+        const revisions = await this.revisions.restoreCascade(id, cascadeId);
+        for (const revision of revisions) {
+          if (revision.referenced) {
+            await this.content.reference(revision.fileObjectId);
+          }
+        }
+      } else if (current.latestRevision !== null) {
+        // Deleted by a release before the cascade existed: nothing stamped the revisions, so the
+        // exact inverse of that delete is Phase 3's — the latest revision's reference comes back.
         await this.content.reference(current.latestRevision.file.fileObjectId);
       }
+
+      await this.retention.onRestored(asId<DocumentId>(id));
+
+      await this.outbox.publish([
+        documentRestoredEvent(asId<AnyId>(id), {
+          documentId: id,
+          restoredTo: current.status,
+          renamedTo: null,
+        }),
+      ]);
 
       return {
         result: undefined,
@@ -935,6 +1023,18 @@ export class DefaultDocumentService {
       throw new ValidationError('This document is in approval and cannot be edited.', [
         { field: 'status', message: document.status },
       ]);
+    }
+  }
+
+  /**
+   * A delete is not an edit, so it answers to the lifecycle table rather than to the frozen set:
+   * `ARCHIVED → DELETED` is legal — it is how a record leaves the shelf — while a published or
+   * in-approval document still refuses, because deleting the controlled copy everyone is reading
+   * is a decision retention makes, never a click.
+   */
+  private refuseWhenFrozenForDelete(document: DocumentRow): void {
+    if (!isLegalTransition(document.status, DocumentStatus.DELETED)) {
+      throw new InvalidTransitionError(document.status, DocumentStatus.DELETED);
     }
   }
 

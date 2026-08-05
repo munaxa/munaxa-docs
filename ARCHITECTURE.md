@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 9**:
+and the product is built through **Phase 10**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -120,11 +120,26 @@ and the product is built through **Phase 9**:
   that states exactly what each row's digest attests, and `ACCESS_DENIED` given the writer 08 §7 has
   required since Phase 1.
 
-Soft delete and retention are Phase 10, and each report says what its phase deliberately left out.
+- **Phase 10** — soft delete and retention. The two halves of one capability, introduced to each
+  other: `DOCUMENT_DELETION_RULES` is the single answer to "what does deleting this cascade to"
+  after Phase 3, Phase 2 and Phase 6 had each answered it locally and incompatibly — a document
+  with four revisions gave back one reference, so its blobs could never reach zero and the sweep
+  that reclaims at zero was never written. Now the delete takes every revision and gives back every
+  reference, a folder's delete reaches the documents inside it, and both are stamped with one
+  cascade identifier so a restore reverses exactly one delete. The recycle bin 16 §2 named in
+  Phase 0 exists; a delete states a reason, recorded in the trail's own `reason` column where
+  Phase 9's widened digest attests it; `ErrorCode.LEGAL_HOLD` is finally thrown by something; the
+  `retention.run` lane is consumed with both of its schedules; and the purge destroys a record
+  while its trail survives — with `document_tombstone` holding the document number where the purge
+  cannot reach, because `audit_event` refuses `DELETE` to every role and the payloads already
+  written cannot be rewritten to carry it.
+
+Delegation is Phase 11, and each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-9-audit-compliance.md`](./docs/reports/phase-9-audit-compliance.md); the original gate is
+[`phase-10-soft-delete-and-retention.md`](./docs/reports/phase-10-soft-delete-and-retention.md);
+the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

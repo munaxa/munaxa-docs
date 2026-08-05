@@ -29,6 +29,7 @@ import { NotificationModule } from './modules/notification/notification.module';
 import { OrganizationModule } from './modules/organization/organization.module';
 import { PreviewModule } from './modules/preview/preview.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
+import { DispositionModule } from './modules/retention/disposition.module';
 import { RetentionModule } from './modules/retention/retention.module';
 import { RevisionModule } from './modules/revision/revision.module';
 import { SearchModule } from './modules/search/search.module';
@@ -84,6 +85,7 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     AuditDomainModule,
     NotificationModule,
     RetentionModule,
+    DispositionModule,
     ReportingModule,
     DashboardModule,
   ],

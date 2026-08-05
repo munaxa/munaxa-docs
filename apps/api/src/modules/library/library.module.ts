@@ -6,6 +6,7 @@ import {
   LIBRARY_ADMIN_REPOSITORY,
   LIBRARY_ADMIN_SERVICE,
 } from './application/administration.ports';
+import { FolderContentsRegistry } from './application/folder-contents.port';
 import { LibraryAdminService } from './application/library-admin.service';
 import { PrismaAclResolver } from './infrastructure/prisma-acl.resolver';
 import { PrismaLibraryAdminRepository } from './infrastructure/prisma-library-admin.repository';
@@ -49,10 +50,15 @@ import {
     { provide: LIBRARY_ADMIN_REPOSITORY, useClass: PrismaLibraryAdminRepository },
     { provide: LIBRARY_ADMIN_SERVICE, useClass: LibraryAdminService },
     { provide: ACL_RESOLVER, useClass: PrismaAclResolver },
+    // Phase 10: the slot the folder-delete cascade reaches its documents through. Declared here,
+    // filled by Document at boot — a registry rather than a binding, because Document already
+    // imports this module and plain DI cannot express the inversion without a cycle (see
+    // `application/folder-contents.port.ts`).
+    FolderContentsRegistry,
   ],
   // Phase 3: a document sits in a folder, and Document resolves the folder through this service
   // rather than by reading the tree. The folder tree is the chain the ACL resolver walks, and a
   // second reader of it would be a second opinion about who can see what.
-  exports: [LIBRARY_ADMIN_SERVICE, ACL_RESOLVER],
+  exports: [LIBRARY_ADMIN_SERVICE, ACL_RESOLVER, FolderContentsRegistry],
 })
 export class LibraryModule {}

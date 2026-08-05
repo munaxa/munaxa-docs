@@ -28,6 +28,11 @@
  * own permissions, and a level only ever narrows. It also widens the compare contract's
  * `text.state`, which Phase 6 shipped as `UNAVAILABLE` with exactly this filling-in in mind.
  *
+ * Phase 10 adds `retention/` — the recycle bin, the mandatory delete reason, legal holds and the
+ * disposition queue. The shape worth noticing is what is *absent*: there is no purge request. The
+ * only manual step retention offers a client is approving a disposition the policy already
+ * scheduled (ADR-0010), so the wire cannot express the button the design rejected.
+ *
  * Phase 9 adds `audit/` — the trail's read surface, its verification status and its evidence
  * exports. The shape worth noticing is `chainHashVersion` travelling beside `hash` on every entry:
  * it is what says how much that digest proves, because rows written before Phase 9 attest nine
@@ -64,3 +69,4 @@ export * from './documents/preview';
 export * from './workflow/approval';
 export * from './search/search';
 export * from './audit/audit';
+export * from './retention/retention';

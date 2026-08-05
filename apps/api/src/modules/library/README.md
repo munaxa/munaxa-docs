@@ -102,3 +102,24 @@ folders somebody removed on purpose weeks earlier, and would do it silently.
 Folders use the same materialised-path arithmetic as departments and categories, from `@edms/domain`'s
 `tree.ts`, with a depth ceiling of 32. Names are unique among live siblings, case-insensitively: two
 folders differing only by case are indistinguishable to everyone except the database.
+
+### Phase 10 — the cascade reaches the documents
+
+Until Phase 10 a folder's delete cascaded over *folders* and stopped there: the documents inside
+stayed live in a deleted folder, reachable by search and by nothing else. ADR-0010 §3 always said
+the cascade covers the subtree, and it now does — the same `deleteCascadeId` is stamped on the
+folders, on the documents beneath them and on those documents' revisions, so one restore reverses
+one delete across all three.
+
+The documents are Document's rows, so Document does the work. The seam is `FolderContentsRegistry`
+— a **registry** rather than an injected port, and it is the one place in the product where plain
+DI could not express the inversion: Document already imports Library (a document sits in a folder),
+so Library cannot import Document's module for a binding without a cycle. The registry breaks it
+the way Preview's renderer registry does — Library declares the interface and holds the slot;
+Document, which imports Library anyway, fills it in `onModuleInit`. The *call* still runs inside
+Library's transaction, which is what a subtree delete that must be atomic requires and what an
+outbox event could not have given it.
+
+Unfilled, the registry deletes nothing and says nothing. That is honest rather than lax: a
+composition with no documents in it genuinely has none to cascade to, which is exactly this
+module's own integration suite.

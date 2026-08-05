@@ -13,6 +13,8 @@ import {
 } from '@nestjs/common';
 
 import {
+  type DeleteDocumentBody,
+  deleteDocumentSchema,
   type AssignDocumentNumberBody,
   type Collection,
   type CreateDocumentBody,
@@ -215,11 +217,23 @@ export class DocumentsController {
     return toDocument(await this.documents.move(id, body.folderId, version));
   }
 
+  /**
+   * Soft delete, with the mandatory reason Phase 10's brief requires.
+   *
+   * A `DELETE` with a body is unusual and deliberate: the reason is content somebody typed, not an
+   * addressing concern, and a query parameter would put a sentence about a record into access
+   * logs. A live legal hold answers `409 LEGAL_HOLD` — not `403`, because no grant would change
+   * the answer.
+   */
   @Delete(':id')
   @RequirePermission(Permission.DOCUMENT_DELETE)
   @HttpCode(HttpStatus.NO_CONTENT)
-  async remove(@Param('id') id: string, @IfMatch() version: number | undefined): Promise<void> {
-    await this.documents.remove(id, version);
+  async remove(
+    @Param('id') id: string,
+    @IfMatch() version: number | undefined,
+    @Body(new ZodValidationPipe(deleteDocumentSchema)) body: DeleteDocumentBody,
+  ): Promise<void> {
+    await this.documents.remove(id, version, body.reason);
   }
 
   @Post(':id/restore')

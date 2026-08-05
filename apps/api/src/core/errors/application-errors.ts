@@ -74,6 +74,29 @@ export class DocumentLockedError extends DomainError {
   }
 }
 
+/**
+ * A legal hold refuses, and it refuses absolutely.
+ *
+ * ADR-0010 §5: a hold blocks disposition and deletion "regardless of policy or permission, until it
+ * is explicitly released by a `legal-hold:manage` holder". So this is not a permission failure and
+ * must not read as one — nothing the caller could be granted would let the operation through, and
+ * `403` would send somebody to an administrator for a grant that does not exist. `ErrorCode.LEGAL_HOLD`
+ * has been in the catalogue with a sentence in both locales since Phase 0.5, mapped to `409`, and
+ * thrown by nothing until Phase 10.
+ *
+ * The count is named rather than the holds themselves: how many matters are holding a record is a
+ * fact worth having at the point of refusal, and who placed them is behind `legal-hold:manage` on
+ * the document's own holds endpoint.
+ */
+export class LegalHoldError extends DomainError {
+  constructor(documentId: string, holds: number) {
+    super(ErrorCode.LEGAL_HOLD, 'This document is under legal hold and cannot be removed.', {
+      documentId,
+      holds,
+    });
+  }
+}
+
 export class InvalidTransitionError extends DomainError {
   constructor(from: string, to: string) {
     // Both halves named, which is what `06-document-lifecycle.md` asks of an illegal

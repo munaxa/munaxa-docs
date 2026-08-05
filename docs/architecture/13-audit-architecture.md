@@ -53,7 +53,7 @@ scan, which is most of them.
 | --- | --- |
 | `ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN` | The phase that builds ACL entries |
 | `DELEGATION_*` (4 rows) | Phase 11 — delegation |
-| `SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED` | Phase 10 — soft delete and retention |
+| ~~`SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED`~~ | Phase 10 — written |
 | `MFA_ENROLLED`, `MFA_FAILED`, `SESSION_REVOKED` | Phase 14 — security |
 | `REPORT_EXPORTED` | Phase 15 — reporting |
 | `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability |
@@ -164,11 +164,14 @@ exempt — §2's prints are audited unconditionally and synchronously.
 | SIEM | Optional per-tenant streaming of security events to an external sink |
 
 Retention: audit is kept for the tenant's compliance period (default 7 years), partitioned monthly,
-and moved to cold storage after 12 months. **Partitioning is not built** — Phase 9 added the action
-index this section's audit search needs and deferred the partitions with a stated trigger; see the
-foot of this document. **Audit is never deleted with its subject**; when a
-document is purged, its audit trail remains, with the document number preserved so the record is
-still meaningful.
+and moved to cold storage after 12 months. **Partitioning is still not built** — Phase 9 added the
+action index this section's audit search needs and deferred the partitions to Phase 10; Phase 10
+re-deferred them with a *new* trigger, because the reason for the first deferral turned out to
+survive it. See "Phase 10 — the trigger fired, and the answer was still no" at the foot of this
+document. **Audit is never deleted with its subject**; when a document is purged, its audit trail
+remains, with the document number preserved so the record is still meaningful — Phase 10 is where
+that stopped being a sentence and became a table, `document_tombstone`, because the number cannot
+be added to payloads already written.
 
 ## 7. What audit must never do
 
@@ -395,3 +398,51 @@ It is a prefix of objects rather than one archive. A ZIP would mean either a com
 and a second assembly pass — precisely the in-memory hold the lane forbids — or hand-rolling an
 archive format nobody asked for. The manifest is the bundle's entry point, and the auditor gets four
 links instead of one.
+
+
+## Phase 10 — the trigger fired, and the answer was still no
+
+Phase 9 deferred monthly range partitions and cold-storage tiering with a stated trigger: "Phase
+10, or the first tenant past tens of millions of rows, whichever comes first". Phase 10 arrived.
+This section records why it did not build them, and what the new trigger is — because a trigger
+that fires and is quietly reset is a deferral nobody is accountable for.
+
+**The reason for the first deferral survived the trigger.** Phase 9's argument was that
+partitioning is "building the mechanism a month before anything could use it", and that the
+retention which would detach a partition is Phase 10's. The second half is what turned out to be
+wrong. Phase 10's retention purges **documents**, and its central constraint is that it must not
+touch `audit_event` at all — 13 §1's "audit outlives its subject", enforced by a trigger that
+refuses `DELETE` to every role. Nothing this phase built detaches an audit partition, and nothing
+it built ever will: a document's disposition and the trail's own retention are different clocks
+with different periods, and conflating them is the failure mode §6 exists to prevent.
+
+So the mechanism would still have no user. What a partition *would* be detached by is a sweep over
+the trail's own compliance period — §6's seven years — and no deployment of this product is seven
+years old. Building the detach path now would mean writing, and maintaining, the one destructive
+operation on the one table that may not be rewritten, against a size no tenant has, for a clock
+that has not started.
+
+**The new trigger, stated so it cannot be reset silently:** the first of
+
+1. a tenant whose `audit_event` passes **twenty million rows**, or
+2. the phase that gives audit its *own* retention period a disposition — the sweep that would drop
+   a month once the compliance period has elapsed.
+
+Neither is Phase 11's, 12's or 13's by any reading, which is the point of naming both. The
+groundwork Phase 9 laid still holds: `ix_audit_occurred` is the partition key, and the immutability
+trigger deliberately leaves DDL uncovered so a detach will work when it arrives.
+
+**What Phase 10 did add to this section's concerns** is the tombstone. §6's promise that a purged
+document's trail keeps "the document number preserved so the record is still meaningful" was true
+of nothing: the number lived on the `document` row, and the purge removes it. It could not be
+back-filled into the payloads of events already written — that is an `UPDATE`, and this table
+refuses one for every role including the owner, which is the property the whole design exists for.
+`document_tombstone` is where it lives instead: written by the purge, in the purge's transaction,
+keyed by the document identifier that every one of those rows already carries as `subject_id`.
+
+The cost is honest and worth stating in this document rather than only in the phase report. For
+events written **before** Phase 10, the number is one join away rather than in the row — a reader
+of an old trail resolves it through the tombstone. For events written since, the `PURGED` row
+carries it in its payload as well, so the last event of a document's life is legible on its own.
+There is no version of this that puts the number into a row already hashed, and a design that
+offered one would be a design in which the trail can be edited.

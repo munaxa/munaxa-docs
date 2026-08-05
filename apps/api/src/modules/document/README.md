@@ -181,3 +181,36 @@ are), **confidentiality** last and subtract-only — `allow_print` refuses a per
 and how to present it is Preview's answer (`PreviewQueryService`); whether is this module's.
 A served view audits `DOCUMENT_VIEWED` gated by `audit.readEventsAboveRank`; a print audits
 13 §2's `PRINTED` row, unconditionally, through the rendition and never the original.
+
+## Phase 10 — the delete, closed
+
+Phase 3 shipped a delete that gave back the reference on the *latest* revision, and Phase 6 built
+revisions nothing ever detached. Together that meant a document with four revisions returned one
+reference when it was deleted: its blobs could never reach zero, and the retention sweep that
+reclaims bytes at zero could never reclaim anything. Phase 10 closes it, and the answer is one
+table rather than a fix in one place — `DOCUMENT_DELETION_RULES` in `@edms/domain`, which the
+purge, the cascade and the integration suite all read.
+
+What changed here:
+
+- **A delete cascades over every live revision**, stamped with one `delete_cascade_id`, giving
+  back each row's reference. A restore reverses *that* cascade — so a revision discarded on its own
+  beforehand comes back as a row and does **not** re-take a reference it had already given up.
+- **A reason is mandatory**, stored on `document.delete_reason` and written to the audit trail's own
+  `reason` column, where Phase 9's widened digest attests it. The recycle bin shows it beside the
+  row: a reason somebody must open the trail to read is a reason nobody reads before restoring.
+- **A legal hold refuses, absolutely.** `LEGAL_HOLD` rather than `FORBIDDEN`, because no grant
+  would change the answer (ADR-0010 §5). The gate is `LEGAL_HOLD_SERVICE`, injected from
+  Retention's lower half — which knows nothing about documents, so the dependency stays one-way.
+- **A delete answers to the lifecycle table rather than to the frozen set.** `ARCHIVED → DELETED`
+  is legal — it is how a record leaves the shelf — while a published or in-approval document still
+  refuses, because deleting the controlled copy everybody is reading is a decision retention makes
+  and never a click.
+- **`RetentionDispositionAdapter` binds `DOCUMENT_DISPOSITION`** — the purge, performed by the
+  module that owns the aggregate being destroyed. It is the one place this module writes rows it
+  does not own (`workflow_instance`, `number_reservation`), and the file says why at length: the
+  cascade is one transaction over relations owned by five modules, its order is the foreign keys',
+  and a port per owner would put that order in no module at all.
+- **`DocumentFolderContentsParticipant`** fills the slot Library declares, so a folder's delete
+  finally reaches the documents inside it. Before this, they stayed live in a deleted folder —
+  reachable by search and by nothing else.

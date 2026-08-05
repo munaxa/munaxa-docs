@@ -18,6 +18,7 @@ import {
   Input,
   Pagination,
   Select,
+  Textarea,
   Toolbar,
   useToast,
 } from '@munaxa/ui';
@@ -60,7 +61,17 @@ export interface ResourceListProps<TRow> {
    */
   readonly onCreate?: (() => void) | undefined;
   readonly onEdit?: ((row: TRow) => void) | undefined;
-  readonly onDelete: (row: TRow) => Promise<ActionResult>;
+  readonly onDelete: (row: TRow, reason: string) => Promise<ActionResult>;
+  /**
+   * Makes the delete confirmation ask for a reason, and refuses to submit without one.
+   *
+   * Phase 10's rule is "delete reason mandatory", and it applies to **documents**: a controlled
+   * record's removal is an act somebody has to answer for, and the recycle bin shows the sentence
+   * beside the row. Administered configuration keeps its plain confirmation — a document type is
+   * deleted on the screen that also shows what depends on it, and demanding a paragraph to retire
+   * an unused category would be ceremony rather than evidence.
+   */
+  readonly deleteRequiresReason?: boolean | undefined;
   readonly onRestore: (row: TRow) => Promise<ActionResult>;
   /** A reason this row cannot be removed, or null when it can. */
   readonly deleteBlocked?: ((row: TRow) => string | null) | undefined;
@@ -97,6 +108,7 @@ export function ResourceList<TRow>({
   onEdit,
   onDelete,
   onRestore,
+  deleteRequiresReason = false,
   deleteBlocked,
   extraActions,
   filters,
@@ -119,6 +131,7 @@ export function ResourceList<TRow>({
     null,
   );
   const [working, setWorking] = useState(false);
+  const [reason, setReason] = useState('');
 
   const gridState: DataGridState = {
     sort: state.sortBy === null ? null : { columnId: state.sortBy, direction: state.sortDirection },
@@ -130,12 +143,15 @@ export function ResourceList<TRow>({
 
   const pageCount = Math.max(1, Math.ceil(total / state.pageSize));
 
+  const reasonMissing = deleteRequiresReason && reason.trim() === '';
+
   async function run(row: TRow, kind: 'delete' | 'restore'): Promise<void> {
     setWorking(true);
-    const result = await (kind === 'delete' ? onDelete(row) : onRestore(row));
+    const result = await (kind === 'delete' ? onDelete(row, reason.trim()) : onRestore(row));
     setWorking(false);
     if (result.ok) {
       setConfirming(null);
+      setReason('');
       // The list is server-rendered, so the row's disappearance comes from re-running the request
       // rather than from editing an array here. One source of truth for what the page shows.
       refresh();
@@ -282,6 +298,7 @@ export function ResourceList<TRow>({
           onClose={() => {
             if (!working) {
               setConfirming(null);
+              setReason('');
             }
           }}
           title={translate(
@@ -303,6 +320,7 @@ export function ResourceList<TRow>({
                 disabled={working}
                 onClick={() => {
                   setConfirming(null);
+                  setReason('');
                 }}
               >
                 {translate('admin.actions.cancel')}
@@ -310,7 +328,7 @@ export function ResourceList<TRow>({
               <Button
                 type="button"
                 variant={confirming.kind === 'delete' ? 'destructive' : 'default'}
-                disabled={working}
+                disabled={working || (confirming.kind === 'delete' && reasonMissing)}
                 onClick={() => {
                   void run(confirming.row, confirming.kind);
                 }}
@@ -321,7 +339,27 @@ export function ResourceList<TRow>({
               </Button>
             </>
           }
-        />
+        >
+          {confirming.kind === 'delete' && deleteRequiresReason ? (
+            <label className="flex flex-col gap-2 text-sm">
+              <span className="font-medium">{translate('admin.actions.deleteReason')}</span>
+              <Textarea
+                rows={3}
+                maxLength={500}
+                required
+                autoFocus
+                value={reason}
+                placeholder={translate('admin.actions.deleteReasonPlaceholder')}
+                onChange={(event) => {
+                  setReason(event.currentTarget.value);
+                }}
+              />
+              <span className="text-muted-foreground">
+                {translate('admin.actions.deleteReasonHint')}
+              </span>
+            </label>
+          ) : null}
+        </Dialog>
       )}
     </>
   );

@@ -54,6 +54,16 @@ export interface AdministrativeChange {
    */
   readonly before?: Readonly<Record<string, unknown>>;
   readonly after?: Readonly<Record<string, unknown>>;
+  /**
+   * Why the actor did it, when the product requires them to say.
+   *
+   * The trail's own `reason` column rather than a payload field, and Phase 10 is the first thing
+   * to write it. It has existed since Phase 1 for the confidentiality levels that demand a stated
+   * reason for access, and Phase 9 widened the chain's digest to cover it — so a delete reason
+   * recorded here is *attested* by the hash, while the same sentence in a payload would only be
+   * attested from Phase 9's digest onward as part of a blob the verifier cannot address.
+   */
+  readonly reason?: string;
 }
 
 @Injectable()
@@ -87,6 +97,7 @@ export class AdministeredWriter {
           ...(change.before ? { before: change.before } : {}),
           ...(change.after ? { after: change.after } : {}),
         },
+        ...(change.reason !== undefined && { reason: change.reason }),
       });
       return result;
     });
@@ -95,6 +106,35 @@ export class AdministeredWriter {
   /** A read that needs a transaction — every repository here joins the ambient one. */
   read<TResult>(work: () => Promise<TResult>): Promise<TResult> {
     return this.unitOfWork.run(work);
+  }
+
+  /**
+   * A *second* audit event inside the unit of work already running.
+   *
+   * `write` records one event per change, which is right for a change with one meaning, and it is
+   * what eighteen resources have used since Phase 2. Phase 10 is the first operation with two: a
+   * purge is both the destruction of a document (`PURGED`, on the document's own timeline) and the
+   * retention act that authorised it (`PURGE_EXECUTED`, in the disposition register) — 13 §2 lists
+   * both, in two groups, because they are two audiences. Writing one and putting the other in its
+   * payload would make the second answerable only by reading the first.
+   *
+   * It must be called from inside `write` or `read`: `requireTransaction()` in the audit writer
+   * raises otherwise, which is the behaviour that keeps "audit commits with its change" true
+   * rather than aspirational.
+   */
+  async record(change: AdministrativeChange): Promise<void> {
+    await this.audit.write(this.actor(), {
+      action: change.action,
+      subjectType: change.subjectType,
+      subjectId: change.subjectId,
+      outcome: AuditOutcome.SUCCESS,
+      payload: {
+        operation: change.operation,
+        ...(change.before ? { before: change.before } : {}),
+        ...(change.after ? { after: change.after } : {}),
+      },
+      ...(change.reason !== undefined && { reason: change.reason }),
+    });
   }
 
   get clock(): RecordStamps {

@@ -160,6 +160,41 @@ export const Settings = {
     { min: 0, max: 100 },
   ),
 
+  /**
+   * How long a deleted document stays restorable before it becomes eligible for disposition.
+   *
+   * ADR-0010 §4 says permanent destruction happens only through retention, and Phase 10's brief
+   * says drafts may be permanently deleted. This is where the two meet: a document that never held
+   * a number and names no retention policy has nothing to compute a disposition date from, so the
+   * recycle-bin window *is* its retention period. It is a tenant setting rather than a constant
+   * because "how long is the undo" is a business decision, and thirty days is the product's
+   * opinion rather than a placeholder.
+   *
+   * A numbered document is never disposed of on this clock. Its frozen policy decides, however
+   * long ago somebody deleted it.
+   */
+  RETENTION_RECYCLE_BIN_DAYS: integerSetting(
+    'retention.recycleBinDays',
+    30,
+    'How long an unnumbered deleted document stays in the recycle bin before it may be purged.',
+    { min: 1, max: 3_650 },
+  ),
+
+  /**
+   * How long a blob stays in storage after its last reference goes.
+   *
+   * ADR-0010 §8's grace period, made a number. It exists because a reference count reaching zero
+   * and a restore are separated by however long somebody takes to notice: without the delay, a
+   * delete followed by a restore an hour later would restore a document whose bytes the sweep had
+   * already removed, and the row would point at nothing.
+   */
+  RETENTION_BLOB_GRACE_DAYS: integerSetting(
+    'retention.blobGraceDays',
+    7,
+    'How long an unreferenced file stays in storage before the retention sweep deletes it.',
+    { min: 0, max: 365 },
+  ),
+
   CHECKOUT_EXPIRY_HOURS: integerSetting(
     'documents.checkoutExpiryHours',
     // Three working days, roughly: long enough to edit a real document offline over a weekend,

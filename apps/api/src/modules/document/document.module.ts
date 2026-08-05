@@ -1,11 +1,14 @@
-import { Module } from '@nestjs/common';
+import { Module, type OnModuleInit } from '@nestjs/common';
 
 import { AdministrationModule } from '../administration/administration.module';
 import { IdentityModule } from '../identity/identity.module';
 import { LibraryModule } from '../library/library.module';
 import { OrganizationModule } from '../organization/organization.module';
 import { PreviewModule } from '../preview/preview.module';
+import { DOCUMENT_DISPOSITION } from '../retention/application/ports';
+import { RetentionModule } from '../retention/retention.module';
 import { RevisionModule } from '../revision/revision.module';
+import { FolderContentsRegistry } from '../library/application/folder-contents.port';
 import { StorageModule } from '../storage/storage.module';
 import { DefaultDocumentNumberService } from './application/document-number.service';
 import { DocumentPreviewService } from './application/document-preview.service';
@@ -26,6 +29,8 @@ import { LibraryPlacementAdapter } from './infrastructure/library-placement.adap
 import { PrismaDocumentActivityRepository } from './infrastructure/prisma-document-activity.repository';
 import { PrismaDocumentLockRepository } from './infrastructure/prisma-document-lock.repository';
 import { PrismaDocumentRepository } from './infrastructure/prisma-document.repository';
+import { DocumentFolderContentsParticipant } from './infrastructure/folder-contents.participant';
+import { RetentionDispositionAdapter } from './infrastructure/retention-disposition.adapter';
 import { StorageContentGateAdapter } from './infrastructure/storage-content-gate.adapter';
 import { DocumentsController } from './presentation/documents.controller';
 import { DocumentPreviewController } from './presentation/document-preview.controller';
@@ -71,6 +76,11 @@ import { RevisionControlController } from './presentation/revision-control.contr
     StorageModule,
     RevisionModule,
     PreviewModule,
+    // Phase 10: the scheduling half of Retention — the seam a delete, restore or publication
+    // writes a schedule through, and the hold that refuses a delete. The *execution* half
+    // (`DispositionModule`) imports this module instead; see `retention/retention.module.ts`
+    // for why the capability is split at exactly that line.
+    RetentionModule,
   ],
   controllers: [DocumentsController, RevisionControlController, DocumentPreviewController],
   providers: [
@@ -86,12 +96,32 @@ import { RevisionControlController } from './presentation/revision-control.contr
     { provide: DOCUMENT_SERVICE, useClass: DefaultDocumentService },
     { provide: DOCUMENT_NUMBER_SERVICE, useClass: DefaultDocumentNumberService },
     RevisionControlService,
+    // Phase 10: the purge, implemented by the module that owns the aggregate being destroyed and
+    // consumed by Retention's sweep — the same inversion as `REVISION_WRITER`, pointing the other
+    // way. The folder-contents participant is the document half of a folder's delete cascade,
+    // registered into Library's registry at boot (see `folder-contents.participant.ts`).
+    { provide: DOCUMENT_DISPOSITION, useClass: RetentionDispositionAdapter },
+    DocumentFolderContentsParticipant,
     // Phase 7: the preview access decisions — permission → state → confidentiality — live
     // beside the download's, because they are the same decisions about the same record.
     DocumentPreviewService,
   ],
   // `DOCUMENT_NUMBER_SERVICE` is exported for exactly one consumer: Workflow's allocator
   // adapter, which is how the engine's `DOCUMENT_NUMBER_ALLOCATOR` seam gets its binding.
-  exports: [DOCUMENT_SERVICE, DOCUMENT_NUMBER_SERVICE],
+  exports: [DOCUMENT_SERVICE, DOCUMENT_NUMBER_SERVICE, DOCUMENT_DISPOSITION],
 })
-export class DocumentModule {}
+export class DocumentModule implements OnModuleInit {
+  constructor(
+    private readonly registry: FolderContentsRegistry,
+    private readonly participant: DocumentFolderContentsParticipant,
+  ) {}
+
+  /**
+   * Fills Library's folder-contents slot. A registry rather than a binding because Document
+   * already imports Library, so Library cannot import Document's module for a provider without a
+   * cycle — the same reason the preview renderers register rather than bind.
+   */
+  onModuleInit(): void {
+    this.registry.register(this.participant);
+  }
+}

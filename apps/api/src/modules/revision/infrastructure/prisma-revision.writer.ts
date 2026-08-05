@@ -16,7 +16,11 @@ import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.po
 import { RecordStamps } from '../../../core/persistence';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
-import type { RevisionFacts, RevisionWriter } from '../../document/application/ports';
+import type {
+  CascadedRevision,
+  RevisionFacts,
+  RevisionWriter,
+} from '../../document/application/ports';
 import {
   revisionCreatedEvent,
   revisionPublishedEvent,
@@ -284,6 +288,45 @@ export class PrismaRevisionWriter implements RevisionWriter {
     return { supersededRevisionId: prior?.id ?? null };
   }
 
+  async cascadeDelete(documentId: string, cascadeId: string): Promise<readonly CascadedRevision[]> {
+    const tx = requireTransaction();
+    const tenantId = requireContext().tenantId;
+    // Read first: the caller gives back each row's blob reference, and the update alone would not
+    // say which rows it took or which of them held one.
+    const rows = await tx.documentRevision.findMany({
+      where: { tenantId, documentId, deletedAt: null },
+      select: { id: true, fileObjectId: true, status: true },
+    });
+    if (rows.length === 0) {
+      return [];
+    }
+    await tx.documentRevision.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, tenantId },
+      data: { ...this.stamps.deletion(), deleteCascadeId: cascadeId },
+    });
+    return rows.map(toCascaded);
+  }
+
+  async restoreCascade(
+    documentId: string,
+    cascadeId: string,
+  ): Promise<readonly CascadedRevision[]> {
+    const tx = requireTransaction();
+    const tenantId = requireContext().tenantId;
+    const rows = await tx.documentRevision.findMany({
+      where: { tenantId, documentId, deleteCascadeId: cascadeId, deletedAt: { not: null } },
+      select: { id: true, fileObjectId: true, status: true },
+    });
+    if (rows.length === 0) {
+      return [];
+    }
+    await tx.documentRevision.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, tenantId },
+      data: { ...this.stamps.restoration(), deleteCascadeId: null },
+    });
+    return rows.map(toCascaded);
+  }
+
   async discard(input: { documentId: string; revisionId: string }): Promise<void> {
     // Only a DRAFT can be discarded — the predicate is the guard. The row stays: the ordinal is
     // spent, and a history with a silent gap is unusable as evidence.
@@ -333,6 +376,16 @@ interface RevisionRow {
   changeNote: string | null;
   publishedAt: Date | null;
   restoredFromRevisionId: string | null;
+}
+
+function toCascaded(row: { id: string; fileObjectId: string; status: string }): CascadedRevision {
+  return {
+    revisionId: row.id,
+    fileObjectId: row.fileObjectId,
+    // A DISCARDED revision's reference was given back when it was discarded; every other status
+    // still holds one, and the cascade must move exactly the references the rows hold.
+    referenced: row.status !== RevisionStatus.DISCARDED,
+  };
 }
 
 function toFacts(row: RevisionRow): RevisionFacts {

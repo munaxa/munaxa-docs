@@ -15,16 +15,18 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 9 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 10 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
 revision control that publishes what was approved and produces the next controlled version, the
 preview pipeline that shows a controlled document without handing its bytes over, and the search
 that finds a document by its number, its words and its people without ever disclosing one the
-caller may not see, and the read half of the audit trail — the timeline, the audit search, the
-daily verification with its signed checkpoints, and the evidence bundle. Its
-map is
+caller may not see, the read half of the audit trail — the timeline, the audit search, the
+daily verification with its signed checkpoints, and the evidence bundle — and the deletion half:
+one answer to what deleting a document reaches, the recycle bin, the retention schedule, the legal
+hold that refuses regardless of permission, and the purge that destroys a record while its trail
+survives it. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -83,6 +85,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 10 — soft delete & retention
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 10 — Soft Delete & Retention](./reports/phase-10-soft-delete-and-retention.md) | The deletion half made real: one table answering what a delete cascades to after three modules had answered it locally, the tombstone that keeps a purged document's number where the purge cannot reach it, the recycle bin 16 §2 named in Phase 0, the `retention.run` lane consumed at last with both its schedules, the legal hold finally throwing the error code that had waited since Phase 0.5 — the decisions the specification left open, why Phase 9's partitioning trigger fired and the answer was still no, what the phase costs, and what it deliberately does not do |
 
 ### Phase 9 — audit & compliance
 

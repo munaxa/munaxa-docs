@@ -195,7 +195,35 @@ export interface DocumentRepository {
    * nowhere else, and never rewritten (`09-numbering-architecture.md` §5).
    */
   assignNumber(id: DocumentId, documentNumber: string, at: Date): Promise<boolean>;
-  setDeleted(id: DocumentId, expectedVersion: number, deleted: boolean): Promise<void>;
+  /**
+   * Soft-deletes or restores the row.
+   *
+   * `marks` carries what Phase 10 added to the delete: the mandatory reason and the cascade
+   * identifier that makes the restore exact. Both are cleared by the restore, exactly as the
+   * folder repository clears its own cascade identifier.
+   */
+  setDeleted(
+    id: DocumentId,
+    expectedVersion: number,
+    deleted: boolean,
+    marks?: { readonly reason: string | null; readonly cascadeId: string | null },
+  ): Promise<void>;
+  /**
+   * Soft-deletes every live document in the named folder and under its subtree path, stamped with
+   * one cascade identifier — the folder delete's half of `DOCUMENT_DELETION_RULES`. Answers the
+   * documents it took, so the caller can cascade their revisions and write their schedules.
+   */
+  cascadeDeleteUnderFolder(input: {
+    readonly folderId: string;
+    readonly path: string;
+    readonly cascadeId: string;
+  }): Promise<readonly CascadedDocument[]>;
+  /** The documents one cascade took — exactly what its restore puts back. */
+  listCascade(cascadeId: string): Promise<readonly CascadedDocument[]>;
+  /** The cascade a document was removed by, or null if it was deleted before the mark existed. */
+  cascadeIdOf(id: DocumentId): Promise<string | null>;
+  /** Restores exactly the documents one cascade removed. */
+  restoreCascade(cascadeId: string): Promise<number>;
   /** Called by the revision writer's caller once the first revision exists. */
   attachLatestRevision(id: DocumentId, revisionId: string): Promise<void>;
   /**
@@ -217,6 +245,13 @@ export interface DocumentRepository {
    * comparison of anything.
    */
   findByFileObject(fileObjectId: string): Promise<readonly DuplicateMatchRow[]>;
+}
+
+/** A document a cascade touched, with what its revisions and schedule need. */
+export interface CascadedDocument {
+  readonly id: string;
+  readonly documentNumber: string | null;
+  readonly retentionPolicyId: string | null;
 }
 
 export interface DuplicateMatchRow {
@@ -312,6 +347,21 @@ export interface RevisionWriter {
 
   /** A draft abandoned by cancel or replaced by a further check-in. Kept, marked, evented. */
   discard(input: { documentId: string; revisionId: string }): Promise<void>;
+  /**
+   * The delete cascade's revision half: soft-deletes every live revision of the document, stamped
+   * with the delete's own cascade identifier, and answers which rows held a blob reference — a
+   * revision in any status but `DISCARDED`, whose discard already gave its reference back.
+   */
+  cascadeDelete(documentId: string, cascadeId: string): Promise<readonly CascadedRevision[]>;
+  /** Restores exactly the revisions one cascade removed, answering the same shape. */
+  restoreCascade(documentId: string, cascadeId: string): Promise<readonly CascadedRevision[]>;
+}
+
+export interface CascadedRevision {
+  readonly revisionId: string;
+  readonly fileObjectId: string;
+  /** True when the row held a reference — every status but DISCARDED. */
+  readonly referenced: boolean;
 }
 
 export interface RevisionFacts {
@@ -415,6 +465,12 @@ export interface DocumentService {
   exists(id: DocumentId): Promise<boolean>;
   /** The transitions this caller may perform right now, computed server-side. */
   availableTransitions(id: DocumentId): Promise<readonly DocumentStatusKey[]>;
+  /**
+   * Puts a deleted document back, with every rule Document owns: the folder must be live, the
+   * revisions its delete took come back with it, and the audit event is this module's own. Added
+   * for the recycle bin, which is a surface over this rather than a second implementation.
+   */
+  restore(id: string, expectedVersion: number | undefined): Promise<void>;
 }
 
 export const DOCUMENT_NUMBER_SERVICE = Symbol('DocumentNumberService');

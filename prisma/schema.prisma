@@ -140,6 +140,9 @@ model Tenant {
   recentSearches        RecentSearch[]
   searchRebuilds        SearchRebuild[]
   auditExports          AuditExport[]
+  retentionSchedules    RetentionSchedule[]
+  legalHolds            LegalHold[]
+  documentTombstones    DocumentTombstone[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -938,9 +941,10 @@ model RetentionPolicy {
   deletedBy      String?          @map("deleted_by") @db.Uuid
   version        Int              @default(1)
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   documentTypes DocumentType[]
   documents     Document[]
+  schedules     RetentionSchedule[]
 
   @@index([tenantId], map: "ix_retention_policy_tenant")
   @@map("retention_policy")
@@ -1628,6 +1632,17 @@ model Document {
   updatedBy         String?        @map("updated_by") @db.Uuid
   deletedAt         DateTime?      @map("deleted_at") @db.Timestamptz(6)
   deletedBy         String?        @map("deleted_by") @db.Uuid
+  /// Why it was deleted. Required at delete time and cleared by a restore.
+  ///
+  /// A column rather than only an audit payload, because the recycle bin shows it beside the row —
+  /// and a reason a reader has to open the audit trail to see is a reason nobody reads before
+  /// deciding whether to put something back.
+  deleteReason      String?        @map("delete_reason")
+  /// Which cascade removed this row: the folder delete that took the subtree, or the document's
+  /// own delete. Cleared by the restore that reverses it, exactly as `folder.delete_cascade_id` is
+  /// — restoring "everything currently deleted under this node" would resurrect what somebody
+  /// removed deliberately beforehand (`05-database-design.md` §4).
+  deleteCascadeId   String?        @map("delete_cascade_id") @db.Uuid
   version           Int            @default(1)
 
   tenant             Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -1644,6 +1659,8 @@ model Document {
   workflowInstances  WorkflowInstance[]
   numberReservations NumberReservation[]
   locks              DocumentLock[]
+  retentionSchedules RetentionSchedule[]
+  legalHolds         LegalHold[]
 
   /// Deliberately **not** partial on `deleted_at`. A number stays reserved forever, so a deleted
   /// document still holds its own — which is the one exception to this schema's rule that a
@@ -1651,6 +1668,13 @@ model Document {
   @@unique([tenantId, documentNumber], map: "uq_document_number")
   /// The folder browser's query: what is in this folder, newest first.
   @@index([tenantId, folderId, deletedAt, updatedAt(sort: Desc)], map: "ix_document_folder")
+  /// The recycle bin's query: what is deleted, most recently first.
+  ///
+  /// Partial on `deleted_at IS NOT NULL`, in the migration, and the partiality is the whole point.
+  /// A live library is almost entirely live rows, so a full index on `deleted_at` would be an
+  /// index of the whole table to answer a question about the thousandth of it that is deleted —
+  /// and the recycle bin, the retention sweep and the disposition register all ask that question.
+  @@index([tenantId, deleteCascadeId], map: "ix_document_cascade")
   /// "What am I working on" on the dashboard, and the owner filter in the library.
   @@index([tenantId, ownerUserId, status], map: "ix_document_owner")
   @@index([tenantId, documentTypeId], map: "ix_document_type")
@@ -1707,6 +1731,13 @@ model DocumentRevision {
   updatedBy              String?        @map("updated_by") @db.Uuid
   deletedAt              DateTime?      @map("deleted_at") @db.Timestamptz(6)
   deletedBy              String?        @map("deleted_by") @db.Uuid
+  /// Which cascade removed this revision — always its document's.
+  ///
+  /// Phase 10 is where a document's delete started reaching its revisions at all. Before it, a
+  /// deleted document kept every revision live and gave back the reference on only the latest, so
+  /// a document with four revisions returned one and its blobs could never reach zero
+  /// (`@edms/domain`'s `DOCUMENT_DELETION_RULES` is the whole table).
+  deleteCascadeId        String?        @map("delete_cascade_id") @db.Uuid
   version                Int            @default(1)
 
   tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -1727,6 +1758,8 @@ model DocumentRevision {
   @@unique([documentId, ordinal], map: "uq_revision_ordinal")
   @@index([tenantId, documentId, ordinal(sort: Desc)], map: "ix_revision_document")
   @@index([tenantId, fileObjectId], map: "ix_revision_file")
+  /// What one cascade took, which is exactly what its restore puts back.
+  @@index([tenantId, deleteCascadeId], map: "ix_revision_cascade")
   @@map("document_revision")
 }
 
@@ -2624,4 +2657,169 @@ model SearchRebuild {
 
   @@index([tenantId, startedAt(sort: Desc)], map: "ix_search_rebuild_tenant")
   @@map("search_rebuild")
+}
+
+// ---------------------------------------------------------------------------------------
+// PHASE 10 — soft delete and retention.
+//
+//   `retention_schedule` and `legal_hold` are `05-database-design.md` §3's two retention tables,
+//   built here for the first time. The third table has no row in that document, and it is the one
+//   worth reading: `document_tombstone` exists because **audit outlives its subject** (13 §1) and
+//   `audit_event` refuses `DELETE` to every role including the owner. A purge therefore leaves a
+//   trail behind whose subject no longer exists, and the events written *before* this phase carry
+//   no document number in their payloads — payloads that cannot be rewritten to add one, for the
+//   same reason the trail is worth having. So the number and enough context to read the trail are
+//   copied, at purge time, to a row the purge does not reach.
+// ---------------------------------------------------------------------------------------
+
+/// Where one document's disposition has got to.
+///
+/// `CANCELLED` is what a *restore* produces: a delete can create a schedule, and putting the
+/// document back has to withdraw it. Leaving it `PENDING` would queue a restored document for
+/// disposition; closing it `EXECUTED` would claim a disposition that never ran.
+enum RetentionScheduleState {
+  PENDING
+  IN_REVIEW
+  EXECUTED
+  SUSPENDED
+  CANCELLED
+
+  @@map("retention_schedule_state")
+}
+
+/// When this record may be disposed of, and how (ADR-0010 §4).
+///
+/// One live schedule per document per trigger, and the disposition is copied from the policy
+/// rather than read through it: ADR-0010 §7 freezes the policy onto the document so that editing
+/// a policy cannot silently re-date records already kept under it, and a schedule that resolved
+/// `disposition` by joining `retention_policy` at execution time would undo exactly that.
+///
+/// `policy_id` is nullable, and the null case is deliberate rather than lax. A document that was
+/// never numbered and names no policy still has to leave the recycle bin, so its delete writes a
+/// schedule whose period is the tenant's `retention.recycleBinDays`. That is the only schedule in
+/// the product with no policy behind it, and `disposition` is always `PURGE` when it happens.
+model RetentionSchedule {
+  id             String                 @id @db.Uuid
+  tenantId       String                 @map("tenant_id") @db.Uuid
+  documentId     String                 @map("document_id") @db.Uuid
+  /// Null for the recycle-bin window of an unnumbered draft. Never null otherwise.
+  policyId       String?                @map("policy_id") @db.Uuid
+  /// Which event started the clock. Part of the identity of the schedule, because a document may
+  /// legitimately hold one from publication and another from its deletion.
+  trigger        RetentionTrigger
+  triggerAt      DateTime               @map("trigger_at") @db.Timestamptz(6)
+  dueAt          DateTime               @map("due_at") @db.Timestamptz(6)
+  disposition    Disposition
+  state          RetentionScheduleState @default(PENDING)
+  /// Copied from the policy at scheduling, and forced true for `PURGE` whatever the policy said:
+  /// ADR-0010 makes review "required for irreversible ones", and purge is the irreversible one.
+  reviewRequired Boolean                @default(false) @map("review_required")
+  /// Who confirmed the disposition, and why. Both null until somebody does.
+  reviewedById   String?                @map("reviewed_by_id") @db.Uuid
+  reviewedAt     DateTime?              @map("reviewed_at") @db.Timestamptz(6)
+  reviewNote     String?                @map("review_note")
+  executedAt     DateTime?              @map("executed_at") @db.Timestamptz(6)
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?                @map("created_by") @db.Uuid
+  updatedAt      DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?                @map("updated_by") @db.Uuid
+  version        Int                    @default(1)
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document Document         @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  policy   RetentionPolicy? @relation(fields: [policyId], references: [id], onDelete: Restrict)
+
+  /// The sweep's only query, and the reason it is partial: `PENDING` and `IN_REVIEW` are a
+  /// handful of rows out of every schedule the tenant has ever written, and an index over the
+  /// executed ones would be an index over the whole history of the library
+  /// (`05-database-design.md` §3 asks for `ix (tenant_id, due_at) WHERE state = 'PENDING'`; the
+  /// second state is here because a schedule waiting for a reviewer is still due).
+  ///
+  /// Expressed in the migration rather than here — Prisma cannot write a partial index.
+  @@index([tenantId, documentId], map: "ix_retention_schedule_document")
+  @@map("retention_schedule")
+}
+
+/// A suspension of disposition, absolute while it lives (ADR-0010 §5).
+///
+/// A row per hold rather than a flag on the document, for the same reason `document_lock` is a row:
+/// who placed it, when, why, and who released it are the questions a legal hold exists to answer,
+/// and a boolean answers none of them. The live hold is any row with `released_at IS NULL`, and
+/// there may be several — two unrelated matters can hold the same record, and releasing one must
+/// not release the other.
+model LegalHold {
+  id            String    @id @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  documentId    String    @map("document_id") @db.Uuid
+  /// Required. A hold with no stated matter is a hold nobody can ever justify releasing.
+  reason        String
+  placedById    String    @map("placed_by_id") @db.Uuid
+  placedAt      DateTime  @map("placed_at") @db.Timestamptz(6)
+  releasedAt    DateTime? @map("released_at") @db.Timestamptz(6)
+  releasedById  String?   @map("released_by_id") @db.Uuid
+  releaseReason String?   @map("release_reason")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?   @map("created_by") @db.Uuid
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?   @map("updated_by") @db.Uuid
+  version       Int       @default(1)
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document Document @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  /// "Is this document held" — the question every delete and every disposition asks. Partial on
+  /// the live rows, in the migration, because a released hold answers it with a no.
+  @@index([tenantId, documentId], map: "ix_legal_hold_document")
+  @@map("legal_hold")
+}
+
+/// What a purged document leaves behind so its trail is still readable.
+///
+/// This table is the answer to the one risk the purge creates. `13 §6` requires that "when a
+/// document is purged, its audit trail remains, with the document number preserved so the record is
+/// still meaningful", and `02-audit-immutability.sql` makes that enforceable rather than stated:
+/// `audit_event` refuses `DELETE` to every role, so the trail *will* outlive the row whether or not
+/// anybody planned for it. What it cannot do is grow a number it never carried — the events written
+/// before this phase have the payloads they were hashed with, and rewriting one is the single
+/// operation this product will not perform on that table.
+///
+/// So the number is copied here instead, at purge time, together with the few facts that make an
+/// old event legible: what the document was called, what type it was, when it was deleted and when
+/// it was destroyed. It is not audit data — it is mutable in principle and it carries no digest —
+/// but it is the only row a purge deliberately writes rather than removes.
+///
+/// It carries no `deleted_at`. A tombstone that could be soft-deleted would be a tombstone the
+/// recycle bin could hide, and there is nothing left to restore.
+model DocumentTombstone {
+  /// The purged document's own identifier, so an audit row's `subject_id` finds this by primary key.
+  documentId        String    @id @map("document_id") @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  /// Reserved forever, and after the purge this is the only row that holds it beside
+  /// `number_reservation` — which knows the value but not what it was issued to.
+  documentNumber    String?   @map("document_number")
+  title             String
+  documentTypeId    String?   @map("document_type_id") @db.Uuid
+  /// The type's name as it stood, not a join: the type itself may be deleted afterwards.
+  documentTypeName  String?   @map("document_type_name")
+  folderPath        String?   @map("folder_path")
+  /// When the record was first soft-deleted, which is not when it was destroyed.
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz(6)
+  purgedAt          DateTime  @map("purged_at") @db.Timestamptz(6)
+  /// Null when the scheduled sweep acted; a purge is normally nobody's act.
+  purgedById        String?   @map("purged_by_id") @db.Uuid
+  /// The schedule that authorised it, and the person who approved the disposition.
+  scheduleId        String?   @map("schedule_id") @db.Uuid
+  policyId          String?   @map("policy_id") @db.Uuid
+  approvedById      String?   @map("approved_by_id") @db.Uuid
+  revisionsRemoved  Int       @default(0) @map("revisions_removed")
+  blobsDereferenced Int       @default(0) @map("blobs_dereferenced")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  /// The number stays unique among tombstones for the same reason it is unique among documents.
+  @@unique([tenantId, documentNumber], map: "uq_tombstone_number")
+  /// "What has this tenant destroyed, and when" — the disposition register, newest first.
+  @@index([tenantId, purgedAt(sort: Desc)], map: "ix_tombstone_tenant")
+  @@map("document_tombstone")
 }
