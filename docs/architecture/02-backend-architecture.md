@@ -237,7 +237,7 @@ around a use case.
 | `documents.ocr` | extract text | slow lane, separate concurrency |
 | `search.index` | project into the index | coalesced per document |
 | `workflow.timers` | deadline due, reminder, escalation | BullMQ delayed jobs |
-| `notifications.deliver` | email, in-app fan-out, digests | retry with backoff, dead-letter |
+| `notifications.deliver` | outbox events → notifications; the delivery pass; three digest collections; the coalescing release | retry with backoff, dead-letter. **One consumer**: the adapter constructs one worker per subscribe, so two subscribers on one lane race for its jobs |
 | `retention.run` | disposition review, purge | scheduled, tenant-partitioned |
 | `audit.export` | evidence bundles | large, streamed to storage |
 

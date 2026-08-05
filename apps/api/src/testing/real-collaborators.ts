@@ -1,4 +1,21 @@
+import type { NotificationChannelKey } from '@edms/domain';
+
 import type { ClockPort } from '../ports/clock.port';
+import type { DeliveryReceipt, NotificationPort } from '../ports/notification.port';
+import { DeliveryService } from '../modules/notification/application/delivery.service';
+import { DigestService } from '../modules/notification/application/digest.service';
+import { NotificationAdminService } from '../modules/notification/application/notification-admin.service';
+import { NotificationEventService } from '../modules/notification/application/notification-event.service';
+import { DefaultNotificationService } from '../modules/notification/application/notification.service';
+import { RecipientVisibilityService } from '../modules/notification/application/recipient-visibility.service';
+import {
+  PrismaNotificationBatchRepository,
+  PrismaNotificationMessageRepository,
+  PrismaNotificationPreferenceRepository,
+  PrismaNotificationSuppressionRepository,
+  PrismaNotificationTemplateRepository,
+} from '../modules/notification/infrastructure/prisma-notification.repositories';
+import type { DocumentService } from '../modules/document/application/ports';
 import { AdministeredWriter } from '../core/persistence/administered-writer';
 import { RecordStamps } from '../core/persistence/record-stamps';
 import { PrismaOutboxWriter } from '../core/outbox/prisma-outbox.writer';
@@ -1176,4 +1193,142 @@ function settingsReaderFor(overrides: Readonly<Record<string, unknown>>) {
     all: () => Promise.resolve(overrides),
     invalidate: () => Promise.resolve(),
   } as never;
+}
+
+// --- Notifications (Phase 12) ------------------------------------------------------------------
+
+/** Records what it was asked to send, and answers however the suite needs. */
+export class RecordingTransport implements NotificationPort {
+  readonly channel: NotificationChannelKey = 'EMAIL';
+  readonly sent: { address: string; subject: string; bodyHtml: string | null }[] = [];
+  receipt: DeliveryReceipt = {
+    accepted: true,
+    providerMessageId: 'provider-1',
+    failureReason: null,
+    permanentFailure: false,
+  };
+
+  send(message: {
+    recipient: { address: string };
+    subject: string;
+    bodyHtml: string | null;
+  }): Promise<DeliveryReceipt> {
+    this.sent.push({
+      address: message.recipient.address,
+      subject: message.subject,
+      bodyHtml: message.bodyHtml,
+    });
+    return Promise.resolve(this.receipt);
+  }
+}
+
+export interface NotificationStack {
+  readonly notifications: DefaultNotificationService;
+  readonly delivery: DeliveryService;
+  readonly digests: DigestService;
+  readonly events: NotificationEventService;
+  readonly admin: NotificationAdminService;
+  readonly messages: PrismaNotificationMessageRepository;
+  readonly preferences: PrismaNotificationPreferenceRepository;
+  readonly suppressions: PrismaNotificationSuppressionRepository;
+  readonly batches: PrismaNotificationBatchRepository;
+  readonly transport: RecordingTransport;
+}
+
+/**
+ * Everything the notification module is, wired the way `NotificationModule` wires it.
+ *
+ * Real repositories, the real ACL resolver and the real renderer; a recording transport, because
+ * the one thing a suite must not do is send mail. `DOCUMENT_SERVICE` is passed in rather than
+ * built here, so a suite that has a real document library asserts against real documents and one
+ * that has none can supply a double — which is the difference between the visibility assertions
+ * and the rest.
+ */
+export function realNotifications(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config: AppConfig;
+  readonly documents: DocumentService;
+  readonly settings?: Readonly<Record<string, unknown>>;
+}): NotificationStack {
+  const { writer } = realWriteStack(options.clock, options.unitOfWork);
+  const settings = settingsReaderFor(options.settings ?? {});
+  const logger = silentLogger();
+
+  const messages = new PrismaNotificationMessageRepository();
+  const preferences = new PrismaNotificationPreferenceRepository();
+  const templates = new PrismaNotificationTemplateRepository();
+  const suppressions = new PrismaNotificationSuppressionRepository();
+  const batches = new PrismaNotificationBatchRepository();
+  const directory = new PrismaUserDirectory();
+
+  const notifications = new DefaultNotificationService(
+    messages,
+    preferences,
+    templates,
+    suppressions,
+    directory,
+    settings,
+    options.clock,
+    logger,
+  );
+  const transport = new RecordingTransport();
+  const delivery = new DeliveryService(
+    messages,
+    suppressions,
+    notifications,
+    transport,
+    settings,
+    options.clock,
+    options.unitOfWork,
+    directory,
+    logger,
+    writer,
+  );
+  const digests = new DigestService(
+    messages,
+    templates,
+    directory,
+    settings,
+    options.clock,
+    options.unitOfWork,
+    logger,
+  );
+  const visibility = new RecipientVisibilityService(
+    new PrismaAclResolver(options.unitOfWork),
+    directory,
+    logger,
+  );
+  const events = new NotificationEventService(
+    notifications,
+    batches,
+    options.documents,
+    directory,
+    settings,
+    options.config,
+    options.clock,
+    options.unitOfWork,
+    logger,
+    visibility,
+  );
+  const admin = new NotificationAdminService(
+    preferences,
+    templates,
+    suppressions,
+    settings,
+    writer,
+  );
+
+  return {
+    notifications,
+    delivery,
+    digests,
+    events,
+    admin,
+    messages,
+    preferences,
+    suppressions,
+    batches,
+    transport,
+  };
 }

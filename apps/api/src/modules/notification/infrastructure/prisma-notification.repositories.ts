@@ -2,9 +2,12 @@ import { Injectable } from '@nestjs/common';
 
 import {
   type DeliveryStateKey,
+  type DigestFrequencyKey,
   type NotificationChannelKey,
   type NotificationMessageId,
   type UserId,
+  DeliveryState,
+  NotificationChannel,
   asId,
 } from '@edms/domain';
 import { type Page, type PageRequest, skipFor, toPage, uuidv7 } from '@edms/utils';
@@ -12,13 +15,21 @@ import { type Page, type PageRequest, skipFor, toPage, uuidv7 } from '@edms/util
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import type { RecipientPreference } from '../domain/notification-types';
+import type { QuietHoursWindow } from '../domain/quiet-hours';
 import type { MessageTemplate } from '../domain/template';
 import type {
+  InboxQuery,
   NewNotificationMessage,
+  NotificationBatch,
+  NotificationBatchRepository,
   NotificationMessageRecord,
   NotificationMessageRepository,
   NotificationPreferenceRepository,
+  NotificationSuppressionRepository,
   NotificationTemplateRepository,
+  StoredPreference,
+  SuppressionRecord,
+  TemplateOverrideRecord,
 } from '../application/notification.ports';
 
 /** Tenant overrides of the shipped templates. An empty table is a fully working tenant. */
@@ -49,6 +60,33 @@ export class PrismaNotificationTemplateRepository implements NotificationTemplat
       update: { ...template },
     });
   }
+
+  async listOverrides(): Promise<readonly TemplateOverrideRecord[]> {
+    const rows = await requireTransaction().notificationTemplate.findMany({
+      where: { tenantId: requireContext().tenantId },
+      orderBy: [{ typeKey: 'asc' }, { locale: 'asc' }, { channel: 'asc' }],
+    });
+    return rows.map((row) => ({
+      typeKey: row.typeKey,
+      channel: row.channel,
+      locale: row.locale,
+      subject: row.subject,
+      bodyText: row.bodyText,
+      bodyHtml: row.bodyHtml,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async deleteOverride(
+    typeKey: string,
+    channel: NotificationChannelKey,
+    locale: string,
+  ): Promise<boolean> {
+    const { count } = await requireTransaction().notificationTemplate.deleteMany({
+      where: { tenantId: requireContext().tenantId, typeKey, channel, locale },
+    });
+    return count > 0;
+  }
 }
 
 @Injectable()
@@ -59,6 +97,18 @@ export class PrismaNotificationPreferenceRepository implements NotificationPrefe
       select: { channels: true, digest: true },
     });
     return row ? { channels: row.channels, digest: row.digest } : null;
+  }
+
+  async listFor(userId: UserId): Promise<readonly StoredPreference[]> {
+    const rows = await requireTransaction().notificationPreference.findMany({
+      where: { tenantId: requireContext().tenantId, userId },
+      select: { typeKey: true, channels: true, digest: true },
+    });
+    return rows.map((row) => ({
+      typeKey: row.typeKey,
+      channels: row.channels,
+      digest: row.digest,
+    }));
   }
 
   async save(userId: UserId, typeKey: string, preference: RecipientPreference): Promise<void> {
@@ -73,6 +123,39 @@ export class PrismaNotificationPreferenceRepository implements NotificationPrefe
         digest: preference.digest,
       },
       update: { channels: [...preference.channels], digest: preference.digest },
+    });
+  }
+
+  async clear(userId: UserId, typeKey: string): Promise<void> {
+    // Removed rather than stored as "the defaults": a row that happens to equal the defaults
+    // today would stop equalling them the day the product changes its mind, and the user would
+    // silently keep an opinion they never expressed.
+    await requireTransaction().notificationPreference.deleteMany({
+      where: { tenantId: requireContext().tenantId, userId, typeKey },
+    });
+  }
+
+  async findQuietHours(userId: UserId): Promise<QuietHoursWindow | null> {
+    const row = await requireTransaction().notificationQuietHours.findUnique({
+      where: { userId },
+      select: { startMinute: true, endMinute: true, timezone: true },
+    });
+    return row
+      ? { startMinute: row.startMinute, endMinute: row.endMinute, timezone: row.timezone }
+      : null;
+  }
+
+  async saveQuietHours(userId: UserId, window: QuietHoursWindow | null): Promise<void> {
+    const tx = requireTransaction();
+    const { tenantId } = requireContext();
+    if (window === null) {
+      await tx.notificationQuietHours.deleteMany({ where: { tenantId, userId } });
+      return;
+    }
+    await tx.notificationQuietHours.upsert({
+      where: { userId },
+      create: { tenantId, userId, ...window },
+      update: { ...window },
     });
   }
 }
@@ -94,6 +177,9 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
         state: message.state,
         idempotencyKey: message.idempotencyKey,
         address: message.address,
+        releaseAt: message.releaseAt,
+        digestWindow: message.digestWindow,
+        failureReason: message.failureReason,
       },
     });
   }
@@ -107,7 +193,7 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
 
   async listInbox(
     recipientId: UserId,
-    page: PageRequest,
+    query: InboxQuery,
   ): Promise<Page<NotificationMessageRecord>> {
     const tx = requireTransaction();
     // In-app only: an email is not an inbox, and listing one here would show a person a copy of
@@ -115,20 +201,32 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
     const where = {
       tenantId: requireContext().tenantId,
       recipientId,
-      channel: 'IN_APP' as const,
+      channel: NotificationChannel.IN_APP,
+      ...(query.unreadOnly ? { readAt: null } : {}),
     };
 
     const total = await tx.notificationMessage.count({ where });
     if (total === 0) {
-      return toPage([], 0, page);
+      return toPage([], 0, query);
     }
     const rows = await tx.notificationMessage.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      skip: skipFor(page),
-      take: page.pageSize,
+      skip: skipFor(query),
+      take: query.pageSize,
     });
-    return toPage(rows.map(toRecord), total, page);
+    return toPage(rows.map(toRecord), total, query);
+  }
+
+  countUnread(recipientId: UserId): Promise<number> {
+    return requireTransaction().notificationMessage.count({
+      where: {
+        tenantId: requireContext().tenantId,
+        recipientId,
+        channel: NotificationChannel.IN_APP,
+        readAt: null,
+      },
+    });
   }
 
   async markRead(id: NotificationMessageId, at: Date): Promise<void> {
@@ -140,16 +238,101 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
     });
   }
 
+  async markAllRead(recipientId: UserId, at: Date): Promise<number> {
+    const { count } = await requireTransaction().notificationMessage.updateMany({
+      where: {
+        tenantId: requireContext().tenantId,
+        recipientId,
+        channel: NotificationChannel.IN_APP,
+        readAt: null,
+      },
+      data: { readAt: at },
+    });
+    return count;
+  }
+
   async claimQueued(
     channel: NotificationChannelKey,
     limit: number,
+    now: Date,
   ): Promise<readonly NotificationMessageRecord[]> {
     const rows = await requireTransaction().notificationMessage.findMany({
-      where: { tenantId: requireContext().tenantId, channel, state: 'QUEUED' },
+      where: {
+        tenantId: requireContext().tenantId,
+        channel,
+        state: DeliveryState.QUEUED,
+        // A row being held is not a row waiting to go out. This one predicate is what quiet
+        // hours and digests are built on, and it is why neither needs a scheduler of its own:
+        // the database decides what is due, every pass, from the row itself.
+        OR: [{ releaseAt: null }, { releaseAt: { lte: now } }],
+      },
       orderBy: { createdAt: 'asc' },
       take: limit,
     });
     return rows.map(toRecord);
+  }
+
+  async releaseHeld(now: Date, limit: number): Promise<number> {
+    const tx = requireTransaction();
+    const tenantId = requireContext().tenantId;
+    // Quiet-hours holds only — `digest_window` null. A digest's members are collected by
+    // `claimForDigest`; releasing them here would send both the member and the summary that
+    // names it.
+    const due = await tx.notificationMessage.findMany({
+      where: {
+        tenantId,
+        state: DeliveryState.HELD,
+        digestWindow: null,
+        digestMessageId: null,
+        releaseAt: { lte: now },
+      },
+      select: { id: true },
+      take: limit,
+    });
+    if (due.length === 0) {
+      return 0;
+    }
+    const { count } = await tx.notificationMessage.updateMany({
+      where: { id: { in: due.map((row) => row.id) }, tenantId, state: DeliveryState.HELD },
+      data: { state: DeliveryState.QUEUED },
+    });
+    return count;
+  }
+
+  async claimForDigest(
+    frequency: DigestFrequencyKey,
+    now: Date,
+    limit: number,
+  ): Promise<readonly NotificationMessageRecord[]> {
+    const rows = await requireTransaction().notificationMessage.findMany({
+      where: {
+        tenantId: requireContext().tenantId,
+        state: DeliveryState.HELD,
+        digestWindow: frequency,
+        digestMessageId: null,
+        releaseAt: { lte: now },
+      },
+      orderBy: [{ recipientId: 'asc' }, { createdAt: 'asc' }],
+      take: limit,
+    });
+    return rows.map(toRecord);
+  }
+
+  async markDigested(
+    ids: readonly NotificationMessageId[],
+    digestMessageId: NotificationMessageId,
+  ): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+    await requireTransaction().notificationMessage.updateMany({
+      where: {
+        id: { in: [...ids] },
+        tenantId: requireContext().tenantId,
+        state: DeliveryState.HELD,
+      },
+      data: { state: DeliveryState.DIGESTED, digestMessageId },
+    });
   }
 
   async recordDelivery(
@@ -161,11 +344,223 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
       data: {
         state: outcome.state,
         failureReason: outcome.failureReason,
-        sentAt: outcome.state === 'SENT' ? outcome.at : null,
+        sentAt: outcome.state === DeliveryState.SENT ? outcome.at : null,
         attempts: { increment: 1 },
       },
     });
   }
+}
+
+/** 18 §7's bounce row: addresses this tenant has stopped writing to. */
+@Injectable()
+export class PrismaNotificationSuppressionRepository implements NotificationSuppressionRepository {
+  async isSuppressed(address: string): Promise<boolean> {
+    const row = await requireTransaction().notificationSuppression.findFirst({
+      where: {
+        tenantId: requireContext().tenantId,
+        address: normalizeAddress(address),
+        suppressedAt: { not: null },
+      },
+      select: { address: true },
+    });
+    return row !== null;
+  }
+
+  async find(address: string): Promise<SuppressionRecord | null> {
+    const row = await requireTransaction().notificationSuppression.findFirst({
+      where: { tenantId: requireContext().tenantId, address: normalizeAddress(address) },
+    });
+    return row
+      ? {
+          address: row.address,
+          bounceCount: row.bounceCount,
+          suppressedAt: row.suppressedAt,
+          lastReason: row.lastReason,
+        }
+      : null;
+  }
+
+  async recordPermanentFailure(
+    address: string,
+    reason: string,
+    threshold: number,
+    at: Date,
+  ): Promise<{ bounceCount: number; crossedThreshold: boolean }> {
+    const tx = requireTransaction();
+    const { tenantId } = requireContext();
+    const normalized = normalizeAddress(address);
+
+    const row = await tx.notificationSuppression.upsert({
+      where: { tenantId_address: { tenantId, address: normalized } },
+      create: {
+        id: uuidv7(at.getTime()),
+        tenantId,
+        address: normalized,
+        bounceCount: 1,
+        lastReason: reason.slice(0, 500),
+        lastBouncedAt: at,
+        // Deliberately null even when the threshold is one. Suppression is decided below, in a
+        // conditional update, and setting it here would make the row look already-suppressed to
+        // the very call that suppressed it — so the first bounce would suppress the address and
+        // alert nobody, which is the one outcome §7 must not have.
+        suppressedAt: null,
+      },
+      update: {
+        bounceCount: { increment: 1 },
+        lastReason: reason.slice(0, 500),
+        lastBouncedAt: at,
+      },
+    });
+
+    if (row.suppressedAt !== null) {
+      // Refused before this call. The administrator has been told once and is not told again: an
+      // administrator alerted forty times about one dead mailbox stops reading the alert.
+      return { bounceCount: row.bounceCount, crossedThreshold: false };
+    }
+    if (row.bounceCount < threshold) {
+      return { bounceCount: row.bounceCount, crossedThreshold: false };
+    }
+    // Conditional on `suppressed_at` still being null, so two concurrent deliveries crossing the
+    // threshold together produce one alert rather than two.
+    const { count } = await tx.notificationSuppression.updateMany({
+      where: { tenantId, address: normalized, suppressedAt: null },
+      data: { suppressedAt: at },
+    });
+    return { bounceCount: row.bounceCount, crossedThreshold: count > 0 };
+  }
+
+  async release(address: string): Promise<boolean> {
+    // The count goes back to zero with the suppression. A corrected address starts again, and
+    // keeping the old count would suppress it on its first unrelated failure.
+    const { count } = await requireTransaction().notificationSuppression.updateMany({
+      where: {
+        tenantId: requireContext().tenantId,
+        address: normalizeAddress(address),
+        suppressedAt: { not: null },
+      },
+      data: { suppressedAt: null, bounceCount: 0, lastReason: null },
+    });
+    return count > 0;
+  }
+
+  async list(page: PageRequest): Promise<Page<SuppressionRecord>> {
+    const tx = requireTransaction();
+    const where = { tenantId: requireContext().tenantId, suppressedAt: { not: null } };
+    const total = await tx.notificationSuppression.count({ where });
+    if (total === 0) {
+      return toPage([], 0, page);
+    }
+    const rows = await tx.notificationSuppression.findMany({
+      where,
+      orderBy: { suppressedAt: 'desc' },
+      skip: skipFor(page),
+      take: page.pageSize,
+    });
+    return toPage(
+      rows.map((row) => ({
+        address: row.address,
+        bounceCount: row.bounceCount,
+        suppressedAt: row.suppressedAt,
+        lastReason: row.lastReason,
+      })),
+      total,
+      page,
+    );
+  }
+}
+
+/** 18 §7's storm control: one open window per bulk operation. */
+@Injectable()
+export class PrismaNotificationBatchRepository implements NotificationBatchRepository {
+  async accumulate(input: {
+    key: string;
+    typeKey: string;
+    recipientIds: readonly UserId[];
+    values: Readonly<Record<string, string>>;
+    releaseAt: Date;
+  }): Promise<void> {
+    const tx = requireTransaction();
+    const { tenantId } = requireContext();
+
+    const existing = await tx.notificationBatch.findUnique({
+      where: { tenantId_key: { tenantId, key: input.key } },
+      select: { recipientIds: true },
+    });
+
+    if (existing === null) {
+      await tx.notificationBatch.create({
+        data: {
+          id: uuidv7(),
+          tenantId,
+          key: input.key,
+          typeKey: input.typeKey,
+          recipientIds: [...input.recipientIds],
+          itemCount: 1,
+          values: { ...input.values },
+          // Set when the window opens and never extended, so a sweep that runs for an hour
+          // produces a summary at the window mark and another for the remainder — rather than a
+          // window that never closes because objects keep arriving.
+          releaseAt: input.releaseAt,
+        },
+      });
+      return;
+    }
+
+    const recipients = new Set([...existing.recipientIds, ...input.recipientIds]);
+    await tx.notificationBatch.update({
+      where: { tenantId_key: { tenantId, key: input.key } },
+      data: { itemCount: { increment: 1 }, recipientIds: [...recipients] },
+    });
+  }
+
+  async claimClosed(now: Date, limit: number): Promise<readonly NotificationBatch[]> {
+    const tx = requireTransaction();
+    const { tenantId } = requireContext();
+    const rows = await tx.notificationBatch.findMany({
+      where: { tenantId, releaseAt: { lte: now } },
+      orderBy: { releaseAt: 'asc' },
+      take: limit,
+    });
+    if (rows.length === 0) {
+      return [];
+    }
+    // Deleted as they are claimed, in the same transaction that reads them: the summary is
+    // produced from the returned rows, so a redelivery finds nothing and cannot send twice.
+    await tx.notificationBatch.deleteMany({ where: { id: { in: rows.map((row) => row.id) } } });
+
+    return rows.map((row) => ({
+      key: row.key,
+      typeKey: row.typeKey,
+      recipientIds: row.recipientIds.map((id) => asId<UserId>(id)),
+      itemCount: row.itemCount,
+      releaseAt: row.releaseAt,
+      values: toStringRecord(row.values),
+    }));
+  }
+}
+
+/**
+ * Mail addresses are matched case-insensitively.
+ *
+ * The local part is technically case-sensitive per RFC 5321 and no mail provider in use treats
+ * it that way. Suppressing `Ada@example.test` and then writing to `ada@example.test` would be a
+ * suppression that suppresses nothing.
+ */
+function normalizeAddress(address: string): string {
+  return address.trim().toLowerCase();
+}
+
+function toStringRecord(value: unknown): Readonly<Record<string, string>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') {
+      result[key] = entry;
+    }
+  }
+  return result;
 }
 
 interface MessageRow {
@@ -180,7 +575,11 @@ interface MessageRow {
   state: string;
   attempts: number;
   readAt: Date | null;
+  createdAt: Date;
   address: string;
+  releaseAt: Date | null;
+  digestWindow: string | null;
+  digestMessageId: string | null;
 }
 
 function toRecord(row: MessageRow): NotificationMessageRecord {
@@ -196,6 +595,10 @@ function toRecord(row: MessageRow): NotificationMessageRecord {
     state: row.state as DeliveryStateKey,
     attempts: row.attempts,
     readAt: row.readAt,
+    createdAt: row.createdAt,
     address: row.address,
+    releaseAt: row.releaseAt,
+    digestWindow: row.digestWindow as DigestFrequencyKey | null,
+    digestMessageId: row.digestMessageId ? asId<NotificationMessageId>(row.digestMessageId) : null,
   };
 }

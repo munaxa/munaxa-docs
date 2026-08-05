@@ -180,6 +180,32 @@ interface ClaimedRow {
  * (Phase 7 kept the decision when it became the second consumer: what it needed was a second
  * *lane* per prefix, not a registry.)
  *
+ * ### Phase 12 kept it too, and had the strongest case yet not to
+ *
+ * The sentence above — "a new event in an existing module routes correctly with no change here at
+ * all" — turned out to be **false**, and Phase 12 is the phase that could see it. Phase 11's four
+ * events are named `delegation.*`; their aggregate is `identity`; no prefix matched them; and
+ * every one of them was silently discarded as unroutable from the day it shipped. That is exactly
+ * the failure this comment predicted for a registry, occurring in the prefix table instead —
+ * because the premise is wrong. A prefix is not derived from the aggregate name. It is derived
+ * from whatever the module chose to call its event type, which is a *different string* that
+ * nothing checks.
+ *
+ * The registry was reconsidered on that evidence and still rejected, for a reason this phase
+ * discovered rather than inherited. A route is not the only thing the notification consumer needs
+ * to know about an event: it has to switch on the event type anyway, to decide who the recipients
+ * are and what the template's values mean. A registry would move the *routing* half of that
+ * decision into the module that publishes the event and leave the *recipient* half in the
+ * consumer — one question, answered in two files, in two modules, that must agree. The prefix
+ * table keeps both halves within one switch, and pays for it with a table somebody has to
+ * remember to extend.
+ *
+ * What makes forgetting detectable rather than silent is `prisma-outbox.dispatcher.spec.ts`: it
+ * asserts that **every event type in every module's `*_EVENT_TYPES` list routes somewhere**, and
+ * that every type 18 §4 names reaches the notification lane. That is the property a registry
+ * would have bought, obtained by a test instead of by a cross-module registration — and it is the
+ * test that would have caught `delegation.*` in Phase 11.
+ *
  * A list, because one fact legitimately interests two lanes at two costs: a revision event is
  * what the preview pipeline renders from *and* what the search projection will index, and the
  * lanes are separated by cost precisely so the two reactions cannot starve each other.
@@ -187,24 +213,25 @@ interface ClaimedRow {
  * An unrouted event is not an error: most events exist so that a later phase can consume them, and
  * the outbox row is the durable record either way.
  */
-function routesFor(eventType: string): readonly QueueNameKey[] {
+export function routesFor(eventType: string): readonly QueueNameKey[] {
   if (eventType.startsWith('workflow.')) {
-    // Notifications, once Phase 12 builds delivery. Until then the job is consumed by nothing and
-    // the lane is where a consumer will look — which is the point of routing it now rather than
-    // discovering the routing table is empty.
     return [QueueName.NOTIFICATIONS_DELIVER];
   }
   if (eventType.startsWith('revision.')) {
+    // Not the notification lane. A revision event and the `document.*` event beside it describe
+    // one act — publishing a revision publishes the document — and routing both would notify
+    // twice about one thing. `document.published` is the one 18 §4 names, so it is the one that
+    // carries the notification.
     return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW];
   }
   if (eventType === 'document.created') {
     // The one document event that announces content: ordinal zero publishes no revision event
     // (`createInitial` predates the revision cycle), so the preview pipeline hears about a new
     // document's file from here.
-    return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW];
+    return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW, QueueName.NOTIFICATIONS_DELIVER];
   }
   if (eventType.startsWith('document.')) {
-    return [QueueName.SEARCH_INDEX];
+    return [QueueName.SEARCH_INDEX, QueueName.NOTIFICATIONS_DELIVER];
   }
   if (eventType.startsWith('preview.')) {
     // The search projection consumes `preview.ocr-completed` in Phase 8; the lane is where it
@@ -218,9 +245,30 @@ function routesFor(eventType: string): readonly QueueNameKey[] {
     // The search projection removes a purged document's entry (`retention.document-purged`
     // resolves to its document like any other event); the rest of the family rides along to the
     // same lane and resolves to the same projection, which re-reads current truth and is
-    // harmless. `retention.due` will interest Phase 12's reminder; the outbox row is the record
-    // until it does.
-    return [QueueName.SEARCH_INDEX];
+    // harmless. The notification lane is Phase 12's: `retention.due` is the disposition-review
+    // reminder Phase 10 left owing, and the two hold events are 18 §4's `LegalHoldPlaced` row.
+    return [QueueName.SEARCH_INDEX, QueueName.NOTIFICATIONS_DELIVER];
+  }
+  if (
+    eventType.startsWith('delegation.') ||
+    eventType.startsWith('audit.') ||
+    eventType.startsWith('storage.')
+  ) {
+    // Phase 12's additions, and the reason the table needed re-reading rather than extending.
+    //
+    // **`delegation.*` routed nowhere at all.** Phase 11's four events begin `delegation.`, and
+    // no prefix here matched them: `identity.` would have, and the aggregate is `identity` while
+    // the event type is not. The rows have been accumulating unrouted since Phase 11, exactly as
+    // its report said — "delivered nowhere" — but for a reason nobody had noticed, which is the
+    // failure mode the comment below predicted for a registry and which a prefix table turns out
+    // to share.
+    //
+    // **`audit.chain-broken`** is Phase 9's undelivered alert. `audit.chain-verified` and
+    // `audit.export-ready` ride the same prefix and are dropped by the consumer, which is
+    // cheaper than a per-event table and is the same trade this function has always made.
+    //
+    // **`storage.file-quarantined`** is 18 §4's "infected upload".
+    return [QueueName.NOTIFICATIONS_DELIVER];
   }
   return [];
 }

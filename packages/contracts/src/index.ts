@@ -33,6 +33,12 @@
  * only manual step retention offers a client is approving a disposition the policy already
  * scheduled (ADR-0010), so the wire cannot express the button the design rejected.
  *
+ * Phase 12 adds `notifications/` — the in-app inbox, per-type preferences, quiet hours and the
+ * tenant's template overrides. The shape worth noticing is what a preference *cannot* say: there
+ * is no address field anywhere in it. Where a notification goes is the account's own verified
+ * address, and a client that could set one could redirect somebody else's mail — 18 §8's fourth
+ * prohibition, expressed as an absent field rather than as a check.
+ *
  * Phase 9 adds `audit/` — the trail's read surface, its verification status and its evidence
  * exports. The shape worth noticing is `chainHashVersion` travelling beside `hash` on every entry:
  * it is what says how much that digest proves, because rows written before Phase 9 attest nine
@@ -78,3 +84,4 @@ export * from './workflow/approval';
 export * from './search/search';
 export * from './audit/audit';
 export * from './retention/retention';
+export * from './notifications/notification';

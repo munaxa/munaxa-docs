@@ -178,6 +178,35 @@ resolving to me is an escalation that goes nowhere and hides that there is nobod
 tenant. Widening is the dangerous default — it would route an approval meant for one department's
 quality manager to every quality manager in the organisation, silently.
 
+## Two more directory reads — Phase 12
+
+`USER_DIRECTORY` gained two, on the same port and for the same reason the Phase 4 four are there.
+
+| Read | Answers |
+| --- | --- |
+| `holdersOfPermission` | Everybody who holds a permission through any of their roles |
+| `authorizationSubjectFor` | One person's roles and departments, for a decision taken *about* them |
+
+**`holdersOfPermission` exists because two of 18 §4's rows are addressed to a capability rather
+than to a person or a role**: "administrators" for a security event, and the document controller
+for a retention one. `holdersOfRole` cannot answer either without the caller naming role keys in
+code — the coupling 07 §8 forbids the workflow engine, and no better here, because a tenant that
+renamed its controller role would silently stop being told its audit chain had broken. A permission
+is a catalogue entry a tenant cannot rename.
+
+**`authorizationSubjectFor` exists because Notification asks the ACL resolver about somebody other
+than the caller.** `AuthorizationSubject` has always been a parameter rather than the request
+context, so the resolver needed no change; what was missing was a way to build the subject for a
+recipient. It is here rather than on `USER_SERVICE` — which declares a `subjectsFor` and has been
+bound to nothing since Phase 0.5 — because binding that symbol would mean building a user aggregate
+repository to answer a two-join read, and this port already answers "who is this person,
+organisationally".
+
+It returns **no delegations**, deliberately. 08 §3 lost its "active delegations" clause in Phase 11
+rather than the resolver gaining a subject, and a notification recipient's visibility must not
+depend on cover they were given — which would make a delegation the permission grant 07 §4 says it
+must never be.
+
 ## Delegation (Phase 11)
 
 `DELEGATION_REPOSITORY` and `DELEGATION_SERVICE`, declared and unbound since Phase 0.5, are bound.

@@ -51,7 +51,9 @@ describe('loadConfig', () => {
       OPENAPI_ENABLED: 'false',
       STORAGE_DRIVER: 'S3',
       STORAGE_BUCKET: 'edms-prod',
-      MAIL_DRIVER: 'SMTP',
+      MAIL_DRIVER: 'RESEND',
+      MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
+      MAIL_FROM_ADDRESS: 'docs@munaxa.com',
       AV_DRIVER: 'ICAP',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       CORS_ORIGINS: 'https://docs.munaxa.com,https://admin.munaxa.com',
@@ -59,6 +61,41 @@ describe('loadConfig', () => {
     expect(config.isProduction).toBe(true);
     expect(config.http.corsOrigins).toHaveLength(2);
     expect(config.http.openApiEnabled).toBe(false);
+  });
+
+  it('refuses a mail driver with no adapter behind it, in production', () => {
+    // `MAIL_DRIVER` has named SMTP since Phase 0.5 and Phase 12 built the hosted adapter instead.
+    // Refused at boot rather than at the first send, because a deployment that discovers its mail
+    // driver has no adapter when an approver is not told about an approval has discovered it far
+    // too late — the `OCR_DRIVER=HOSTED` precedent.
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'production',
+        OPENAPI_ENABLED: 'false',
+        STORAGE_DRIVER: 'S3',
+        STORAGE_BUCKET: 'edms-prod',
+        MAIL_DRIVER: 'SMTP',
+        MAIL_FROM_ADDRESS: 'docs@munaxa.com',
+        AV_DRIVER: 'ICAP',
+        AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+      }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('refuses a hosted mail driver with no key and no sender', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'production',
+        OPENAPI_ENABLED: 'false',
+        STORAGE_DRIVER: 'S3',
+        STORAGE_BUCKET: 'edms-prod',
+        MAIL_DRIVER: 'RESEND',
+        AV_DRIVER: 'ICAP',
+        AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+      }),
+    ).toThrowError(ConfigurationError);
   });
 
   it('never echoes a rejected value in the error', () => {
@@ -175,7 +212,9 @@ describe('describing which tenants this deployment serves', () => {
         NODE_ENV: 'production',
         OPENAPI_ENABLED: 'false',
         STORAGE_DRIVER: 'LOCAL',
-        MAIL_DRIVER: 'SMTP',
+        MAIL_DRIVER: 'RESEND',
+        MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
+        MAIL_FROM_ADDRESS: 'docs@munaxa.com',
         AV_DRIVER: 'ICAP',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       }),
@@ -190,7 +229,9 @@ describe('describing which tenants this deployment serves', () => {
       NODE_ENV: 'production',
       OPENAPI_ENABLED: 'false',
       STORAGE_DRIVER: 'LOCAL',
-      MAIL_DRIVER: 'SMTP',
+      MAIL_DRIVER: 'RESEND',
+      MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
+      MAIL_FROM_ADDRESS: 'docs@munaxa.com',
       AV_DRIVER: 'ICAP',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
     });
@@ -207,7 +248,9 @@ describe('describing which tenants this deployment serves', () => {
         NODE_ENV: 'production',
         OPENAPI_ENABLED: 'false',
         STORAGE_DRIVER: 'LOCAL',
-        MAIL_DRIVER: 'SMTP',
+        MAIL_DRIVER: 'RESEND',
+        MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
+        MAIL_FROM_ADDRESS: 'docs@munaxa.com',
         AV_DRIVER: 'ICAP',
       }),
     ).toThrowError(ConfigurationError);

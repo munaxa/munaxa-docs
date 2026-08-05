@@ -99,6 +99,16 @@ const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
     permission: Permission.DELEGATION_MANAGE,
   },
   {
+    // Phase 12. `notification:manage`, which every seeded role holds — the widest row in this
+    // table, and deliberately so: 18 §3 calls the in-app inbox authoritative, so everybody who
+    // can receive a notification must be able to reach it. Its scope is the caller's own inbox,
+    // enforced by there being no route under `/notifications` that names a recipient.
+    id: 'notifications',
+    href: '/notifications' as Route,
+    labelKey: 'nav.notifications',
+    permission: Permission.NOTIFICATION_MANAGE,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',

@@ -403,6 +403,43 @@ export interface UserDirectory {
 
   /** Which of these are live and active. The filter every resolver ends with. */
   activeAmong(userIds: readonly UserId[]): Promise<readonly UserId[]>;
+
+  /**
+   * Everybody who holds a permission through any of their roles — Phase 12's addition.
+   *
+   * It exists because two notifications in 18 §4 are addressed to a *capability* rather than to
+   * a person or a role: "administrators" for a security event, and the document controller for a
+   * retention one. `holdersOfRole` cannot answer either without the caller naming role keys in
+   * code, which is the coupling `07-workflow-architecture.md` §8 forbids the workflow engine and
+   * which would be no better here — a tenant that renames its controller role would silently
+   * stop being told its audit chain had broken.
+   *
+   * A permission, by contrast, is a catalogue entry: it cannot be renamed by a tenant, and "who
+   * may manage users" is exactly the question "who should be told an address was suppressed" is
+   * asking. Roles are still where the grant lives; this walks from the permission back to them.
+   */
+  holdersOfPermission(permission: PermissionKey): Promise<readonly UserId[]>;
+
+  /**
+   * A person's own authorisation subject — their roles and departments — Phase 12's second
+   * addition.
+   *
+   * It is here rather than on `USER_SERVICE`, which declares a `subjectsFor` and has been bound
+   * to nothing since Phase 0.5, for one reason: every caller of that symbol would have to be a
+   * caller of a service that does not exist, and binding it would mean building a user
+   * *aggregate* repository to answer a two-join read. This port already answers "who is this
+   * person, organisationally" — which departments, which roles, who manages them — and a subject
+   * is the same question asked in the vocabulary the ACL resolver speaks.
+   *
+   * The delegations are deliberately **not** here. 08 §3 lost its "active delegations" clause in
+   * Phase 11 rather than the resolver gaining a subject, so a subject carries none — and a
+   * notification recipient's visibility must not depend on cover they were given, which would
+   * make a delegation the permission grant 07 §4 says it must never be.
+   */
+  authorizationSubjectFor(userId: UserId): Promise<{
+    readonly roleIds: readonly RoleId[];
+    readonly departmentIds: readonly AnyId[];
+  } | null>;
 }
 
 /** Where a role lookup looks. `nodeId` is null for `TENANT`, and only for it. */

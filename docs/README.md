@@ -15,7 +15,7 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 11 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 12 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
@@ -28,7 +28,9 @@ one answer to what deleting a document reaches, the recycle bin, the retention s
 hold that refuses regardless of permission, and the purge that destroys a record while its trail
 survives it, and the delegation that lets one person decide another's approvals without the task
 ever moving — a routing overlay whose trail names both people and the arrangement that authorised
-them. Its map is
+them, and the notifications that finally tell people any of it happened: an inbox, an email, a
+digest, quiet hours, a suppression when an address stops accepting mail, and one summary where a
+sweep would otherwise have sent five hundred. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -87,6 +89,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 12 — notifications
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 12 — Notifications](./reports/phase-12-notifications.md) | The framework Phase 1 built with no producers, finally called: the `notifications.deliver` lane's first consumer, fourteen rows of 18 §4 given catalogue entries and templates, the four phases that deferred delivery here discharged — and the outbox routing table found to have been silently discarding every `delegation.*` event since Phase 11. The decisions 18 left open — what a held message *is*, where a digest's list is composed, what holds a suppression, and which mail adapter is worth building — why the recipient walk is the phase's central safety property, what the phase costs, and what it deliberately does not do |
 
 ### Phase 11 — delegation
 

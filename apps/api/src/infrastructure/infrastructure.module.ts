@@ -6,7 +6,7 @@ import { APP_CONFIG, type AppConfig } from '../core/config';
 import { ANTIVIRUS_PORT } from '../ports/antivirus.port';
 import { CACHE_PORT } from '../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
-import { NOTIFICATION_PORT } from '../ports/notification.port';
+import { NOTIFICATION_PORT, type NotificationPort } from '../ports/notification.port';
 import { QUEUE_CONSUMER, QUEUE_PORT } from '../ports/queue.port';
 import { OCR_PORT, type OcrPort } from '../ports/ocr.port';
 import { INDEX_PORT, SEARCH_PORT, type IndexPort } from '../ports/search.port';
@@ -15,6 +15,7 @@ import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-reg
 import { RedisCacheAdapter } from './cache/redis-cache.adapter';
 import { BullMqQueueAdapter } from './queue/bullmq.adapter';
 import { SystemClockAdapter } from './clock/system-clock.adapter';
+import { ResendMailAdapter } from './providers/resend-mail.adapter';
 import { TesseractOcrAdapter } from './providers/tesseract-ocr.adapter';
 import {
   UnconfiguredAntivirusAdapter,
@@ -182,6 +183,37 @@ function ocrAdapterFor(config: AppConfig): OcrPort {
  * never answers would be an outage discovered at the first query rather than the deployment.
  * The refusal names the variable — the `OCR_DRIVER=HOSTED` precedent, exactly.
  */
+/**
+ * The mail provider, chosen by configuration — Phase 12 replaces the unconfigured refusal.
+ *
+ * `SMTP` is accepted by the schema — 18 §3's promise for on-premise — and never reaches this
+ * function: `configuration.ts` refuses it at boot, naming the decision, because a value that
+ * boots and then fails at the first send is an outage discovered when an approver is not told
+ * about an approval. The `OCR_DRIVER=HOSTED` precedent, exactly.
+ *
+ * `NONE` keeps the Phase 0.5 refusal, which is the correct behaviour for an unconfigured
+ * deployment and the one CI runs under: the delivery service records a refusal like any other
+ * failure, and nothing is silently dropped.
+ */
+function mailAdapterFor(config: AppConfig): NotificationPort {
+  if (config.providers.mail !== 'RESEND') {
+    return new UnconfiguredNotificationAdapter();
+  }
+  const { resendApiKey, fromAddress } = config.mail;
+  if (resendApiKey === null || fromAddress === null) {
+    // Production validation already requires both. This covers the other environments, where a
+    // half-configured driver would otherwise send from `undefined`.
+    throw new Error('MAIL_DRIVER=RESEND requires MAIL_RESEND_API_KEY and MAIL_FROM_ADDRESS.');
+  }
+  return new ResendMailAdapter({
+    apiKey: resendApiKey,
+    endpoint: config.mail.resendEndpoint,
+    fromAddress,
+    fromName: config.mail.fromName,
+    timeoutMs: config.mail.timeoutMs,
+  });
+}
+
 function searchAdapterFor(config: AppConfig): PostgresSearchAdapter {
   switch (config.providers.search) {
     case 'OPENSEARCH':
@@ -255,7 +287,7 @@ function requireBucket(config: AppConfig): string {
     // "binds in core" has meant in its contract since Phase 0.5: the renderers are that
     // module's plugins, and this file would otherwise have to import them all.
     { provide: OCR_PORT, useFactory: ocrAdapterFor, inject: [APP_CONFIG] },
-    { provide: NOTIFICATION_PORT, useClass: UnconfiguredNotificationAdapter },
+    { provide: NOTIFICATION_PORT, useFactory: mailAdapterFor, inject: [APP_CONFIG] },
     { provide: ANTIVIRUS_PORT, useClass: UnconfiguredAntivirusAdapter },
   ],
   exports: [

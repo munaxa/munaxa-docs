@@ -2,15 +2,17 @@
 
 Product root for **Munaxa Docs**, the Enterprise Document Management System (EDMS).
 
-**The product is built through Phase 6: documents are created, submitted, approved, numbered,
-published and revised.** Phase 0 designed the architecture and Phase 0.5 built the structure that
-implements it; Phases 1 through 3 added authentication, the whole of Administration, per-tenant
-infrastructure and the document library; Phase 4 added the approval engine — and with it the first
-background work this product has ever run; Phase 5 gave an approved document its permanent number;
-and Phase 6 added revision control — publication, the check-out lock, check-in, restore, the
-revision timeline and the compare API.
+**The product is built through Phase 12: documents are created, submitted, approved, numbered,
+published, revised, previewed, found, audited, deleted, delegated — and the people who need to know
+are told.** Phase 0 designed the architecture and Phase 0.5 built the structure that implements it;
+Phases 1 through 3 added authentication, the whole of Administration, per-tenant infrastructure and
+the document library; Phase 4 added the approval engine — and with it the first background work this
+product has ever run; Phase 5 gave an approved document its permanent number; Phase 6 added revision
+control; Phase 7 the preview pipeline; Phase 8 search; Phase 9 the read half of the audit trail;
+Phase 10 soft delete and retention; Phase 11 delegation; and Phase 12 notifications — the framework
+Phase 1 built with no producers, finally called.
 
-Read the most recent report before starting: [Phase 6 — revision control](./docs/reports/phase-6-revision-control.md).
+Read the most recent report before starting: [Phase 12 — notifications](./docs/reports/phase-12-notifications.md).
 The original gate is the [Phase 0.5 architecture compliance report](./docs/reports/phase-0.5-architecture-compliance-report.md)
 and the [technical debt it records](./docs/reports/phase-0.5-technical-debt.md).
 
@@ -90,6 +92,12 @@ pnpm build && pnpm test
 Redis is no longer optional. Phase 4 is the first phase with background work — the outbox dispatcher
 and the workflow engine's deadline timers — and `QUEUE_CONSUMERS_ENABLED` says which processes run
 it. It defaults to true, because a deployment where nothing consumes a lane is a deployment where
-approval deadlines silently never fire.
+approval deadlines silently never fire. As of Phase 12 every declared lane has a consumer, and a
+deployment that disables them everywhere is one where nobody is told anything.
+
+Mail is configured but not required. `MAIL_DRIVER=NONE` is the default and the correct setting for
+a development machine: in-app notifications are unaffected because the row *is* the delivery, and
+every refused email is recorded rather than dropped. `RESEND` is the one real driver; `SMTP` is
+named by the schema, has no adapter, and is refused at boot rather than at the first send.
 
 Full reasoning: [`docs/architecture/01-monorepo-and-folder-structure.md`](./docs/architecture/01-monorepo-and-folder-structure.md).
