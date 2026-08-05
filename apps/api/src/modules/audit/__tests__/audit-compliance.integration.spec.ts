@@ -345,6 +345,7 @@ describe('the chain, verified against what the database actually holds', () => {
       correlationId: 'legacy',
       ipAddress: null,
       userAgent: null,
+      apiClientId: null,
     };
     const firstHash = chainHash(GENESIS_HASH, first, CHAIN_HASH_V1);
     const second = { ...first, eventId: uuidv7(), sequence: 2n, action: 'CURRENT' };

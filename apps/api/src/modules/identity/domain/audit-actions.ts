@@ -119,3 +119,63 @@ export const DelegationAudit = {
 } as const;
 
 export type DelegationAuditAction = (typeof DelegationAudit)[keyof typeof DelegationAudit];
+
+/**
+ * The Integration group — Phase 17, and 13 §2 gains it.
+ *
+ * **Four actions rather than one `INTEGRATION_CHANGED` with the operation in the payload**, which
+ * is the opposite of the convention `IdentityAdminAudit` and `AdministeredWriter` follow, so the
+ * departure has to earn itself. It does, on Retention's and Delegation's reasoning: each is the
+ * answer to a question somebody asks on its own, and three of the four are security events rather
+ * than configuration changes.
+ *
+ * "Which keys were issued last quarter, to act as whom" is the question an access review asks, and
+ * it is a different question from "where does this tenant send its events". "When did we start
+ * federating, and which groups map to the administrator role" is what an auditor asks about
+ * privilege. Collapsing them would make all three payload filters over one action — and the one
+ * that matters most, `API_CLIENT_CREATED`, would be indistinguishable at a glance from somebody
+ * renaming a webhook.
+ *
+ * `API_CLIENT_CREATED` and `API_CLIENT_REVOKED` are separated for the reason `DELEGATION_CREATED`
+ * and `DELEGATION_REVOKED` are: a credential's issue and its withdrawal are the two ends of a
+ * period, and an access review reads both columns.
+ *
+ * **Only the three this module writes are here.** `WEBHOOK_ENDPOINT_CHANGED` and
+ * `AUDIT_SINK_CHANGED` live in `modules/integration/domain/audit-actions.ts`, because the rule
+ * this file's own opening states is *each module owns the actions it writes* — and the lint rule
+ * that forbids a cross-module reach into `domain/` is what turned that from a convention into a
+ * constraint. The two files are one group in 13 §2's catalogue and two files in the code, which is
+ * the same shape `SecurityAudit` and `IdentityAdminAudit` already have.
+ */
+export const IntegrationAudit = {
+  /**
+   * A machine credential was issued.
+   *
+   * The payload names the subject it acts as and the scopes it carries — which together are the
+   * whole of what it can do — and **never the secret**. It is the highest-privilege act in this
+   * group by some distance: a key bound to a tenant administrator is, in effect, that
+   * administrator without a second factor.
+   */
+  API_CLIENT_CREATED: 'API_CLIENT_CREATED',
+  API_CLIENT_REVOKED: 'API_CLIENT_REVOKED',
+  /**
+   * The tenant's identity provider was configured or changed.
+   *
+   * One action for the resource because its interesting field — the role mapping — is a `before`
+   * and an `after` that the trail already carries, and "who made the Entra group `all-staff` map
+   * to `TENANT_ADMIN`" is answered by reading them rather than by a second action name.
+   */
+  IDENTITY_PROVIDER_CHANGED: 'IDENTITY_PROVIDER_CHANGED',
+  /**
+   * A federated sign-in provisioned a person who did not exist here.
+   *
+   * Written by the JIT path and not by ordinary user administration, because they are genuinely
+   * different facts: `USER_CREATED` means an administrator decided somebody should have an
+   * account, and this means a *provider assertion* did. The payload names the provider, the
+   * external subject and the roles the mapping produced — so "which accounts did we create
+   * because Entra said so, and what did the mapping give them" is one query.
+   */
+  USER_PROVISIONED_FROM_PROVIDER: 'USER_PROVISIONED_FROM_PROVIDER',
+} as const;
+
+export type IntegrationAuditAction = (typeof IntegrationAudit)[keyof typeof IntegrationAudit];

@@ -43,6 +43,8 @@ export const auditSubjectTypeSchema = z.enum([
   'DELEGATION',
   /** Phase 16. Not a `DOCUMENT`: an act over four hundred of them belongs on no one timeline. */
   'BULK_OPERATION',
+  /** Phase 17. An API client, a webhook endpoint, an identity provider or an audit sink. */
+  'INTEGRATION',
 ]);
 
 export type AuditSubjectTypeValue = z.infer<typeof auditSubjectTypeSchema>;
@@ -62,9 +64,20 @@ export interface AuditEntry {
   readonly payload: Readonly<Record<string, unknown>>;
   readonly reason: string | null;
   readonly correlationId: string;
+  /**
+   * Which API key the request arrived on — Phase 17. Null for every human request.
+   *
+   * On the wire because an investigator's first question about a machine action is *which*
+   * machine, and the alternative — reading it from a payload — would make the answer depend on
+   * what each writer chose to put there.
+   */
+  readonly apiClientId: string | null;
   readonly hash: string;
   readonly previousHash: string;
-  /** Which field set the hash covers: `1` is the Phase 1 digest, `2` the widened one. */
+  /**
+   * Which field set the hash covers: `1` is the Phase 1 digest, `2` the Phase 9 widening, `3` the
+   * Phase 17 one that adds `apiClientId`.
+   */
   readonly chainHashVersion: number;
 }
 

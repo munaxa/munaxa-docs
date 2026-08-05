@@ -88,6 +88,9 @@ export class ChainedAuditWriter implements AuditWriter {
       correlationId: actor.correlationId,
       ipAddress: actor.ipAddress,
       userAgent: actor.userAgent,
+      // Phase 17, and covered by `CHAIN_HASH_V3`: which credential took the action, attested
+      // rather than merely recorded.
+      apiClientId: actor.apiClientId ?? null,
     };
 
     await this.repository.append({
@@ -107,6 +110,7 @@ export class ChainedAuditWriter implements AuditWriter {
       correlationId: actor.correlationId,
       ipAddress: actor.ipAddress,
       userAgent: actor.userAgent,
+      apiClientId: actor.apiClientId ?? null,
       hash: chainHash(tail.hash, material, CURRENT_CHAIN_HASH_VERSION),
       previousHash: tail.hash,
       chainHashVersion: CURRENT_CHAIN_HASH_VERSION,

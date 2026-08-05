@@ -101,6 +101,20 @@ export const configSchema = z
     JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
     JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().min(3_600).default(2_592_000),
 
+    /**
+     * Where an OIDC provider sends the browser back to — Phase 17.
+     *
+     * **Configured rather than taken from the request**, and that is the check whose absence is
+     * the open-redirect in every hand-rolled OIDC integration: a `redirect_uri` read from a query
+     * string is one an attacker sets to their own site, and the provider delivers the
+     * authorization code there. It is also registered with the provider, which is the other half
+     * of the same defence and the half this deployment does not control.
+     *
+     * Defaulted to the web client's own callback route, so a deployment that has already
+     * configured `WEB_BASE_URL` needs nothing further.
+     */
+    FEDERATION_REDIRECT_URI: z.string().url().optional(),
+
     STORAGE_DRIVER: z.enum(['NONE', 'LOCAL', 'S3', 'AZURE_BLOB', 'R2', 'GCS']).default('NONE'),
     /** The bucket, container or root directory. A tenant's own prefix sits inside it. */
     STORAGE_BUCKET: z.string().optional(),
@@ -356,7 +370,52 @@ export const configSchema = z
     RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
     RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().min(1).default(300),
 
+    /**
+     * The hosts this deployment will make an outbound request to — 17 §6's "configured
+     * allow-list", Phase 17.
+     *
+     * Comma-separated. An entry with a leading dot covers its subdomains
+     * (`.hooks.example.com`); one without covers exactly itself. **Empty is the default, and
+     * empty means nothing is reachable** — so webhooks, federation and audit push are all
+     * inert on a deployment where an operator has not named a host, which is the correct
+     * posture for a control whose failure mode is the server attacking its own network.
+     *
+     * An *operator's* setting rather than a tenant's, uniquely among this phase's configuration.
+     * Everything else an integration needs is tenant data a tenant administrator edits; this is
+     * the boundary those administrators sit inside, and a boundary the people inside it can move
+     * is not one.
+     */
+    OUTBOUND_HTTP_ALLOWLIST: z.string().default(''),
+    /**
+     * Whether `http://` is fetched as well as `https://`.
+     *
+     * For a development collector on a laptop and nothing else — which is why it is refused in
+     * production below rather than merely discouraged. A webhook over plaintext puts a signed
+     * payload and its signature on the wire for anybody on the path.
+     */
+    OUTBOUND_HTTP_ALLOW_INSECURE: booleanFromEnv.default(false),
+    OUTBOUND_HTTP_MAX_RESPONSE_BYTES: z.coerce.number().int().min(1_024).default(65_536),
+
     OPENAPI_ENABLED: booleanFromEnv.default(true),
+    /**
+     * Whether the machine-readable schema is served, separately from the human explorer.
+     *
+     * **They were one flag until Phase 17, and treating them as one thing was the mistake.** 15 §6
+     * says OpenAPI is "served at `/api/docs` in non-production **and emitted as a build
+     * artifact**" — two deliverables with two audiences. The explorer is an interactive surface
+     * that enumerates every route in the product and is correctly refused in production. The
+     * *document* is a contract: it is what an SDK is generated from, what a customer's integration
+     * team reads, and what a compatibility check diffs between releases — and refusing to serve it
+     * in production means the one deployment whose contract anybody cares about is the one that
+     * will not state it.
+     *
+     * Defaulted on and permitted in production. It is served on a route that renders no HTML,
+     * executes nothing, and describes routes the caller is refused by every guard in the product
+     * anyway — enumerating an API is not a permission this product has ever pretended to enforce,
+     * because `RoutePermissionRegistry` publishes the whole route table at boot and 15 §8 requires
+     * deprecations to be announced in it.
+     */
+    OPENAPI_DOCUMENT_ENABLED: booleanFromEnv.default(true),
     SENTRY_DSN: z.string().url().optional(),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   })
@@ -501,10 +560,20 @@ export const configSchema = z
       });
     }
     if (config.OPENAPI_ENABLED) {
+      // The *explorer*, and only the explorer. `OPENAPI_DOCUMENT_ENABLED` is deliberately not
+      // refused here — Phase 17 split the two, and the reasoning is on that variable.
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['OPENAPI_ENABLED'],
         message: 'The OpenAPI explorer is not served in production.',
+      });
+    }
+    if (config.OUTBOUND_HTTP_ALLOW_INSECURE) {
+      // A signed webhook payload over plaintext is the payload and its signature on the wire.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['OUTBOUND_HTTP_ALLOW_INSECURE'],
+        message: 'Outbound requests are https-only in production.',
       });
     }
     if (config.SIGNATURE_WITNESS_SECRET === undefined) {
@@ -550,7 +619,13 @@ export interface AppConfig {
       | { readonly source: 'FILE'; readonly path: string };
   };
   readonly app: { readonly name: string; readonly version: string; readonly port: number };
-  readonly http: { readonly corsOrigins: readonly string[]; readonly openApiEnabled: boolean };
+  readonly http: {
+    readonly corsOrigins: readonly string[];
+    /** The interactive explorer. Refused in production. */
+    readonly openApiEnabled: boolean;
+    /** The machine-readable schema. Permitted in production — Phase 17 split the two. */
+    readonly openApiDocumentEnabled: boolean;
+  };
   readonly log: { readonly level: RawConfig['LOG_LEVEL'] };
   readonly database: {
     readonly url: string;
@@ -577,6 +652,8 @@ export interface AppConfig {
     readonly accessSecret: string;
     readonly accessTtlSeconds: number;
     readonly refreshTtlSeconds: number;
+    /** Where an OIDC provider returns the browser. Configured, never taken from a request. */
+    readonly federationRedirectUri: string;
   };
   readonly storage: {
     readonly driver: RawConfig['STORAGE_DRIVER'];
@@ -673,6 +750,16 @@ export interface AppConfig {
     readonly maxPixels: number;
   };
   readonly rateLimit: { readonly windowSeconds: number; readonly maxRequests: number };
+  /**
+   * The outbound boundary — Phase 17, and the only configuration in the phase a tenant cannot
+   * touch (`17-security-architecture.md` §6).
+   */
+  readonly outbound: {
+    /** Empty means nothing is reachable, which is the default and the correct one. */
+    readonly allowList: readonly string[];
+    readonly allowInsecure: boolean;
+    readonly maxResponseBytes: number;
+  };
   readonly observability: {
     readonly sentryDsn: string | null;
     readonly otlpEndpoint: string | null;
@@ -729,6 +816,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
         .map((origin) => origin.trim())
         .filter((origin) => origin.length > 0),
       openApiEnabled: raw.OPENAPI_ENABLED,
+      openApiDocumentEnabled: raw.OPENAPI_DOCUMENT_ENABLED,
     },
     log: { level: raw.LOG_LEVEL },
     database: {
@@ -750,6 +838,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       accessSecret: raw.JWT_ACCESS_SECRET,
       accessTtlSeconds: raw.JWT_ACCESS_TTL_SECONDS,
       refreshTtlSeconds: raw.JWT_REFRESH_TTL_SECONDS,
+      federationRedirectUri:
+        raw.FEDERATION_REDIRECT_URI ??
+        `${raw.WEB_BASE_URL.replace(/\/+$/, '')}/auth/federation/callback`,
     },
     storage: {
       driver: raw.STORAGE_DRIVER,
@@ -837,6 +928,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       maxArchiveEntries: raw.PREVIEW_MAX_ARCHIVE_ENTRIES,
       maxArchiveExpansionRatio: raw.PREVIEW_MAX_ARCHIVE_EXPANSION_RATIO,
       maxPixels: raw.PREVIEW_MAX_PIXELS,
+    },
+    outbound: {
+      allowList: raw.OUTBOUND_HTTP_ALLOWLIST.split(',')
+        .map((host) => host.trim().toLowerCase())
+        .filter((host) => host.length > 0),
+      allowInsecure: raw.OUTBOUND_HTTP_ALLOW_INSECURE,
+      maxResponseBytes: raw.OUTBOUND_HTTP_MAX_RESPONSE_BYTES,
     },
     rateLimit: {
       windowSeconds: raw.RATE_LIMIT_WINDOW_SECONDS,

@@ -214,24 +214,51 @@ interface ClaimedRow {
  * the outbox row is the durable record either way.
  */
 export function routesFor(eventType: string): readonly QueueNameKey[] {
+  // **Every event goes to the webhook lane** — Phase 17, and the reason this line is at the top
+  // rather than being a branch among the others.
+  //
+  // A webhook subscriber is the first consumer in the product that wants *every* family, and it is
+  // therefore the first for which this table's failure mode is total rather than partial. When
+  // `delegation.*` routed nowhere from Phase 11 to Phase 12, the search index missed some
+  // re-projections and the notification lane missed some messages — bad, and observable, because
+  // somebody eventually noticed a document was not findable. An integration built on "tell me when
+  // anything happens" that silently receives nothing from one family has no such signal: absence
+  // is indistinguishable from quiet, and the author has no way to discover the gap at all.
+  //
+  // So the webhook lane is not a line somebody has to remember to add. It is unconditional, and
+  // the **default** below changed from `[]` to this same lane — an event matching no branch now
+  // reaches webhooks instead of nowhere. The next phase that adds an event family gets webhooks
+  // without touching this function, which is the property the original comment claimed for the
+  // whole table and which was false twice.
+  //
+  // The fan-out then filters per endpoint (`webhookSubscribes`), so a tenant subscribing to
+  // `document` receives no `search.*` traffic — the narrowing is the subscriber's, where it can be
+  // changed without a release, rather than this table's.
+  const webhook: readonly QueueNameKey[] = [QueueName.WEBHOOKS_DELIVER];
+
   if (eventType.startsWith('workflow.')) {
-    return [QueueName.NOTIFICATIONS_DELIVER];
+    return [QueueName.NOTIFICATIONS_DELIVER, ...webhook];
   }
   if (eventType.startsWith('revision.')) {
     // Not the notification lane. A revision event and the `document.*` event beside it describe
     // one act — publishing a revision publishes the document — and routing both would notify
     // twice about one thing. `document.published` is the one 18 §4 names, so it is the one that
     // carries the notification.
-    return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW];
+    return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW, ...webhook];
   }
   if (eventType === 'document.created') {
     // The one document event that announces content: ordinal zero publishes no revision event
     // (`createInitial` predates the revision cycle), so the preview pipeline hears about a new
     // document's file from here.
-    return [QueueName.SEARCH_INDEX, QueueName.DOCUMENTS_PREVIEW, QueueName.NOTIFICATIONS_DELIVER];
+    return [
+      QueueName.SEARCH_INDEX,
+      QueueName.DOCUMENTS_PREVIEW,
+      QueueName.NOTIFICATIONS_DELIVER,
+      ...webhook,
+    ];
   }
   if (eventType.startsWith('document.')) {
-    return [QueueName.SEARCH_INDEX, QueueName.NOTIFICATIONS_DELIVER];
+    return [QueueName.SEARCH_INDEX, QueueName.NOTIFICATIONS_DELIVER, ...webhook];
   }
   if (eventType.startsWith('library.')) {
     // **Phase 14's addition, and the third time this table needed extending rather than deriving.**
@@ -249,15 +276,15 @@ export function routesFor(eventType: string): readonly QueueNameKey[] {
     // Not the notification lane. Nobody is told that permissions changed — 18 §4 names no such
     // message, and a notification saying "you can now see forty documents" would be a disclosure
     // decided by a template rather than by the resolver.
-    return [QueueName.SEARCH_INDEX];
+    return [QueueName.SEARCH_INDEX, ...webhook];
   }
   if (eventType.startsWith('preview.')) {
     // The search projection consumes `preview.ocr-completed` in Phase 8; the lane is where it
     // will look.
-    return [QueueName.SEARCH_INDEX];
+    return [QueueName.SEARCH_INDEX, ...webhook];
   }
   if (eventType.startsWith('notification.')) {
-    return [QueueName.NOTIFICATIONS_DELIVER];
+    return [QueueName.NOTIFICATIONS_DELIVER, ...webhook];
   }
   if (eventType.startsWith('bulk.')) {
     // Phase 16, and the fourth time this table needed a line rather than a derivation. The
@@ -270,7 +297,7 @@ export function routesFor(eventType: string): readonly QueueNameKey[] {
     // tasks it decided — already publish their own events from inside each object's transaction,
     // and those route to the search index exactly as they always have. Routing this one there
     // too would re-project nothing, because the operation resolves to no document.
-    return [QueueName.NOTIFICATIONS_DELIVER];
+    return [QueueName.NOTIFICATIONS_DELIVER, ...webhook];
   }
   if (eventType.startsWith('retention.')) {
     // The search projection removes a purged document's entry (`retention.document-purged`
@@ -278,7 +305,7 @@ export function routesFor(eventType: string): readonly QueueNameKey[] {
     // same lane and resolves to the same projection, which re-reads current truth and is
     // harmless. The notification lane is Phase 12's: `retention.due` is the disposition-review
     // reminder Phase 10 left owing, and the two hold events are 18 §4's `LegalHoldPlaced` row.
-    return [QueueName.SEARCH_INDEX, QueueName.NOTIFICATIONS_DELIVER];
+    return [QueueName.SEARCH_INDEX, QueueName.NOTIFICATIONS_DELIVER, ...webhook];
   }
   if (
     eventType.startsWith('delegation.') ||
@@ -299,9 +326,12 @@ export function routesFor(eventType: string): readonly QueueNameKey[] {
     // cheaper than a per-event table and is the same trade this function has always made.
     //
     // **`storage.file-quarantined`** is 18 §4's "infected upload".
-    return [QueueName.NOTIFICATIONS_DELIVER];
+    return [QueueName.NOTIFICATIONS_DELIVER, ...webhook];
   }
-  return [];
+  // The default, and the line this phase changed. It was `[]`, which is what made forgetting a
+  // family silent; it is now the lane whose consumer wants everything, so a family nobody has
+  // written a branch for still reaches an integration that asked for it.
+  return webhook;
 }
 
 /** Exponential, capped at five minutes, from the attempt count the row already carries. */

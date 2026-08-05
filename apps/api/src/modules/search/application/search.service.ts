@@ -128,7 +128,8 @@ export class DefaultSearchService implements SearchService {
         {
           tenantId: context.tenantId,
           userId: context.userId,
-          channel: ActorChannel.WEB,
+          channel: context.channel ?? ActorChannel.WEB,
+          ...(context.apiClientId !== undefined && { apiClientId: context.apiClientId }),
           correlationId: context.correlationId,
           ipAddress: null,
           userAgent: null,

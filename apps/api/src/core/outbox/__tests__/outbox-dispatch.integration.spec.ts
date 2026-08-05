@@ -142,12 +142,18 @@ describe('the outbox dispatcher', () => {
     const result = await dispatcher.dispatchBatch(10);
 
     expect(result).toEqual({ claimed: 1, enqueued: 1, failed: 0 });
-    expect(handed).toHaveLength(1);
-    expect(handed[0]?.queue).toBe(QueueName.NOTIFICATIONS_DELIVER);
+    // **Two lanes since Phase 17**: the notification lane this event has always gone to, and the
+    // webhook lane every event now goes to. One row, two jobs — which is what `enqueued: 1`
+    // counts, because the row is what was dispatched.
+    expect(handed.map((job) => job.queue)).toEqual([
+      QueueName.NOTIFICATIONS_DELIVER,
+      QueueName.WEBHOOKS_DELIVER,
+    ]);
     // Derived from the row and the lane, so a re-dispatch after a crash is the same job rather
     // than a second one — and an event fanned to two lanes is two distinct jobs, not a
     // collision. This is what makes at-least-once delivery safe rather than merely tolerable.
     expect(handed[0]?.jobId).toBe(`outbox:${eventId}:${QueueName.NOTIFICATIONS_DELIVER}`);
+    expect(handed[1]?.jobId).toBe(`outbox:${eventId}:${QueueName.WEBHOOKS_DELIVER}`);
 
     const row = await owner.outboxMessage.findUniqueOrThrow({ where: { id: eventId } });
     expect(row.processedAt).not.toBeNull();
@@ -162,12 +168,25 @@ describe('the outbox dispatcher', () => {
     expect(row.processedAt).toBeNull();
   });
 
-  it('does not enqueue an event nothing routes, and does not leave it pending forever', async () => {
+  /**
+   * **Phase 17 reversed the premise of this test, and that is the point of it.**
+   *
+   * Until this phase an event matching no branch of `routesFor` routed *nowhere*, which is what
+   * made forgetting a family silent — `delegation.*` from Phase 11 to Phase 12, `library.*` to
+   * Phase 14. A webhook subscriber is the first consumer for which that failure is total rather
+   * than partial: an integration told "you will hear about everything" that silently receives
+   * nothing from one family cannot tell quiet from absent.
+   *
+   * So the default is now the webhook lane, and an event nobody wrote a branch for still reaches
+   * an integration that asked for it. What the row below still asserts is the other half, which
+   * has not changed: the row is marked processed rather than retried for ever.
+   */
+  it('routes an event with no branch of its own to the webhook lane, and marks it processed', async () => {
     const eventId = await writeEvent('administration.document-type-changed');
 
     const result = await dispatcher.dispatchBatch(10);
 
-    expect(handed).toHaveLength(0);
+    expect(handed.map((job) => job.queue)).toEqual([QueueName.WEBHOOKS_DELIVER]);
     expect(result.claimed).toBe(1);
     // Marked processed rather than retried forever: the row is the durable record that it happened,
     // and leaving it pending would make the backlog grow without bound and hide the events that
@@ -230,8 +249,10 @@ describe('the outbox dispatcher', () => {
     await other.$disconnect();
 
     expect(result.claimed).toBe(1);
+    // Only the free row's jobs — both of its lanes — and nothing for the held one.
     expect(handed.map((job) => job.jobId)).toEqual([
       `outbox:${free}:${QueueName.NOTIFICATIONS_DELIVER}`,
+      `outbox:${free}:${QueueName.WEBHOOKS_DELIVER}`,
     ]);
     // The held row is untouched and the next pass finds it — no double send, no starvation.
     expect(

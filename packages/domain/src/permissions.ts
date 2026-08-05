@@ -91,6 +91,23 @@ export const Permission = {
   ROLE_MANAGE: 'role:manage',
   ORG_MANAGE: 'org:manage',
   SETTINGS_MANAGE: 'settings:manage',
+  /**
+   * The integration platform — Phase 17: API clients, outbound webhooks, the tenant's identity
+   * provider and its audit sink.
+   *
+   * **One key for four surfaces, and splitting it would be the wrong precision.** They are not
+   * four independent decisions: whoever may mint an API key may mint one bound to a subject who
+   * holds `audit:view`, and whoever may point a webhook at a URL may exfiltrate the same events a
+   * sink would carry. Four keys would suggest four boundaries that do not exist, and an
+   * administrator holding three of them could obtain the fourth's effect through the ones they
+   * hold. `08-permission-model.md` §2's rule — a permission is a decision somebody can actually be
+   * trusted with separately — decides it.
+   *
+   * It ends in `:manage`, so like every other administrative grant it crosses a broken
+   * inheritance: an integration is configured beside the tenant, never inside a folder subtree.
+   * Seeded to `TENANT_ADMIN` alone.
+   */
+  INTEGRATION_MANAGE: 'integration:manage',
 } as const;
 
 export type PermissionKey = (typeof Permission)[keyof typeof Permission];

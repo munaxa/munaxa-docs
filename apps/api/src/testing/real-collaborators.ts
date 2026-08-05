@@ -1,5 +1,21 @@
 import type { NotificationChannelKey } from '@edms/domain';
 
+import { DefaultApiClientService } from '../modules/identity/application/api-client.service';
+import { PrismaApiClientRepository } from '../modules/identity/infrastructure/prisma-api-client.repository';
+import { ScryptPasswordHasher } from '../modules/identity/infrastructure/scrypt-password-hasher';
+import { AuditSinkService } from '../modules/integration/application/audit-sink.service';
+import { WebhookAdminService } from '../modules/integration/application/webhook-admin.service';
+import { DefaultWebhookDeliveryService } from '../modules/integration/application/webhook-delivery.service';
+import { PrismaAuditSinkRepository } from '../modules/integration/infrastructure/prisma-audit-sink.repository';
+import { PrismaWebhookRepository } from '../modules/integration/infrastructure/prisma-webhook.repository';
+import { AuditStreamSourceAdapter } from '../modules/audit/infrastructure/stream-source.adapter';
+import { PrismaFederatedUserRepository } from '../modules/identity/infrastructure/prisma-federation.repository';
+import {
+  AllowListedHttpAdapter,
+  isPublicAddress,
+} from '../infrastructure/providers/allow-listed-http.adapter';
+import type { TenantDatabase } from '../core/prisma/tenant-database';
+
 import type { ClockPort } from '../ports/clock.port';
 import type { DeliveryReceipt, NotificationPort } from '../ports/notification.port';
 import { DeliveryService } from '../modules/notification/application/delivery.service';
@@ -312,6 +328,13 @@ export interface DocumentLibraryStack {
   readonly localStorage: LocalStorageAdapter;
   /** The scoped port the service writes through — what the preview stack fetches bytes with. */
   readonly storagePort: TenantScopedStorage;
+  /**
+   * The read-audit buffer the document service records views through — Phase 17's addition.
+   *
+   * Exposed so a suite can flush it deterministically. 13 §5's buffer batches reads and flushes on
+   * an interval, and a test that waited for the interval would be a test that sleeps.
+   */
+  readonly readAudit: BufferedReadAuditWriter;
 }
 
 export interface DocumentLibraryOptions {
@@ -457,6 +480,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     numbering: new NumberingAdminService(configurationRepository, outbox, writer),
     localStorage,
     storagePort: scopedStorage,
+    readAudit,
   };
 }
 
@@ -1696,3 +1720,193 @@ export function realBulk(options: {
   );
   return { executor, operations, documents, exports, acl };
 }
+
+// --- Integration platform (Phase 17) -----------------------------------------------------------
+
+/**
+ * An outbound HTTP port a suite can steer, and a *stand-in for the network* rather than for the
+ * allow-list.
+ *
+ * The distinction matters. `AllowListedHttpAdapter` is where the SSRF decision lives, and a fake
+ * that also faked the allow-list would let a suite "prove" a refusal that the real class never
+ * made. So this fake **has no allow-list at all**: it answers whatever the suite tells it to, and
+ * the refusal assertions are made against the real adapter with a real allow-list and a stubbed
+ * resolver instead.
+ */
+export class RecordingHttp {
+  readonly sent: {
+    url: string;
+    method: string;
+    headers: Readonly<Record<string, string>>;
+    body: string | undefined;
+  }[] = [];
+
+  /** What the next send answers. A suite flips this to exercise retry and dead-lettering. */
+  status = 200;
+  fail: 'REFUSED' | 'TIMEOUT' | 'NETWORK' | null = null;
+  responseBody = '{}';
+
+  permits(): Promise<{ allowed: boolean; reason: string | null }> {
+    return Promise.resolve({ allowed: this.fail !== 'REFUSED', reason: null });
+  }
+
+  send(request: {
+    url: string;
+    method: string;
+    headers?: Readonly<Record<string, string>>;
+    body?: string;
+  }): Promise<unknown> {
+    this.sent.push({
+      url: request.url,
+      method: request.method,
+      headers: request.headers ?? {},
+      body: request.body,
+    });
+    if (this.fail !== null) {
+      return Promise.resolve({
+        ok: false,
+        failure: { kind: this.fail, reason: 'stubbed', durationMs: 1 },
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      response: { status: this.status, body: this.responseBody, durationMs: 1 },
+    });
+  }
+}
+
+export interface WebhookStack {
+  readonly repository: PrismaWebhookRepository;
+  readonly admin: WebhookAdminService;
+  readonly delivery: DefaultWebhookDeliveryService;
+  readonly http: RecordingHttp;
+}
+
+export function realWebhooks(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly settings?: Readonly<Record<string, unknown>>;
+  readonly http?: RecordingHttp;
+}): WebhookStack {
+  const http = options.http ?? new RecordingHttp();
+  const repository = new PrismaWebhookRepository();
+  const { writer } = realWriteStack(options.clock, options.unitOfWork);
+  return {
+    repository,
+    http,
+    admin: new WebhookAdminService(repository, http as never, options.clock, writer),
+    delivery: new DefaultWebhookDeliveryService(
+      repository,
+      http as never,
+      settingsReaderFor(options.settings ?? {}),
+      options.clock,
+      options.unitOfWork,
+      silentLogger(),
+    ),
+  };
+}
+
+export interface ApiClientStack {
+  readonly service: DefaultApiClientService;
+  readonly repository: PrismaApiClientRepository;
+  readonly hasher: ScryptPasswordHasher;
+}
+
+export function realApiClients(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly databases: TenantDatabase;
+  readonly settings?: Readonly<Record<string, unknown>>;
+}): ApiClientStack {
+  const repository = new PrismaApiClientRepository(options.databases);
+  const hasher = new ScryptPasswordHasher();
+  const { writer } = realWriteStack(options.clock, options.unitOfWork);
+  return {
+    repository,
+    hasher,
+    service: new DefaultApiClientService(
+      repository,
+      new PrismaCredentialRepository(),
+      hasher,
+      options.clock,
+      options.unitOfWork,
+      settingsReaderFor(options.settings ?? {}),
+      writer,
+      silentLogger(),
+    ),
+  };
+}
+
+export interface AuditSinkStack {
+  readonly service: AuditSinkService;
+  readonly repository: PrismaAuditSinkRepository;
+  readonly http: RecordingHttp;
+}
+
+/**
+ * The sink over the **real** `AuditStreamSourceAdapter` and the real audit repository.
+ *
+ * The adapter is composed here rather than in the suite for the boundary reason every helper in
+ * this file exists for: a suite under `modules/integration/` may not import
+ * `modules/audit/infrastructure/`, and that rule applies to tests. Composing it here is what lets
+ * the assertion be about the *chain* — one reader, shared with the verifier and the evidence
+ * exporter — rather than about a double written from the same belief as the code.
+ */
+export function realAuditSink(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly settings?: Readonly<Record<string, unknown>>;
+  readonly http?: RecordingHttp;
+}): AuditSinkStack {
+  const http = options.http ?? new RecordingHttp();
+  const repository = new PrismaAuditSinkRepository();
+  const { writer } = realWriteStack(options.clock, options.unitOfWork);
+  return {
+    repository,
+    http,
+    service: new AuditSinkService(
+      repository,
+      new AuditStreamSourceAdapter(new PrismaAuditRepository()),
+      http as never,
+      settingsReaderFor(options.settings ?? {}),
+      options.clock,
+      writer,
+      silentLogger(),
+    ),
+  };
+}
+
+/** The federated-user repository, for the same boundary reason. */
+export function realFederatedUsers(): PrismaFederatedUserRepository {
+  return new PrismaFederatedUserRepository();
+}
+
+/**
+ * The **real** outbound adapter, with the network stubbed and the allow-list real.
+ *
+ * The allow-list is deliberately *not* faked: it is where the SSRF decision lives, and a fake with
+ * its own would let a suite prove a refusal the real class never made. What is injected is `fetch`
+ * — which rejects, so a check that failed to refuse would fail loudly rather than silently opening
+ * a socket — and the resolver, so the address checks are exercised without DNS.
+ */
+export function realOutboundHttp(options: {
+  readonly allowList: readonly string[];
+  readonly allowInsecure?: boolean;
+  readonly resolve: (host: string) => Promise<readonly string[]>;
+}): AllowListedHttpAdapter {
+  return new AllowListedHttpAdapter(
+    {
+      outbound: {
+        allowList: options.allowList,
+        allowInsecure: options.allowInsecure ?? false,
+        maxResponseBytes: 1_024,
+      },
+    } as unknown as AppConfig,
+    silentLogger(),
+    () => Promise.reject(new Error('a suite must never reach the network')),
+    options.resolve,
+  );
+}
+
+/** Re-exported so a suite can assert the range table without importing an adapter directly. */
+export { isPublicAddress };

@@ -207,6 +207,31 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = Object.freeze([
         descriptionKey: 'admin.notificationTemplates.description',
         permission: Permission.SETTINGS_MANAGE,
       },
+      /**
+       * Phase 17. Two destinations behind one permission, because they are one administrative
+       * surface: whoever may mint a key may mint one bound to an auditor, and whoever may point a
+       * webhook at a URL can exfiltrate the same events a key would read. `08 §2`'s test for a
+       * permission — is this a decision somebody can be trusted with *separately* — says no.
+       *
+       * Under System rather than People, deliberately. A key acts as a person, which makes it
+       * tempting to file beside users; but what an administrator is doing here is connecting this
+       * tenant to another system, and the neighbours that make that legible are the settings and
+       * the templates rather than the directory.
+       */
+      {
+        id: 'api-clients',
+        href: '/admin/api-clients',
+        titleKey: 'admin.apiClients.title',
+        descriptionKey: 'admin.apiClients.description',
+        permission: Permission.INTEGRATION_MANAGE,
+      },
+      {
+        id: 'webhooks',
+        href: '/admin/webhooks',
+        titleKey: 'admin.webhooks.title',
+        descriptionKey: 'admin.webhooks.description',
+        permission: Permission.INTEGRATION_MANAGE,
+      },
     ],
   },
 ]);

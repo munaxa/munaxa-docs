@@ -2,7 +2,12 @@ import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from 
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AuditModule } from './core/audit';
-import { AuthModule, AuthenticationGuard, AuthenticationMiddleware } from './core/auth';
+import {
+  API_KEY_AUTHENTICATOR,
+  AuthModule,
+  AuthenticationGuard,
+  AuthenticationMiddleware,
+} from './core/auth';
 import { AuthorizationModule, AclGuard, RbacGuard } from './core/authorization';
 import { ConfigModule } from './core/config';
 import { AllExceptionsFilter } from './core/errors';
@@ -24,6 +29,8 @@ import { AuditModule as AuditDomainModule } from './modules/audit/audit.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DocumentModule } from './modules/document/document.module';
 import { IdentityModule } from './modules/identity/identity.module';
+import { IdentityApiKeyAuthenticator } from './modules/identity/infrastructure/api-key.authenticator';
+import { IntegrationModule } from './modules/integration/integration.module';
 import { JwtTokenService } from './modules/identity/infrastructure/jwt.token-service';
 import { LibraryModule } from './modules/library/library.module';
 import { NotificationModule } from './modules/notification/notification.module';
@@ -93,8 +100,26 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     DispositionModule,
     ReportingModule,
     DashboardModule,
+    // Phase 17. After Audit, whose `AUDIT_STREAM_SOURCE` it consumes.
+    IntegrationModule,
   ],
   providers: [
+    /**
+     * The machine-credential resolver, and the middleware that consumes it — Phase 17.
+     *
+     * Both are provided **here** rather than inside `AuthModule`, and the reason is a real
+     * constraint rather than a preference. `IdentityApiKeyAuthenticator` needs Identity's
+     * credential repository and settings reader, so a class registered inside `AuthModule` cannot
+     * resolve it — that module's scope has neither. And Nest resolves a middleware from the module
+     * that *declares* it, so binding the token here while leaving the middleware in `AuthModule`
+     * would produce an instance that could not see the binding.
+     *
+     * The composition root is the one place that may import both `core/` and a module, which is
+     * exactly what this needs and exactly what `TOKEN_VERIFIER` has used since Phase 1. The
+     * `AuthModule` instance of the middleware still exists and is simply not the one applied.
+     */
+    { provide: API_KEY_AUTHENTICATOR, useExisting: IdentityApiKeyAuthenticator },
+    AuthenticationMiddleware,
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     { provide: APP_GUARD, useClass: TenantIsolationGuard },

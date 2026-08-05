@@ -18,6 +18,7 @@ import {
   type RefreshBody,
   type SignInBody,
   refreshSchema,
+  respondWith,
   signInSchema,
 } from './auth.dto';
 
@@ -100,21 +101,9 @@ export class AuthController {
   }
 }
 
+/** One mapper, shared with the federation controller since Phase 17 — see `respondWith`. */
 function respond(result: AuthenticationResult): AuthenticationResponse {
-  return {
-    accessToken: result.accessToken,
-    accessTokenExpiresAt: result.accessTokenExpiresAt.toISOString(),
-    refreshToken: result.refreshToken,
-    refreshTokenExpiresAt: result.refreshTokenExpiresAt.toISOString(),
-    user: {
-      id: result.user.id,
-      email: result.user.email,
-      displayName: result.user.displayName,
-      roles: result.user.roles,
-      permissions: result.user.permissions,
-      mfaEnrolled: result.user.mfaEnrolled,
-    },
-  };
+  return respondWith(result);
 }
 
 function sessionContext(request: Request, explicitTenant?: string): SessionContext {

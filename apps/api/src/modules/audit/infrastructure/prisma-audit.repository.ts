@@ -221,6 +221,7 @@ interface AuditRow {
   correlationId: string;
   ipAddress: string | null;
   userAgent: string | null;
+  apiClientId: string | null;
   hash: string;
   previousHash: string;
   chainHashVersion: number;
@@ -244,6 +245,7 @@ function toRow(event: AuditEventRecord) {
     correlationId: event.correlationId,
     ipAddress: event.ipAddress,
     userAgent: event.userAgent,
+    apiClientId: event.apiClientId,
     hash: event.hash,
     previousHash: event.previousHash,
     chainHashVersion: event.chainHashVersion,
@@ -268,6 +270,7 @@ function toRecord(row: AuditRow): AuditEventRecord {
     correlationId: row.correlationId,
     ipAddress: row.ipAddress,
     userAgent: row.userAgent,
+    apiClientId: row.apiClientId ? asId<AnyId>(row.apiClientId) : null,
     hash: row.hash,
     previousHash: row.previousHash,
     chainHashVersion: row.chainHashVersion,

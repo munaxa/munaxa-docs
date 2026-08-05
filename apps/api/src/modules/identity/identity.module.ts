@@ -11,10 +11,39 @@ import { DefaultMfaService } from './application/mfa.service';
 import { MFA_REPOSITORY, MFA_SERVICE } from './application/mfa.ports';
 import { PrismaMfaRepository } from './infrastructure/prisma-mfa.repository';
 import { DefaultAuthenticationService } from './application/authentication.service';
+import { DefaultApiClientService } from './application/api-client.service';
+import {
+  API_CLIENT_AUTHENTICATOR,
+  API_CLIENT_REPOSITORY,
+  API_CLIENT_SERVICE,
+} from './application/api-client.ports';
+import { DefaultFederationService } from './application/federation.service';
+import {
+  FEDERATION_SERVICE,
+  IDENTITY_PROVIDER_REPOSITORY,
+  OIDC_DISCOVERY,
+} from './application/federation.ports';
+import {
+  DefaultIdentityProviderAdminService,
+  IDENTITY_PROVIDER_ADMIN_SERVICE,
+} from './application/identity-provider-admin.service';
+import { PrismaApiClientRepository } from './infrastructure/prisma-api-client.repository';
+import { IdentityApiKeyAuthenticator } from './infrastructure/api-key.authenticator';
+import { HttpOidcDiscovery } from './infrastructure/http-oidc.discovery';
+import {
+  PrismaFederatedUserRepository,
+  PrismaIdentityProviderRepository,
+} from './infrastructure/prisma-federation.repository';
+import { ApiClientController } from './presentation/api-client.controller';
+import {
+  FederationController,
+  IdentityProviderController,
+} from './presentation/federation.controller';
 import {
   CREDENTIAL_REPOSITORY,
   DELEGATION_REPOSITORY,
   DELEGATION_SERVICE,
+  FEDERATED_USER_REPOSITORY,
   PROVISIONING_REPOSITORY,
   SESSION_REPOSITORY,
   USER_DIRECTORY,
@@ -84,6 +113,12 @@ import {
     UserAdminController,
     RoleAdminController,
     DelegationController,
+    // Phase 17. Machine credentials and the tenant's identity provider are *authentication*, which
+    // is this module's own question, so they live here rather than in `IntegrationModule` — see
+    // that module's note for the argument.
+    ApiClientController,
+    FederationController,
+    IdentityProviderController,
   ],
   providers: [
     // Phase 15: the users report, and — separately — whose reach a queued export runs under.
@@ -114,6 +149,27 @@ import {
     // The lane's consumer, declared here rather than in a worker for the reason every consumer
     // since Phase 4 is: `apps/worker` composes none of the domain modules.
     DelegationLaneConsumer,
+    // Phase 17: the machine caller. `DefaultApiClientService` is bound to three tokens because it
+    // is genuinely three roles of one class — the administration service, and the authenticator the
+    // middleware reaches through `core/auth`'s port. Splitting it would put the scope intersection
+    // in one class and the key verification in another, and those two have to agree exactly.
+    { provide: API_CLIENT_REPOSITORY, useClass: PrismaApiClientRepository },
+    DefaultApiClientService,
+    { provide: API_CLIENT_SERVICE, useExisting: DefaultApiClientService },
+    { provide: API_CLIENT_AUTHENTICATOR, useExisting: DefaultApiClientService },
+    IdentityApiKeyAuthenticator,
+
+    // Phase 17: federation. One adapter for SSO, Entra ID and Google Workspace — they differ in a
+    // discovery URL and a claim name, both of which are columns.
+    { provide: IDENTITY_PROVIDER_REPOSITORY, useClass: PrismaIdentityProviderRepository },
+    { provide: FEDERATED_USER_REPOSITORY, useClass: PrismaFederatedUserRepository },
+    { provide: OIDC_DISCOVERY, useClass: HttpOidcDiscovery },
+    {
+      provide: IDENTITY_PROVIDER_ADMIN_SERVICE,
+      useClass: DefaultIdentityProviderAdminService,
+    },
+    { provide: FEDERATION_SERVICE, useClass: DefaultFederationService },
+
     { provide: PASSWORD_HASHER, useClass: ScryptPasswordHasher },
     { provide: REFRESH_TOKEN_FACTORY, useClass: RandomRefreshTokenFactory },
     // The issuer and the verifier are one class: they share the secret, the algorithm and the
@@ -143,6 +199,10 @@ import {
     // Identity's tables.
     DELEGATION_SERVICE,
     ProvisioningService,
+    // Phase 17: the composition root binds this behind `core/auth`'s `API_KEY_AUTHENTICATOR`, in
+    // the one place that may import both `core/` and a module — exactly as `TOKEN_VERIFIER` has
+    // been bound since Phase 1.
+    IdentityApiKeyAuthenticator,
   ],
 })
 export class IdentityModule {}

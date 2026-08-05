@@ -27,6 +27,8 @@ export const QueueName = {
   AUDIT_EXPORT: 'audit.export',
   REPORTING_EXPORT: 'reporting.export',
   DOCUMENTS_BULK: 'documents.bulk',
+  WEBHOOKS_DELIVER: 'webhooks.deliver',
+  AUDIT_STREAM: 'audit.stream',
   OUTBOX_DISPATCH: 'outbox.dispatch',
 } as const;
 
@@ -190,6 +192,61 @@ export const QUEUES: readonly QueueDefinition[] = Object.freeze([
     description:
       'Bulk document operations, one transaction per object, under the requester’s own reach.',
   },
+  {
+    /**
+     * Outbound webhooks — Phase 17, and the first lane in the product whose work is an HTTP
+     * request to **somebody else's server**.
+     *
+     * That is what separates it by cost (§8), and it is not the usual kind of cost. Every other
+     * lane's slowest job is bounded by something this deployment controls: a renderer's CPU cap, a
+     * query's row limit, a transaction's statement timeout. A webhook's is bounded by a receiver
+     * who may accept the connection and never answer — which is why `webhook.timeoutSeconds` is a
+     * setting with a low default and why the concurrency here is high relative to the work: the
+     * slots are spent waiting, not computing.
+     *
+     * `perTenantConcurrency` of 4 against a lane of 12. A tenant with eight endpoints subscribed
+     * to everything produces eight deliveries per event, and one such tenant during a bulk import
+     * would otherwise be every slot in the lane while everybody else's approval notifications
+     * wait behind a stranger's unresponsive URL. This is the second lane to declare a cap, and the
+     * first where the contended resource is *latency somebody else controls* rather than a
+     * database.
+     *
+     * Retries are **not** BullMQ's. `attempts: 1` here, and the delivery record carries its own
+     * attempt count and `nextAttemptAt` — because a webhook's retry schedule is a tenant setting,
+     * has to survive a worker restart, and has to be visible to the administrator whose endpoint
+     * is failing. A lane-level retry would be a second, invisible schedule with different numbers.
+     */
+    name: QueueName.WEBHOOKS_DELIVER,
+    concurrency: 12,
+    perTenantConcurrency: 4,
+    retry: { attempts: 1, backoffMs: 0, backoff: 'fixed' },
+    timeoutMs: 120_000,
+    description:
+      'Outbound webhook deliveries, signed and retried on the delivery record’s own schedule.',
+  },
+  {
+    /**
+     * The push half of 13 §6's SIEM sink — Phase 17.
+     *
+     * A lane of its own rather than a second workload on `webhooks.deliver`, and the reason is the
+     * cursor. A webhook delivery is one event to one endpoint and is independent of every other; a
+     * sink push is a *contiguous range* of one tenant's hash chain, and the next push may not
+     * start until the last one's cursor has advanced. Two concurrent pushes for one tenant would
+     * either send the same range twice or advance the cursor past events nobody sent — and the
+     * gap-free sequence, which is the whole reason a SIEM can trust this stream, would stop being
+     * a guarantee this end can make.
+     *
+     * So concurrency 2 across tenants with a per-tenant cap of 1: two customers' sinks proceed
+     * together and one customer's sink is strictly serial with itself.
+     */
+    name: QueueName.AUDIT_STREAM,
+    concurrency: 2,
+    perTenantConcurrency: 1,
+    retry: { attempts: 3, backoffMs: 60_000, backoff: 'exponential' },
+    timeoutMs: 300_000,
+    description:
+      'Pushes a contiguous range of the audit chain to a tenant’s collector, strictly serial per tenant.',
+  },
 ]);
 
 export function queueDefinition(name: QueueNameKey): QueueDefinition {
@@ -314,5 +371,43 @@ export const SCHEDULE: readonly ScheduledJob[] = Object.freeze([
     cron: '*/5 * * * *',
     lockKey: 'schedule:notifications.release-batches',
     description: 'Emits one summary per closed coalescing window, and discards the window.',
+  },
+  {
+    /**
+     * Retries the webhook deliveries whose backoff has elapsed — Phase 17.
+     *
+     * A schedule rather than a delayed job per delivery, and the reasoning is `notifications.deliver`'s
+     * exactly: a receiver is either reachable or it is not, and five hundred delayed jobs
+     * discovering that separately is five hundred backoff curves where one sweep belongs. It is
+     * also what makes a retry survive a worker restart — a delayed job lives in Redis, and a
+     * delivery that must not be lost cannot depend on that.
+     *
+     * The first attempt does **not** come from here. It is enqueued by the outbox dispatcher the
+     * instant the event is routed, so an ordinary delivery is not waiting up to a minute for a
+     * sweep; this lane is only for the ones that failed.
+     */
+    name: 'webhooks.retry-due',
+    queue: QueueName.WEBHOOKS_DELIVER,
+    cron: '* * * * *',
+    lockKey: 'schedule:webhooks.retry-due',
+    description:
+      'Re-attempts webhook deliveries whose backoff has elapsed, and dead-letters the spent.',
+  },
+  {
+    /**
+     * Advances each tenant's audit sink cursor — Phase 17, and 13 §6's push half.
+     *
+     * Every minute rather than on each audit write, because a sink is a *stream* rather than a
+     * reaction: batching a minute of the chain into one request is what makes the range
+     * contiguous, and a per-event push would post one HTTP request per document view.
+     *
+     * Only the `PUSH` sinks run here. A `PULL` sink is a cursor the customer's collector polls and
+     * costs this deployment nothing at all until they call.
+     */
+    name: 'audit.stream-sinks',
+    queue: QueueName.AUDIT_STREAM,
+    cron: '* * * * *',
+    lockKey: 'schedule:audit.stream-sinks',
+    description: 'Pushes each tenant’s new audit events to its collector, from the stored cursor.',
   },
 ]);

@@ -216,6 +216,7 @@ export class BufferedReadAuditWriter
             correlationId: buffered.actor.correlationId,
             ipAddress: buffered.actor.ipAddress,
             userAgent: buffered.actor.userAgent,
+            apiClientId: buffered.actor.apiClientId ?? null,
           };
           const hash = chainHash(previousHash, material, CURRENT_CHAIN_HASH_VERSION);
           records.push({

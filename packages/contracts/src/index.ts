@@ -67,6 +67,13 @@
  * asserting a container it never wrote. And an export carries `truncated` and `substitutions`,
  * because a spreadsheet cut off at a round number looks exactly like a complete one.
  *
+ * Phase 17 adds `integration/` — API clients, webhooks, federation and the audit sink. The shape
+ * worth noticing is what an API client's body cannot say: there is no permission field anywhere in
+ * it. What a key may do is the intersection of its scopes with what its *subject* holds, computed
+ * on every request, so a client that could name a permission could grant itself one. The second is
+ * that a secret appears in exactly one response per resource and in no request that reads one —
+ * there is no endpoint by which a key or a signing secret can be asked for again.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -106,3 +113,4 @@ export * from './retention/retention';
 export * from './notifications/notification';
 export * from './dashboard/dashboard';
 export * from './reporting/reporting';
+export * from './integration/integration';

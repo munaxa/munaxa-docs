@@ -24,6 +24,8 @@ import { StorageCheckpointStore } from './infrastructure/storage-checkpoint.stor
 import { AuditController } from './presentation/audit.controller';
 
 import { REPORT_AUDIT_SOURCE } from '../reporting/application/ports';
+import { AuditStreamSourceAdapter } from './infrastructure/stream-source.adapter';
+import { AUDIT_STREAM_SOURCE } from '../integration/application/ports';
 import { AuditReportSource } from './infrastructure/report-source.adapter';
 /**
  * Audit — What happened, when, by whom — provably?
@@ -53,6 +55,11 @@ import { AuditReportSource } from './infrastructure/report-source.adapter';
   imports: [StorageModule],
   controllers: [AuditController],
   providers: [
+    // Phase 17: the SIEM stream's source. The port is declared by `IntegrationModule` and
+    // implemented here, because this module owns the table — Phase 13's shape, and for its reason:
+    // an integration module holding `AUDIT_REPOSITORY` would hold a handle able to `append` to the
+    // hash chain.
+    { provide: AUDIT_STREAM_SOURCE, useClass: AuditStreamSourceAdapter },
     // Phase 15: the audit report — a projection over `AuditReadService.search`, never a second
     // query beside it, and behind `audit:view` as well as `report:view`.
     { provide: REPORT_AUDIT_SOURCE, useClass: AuditReportSource },
@@ -75,6 +82,7 @@ import { AuditReportSource } from './infrastructure/report-source.adapter';
     AuditLaneConsumer,
   ],
   exports: [
+    AUDIT_STREAM_SOURCE,
     REPORT_AUDIT_SOURCE,
     AUDIT_WRITER,
     AUDIT_REPOSITORY,

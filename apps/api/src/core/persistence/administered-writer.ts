@@ -169,15 +169,24 @@ export class AdministeredWriter {
     }
   }
 
+  /**
+   * Who the trail records as having acted, and **through what**.
+   *
+   * The channel was the literal `'WEB'` here from Phase 2 until Phase 17, which made it a guess
+   * rather than a fact: a bulk import running on a lane and an API key writing metadata both
+   * recorded themselves as a browser. It now comes from the request context, which the
+   * authenticator sets from the credential that was actually presented.
+   */
   private actor(): AuditActor {
     const context = requireContext();
     return {
       tenantId: context.tenantId,
       userId: context.userId,
-      channel: 'WEB',
+      channel: context.channel ?? 'WEB',
       correlationId: context.correlationId,
       ipAddress: null,
       userAgent: null,
+      ...(context.apiClientId !== undefined && { apiClientId: context.apiClientId }),
     };
   }
 }

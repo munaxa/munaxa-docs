@@ -606,6 +606,60 @@ export const en = {
       lastDefault: 'Make another calendar the default before removing this one.',
     },
     /** Phase 12: tenant-editable notification wording, and the addresses mail stopped reaching. */
+    /**
+     * Phase 17 — the integration platform.
+     *
+     * The wording here does the work a form's validation cannot: a secret shown once has to *say*
+     * it is shown once, and a key bound to a person has to say that it can reach what that person
+     * can. Both are facts somebody discovers too late otherwise.
+     */
+    apiClients: {
+      title: 'API clients',
+      description:
+        'Credentials for the systems that call this product. Each acts as a person and can reach exactly what they can.',
+      subject: 'Acts as',
+      subjectHint:
+        'The key can read and change exactly what this person can, and nothing more. Removing their access removes the key’s.',
+      scopes: 'Scopes',
+      scopesHint:
+        'A scope narrows what the key may do. It can never grant something the person above does not already hold.',
+      prefix: 'Key',
+      lastUsed: 'Last used',
+      neverUsed: 'Never',
+      createTitle: 'Create an API client',
+      createHint: 'The key is shown once, when you save. It cannot be retrieved afterwards.',
+      mintedTitle: 'Your API key',
+      mintedHint: 'Copy it now. It is not stored and cannot be shown again.',
+    },
+    webhooks: {
+      title: 'Webhooks',
+      description:
+        'Where this organisation’s events are sent. Each delivery is signed, retried, and recorded.',
+      url: 'Endpoint',
+      urlHint:
+        'An https address. Your deployment only sends to hosts an operator has allowed, and refuses others when you save.',
+      events: 'Events',
+      eventsHint:
+        'Leave blank to receive everything. Otherwise list families — document, workflow, retention — separated by commas.',
+      allEvents: 'Everything',
+      failures: 'Failures',
+      state: 'State',
+      enabled: 'Enabled',
+      disabled: 'Disabled',
+      reenableHint:
+        'Turning it back on also clears the failure count, so a fixed receiver does not switch itself off again.',
+      createTitle: 'Add an endpoint',
+      createHint: 'The signing secret is shown once, when you save.',
+      editTitle: 'Edit endpoint',
+      mintedTitle: 'Your signing secret',
+      mintedHint:
+        'Your receiver verifies each delivery with this. Copy it now — it cannot be shown again.',
+    },
+    integration: {
+      secretWarning:
+        'This is the only time this value is shown. It is not stored and cannot be recovered.',
+      secretDismiss: 'I have copied it',
+    },
     notificationTemplates: {
       title: 'Notification templates',
       description:

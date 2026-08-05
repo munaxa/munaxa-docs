@@ -66,6 +66,13 @@ enum AuditSubjectType {
   /// A bulk operation — Phase 16's addition, same reasoning again: an act over four hundred
   /// documents belongs on no single document's timeline.
   BULK_OPERATION
+  /// An integration — Phase 17: an API client, a webhook endpoint, an identity provider or an
+  /// audit sink. One type for four resources, unlike the three above, because they have one
+  /// audience and one question between them: what did an administrator change about how this
+  /// tenant connects to other systems. `CONFIGURATION` was the near miss and would have put
+  /// "somebody minted a key that reads every document this person can" beside "somebody changed
+  /// the digest hour".
+  INTEGRATION
 
   @@map("audit_subject_type")
 }
@@ -238,6 +245,11 @@ model Tenant {
   aclEntries               AclEntry[]
   mfaEnrolments            MfaEnrolment[]
   mfaRecoveryCodes         MfaRecoveryCode[]
+  apiClients               ApiClient[]
+  webhookEndpoints         WebhookEndpoint[]
+  webhookDeliveries        WebhookDelivery[]
+  identityProviders        IdentityProvider[]
+  auditSinks               AuditSink[]
   documentTemplates        DocumentTemplate[]
   documentSignatures       DocumentSignature[]
   bulkOperations           BulkOperation[]
@@ -285,12 +297,22 @@ model AuditEvent {
   correlationId    String           @map("correlation_id")
   ipAddress        String?          @map("ip_address")
   userAgent        String?          @map("user_agent")
+  /// Which API key the request arrived on — Phase 17, and null for every human request.
+  ///
+  /// A column rather than a payload field, so the chain's digest covers it: "which credential did
+  /// this" is the first question an incident asks, and an answer only the payload carries is an
+  /// answer somebody with write access can change without breaking a hash. Covered by
+  /// `chain_hash_version` 3.
+  ///
+  /// Not a foreign key, for `bulk_operation_item.target_id`'s reason: the trail outlives its
+  /// subject, and a revoked key that is later deleted must not take the record of what it did.
+  apiClientId      String?          @map("api_client_id") @db.Uuid
   hash             String           @db.Char(64)
   previousHash     String           @map("previous_hash") @db.Char(64)
   /// Which field set this row's digest covers (`core/audit/hash-chain.ts`).
   ///
   /// `1` is Phase 1's nine fields; `2` adds `sequence`, `channel`, `on_behalf_of_id`, `reason`,
-  /// `correlation_id`, `ip_address` and `user_agent`. Stamped per row rather than assumed per
+  /// `correlation_id`, `ip_address` and `user_agent`; `3` adds `api_client_id`. Stamped per row rather than assumed per
   /// deployment because rows written under the older digest cannot be rehashed — the table
   /// refuses `UPDATE` to every role, owner included, which is precisely the property that makes
   /// the trail worth having. Verification dispatches on this, and an evidence bundle's manifest
@@ -461,6 +483,16 @@ model User {
   passwordAlgorithm PasswordAlgorithm? @map("password_algorithm")
   passwordUpdatedAt DateTime?          @map("password_updated_at") @db.Timestamptz(6)
   mfaEnrolled       Boolean            @default(false) @map("mfa_enrolled")
+  /// Where this identity came from — Phase 17, and the column whose absence was the phase's first
+  /// finding: `password_hash` has been nullable since Phase 1 and **nothing anywhere recorded
+  /// where an identity originated**. A user with no password could equally be an invitation not
+  /// yet accepted or somebody who signs in through Entra ID, and the product could not tell.
+  identitySource    IdentitySource     @default(LOCAL) @map("identity_source")
+  /// The provider's own subject claim. The join key for a returning federated signer, and the
+  /// reason a person who changes their email address at the provider is still the same person.
+  externalId        String?            @map("external_id")
+  identityProviderId String?           @map("identity_provider_id") @db.Uuid
+  federatedAt       DateTime?          @map("federated_at") @db.Timestamptz(6)
   /// Bumped whenever this user's roles or permissions change. An access token carrying an
   /// older value is refused, so a revoked role takes effect within one request rather than
   /// at the end of the token's lifetime.
@@ -497,9 +529,18 @@ model User {
   mfaEnrolment            MfaEnrolment?
   signatures              DocumentSignature[]
   bulkOperations          BulkOperation[]
+  apiClientSubjects       ApiClient[]              @relation("ApiClientSubject")
+  identityProvider        IdentityProvider?        @relation(fields: [identityProviderId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
+  /// The federated lookup, and unique so one provider subject can never be two accounts.
+  ///
+  /// It needs no `WHERE deleted_at IS NULL` and that is a property of the columns rather than an
+  /// omission: PostgreSQL treats NULLs as distinct in a unique index, and every local user has a
+  /// NULL `identity_provider_id` and a NULL `external_id`. So the constraint binds exactly the
+  /// federated rows and ignores every password account, which is what it is for.
+  @@unique([tenantId, identityProviderId, externalId], map: "uq_user_external_identity")
   @@map("user")
 }
 
@@ -3636,4 +3677,274 @@ model BulkOperationItem {
   @@unique([operationId, targetId], map: "uq_bulk_operation_item")
   @@index([tenantId, operationId, outcome], map: "ix_bulk_operation_item_outcome")
   @@map("bulk_operation_item")
+}
+
+// ---------------------------------------------------------------------------------------
+// Integration — Phase 17
+//
+// The machine caller, the outbound webhook, the tenant's identity provider and its audit sink.
+// Four resources, one permission (`integration:manage`) and one audit subject type
+// (`INTEGRATION`), for the reasons their catalogue entries give.
+// ---------------------------------------------------------------------------------------
+
+/// How a webhook delivery ended, or has not yet.
+///
+/// Its own type rather than a share with `delivery_state`, which is the same decision Phase 15 and
+/// Phase 16 each made about their export states and holds harder here: a notification's
+/// `SUPPRESSED`, `HELD` and `DIGESTED` mean nothing for an endpoint, and `DEAD` has no
+/// notification counterpart.
+enum WebhookDeliveryState {
+  PENDING
+  DELIVERED
+  RETRYING
+  /// Out of attempts. The row survives with its payload — 18 §8's "never silently dropped",
+  /// applied to a recipient that is a system.
+  DEAD
+
+  @@map("webhook_delivery_state")
+}
+
+/// How a tenant federates. One value, deliberately — see `packages/domain/src/integration.ts`.
+enum IdentityProviderKind {
+  OIDC
+
+  @@map("identity_provider_kind")
+}
+
+/// Where a user's identity came from.
+enum IdentitySource {
+  LOCAL
+  FEDERATED
+
+  @@map("identity_source")
+}
+
+/// Whether the collector polls us or we post to it (`13-audit-architecture.md` §6).
+enum AuditSinkKind {
+  PULL
+  PUSH
+
+  @@map("audit_sink_kind")
+}
+
+/// A machine caller.
+///
+/// **Bound to a person, always** — [ADR-0018](../docs/architecture/adr/0018-machine-identity-as-a-delegated-subject.md).
+/// `subject_user_id` is not optional and has no default: a client with no subject would be a
+/// caller whose `RequestContext.userId` is null, and `PrismaDocumentRepository.visibilityCondition`
+/// answers a subject-less caller with an **empty predicate**, which is the whole tenant. That is
+/// the defect Phase 15 found in the export lane and it would be a data breach rather than a bug
+/// here, so the schema makes it unrepresentable rather than the code remembering not to.
+///
+/// The secret is stored as a digest and never again in clear. `key_prefix` is the selector — the
+/// visible part of the presented key, so the lookup is one indexed read rather than a scan that
+/// verifies every row's digest in turn.
+model ApiClient {
+  id            String    @id @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  name          String
+  description   String?
+  /// The clear, indexed selector. Shown in lists so an administrator can tell two keys apart.
+  keyPrefix     String    @map("key_prefix")
+  /// scrypt, the same construction and the same verifier as a password. Never returned.
+  secretHash    String    @map("secret_hash")
+  /// Whose reach this key has. Required, and the point of the whole model.
+  subjectUserId String    @map("subject_user_id") @db.Uuid
+  /// `ApiScope` values. Narrows the subject's tenant-wide grants; can never widen them.
+  scopes        String[]
+  /// Null for a key that does not expire. An expiry is a predicate at authentication, so a
+  /// stalled sweep can never leave a dead key working — Phase 11's rule for delegation.
+  expiresAt     DateTime? @map("expires_at") @db.Timestamptz(6)
+  /// Written on use, coarsely: a key nobody can date is a key nobody dares revoke.
+  lastUsedAt    DateTime? @map("last_used_at") @db.Timestamptz(6)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedBy     String?   @map("revoked_by") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?   @map("created_by") @db.Uuid
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?   @map("updated_by") @db.Uuid
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy     String?   @map("deleted_by") @db.Uuid
+  version       Int       @default(1)
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  subject User   @relation("ApiClientSubject", fields: [subjectUserId], references: [id], onDelete: Restrict)
+
+  /// The lookup index, and unique so two live keys can never share a selector — which would make
+  /// the authenticator's single indexed read ambiguous. Partial on `deleted_at IS NULL`, like
+  /// every other unique on soft-deletable data.
+  @@unique([tenantId, keyPrefix], map: "uq_api_client_prefix")
+  @@index([tenantId, subjectUserId], map: "ix_api_client_subject")
+  @@map("api_client")
+}
+
+/// Where a tenant's events go.
+///
+/// The signing secret is stored in clear, and that is a deliberate departure from every other
+/// secret in this schema — which are all digests. It has to be: a signature is computed from it on
+/// every delivery, so a one-way digest could not produce one. It is a *shared* secret with a
+/// receiver rather than a credential that authenticates anybody to us, it is never returned by any
+/// read path after creation, and 17 §7's rule about secrets is about the ones that grant access
+/// here. Rotating it is a new value, not a re-derivation.
+model WebhookEndpoint {
+  id               String    @id @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  name             String
+  url              String
+  /// The HMAC key a receiver verifies with. Write-only from the API's point of view.
+  secret           String
+  /// Which event families this endpoint wants. **Empty means every event** — see
+  /// `webhookSubscribes` for why that is the right default rather than the lazy one.
+  eventTypes       String[]  @map("event_types")
+  enabled          Boolean   @default(true)
+  /// Consecutive failures. Reset by any success, so it measures "is this endpoint dead now"
+  /// rather than "has it ever failed".
+  failureCount     Int       @default(0) @map("failure_count")
+  /// Set when the failure threshold disables it. Reversible, and recorded rather than silent.
+  disabledAt       DateTime? @map("disabled_at") @db.Timestamptz(6)
+  disabledReason   String?   @map("disabled_reason")
+  lastSuccessAt    DateTime? @map("last_success_at") @db.Timestamptz(6)
+  lastFailureAt    DateTime? @map("last_failure_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy        String?   @map("deleted_by") @db.Uuid
+  version          Int       @default(1)
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  deliveries WebhookDelivery[]
+
+  @@index([tenantId, enabled], map: "ix_webhook_endpoint_enabled")
+  @@map("webhook_endpoint")
+}
+
+/// One event's journey to one endpoint.
+///
+/// A row per (event, endpoint) rather than per event, because two endpoints subscribed to the same
+/// family fail independently and a shared row could not say which succeeded.
+///
+/// The payload is stored rather than recomputed. That is what makes a dead delivery *replayable*:
+/// the alternative is reconstructing it from the outbox row, which requires the outbox row still to
+/// exist and the rendering to be unchanged since — two assumptions a replay a week later cannot
+/// make.
+model WebhookDelivery {
+  id             String               @id @db.Uuid
+  tenantId       String               @map("tenant_id") @db.Uuid
+  endpointId     String               @map("endpoint_id") @db.Uuid
+  /// The outbox row this came from. The de-duplication key, with the endpoint.
+  eventId        String               @map("event_id") @db.Uuid
+  eventType      String               @map("event_type")
+  /// Exactly the bytes that were signed and sent. A re-serialisation would not verify.
+  payload        String
+  state          WebhookDeliveryState @default(PENDING)
+  attempts       Int                  @default(0)
+  /// When the next attempt is due. Null once the delivery is settled either way.
+  nextAttemptAt  DateTime?            @map("next_attempt_at") @db.Timestamptz(6)
+  deliveredAt    DateTime?            @map("delivered_at") @db.Timestamptz(6)
+  /// The receiver's status, when there was one. Null for a refusal or a timeout.
+  responseStatus Int?                 @map("response_status")
+  /// Why the last attempt failed, in words safe to show an administrator and to store.
+  lastError      String?              @map("last_error")
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant   Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  /// At-least-once delivery from the outbox means the same event arrives twice; this is what makes
+  /// the second arrival a no-op rather than a second POST to somebody's server.
+  @@unique([endpointId, eventId], map: "uq_webhook_delivery_event")
+  /// The retry sweep's index: due, unsettled, oldest first.
+  @@index([tenantId, state, nextAttemptAt], map: "ix_webhook_delivery_due")
+  @@index([tenantId, endpointId, createdAt(sort: Desc)], map: "ix_webhook_delivery_endpoint")
+  @@map("webhook_delivery")
+}
+
+/// A tenant's identity provider — 17 §2's "per-tenant OIDC/SAML".
+///
+/// One row per tenant, enforced by the unique index: "the tenant's domain determines the provider"
+/// is a sentence about one provider, and a tenant with two would need a rule for which wins that
+/// §2 does not give. A tenant migrating between providers replaces the row.
+model IdentityProvider {
+  id             String               @id @db.Uuid
+  tenantId       String               @map("tenant_id") @db.Uuid
+  kind           IdentityProviderKind @default(OIDC)
+  name           String
+  /// The issuer as it appears in the ID token's `iss`. Compared exactly, never normalised.
+  issuer         String
+  /// Where the discovery document lives. Fetched through the allow-listed outbound port and
+  /// nowhere else — this is the URL 17 §6's SSRF row has always been about.
+  discoveryUrl   String               @map("discovery_url")
+  clientId       String               @map("client_id")
+  /// Stored in clear for the reason a webhook secret is: the token exchange presents it.
+  clientSecret   String               @map("client_secret")
+  /// The email domains this provider answers for. Matched on a label boundary.
+  domains        String[]
+  /// Claim names, because Entra ID and Google Workspace use different ones. See `ClaimMapping`.
+  claimMapping   Json                 @default("{}") @map("claim_mapping")
+  /// `RoleMapping[]` — the pre-mapped roles 17 §2 requires. A provider asserts groups; the
+  /// tenant decides in advance what each group means here.
+  roleMappings   Json                 @default("[]") @map("role_mappings")
+  /// The roles everybody who signs in through this provider gets, before mappings add to them.
+  defaultRoleKeys String[]            @map("default_role_keys")
+  /// Whether a first-time signer is created at all. Off means federation authenticates people who
+  /// already have an account and refuses everybody else, which is what a tenant that provisions
+  /// through its own onboarding wants.
+  jitProvisioning Boolean             @default(true) @map("jit_provisioning")
+  enabled        Boolean              @default(false)
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?              @map("created_by") @db.Uuid
+  updatedAt      DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?              @map("updated_by") @db.Uuid
+  deletedAt      DateTime?            @map("deleted_at") @db.Timestamptz(6)
+  deletedBy      String?              @map("deleted_by") @db.Uuid
+  version        Int                  @default(1)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  users  User[]
+
+  @@unique([tenantId], map: "uq_identity_provider_tenant")
+  @@map("identity_provider")
+}
+
+/// Where a tenant's trail is streamed — 13 §6's SIEM row, and "optional per tenant" as a table
+/// that need not have a row.
+///
+/// `PULL` needs no endpoint and makes no outbound request; `PUSH` needs both and is why the
+/// outbound allow-list exists. The cursor is the same column for both, and it is
+/// `audit_event.sequence` — per-tenant, monotonic and gap-free, which is a stronger completeness
+/// guarantee than a timestamp window and is the reason this integration is worth having.
+model AuditSink {
+  id                   String        @id @db.Uuid
+  tenantId             String        @map("tenant_id") @db.Uuid
+  kind                 AuditSinkKind @default(PULL)
+  name                 String
+  /// Null for a `PULL` sink, which is the whole of its difference.
+  endpointUrl          String?       @map("endpoint_url")
+  /// The HMAC key the collector verifies a pushed batch with. Null for `PULL`, where the
+  /// collector authenticates to us with an API key instead and there is nothing to sign.
+  secret               String?
+  /// Which actions to carry. Empty means the whole trail; naming actions is how a tenant keeps a
+  /// volume-priced SIEM from ingesting every `DOCUMENT_VIEWED`.
+  actions              String[]
+  /// How far the push has got. Never rewound by the product — a collector that needs a replay
+  /// asks an administrator to move it, which is an audited change.
+  lastStreamedSequence BigInt        @default(0) @map("last_streamed_sequence")
+  lastStreamedAt       DateTime?     @map("last_streamed_at") @db.Timestamptz(6)
+  lastError            String?       @map("last_error")
+  enabled              Boolean       @default(false)
+  createdAt            DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy            String?       @map("created_by") @db.Uuid
+  updatedAt            DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy            String?       @map("updated_by") @db.Uuid
+  deletedAt            DateTime?     @map("deleted_at") @db.Timestamptz(6)
+  deletedBy            String?       @map("deleted_by") @db.Uuid
+  version              Int           @default(1)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId], map: "uq_audit_sink_tenant")
+  @@map("audit_sink")
 }

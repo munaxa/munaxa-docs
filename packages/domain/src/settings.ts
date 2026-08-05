@@ -486,6 +486,95 @@ export const Settings = {
     true,
     'Whether signing asks for the signer’s password again. Required by 21 CFR Part 11 §11.200.',
   ),
+
+  // --- Phase 17: the integration platform -------------------------------------------------
+
+  /**
+   * Whether this tenant may authenticate machine callers at all.
+   *
+   * Read at the **authenticator**, not at the screen that mints a key: a tenant that turns this
+   * off wants every existing key to stop working now, not to stop being creatable. The keys
+   * survive, disabled by the flag rather than deleted, so turning it back on does not mean
+   * re-issuing credentials to every integration somebody built.
+   */
+  FEATURE_API_CLIENTS: booleanSetting(
+    'feature.apiClients',
+    true,
+    'Whether machine callers may authenticate with an API key.',
+  ),
+
+  FEATURE_WEBHOOKS: booleanSetting(
+    'feature.webhooks',
+    true,
+    'Whether domain events are delivered to this tenant’s outbound webhook endpoints.',
+  ),
+
+  /**
+   * Whether a tenant's users may sign in through its identity provider.
+   *
+   * Deliberately separate from whether a provider is *configured*. An administrator setting one up
+   * needs to save it, test the discovery document and map the roles before anybody signs in
+   * through it, and a flag that meant "configured" would make the half-configured state the live
+   * one. Local passwords are unaffected either way — 17 §2 lists federation beside local
+   * credentials rather than instead of them.
+   */
+  FEATURE_FEDERATION: booleanSetting(
+    'feature.federation',
+    false,
+    'Whether users may sign in through this tenant’s identity provider.',
+  ),
+
+  /** Whether the audit sink streams at all — 13 §6's "optional per tenant", as a flag. */
+  FEATURE_AUDIT_STREAMING: booleanSetting(
+    'feature.auditStreaming',
+    false,
+    'Whether the audit trail is available to an external collector, by pull cursor or by push.',
+  ),
+
+  /**
+   * How many times a webhook delivery is attempted before it is dead-lettered.
+   *
+   * The floor is 1 rather than 0 — an endpoint configured to receive nothing is a disabled
+   * endpoint, and expressing it here would give two ways to say one thing. The ceiling is 12,
+   * which with the capped exponential backoff is a little over a day of retrying: long enough to
+   * cover a receiver's weekend outage, short enough that a decommissioned URL stops costing
+   * requests within one.
+   */
+  WEBHOOK_MAX_ATTEMPTS: integerSetting(
+    'webhook.maxAttempts',
+    8,
+    'How many times an undelivered webhook is retried before it is dead-lettered.',
+    { min: 1, max: 12 },
+  ),
+
+  /**
+   * How long a receiver has to answer before the attempt is a failure.
+   *
+   * Short on purpose. A webhook consumer that needs longer than this is doing work in its handler
+   * that belongs in its own queue, and waiting for it holds a delivery slot that everybody else's
+   * endpoints are behind.
+   */
+  WEBHOOK_TIMEOUT_SECONDS: integerSetting(
+    'webhook.timeoutSeconds',
+    10,
+    'How long an endpoint has to acknowledge a delivery before the attempt fails.',
+    { min: 1, max: 60 },
+  ),
+
+  /**
+   * How many events one audit-stream page may carry.
+   *
+   * Bounded like every other page in the product, and for one extra reason here: a collector
+   * asking for a million rows in one request would hold a transaction open across the whole
+   * range, and the trail is the one table in the product with a per-tenant advisory lock in front
+   * of its writes.
+   */
+  AUDIT_STREAM_PAGE_SIZE: integerSetting(
+    'audit.streamPageSize',
+    500,
+    'How many audit events one page of the stream carries.',
+    { min: 25, max: 2_000 },
+  ),
 } as const;
 
 export type SettingKey = (typeof Settings)[keyof typeof Settings]['key'];

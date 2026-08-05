@@ -81,3 +81,41 @@ export interface AuthenticationResponse {
     readonly mfaEnrolled: boolean;
   };
 }
+
+/**
+ * The wire shape of a successful authentication, from whichever path produced it.
+ *
+ * Lifted here in Phase 17 so that a **federated** sign-in and a password sign-in cannot answer
+ * differently. Two mappers would be two chances for one of them to add a field the other did not,
+ * and a client that could tell the two apart would start branching on it — which is the opposite
+ * of the property federation is meant to have: a federated session is an ordinary session.
+ */
+export function respondWith(result: {
+  readonly accessToken: string;
+  readonly accessTokenExpiresAt: Date;
+  readonly refreshToken: string;
+  readonly refreshTokenExpiresAt: Date;
+  readonly user: {
+    readonly id: string;
+    readonly email: string;
+    readonly displayName: string;
+    readonly roles: readonly string[];
+    readonly permissions: readonly string[];
+    readonly mfaEnrolled: boolean;
+  };
+}): AuthenticationResponse {
+  return {
+    accessToken: result.accessToken,
+    accessTokenExpiresAt: result.accessTokenExpiresAt.toISOString(),
+    refreshToken: result.refreshToken,
+    refreshTokenExpiresAt: result.refreshTokenExpiresAt.toISOString(),
+    user: {
+      id: result.user.id,
+      email: result.user.email,
+      displayName: result.user.displayName,
+      roles: result.user.roles,
+      permissions: result.user.permissions,
+      mfaEnrolled: result.user.mfaEnrolled,
+    },
+  };
+}

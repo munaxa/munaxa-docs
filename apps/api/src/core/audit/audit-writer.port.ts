@@ -37,6 +37,16 @@ export interface AuditActor {
   readonly correlationId: string;
   readonly ipAddress: string | null;
   readonly userAgent: string | null;
+  /**
+   * The API key the request arrived on — Phase 17, and null for every human request.
+   *
+   * A separate column rather than a payload field, for the reason 13 §4 gives about `reason`: the
+   * chain's digest covers the row's fields, so a key identifier here is *attested* by the hash,
+   * while the same value in a `jsonb` payload would be attested only as part of a blob the
+   * verifier cannot address. "Which credential took this action" is precisely the question an
+   * incident asks first, and it must not be answerable only by trusting the payload.
+   */
+  readonly apiClientId?: AnyId;
 }
 
 export interface AuditWriter {
