@@ -84,6 +84,23 @@ export const scopeChainNodeSchema = z.object({
 });
 
 /**
+ * A node's own entries, with the chain they sit on.
+ *
+ * The chain is here as well as on the effective answer because it is a property of the *node*, not
+ * of a person: whether a folder above this one has stopped inheriting is true before anybody is
+ * named, and a screen that could only show it after choosing somebody would hide the one fact an
+ * administrator opens the screen to check.
+ */
+export const explicitAclSchema = z.object({
+  entries: z.array(storedAclEntrySchema),
+  chain: z.array(scopeChainNodeSchema),
+  inheritanceBroken: z.boolean(),
+  /** Null unless this node is a folder — only a folder carries the flag. */
+  folderId: uuidSchema.nullable(),
+  folderInheritsAcl: z.boolean().nullable(),
+});
+
+/**
  * ADR-0005's mitigation, as a response body.
  *
  * *"A `DENY` is a blunt instrument and administrators must be told so: the UI shows, for any user
@@ -109,3 +126,4 @@ export type SetInheritanceBody = z.infer<typeof setInheritanceSchema>;
 export type EffectivePermission = z.infer<typeof effectivePermissionSchema>;
 export type EffectivePermissions = z.infer<typeof effectivePermissionsSchema>;
 export type ScopeChainNode = z.infer<typeof scopeChainNodeSchema>;
+export type ExplicitAcl = z.infer<typeof explicitAclSchema>;

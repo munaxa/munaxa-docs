@@ -39,9 +39,9 @@ import {
   type AclRepository,
   type EffectivePermission,
   type EffectivePermissions,
+  type ExplicitAcl,
   type PermissionService,
   type ScopeChainReader,
-  type StoredAclEntry,
 } from './ports';
 
 /**
@@ -90,11 +90,8 @@ export class DefaultPermissionService implements PermissionService {
     private readonly writer: AdministeredWriter,
   ) {}
 
-  async explicitFor(scope: ScopeRef): Promise<readonly StoredAclEntry[]> {
-    return this.writer.read(async () => {
-      await this.requireReachable(scope);
-      return this.entries.listForScope(scope);
-    });
+  async explicitFor(scope: ScopeRef): Promise<ExplicitAcl> {
+    return this.writer.read(() => this.explicitWithin(scope));
   }
 
   /**
@@ -147,10 +144,7 @@ export class DefaultPermissionService implements PermissionService {
     });
   }
 
-  async replaceFor(
-    scope: ScopeRef,
-    drafts: readonly AclEntryDraft[],
-  ): Promise<readonly StoredAclEntry[]> {
+  async replaceFor(scope: ScopeRef, drafts: readonly AclEntryDraft[]): Promise<ExplicitAcl> {
     const entries = drafts.map((draft) => this.validate(scope, draft));
     // Refusing duplicates here rather than letting the unique index do it: the index would report
     // a constraint name, and an administrator posting two rows for one subject wants to be told
@@ -218,7 +212,7 @@ export class DefaultPermissionService implements PermissionService {
                 after: { entries: [], unchanged: true },
               };
 
-      return { result: await this.entries.listForScope(scope), change };
+      return { result: await this.explicitWithin(scope), change };
     });
   }
 
@@ -259,6 +253,34 @@ export class DefaultPermissionService implements PermissionService {
   }
 
   // --- Internals ---------------------------------------------------------------------------
+
+  /**
+   * A node's entries and its chain, inside a transaction the caller already opened.
+   *
+   * Shared by the read and the write, so the body a `PUT` returns is the body a `GET` would return
+   * — a screen that re-rendered from a differently-shaped answer would be one refresh away from
+   * disagreeing with itself about what it had just saved.
+   */
+  private async explicitWithin(scope: ScopeRef): Promise<ExplicitAcl> {
+    await this.requireReachable(scope);
+    const [entries, chain] = await Promise.all([
+      this.entries.listForScope(scope),
+      this.chains.chainFor(scope),
+    ]);
+    if (chain === null) {
+      throw new NotFoundError('The requested resource');
+    }
+    // The *nearest* folder on the chain: for a document that is the folder holding it, and for a
+    // folder it is the folder itself. That is the node whose flag the screen offers to change.
+    const folder = [...chain].reverse().find((node) => node.scope.type === ScopeType.FOLDER);
+    return {
+      entries,
+      chain,
+      inheritanceBroken: chain.some((node) => node.breaksInheritance),
+      folderId: folder === undefined ? null : asId<FolderId>(String(folder.scope.id)),
+      folderInheritsAcl: folder === undefined ? null : !folder.breaksInheritance,
+    };
+  }
 
   /**
    * The node exists and this caller may reach it — the `404` that keeps existence undisclosed.

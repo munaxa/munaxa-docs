@@ -2,6 +2,7 @@ import { Body, Controller, Get, Inject, Param, Put, Query } from '@nestjs/common
 
 import {
   type EffectivePermissions,
+  type ExplicitAcl,
   type ReplaceAclBody,
   type SetInheritanceBody,
   type StoredAclEntry,
@@ -25,6 +26,7 @@ import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { PERMISSION_SERVICE } from '../application/ports';
 import type {
   EffectivePermissions as ResolvedPermissions,
+  ExplicitAcl as ResolvedExplicitAcl,
   PermissionService,
   StoredAclEntry as StoredEntry,
 } from '../application/ports';
@@ -62,10 +64,9 @@ export class PermissionsController {
   async explicit(
     @Param('scopeType') scopeType: string,
     @Param('scopeId') scopeId: string,
-  ): Promise<{ entries: StoredAclEntry[] }> {
+  ): Promise<ExplicitAcl> {
     const scope = toScope(scopeType, scopeId);
-    const entries = await this.permissions.explicitFor(scope);
-    return { entries: entries.map((entry) => toStored(entry, scope)) };
+    return toExplicit(await this.permissions.explicitFor(scope), scope);
   }
 
   /** ADR-0005's mitigation: the effective answer, and the node that decided each one. */
@@ -88,10 +89,9 @@ export class PermissionsController {
     @Param('scopeType') scopeType: string,
     @Param('scopeId') scopeId: string,
     @Body(new ZodValidationPipe(replaceAclSchema)) body: ReplaceAclBody,
-  ): Promise<{ entries: StoredAclEntry[] }> {
+  ): Promise<ExplicitAcl> {
     const scope = toScope(scopeType, scopeId);
-    const entries = await this.permissions.replaceFor(scope, body.entries);
-    return { entries: entries.map((entry) => toStored(entry, scope)) };
+    return toExplicit(await this.permissions.replaceFor(scope, body.entries), scope);
   }
 
   /**
@@ -152,6 +152,21 @@ function toStored(entry: StoredEntry, scope: ScopeRef): StoredAclEntry {
     effect: entry.effect,
     createdAt: entry.createdAt.toISOString(),
     createdBy: entry.createdBy,
+  };
+}
+
+function toExplicit(resolved: ResolvedExplicitAcl, scope: ScopeRef): ExplicitAcl {
+  return {
+    entries: resolved.entries.map((entry) => toStored(entry, scope)),
+    chain: resolved.chain.map((node) => ({
+      type: node.scope.type,
+      id: String(node.scope.id),
+      name: node.name,
+      breaksInheritance: node.breaksInheritance,
+    })),
+    inheritanceBroken: resolved.inheritanceBroken,
+    folderId: resolved.folderId === null ? null : String(resolved.folderId),
+    folderInheritsAcl: resolved.folderInheritsAcl,
   };
 }
 

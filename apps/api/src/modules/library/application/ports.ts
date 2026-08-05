@@ -225,8 +225,14 @@ export interface LibraryService {
  * field since Phase 0.5 with nothing reading it. This is its reader.
  */
 export interface PermissionService {
-  /** The entries written *on this node*. Nothing inherited: this is the editable set. */
-  explicitFor(scope: ScopeRef): Promise<readonly StoredAclEntry[]>;
+  /**
+   * The entries written *on this node*, and the chain the node sits on.
+   *
+   * Nothing inherited among the entries — this is the editable set. The chain comes with them
+   * because whether something above has stopped inheriting is a fact about the node rather than
+   * about any person, and the screen must be able to show it before anybody has been named.
+   */
+  explicitFor(scope: ScopeRef): Promise<ExplicitAcl>;
   /**
    * What one person actually holds on one object, permission by permission, with the node that
    * decided each and the rule that did it.
@@ -237,10 +243,7 @@ export interface PermissionService {
    */
   effectiveFor(scope: ScopeRef, userId: string): Promise<EffectivePermissions>;
   /** Replaces one node's explicit entries, audited. Returns the node's new explicit set. */
-  replaceFor(
-    scope: ScopeRef,
-    entries: readonly AclEntryDraft[],
-  ): Promise<readonly StoredAclEntry[]>;
+  replaceFor(scope: ScopeRef, entries: readonly AclEntryDraft[]): Promise<ExplicitAcl>;
   /** Sets `folder.inherit_acl`, audited as `INHERITANCE_BROKEN` when it goes false. */
   setInheritance(folderId: FolderId, inherit: boolean, expectedVersion?: number): Promise<boolean>;
 }
@@ -251,6 +254,15 @@ export interface AclEntryDraft {
   readonly subjectId: string;
   readonly permission: PermissionKey;
   readonly effect: AclEffectKey;
+}
+
+export interface ExplicitAcl {
+  readonly entries: readonly StoredAclEntry[];
+  readonly chain: readonly ChainNodeRecord[];
+  readonly inheritanceBroken: boolean;
+  /** Set only when the node is a folder — only a folder carries the inheritance flag. */
+  readonly folderId: FolderId | null;
+  readonly folderInheritsAcl: boolean | null;
 }
 
 export interface EffectivePermission {

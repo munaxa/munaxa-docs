@@ -754,6 +754,7 @@ export const en = {
       backToFolder: 'Back to the folder',
       notReachable: 'This file has not cleared the malware check.',
       assignNumber: 'Assign a number',
+      permissions: 'Permissions',
     },
     number: {
       pending: 'Pending',
@@ -1178,6 +1179,66 @@ export const en = {
       fileQuarantined: 'File quarantined',
       addressSuppressed: 'Email address suppressed',
       auditChainBroken: 'Audit chain failed verification',
+    },
+  },
+  /**
+   * The permissions screen — Phase 14.
+   *
+   * Its own block rather than a section of `documents`, because the vocabulary is the permission
+   * model's rather than the library's: "allow", "deny", "the node that decided it" mean the same
+   * thing on a folder and on a library, and the screen is reachable from more than one place.
+   *
+   * The permission *keys* themselves are deliberately not translated. They are the catalogue's
+   * identifiers — `document:view` is what the API takes, what the audit payload records and what
+   * an administrator searches the trail for — and a localised label beside a key that is not
+   * localised anywhere else would be a second name for one thing.
+   */
+  permissions: {
+    title: 'Permissions',
+    subtitle: 'Who can reach {name}, and why.',
+    chain: 'Where this sits',
+    chainHint: 'Choose somebody below to see how the chain resolves for them.',
+    breaksHere: 'stops inheriting here',
+    inheritanceWarning:
+      'A folder above this one does not inherit permissions. Grants made higher up — including the tenant-wide ones — do not reach here, except for administrative permissions.',
+    breakInheritance: 'Stop inheriting here',
+    restoreInheritance: 'Inherit from above again',
+    inheritanceSaved: 'Inheritance updated.',
+    explicit: 'Set on this object',
+    explicitHint:
+      'Only what is written here. A permission somebody holds through a folder above this one does not appear in this list, and removing a row here will not take it away.',
+    noEntries: 'Nothing is set on this object; everything is inherited.',
+    effective: 'What one person actually holds',
+    effectiveHint:
+      'Resolved by the server over the whole chain, with the node that decided each answer. A deny anywhere on the chain wins, however specific a lower allow is.',
+    forPerson: 'Resolve for',
+    resolve: 'Resolve',
+    pickPerson: 'Choose somebody to see what they hold here.',
+    subject: 'Subject',
+    subjectType: 'Kind',
+    permission: 'Permission',
+    effect: 'Effect',
+    outcome: 'Outcome',
+    decidedBy: 'Decided by',
+    noNode: 'No node',
+    actions: 'Actions',
+    choose: 'Choose…',
+    user: 'Person',
+    role: 'Role',
+    department: 'Department',
+    allow: 'Allow',
+    deny: 'Deny',
+    allowed: 'Allowed',
+    refused: 'Refused',
+    grant: 'Add',
+    revoke: 'Remove',
+    saved: 'Permissions updated.',
+    duplicate: 'That subject already has an entry for this permission on this object.',
+    reason: {
+      ALLOW: 'an entry on this node',
+      DENY: 'a deny on this node',
+      ROLE_GRANT: 'their role, tenant-wide',
+      CLOSED_BY_DEFAULT: 'nothing grants it',
     },
   },
   recycleBin: {
