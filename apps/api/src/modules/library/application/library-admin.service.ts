@@ -33,6 +33,7 @@ import {
   ORGANIZATION_SERVICE,
   type OrganizationService,
 } from '../../organization/application/ports';
+import { FolderContentsRegistry } from './folder-contents.port';
 import { LibraryAudit } from '../domain/audit-actions';
 import { folderMovedEvent, libraryCreatedEvent } from '../domain/events';
 import {
@@ -79,6 +80,7 @@ export class LibraryAdminService {
     @Inject(LIBRARY_ADMIN_REPOSITORY) private readonly libraries: LibraryAdminRepository,
     @Inject(ORGANIZATION_SERVICE) private readonly organization: OrganizationService,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
+    private readonly contents: FolderContentsRegistry,
     private readonly writer: AdministeredWriter,
   ) {}
 
@@ -480,6 +482,15 @@ export class LibraryAdminService {
       }
 
       const cascadeId = this.writer.clock.nextId();
+      // The documents first: any legal hold under the subtree refuses the whole delete before a
+      // single folder is touched (ADR-0010 §5 — a hold blocks deletion absolutely, including the
+      // folder above the record). Phase 10 is where the cascade started reaching documents at
+      // all; until it, they stayed live in a deleted folder, reachable by search and nothing else.
+      const documentsRemoved = await this.contents.deleteUnder({
+        folderId: id,
+        path: current.path,
+        cascadeId,
+      });
       const removed = await this.libraries.cascadeDeleteFolder({
         id,
         version: current.version,
@@ -497,6 +508,7 @@ export class LibraryAdminService {
             name: current.name,
             cascadeId,
             foldersRemoved: removed,
+            documentsRemoved,
           },
         ),
       };
@@ -539,6 +551,7 @@ export class LibraryAdminService {
 
       const cascadeId = await this.libraries.cascadeIdOf(id);
       let restored: number;
+      let documentsRestored = 0;
       if (cascadeId === null) {
         // No cascade recorded — an older release, or a maintenance script. Restoring a "subtree" would
         // be guessing at an intent nothing wrote down, so only this folder comes back.
@@ -546,6 +559,9 @@ export class LibraryAdminService {
         restored = 1;
       } else {
         restored = await this.libraries.restoreCascade(cascadeId);
+        // The same identifier, so the restore returns exactly what the delete took: a document
+        // deleted on its own beforehand carries its own cascade identifier and stays deleted.
+        documentsRestored = await this.contents.restoreCascade(cascadeId);
       }
 
       return {
@@ -554,7 +570,7 @@ export class LibraryAdminService {
           id,
           AdministrativeOperation.RESTORED,
           { deletedAt: current.deletedAt },
-          { name: current.name, cascadeId, foldersRestored: restored },
+          { name: current.name, cascadeId, foldersRestored: restored, documentsRestored },
         ),
       };
     });

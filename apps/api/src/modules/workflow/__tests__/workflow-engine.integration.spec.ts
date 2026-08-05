@@ -1375,7 +1375,9 @@ describe('numbering', () => {
     // Delete and recreate: the number stays spent forever. Uniqueness deliberately ignores
     // `deleted_at`, so a deleted document holds its number for good (§5).
     const doomed = await owner.document.findUniqueOrThrow({ where: { id: manualId } });
-    await as(() => library.documents.remove(manualId, doomed.version));
+    await as(() =>
+      library.documents.remove(manualId, doomed.version, 'superseded by a newer drawing'),
+    );
     await expect(
       as(() => numbersService().assignManually(asId<DocumentId>(otherId), `${rule.prefix}-0007`)),
     ).rejects.toMatchObject({ code: 'DUPLICATE' });

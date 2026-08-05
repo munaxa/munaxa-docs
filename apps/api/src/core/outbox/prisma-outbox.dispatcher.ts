@@ -214,6 +214,14 @@ function routesFor(eventType: string): readonly QueueNameKey[] {
   if (eventType.startsWith('notification.')) {
     return [QueueName.NOTIFICATIONS_DELIVER];
   }
+  if (eventType.startsWith('retention.')) {
+    // The search projection removes a purged document's entry (`retention.document-purged`
+    // resolves to its document like any other event); the rest of the family rides along to the
+    // same lane and resolves to the same projection, which re-reads current truth and is
+    // harmless. `retention.due` will interest Phase 12's reminder; the outbox row is the record
+    // until it does.
+    return [QueueName.SEARCH_INDEX];
+  }
   return [];
 }
 

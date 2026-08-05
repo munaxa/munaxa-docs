@@ -9,6 +9,7 @@ import {
   completeUploadSchema,
   createDocumentSchema,
   createUploadSchema,
+  deleteDocumentSchema,
   moveDocumentSchema,
   updateDocumentSchema,
 } from '@edms/contracts';
@@ -112,8 +113,21 @@ export async function assignDocumentNumber(
   );
 }
 
-export async function deleteDocument(id: string, version: number): Promise<ActionResult> {
-  return adminWrite({ path: `/documents/${id}`, method: 'DELETE', version });
+/**
+ * Soft-deletes a document, with the reason the API now requires.
+ *
+ * The body travels on a `DELETE`, which is unusual and deliberate: the reason is content somebody
+ * typed, and a query parameter would put a sentence about a record into every access log between
+ * here and the API.
+ */
+export async function deleteDocument(
+  id: string,
+  version: number,
+  reason: string,
+): Promise<ActionResult> {
+  return validated(deleteDocumentSchema, { reason }, (body) =>
+    adminWrite({ path: `/documents/${id}`, method: 'DELETE', version, body }),
+  );
 }
 
 export async function restoreDocument(id: string, version: number): Promise<ActionResult> {

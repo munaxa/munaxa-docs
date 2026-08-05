@@ -12,6 +12,7 @@ export * from './scope';
 export * from './tree';
 export * from './settings';
 export * from './base-entity';
+export * from './deletion';
 export * from './errors';
 export * from './file-formats';
 export * from './queues';

@@ -125,7 +125,11 @@ export function LibraryScreen({
             router.push(`/documents/${row.id}` as Route);
           }}
           onCreate={canCreate && selectedFolderId !== null ? () => setAdding('UPLOAD') : undefined}
-          onDelete={(row) => deleteDocument(row.id, row.version)}
+          onDelete={(row, reason) => deleteDocument(row.id, row.version, reason)}
+          // Phase 10's rule, and it applies here rather than to every administered list: a
+          // controlled record's removal is an act somebody answers for, and the recycle bin shows
+          // the sentence beside the row.
+          deleteRequiresReason
           onRestore={(row) => restoreDocument(row.id, row.version)}
           extraActions={(row) => [
             {

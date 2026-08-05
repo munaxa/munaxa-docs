@@ -53,6 +53,7 @@ export const en = {
     approvals: 'Approvals',
     search: 'Search',
     audit: 'Audit',
+    recycleBin: 'Recycle bin',
   },
   /**
    * Administration.
@@ -92,6 +93,10 @@ export const en = {
         'It is removed from the lists that use it and can be restored from the recycle bin.',
       confirmRestore: 'Restore {name}?',
       confirmRestoreHint: 'It becomes available again wherever it was used before.',
+      deleteReason: 'Why are you deleting this?',
+      deleteReasonPlaceholder: 'Superseded by drawing A-102, filed in error, …',
+      deleteReasonHint:
+        'Recorded in the audit trail and shown in the recycle bin. A reason is required.',
       createTitle: 'Add {name}',
       editTitle: 'Edit {name}',
     },
@@ -1007,6 +1012,32 @@ export const en = {
         completed: 'Ready',
         failed: 'Failed',
       },
+    },
+  },
+  recycleBin: {
+    title: 'Recycle bin',
+    subtitle:
+      'Everything deleted and not yet disposed of. Restore what should not have gone; the rest leaves on its retention schedule.',
+    count: 'Showing {count} of {total}',
+    empty: 'Nothing has been deleted',
+    emptyHint: 'Deleted documents and folders appear here until their retention period ends.',
+    restored: 'Restored',
+    restoring: 'Restoring…',
+    deletedAt: 'Deleted',
+    deletedBy: 'By',
+    location: 'Location',
+    reason: 'Reason',
+    system: 'The system',
+    cascaded: 'Removed with the folder above it — restore that folder to bring this back.',
+    filter: {
+      kind: 'What to show',
+      everything: 'Everything',
+      documents: 'Documents',
+      folders: 'Folders',
+    },
+    kind: {
+      document: 'Document',
+      folder: 'Folder',
     },
   },
   error: {

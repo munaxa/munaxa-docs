@@ -79,6 +79,15 @@ const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
     permission: Permission.AUDIT_VIEW,
   },
   {
+    // Phase 10. `document:restore` — ADR-0010 §2's own gate: "deleted objects are visible in a
+    // recycle bin to holders of `document:restore`". Narrower than the library's `document:view`
+    // on purpose: being able to read what exists is not being able to see what somebody removed.
+    id: 'recycle-bin',
+    href: '/recycle-bin' as Route,
+    labelKey: 'nav.recycleBin',
+    permission: Permission.DOCUMENT_RESTORE,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',

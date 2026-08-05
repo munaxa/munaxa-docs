@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { BLOB_REAPER } from '../retention/application/ports';
 import { DefaultStorageService } from './application/storage.service';
 import {
   FILE_OBJECT_REPOSITORY,
@@ -8,6 +9,7 @@ import {
 } from './application/ports';
 import { PrismaFileObjectRepository } from './infrastructure/prisma-file-object.repository';
 import { PrismaUploadSessionRepository } from './infrastructure/prisma-upload-session.repository';
+import { StorageBlobReaper } from './infrastructure/blob-reaper.adapter';
 import { UploadsController } from './presentation/uploads.controller';
 
 /**
@@ -34,7 +36,11 @@ import { UploadsController } from './presentation/uploads.controller';
     { provide: FILE_OBJECT_REPOSITORY, useClass: PrismaFileObjectRepository },
     { provide: UPLOAD_SESSION_REPOSITORY, useClass: PrismaUploadSessionRepository },
     { provide: STORAGE_SERVICE, useClass: DefaultStorageService },
+    // Phase 10: Retention's `BLOB_REAPER`, implemented by the module that owns the bytes — the
+    // same inversion as `REVISION_WRITER`. The only code in the product that removes an object
+    // from storage, and the first caller `StoragePort.delete` has had outside the upload path.
+    { provide: BLOB_REAPER, useClass: StorageBlobReaper },
   ],
-  exports: [STORAGE_SERVICE],
+  exports: [STORAGE_SERVICE, BLOB_REAPER],
 })
 export class StorageModule {}

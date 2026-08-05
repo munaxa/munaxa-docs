@@ -29,6 +29,7 @@ import { PrismaNumberIssueRepository } from '../modules/administration/infrastru
 import { DefaultDocumentNumberService } from '../modules/document/application/document-number.service';
 import { DefaultDocumentService } from '../modules/document/application/document.service';
 import { AdministrationConfigurationAdapter } from '../modules/document/infrastructure/administration-configuration.adapter';
+import { DocumentFolderContentsParticipant } from '../modules/document/infrastructure/folder-contents.participant';
 import { LibraryPlacementAdapter } from '../modules/document/infrastructure/library-placement.adapter';
 import { PrismaDocumentActivityRepository } from '../modules/document/infrastructure/prisma-document-activity.repository';
 import { PrismaDocumentRepository } from '../modules/document/infrastructure/prisma-document.repository';
@@ -36,6 +37,7 @@ import { StorageContentGateAdapter } from '../modules/document/infrastructure/st
 import { DocumentPreviewService } from '../modules/document/application/document-preview.service';
 import type { UserDirectory } from '../modules/identity/application/ports';
 import type { UserAdminService } from '../modules/identity/application/user-admin.service';
+import { FolderContentsRegistry } from '../modules/library/application/folder-contents.port';
 import { LibraryAdminService } from '../modules/library/application/library-admin.service';
 import { PrismaLibraryAdminRepository } from '../modules/library/infrastructure/prisma-library-admin.repository';
 import { PrismaRevisionWriter } from '../modules/revision/infrastructure/prisma-revision.writer';
@@ -76,6 +78,20 @@ import { PrismaWorkflowEngineRepository } from '../modules/workflow/infrastructu
 import { PrismaWorkflowVersionReader } from '../modules/workflow/infrastructure/prisma-workflow-version.reader';
 import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/workflow-calendar.adapter';
 import type { QueuePort } from '../ports/queue.port';
+import { DefaultLegalHoldService } from '../modules/retention/application/legal-hold.service';
+import type { DocumentDisposition } from '../modules/retention/application/ports';
+import { DefaultRecycleBinService } from '../modules/retention/application/recycle-bin.service';
+import { RetentionSchedulerService } from '../modules/retention/application/retention-scheduler.service';
+import { DefaultRetentionService } from '../modules/retention/application/retention.service';
+import { PrismaRecycleBinRepository } from '../modules/retention/infrastructure/prisma-recycle-bin.repository';
+import {
+  PrismaLegalHoldRepository,
+  PrismaRetentionPolicyReader,
+  PrismaRetentionScheduleRepository,
+  PrismaTombstoneRepository,
+} from '../modules/retention/infrastructure/prisma-retention.repositories';
+import { RetentionDispositionAdapter } from '../modules/document/infrastructure/retention-disposition.adapter';
+import { StorageBlobReaper } from '../modules/storage/infrastructure/blob-reaper.adapter';
 import { PrismaFileObjectRepository } from '../modules/storage/infrastructure/prisma-file-object.repository';
 import { PrismaUploadSessionRepository } from '../modules/storage/infrastructure/prisma-upload-session.repository';
 import { RevisionControlService } from '../modules/document/application/revision-control.service';
@@ -221,6 +237,8 @@ export function realOrganizationService(): DefaultOrganizationService {
 export interface DocumentLibraryStack {
   readonly storage: DefaultStorageService;
   readonly documents: DefaultDocumentService;
+  /** Check-out, check-in and publication — what Phase 10's cascade assertions need revisions from. */
+  readonly control: RevisionControlService;
   readonly libraries: LibraryAdminService;
   readonly configuration: ConfigurationService;
   readonly numbering: NumberingAdminService;
@@ -241,6 +259,8 @@ export interface DocumentLibraryOptions {
   readonly antivirus: AntivirusPort;
   /** Answers `userExists`. Identity's own admin service needs a database this suite has not seeded. */
   readonly users: Pick<UserAdminService, 'get'>;
+  /** Overrides for Phase 10's retention settings — the recycle-bin window, the blob grace. */
+  readonly retentionSettings?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -273,10 +293,15 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
 
   const configurationRepository = new PrismaConfigurationRepository(stamps);
   const configuration = new ConfigurationService(configurationRepository, outbox, writer);
+  // The registry Library holds and Document fills at boot. Filled below, once the participant
+  // has the collaborators it needs — so a folder delete in a suite genuinely cascades to the
+  // documents inside it, which is the property Phase 10 added.
+  const folderContents = new FolderContentsRegistry();
   const libraries = new LibraryAdminService(
     new PrismaLibraryAdminRepository(stamps),
     realOrganizationService(),
     outbox,
+    folderContents,
     writer,
   );
 
@@ -297,14 +322,70 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     // for PNG. A suite uploading PDFs would get nothing from the real implementation, so a double
     // that does nothing is honest about that rather than pretending to render.
     { generate: () => Promise.resolve() },
+    // Phase 10's two seams, both real: the hold that refuses a delete and the scheduler that
+    // writes the clock a delete starts. Doubles would defeat the point — what the suites assert is
+    // that the refusal and the schedule commit with the delete.
+    new DefaultLegalHoldService(
+      new PrismaLegalHoldRepository(stamps),
+      new PrismaRetentionScheduleRepository(stamps),
+      outbox,
+      writer,
+    ),
+    realRetentionScheduler({
+      clock: options.clock,
+      unitOfWork: options.unitOfWork,
+      ...(options.retentionSettings !== undefined && { settings: options.retentionSettings }),
+    }),
     outbox,
     readAudit,
     writer,
   );
 
+  // The container does this in `DocumentModule.onModuleInit`; a suite that skipped it would have
+  // a folder delete that silently left its documents live — the Phase 2 behaviour Phase 10 fixed.
+  folderContents.register(
+    new DocumentFolderContentsParticipant(
+      documentRepository,
+      new PrismaRevisionWriter(stamps, outbox),
+      new StorageContentGateAdapter(storage),
+      new DefaultLegalHoldService(
+        new PrismaLegalHoldRepository(stamps),
+        new PrismaRetentionScheduleRepository(stamps),
+        outbox,
+        writer,
+      ),
+      realRetentionScheduler({
+        clock: options.clock,
+        unitOfWork: options.unitOfWork,
+        ...(options.retentionSettings !== undefined && { settings: options.retentionSettings }),
+      }),
+      stamps,
+    ),
+  );
+
   return {
     storage,
     documents,
+    control: new RevisionControlService(
+      documentRepository,
+      new PrismaDocumentLockRepository(stamps),
+      new PrismaRevisionWriter(stamps, outbox),
+      new StorageContentGateAdapter(storage),
+      new AdministrationConfigurationAdapter(
+        configuration,
+        realOrganizationService(),
+        options.users as UserAdminService,
+      ),
+      documents,
+      settingsReaderFor({}),
+      realRetentionScheduler({
+        clock: options.clock,
+        unitOfWork: options.unitOfWork,
+        ...(options.retentionSettings !== undefined && { settings: options.retentionSettings }),
+      }),
+      outbox,
+      writer,
+    ),
     libraries,
     configuration,
     numbering: new NumberingAdminService(configurationRepository, outbox, writer),
@@ -429,6 +510,7 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
     ),
     options.documents,
     settings,
+    realRetentionScheduler({ clock: options.clock, unitOfWork: options.unitOfWork }),
     outbox,
     writer,
   );
@@ -684,6 +766,7 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
               new PrismaLibraryAdminRepository(stamps),
               realOrganizationService(),
               outbox,
+              new FolderContentsRegistry(),
               writer,
             ),
           ),
@@ -923,4 +1006,114 @@ export function realAuditStack(options: AuditStackOptions): AuditStack {
     acl,
     enqueuedJobs,
   };
+}
+
+// --- Phase 10: soft delete and retention ------------------------------------------------------
+//
+// The same boundary reason a fifth time, and the sharpest yet: almost everything Phase 10 asserts
+// is a property of the *database* — a cascade that takes exactly one delete's rows, a reference
+// count that reaches zero across four revisions, a purge that removes eleven relations in one
+// transaction while `audit_event` refuses to be one of them, and a hold whose refusal holds inside
+// the transaction that would destroy. A double for any of the collaborators would be written from
+// the same belief as the code it stands in for.
+
+export interface RetentionStack {
+  readonly scheduler: RetentionSchedulerService;
+  readonly holds: DefaultLegalHoldService;
+  readonly retention: DefaultRetentionService;
+  readonly bin: DefaultRecycleBinService;
+  readonly schedules: PrismaRetentionScheduleRepository;
+  readonly tombstones: PrismaTombstoneRepository;
+  readonly reaper: StorageBlobReaper;
+}
+
+export interface RetentionOptions {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  /** Overrides for the two settings this phase adds. Absent means the catalogue default. */
+  readonly settings?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The scheduler half — what Document's own delete, restore and publication call.
+ *
+ * Built separately from the rest because that is exactly how the container builds it: this half
+ * sits below Document and the disposition half sits above it, and a test composing them as one
+ * object would be testing a composition nothing ships.
+ */
+export function realRetentionScheduler(options: RetentionOptions): RetentionSchedulerService {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  return new RetentionSchedulerService(
+    new PrismaRetentionScheduleRepository(stamps),
+    new PrismaLegalHoldRepository(stamps),
+    new PrismaRetentionPolicyReader(),
+    settingsReaderFor(options.settings ?? {}),
+    outbox,
+    writer,
+  );
+}
+
+export function realRetention(
+  options: RetentionOptions & {
+    readonly disposition: DocumentDisposition;
+    readonly storage: StoragePort;
+  },
+): RetentionStack {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const schedules = new PrismaRetentionScheduleRepository(stamps);
+  const holdRepository = new PrismaLegalHoldRepository(stamps);
+  const tombstones = new PrismaTombstoneRepository();
+  const reaper = new StorageBlobReaper(options.storage, options.unitOfWork, silentLogger(), stamps);
+
+  return {
+    scheduler: new RetentionSchedulerService(
+      schedules,
+      holdRepository,
+      new PrismaRetentionPolicyReader(),
+      settingsReaderFor(options.settings ?? {}),
+      outbox,
+      writer,
+    ),
+    holds: new DefaultLegalHoldService(holdRepository, schedules, outbox, writer),
+    retention: new DefaultRetentionService(
+      schedules,
+      holdRepository,
+      tombstones,
+      options.disposition,
+      reaper,
+      settingsReaderFor(options.settings ?? {}),
+      outbox,
+      silentLogger(),
+      writer,
+    ),
+    bin: new DefaultRecycleBinService(new PrismaRecycleBinRepository(), writer),
+    schedules,
+    tombstones,
+    reaper,
+  };
+}
+
+/** The purge, composed the way `DocumentModule` binds `DOCUMENT_DISPOSITION`. */
+export function realDisposition(
+  clock: ClockPort,
+  storage: DefaultStorageService,
+): RetentionDispositionAdapter {
+  const stamps = new RecordStamps(clock);
+  return new RetentionDispositionAdapter(new StorageContentGateAdapter(storage), stamps);
+}
+
+/**
+ * The catalogue defaults, with the overrides a suite states.
+ *
+ * The real `CachedSettingsReader` would need Administration's repository and a seeded settings
+ * row to answer "thirty days"; what these suites vary is the *number*, and the catalogue is where
+ * the number comes from when nobody overrides it.
+ */
+function settingsReaderFor(overrides: Readonly<Record<string, unknown>>) {
+  return {
+    get: (definition: { key: string; defaultValue: unknown }) =>
+      Promise.resolve(overrides[definition.key] ?? definition.defaultValue),
+    all: () => Promise.resolve(overrides),
+    invalidate: () => Promise.resolve(),
+  } as never;
 }

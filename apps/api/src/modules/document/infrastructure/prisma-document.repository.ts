@@ -28,6 +28,7 @@ import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import type { MetadataColumns } from '../domain/metadata';
 import type {
+  CascadedDocument,
   DocumentListRequest,
   DocumentRepository,
   DocumentRow,
@@ -167,15 +168,81 @@ export class PrismaDocumentRepository implements DocumentRepository {
     return result.count > 0;
   }
 
-  async setDeleted(id: DocumentId, expectedVersion: number, deleted: boolean): Promise<void> {
+  async setDeleted(
+    id: DocumentId,
+    expectedVersion: number,
+    deleted: boolean,
+    marks?: { readonly reason: string | null; readonly cascadeId: string | null },
+  ): Promise<void> {
     await this.versioned(
       id,
       expectedVersion,
-      deleted ? this.stamps.deletion() : this.stamps.restoration(),
+      deleted
+        ? {
+            ...this.stamps.deletion(),
+            deleteReason: marks?.reason ?? null,
+            deleteCascadeId: marks?.cascadeId ?? null,
+          }
+        : // The restore clears both marks with the delete columns: a reason describes a delete
+          // that is no longer in force, and a cascade identifier left behind would make a later
+          // delete of the same subtree indistinguishable from this one.
+          { ...this.stamps.restoration(), deleteReason: null, deleteCascadeId: null },
       // Both directions need to find the row whatever its current delete state, so the predicate
       // cannot filter on `deleted_at` the way every other write here does.
       true,
     );
+  }
+
+  async cascadeIdOf(id: DocumentId): Promise<string | null> {
+    const row = await requireTransaction().document.findFirst({
+      where: { id, tenantId: this.tenantId() },
+      select: { deleteCascadeId: true },
+    });
+    return row?.deleteCascadeId ?? null;
+  }
+
+  async cascadeDeleteUnderFolder(input: {
+    folderId: string;
+    path: string;
+    cascadeId: string;
+  }): Promise<readonly CascadedDocument[]> {
+    const tx = requireTransaction();
+    const tenantId = this.tenantId();
+    // Read first, then stamp: the caller needs each document's number and frozen policy to write
+    // its schedule, and the update alone would not say which rows it took.
+    const rows = await tx.document.findMany({
+      where: {
+        tenantId,
+        deletedAt: null,
+        folder: { OR: [{ path: input.path }, { path: { startsWith: `${input.path}.` } }] },
+      },
+      select: { id: true, documentNumber: true, retentionPolicyId: true },
+    });
+    if (rows.length === 0) {
+      return [];
+    }
+    await tx.document.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, tenantId },
+      // No reason of its own: the folder delete is the reason, recorded on the folder's audit
+      // event, and the shared cascade identifier is what ties each row to it.
+      data: { ...this.stamps.deletion(), deleteCascadeId: input.cascadeId },
+    });
+    return rows;
+  }
+
+  async listCascade(cascadeId: string): Promise<readonly CascadedDocument[]> {
+    return requireTransaction().document.findMany({
+      where: { tenantId: this.tenantId(), deleteCascadeId: cascadeId, deletedAt: { not: null } },
+      select: { id: true, documentNumber: true, retentionPolicyId: true },
+    });
+  }
+
+  async restoreCascade(cascadeId: string): Promise<number> {
+    const { count } = await requireTransaction().document.updateMany({
+      where: { tenantId: this.tenantId(), deleteCascadeId: cascadeId, deletedAt: { not: null } },
+      data: { ...this.stamps.restoration(), deleteReason: null, deleteCascadeId: null },
+    });
+    return count;
   }
 
   async attachLatestRevision(id: DocumentId, revisionId: string): Promise<void> {

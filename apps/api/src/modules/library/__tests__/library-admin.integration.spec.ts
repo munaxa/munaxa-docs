@@ -12,6 +12,7 @@ import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { realOrganizationService, realWriteStack } from '../../../testing/real-collaborators';
+import { FolderContentsRegistry } from '../application/folder-contents.port';
 import { LibraryAdminService } from '../application/library-admin.service';
 import { PrismaLibraryAdminRepository } from '../infrastructure/prisma-library-admin.repository';
 import { sharedDatabase } from '../../../testing/tenant-database';
@@ -49,6 +50,9 @@ const libraries = new LibraryAdminService(
   new PrismaLibraryAdminRepository(stamps),
   organization,
   outbox,
+  // Unfilled: this suite composes no documents, and an unfilled registry deletes nothing and
+  // says nothing — which is the honest behaviour for a library that genuinely holds none.
+  new FolderContentsRegistry(),
   writer,
 );
 

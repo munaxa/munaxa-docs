@@ -836,7 +836,9 @@ describe('moving and removing', () => {
       (await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } })).refCount,
     ).toBe(1);
 
-    await as(() => documents.remove(document.id, document.version));
+    await as(() =>
+      documents.remove(document.id, document.version, 'superseded by a newer drawing'),
+    );
     // Nothing is deleted from storage: retention decides that later, at a count of zero, after a
     // grace period. A delete that removed bytes would make the recycle bin a lie.
     const dereferenced = await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } });
@@ -851,7 +853,9 @@ describe('moving and removing', () => {
 
   it('hides a deleted document from an ordinary list and shows it in the recycle bin', async () => {
     const document = await createDocument({});
-    await as(() => documents.remove(document.id, document.version));
+    await as(() =>
+      documents.remove(document.id, document.version, 'superseded by a newer drawing'),
+    );
 
     const live = await as(() =>
       documents.list({ page: 1, pageSize: 100, sortDirection: 'desc', deleted: 'live' }),
