@@ -59,8 +59,14 @@ export function TextField({
    * A native date input rather than a picker component: it posts `YYYY-MM-DD`, which is one of the
    * two spellings the API accepts, and every browser and every mobile keyboard already knows how to
    * enter one. A JavaScript calendar would be a worse control that also has to be localised.
+   *
+   * `datetime-local` was added by Phase 11, for a delegation's period. A delegation is bounded to
+   * an *instant* rather than a day — "until Friday" is ambiguous by up to twenty-four hours, and
+   * an authority that lingers for a day longer than somebody meant is the wrong side to be
+   * ambiguous on. It posts without a zone, so the value is read as the browser's own time, which
+   * is the time the person typing it meant.
    */
-  readonly type?: 'text' | 'email' | 'password' | 'date';
+  readonly type?: 'text' | 'email' | 'password' | 'date' | 'datetime-local';
   readonly readOnly?: boolean | undefined;
 }): ReactNode {
   const id = useId();

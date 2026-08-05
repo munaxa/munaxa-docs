@@ -82,6 +82,26 @@ Document's number service, and every completed approval is numbered with no chan
 completion path. The port stays `@Optional`, so an unbound composition still produces the honest
 unnumbered outcome rather than a fabricated number.
 
+**Delegation goes through the second seam, and the engine's one check is where it is relaxed.**
+Phase 4 wrote that "the single check that phase relaxes — the task belongs to you — is in one place
+in the engine", and Phase 11 relaxed exactly that place: `if (task.assigneeId !== actor)` now asks
+`WORKFLOW_DELEGATION_GATE` whether the actor holds a delegation *for this permission* before it
+refuses. Nothing else in the engine changed, and `assigneeId` is never rewritten — §4 makes
+delegation a **routing overlay**, so the task stays the delegator's and the delegate acts on it.
+
+The gate names the permission the decision exercises (`document:approve` for an approval,
+`document:reject` for the other two), so a delegation covering approvals does not authorise a
+rejection — which is what 08 §6's two separate grants already meant for an assignee. It is
+`@Optional` for the same reason the allocator is, with one difference worth stating: an unbound
+allocator degrades to an *unnumbered* approval, and an unbound delegation gate degrades to the
+**stricter** behaviour, where only the assignee decides. A seam whose absence loosens a control
+would be the wrong seam.
+
+A delegated decision writes two audit events in one transaction: the decision's own, and
+`DELEGATION_USED` filed against the **delegation**. That second one is written here rather than in
+Identity because the act being recorded is a decision on an approval task, and 13 §1 requires an
+event in the same transaction as the act it describes.
+
 ### Timers are rows as well as jobs
 
 §3 says timers are BullMQ delayed jobs, not polling, and §6 says a paused instance resumes with the

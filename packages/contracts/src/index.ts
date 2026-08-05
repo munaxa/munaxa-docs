@@ -39,6 +39,13 @@
  * fields and rows written since attest every column but the hashes themselves. A client that
  * rendered "verified" identically for both would be overstating the older half of the trail.
  *
+ * Phase 11 adds `identity/delegation.ts` — the routing overlay of `07-workflow-architecture.md`
+ * §4. The shape worth noticing is what a client cannot say: there is no status field on any
+ * request body. Whether a delegation is in force is the server's answer, from the tenant's
+ * approval setting and from who agreed to it — a client that could name the status could grant
+ * itself the authority the approval exists to gate. The emergency path is a second body rather
+ * than a flag on the first, so the bypass is never one character away from the ordinary request.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -56,6 +63,7 @@ export * from './common/query';
 export * from './admin/record';
 export * from './admin/organization';
 export * from './admin/identity';
+export * from './identity/delegation';
 export * from './admin/configuration';
 export * from './admin/numbering';
 export * from './admin/library';

@@ -36,6 +36,10 @@ import { PrismaDocumentRepository } from '../modules/document/infrastructure/pri
 import { StorageContentGateAdapter } from '../modules/document/infrastructure/storage-content-gate.adapter';
 import { DocumentPreviewService } from '../modules/document/application/document-preview.service';
 import type { UserDirectory } from '../modules/identity/application/ports';
+import { DefaultDelegationService } from '../modules/identity/application/delegation.service';
+import { PrismaCredentialRepository } from '../modules/identity/infrastructure/prisma-credential.repository';
+import { PrismaDelegationRepository } from '../modules/identity/infrastructure/prisma-delegation.repository';
+import { PrismaUserDirectory } from '../modules/identity/infrastructure/prisma-user.directory';
 import type { UserAdminService } from '../modules/identity/application/user-admin.service';
 import { FolderContentsRegistry } from '../modules/library/application/folder-contents.port';
 import { LibraryAdminService } from '../modules/library/application/library-admin.service';
@@ -68,7 +72,11 @@ import { ApprovalService } from '../modules/workflow/application/approval.servic
 import { WorkflowAdminService } from '../modules/workflow/application/workflow-admin.service';
 import { PrismaWorkflowAdminRepository } from '../modules/workflow/infrastructure/prisma-workflow-admin.repository';
 import { ParticipantResolver } from '../modules/workflow/application/participant-resolver';
-import type { WorkflowDirectory } from '../modules/workflow/application/ports';
+import type {
+  WorkflowDelegationGate,
+  WorkflowDirectory,
+} from '../modules/workflow/application/ports';
+import { WorkflowDelegationAdapter } from '../modules/workflow/infrastructure/workflow-delegation.adapter';
 import { WorkflowEngine } from '../modules/workflow/application/workflow-engine.service';
 import { WorkflowTimers } from '../modules/workflow/application/workflow-timers.service';
 import { DocumentContextAdapter } from '../modules/workflow/infrastructure/document-context.adapter';
@@ -461,6 +469,12 @@ export interface WorkflowEngineOptions {
    * still a property of the engine worth asserting.
    */
   readonly withoutNumbering?: boolean;
+  /**
+   * Phase 11's gate, from `realDelegation`. Absent composes the engine the way Phase 4 shipped it,
+   * where only the assignee decides — which is still a property worth asserting, and is what the
+   * engine's own suite continues to exercise.
+   */
+  readonly delegations?: WorkflowDelegationGate | undefined;
 }
 
 // --- Phase 6: revision control ---------------------------------------------------------------
@@ -787,6 +801,7 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     timers,
     writer,
     numbers === null ? null : new DocumentNumberAllocatorAdapter(numbers),
+    options.delegations ?? null,
   );
 
   return {
@@ -1090,6 +1105,51 @@ export function realRetention(
     schedules,
     tombstones,
     reaper,
+  };
+}
+
+// --- Phase 11: delegation ---------------------------------------------------------------------
+//
+// The same boundary reason again, and it is the sharpest case yet. What this phase's suite asserts
+// is entirely about the database at an instant: a delegation revoked mid-flight refusing the very
+// next decision, a delegator's authority disappearing between creation and use, a chain refused by
+// a graph walk over live rows, and a period that has passed authorising nothing. Every one of those
+// is a question about what is in the table *now*, and a repository double would answer each of them
+// from the same belief as the code under test.
+//
+// So the service is composed with its real repository, the real credential repository — because
+// "what does the delegator hold right now" has to be read from `user_role` and `role_permission`
+// rather than asserted — the real user directory, the real outbox and the real transaction
+// boundary. Only the settings reader is stood in for, because what these suites vary is a number
+// and the catalogue is where the number comes from.
+
+export interface DelegationStack {
+  readonly delegations: DefaultDelegationService;
+  readonly repository: PrismaDelegationRepository;
+  /** The adapter the engine binds, so a suite can hand the same object to `realWorkflowEngine`. */
+  readonly gate: WorkflowDelegationAdapter;
+}
+
+export function realDelegation(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  /** Overrides for the four settings this phase adds. Absent means the catalogue default. */
+  readonly settings?: Readonly<Record<string, unknown>>;
+}): DelegationStack {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const repository = new PrismaDelegationRepository(stamps);
+  const service = new DefaultDelegationService(
+    repository,
+    new PrismaCredentialRepository(),
+    new PrismaUserDirectory(),
+    settingsReaderFor(options.settings ?? {}),
+    outbox,
+    writer,
+  );
+  return {
+    delegations: service,
+    repository,
+    gate: new WorkflowDelegationAdapter(service),
   };
 }
 

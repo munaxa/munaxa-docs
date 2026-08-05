@@ -239,6 +239,7 @@ export class PrismaWorkflowEngineRepository implements WorkflowEngineRepository 
     readonly decision: TaskDecisionKey;
     readonly decidedById: string;
     readonly onBehalfOfId: string | null;
+    readonly delegationId: string | null;
     readonly comment: string | null;
     readonly at: Date;
     readonly autoDecided: boolean;
@@ -257,6 +258,7 @@ export class PrismaWorkflowEngineRepository implements WorkflowEngineRepository 
         decision: input.decision,
         decidedById: input.decidedById,
         onBehalfOfId: input.onBehalfOfId,
+        delegationId: input.delegationId,
         decidedAt: input.at,
         comment: input.comment,
         autoDecided: input.autoDecided,
@@ -611,6 +613,7 @@ function toTask(row: InstanceWithChildren['tasks'][number]): ApprovalTaskRecord 
     decision: row.decision,
     decidedById: row.decidedById === null ? null : asId<UserId>(row.decidedById),
     onBehalfOfId: row.onBehalfOfId === null ? null : asId<UserId>(row.onBehalfOfId),
+    delegationId: row.delegationId,
     decidedAt: row.decidedAt,
     comment: row.comment,
     dueAt: row.dueAt,

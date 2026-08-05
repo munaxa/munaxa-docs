@@ -42,3 +42,55 @@ export const IdentityAdminAudit = {
 } as const;
 
 export type IdentityAdminAuditAction = (typeof IdentityAdminAudit)[keyof typeof IdentityAdminAudit];
+
+/**
+ * The Delegation group of `13-audit-architecture.md` §2, whose four rows §2's ownership table
+ * attributes to Phase 11. All four are written; none is invented.
+ *
+ * The four are separate actions rather than one `DELEGATION_CHANGED` with an operation in the
+ * payload — which is the catalogue's usual shape — for the reason Retention's five are: each is
+ * the answer to a question somebody asks on its own. "Who was covering for whom last quarter",
+ * "what was decided under a delegation", "which arrangements were cut short and by whom", and
+ * "which simply ran out" are four different reports, and collapsing them would make three of them
+ * payload filters.
+ *
+ * Two things this group deliberately does **not** have.
+ *
+ * **No fifth action for an emergency delegation.** §2's catalogue names four and the code writes
+ * four; growing a `DELEGATION_DECLARED` would put the product's vocabulary ahead of the document
+ * that defines it. The emergency path is distinguished instead by something stronger than a name:
+ * its `DELEGATION_CREATED` event carries the stated ground in the trail's own `reason` column —
+ * the column Phase 9's widened digest attests, and which the verifier can address — where an
+ * ordinary delegation's is null. A bypass of a control recorded in an attested column is a better
+ * record than a bypass recorded in a fifth string.
+ *
+ * **No action for a declined request.** A delegation that was never in force authorised nothing,
+ * and the refusal is on the row with its stated ground. The catalogue has four rows and this is
+ * the one place where following it costs something; it is recorded here rather than worked around.
+ */
+export const DelegationAudit = {
+  /** A delegation exists. `PENDING_APPROVAL`, or `ACTIVE` when it was declared as an emergency. */
+  DELEGATION_CREATED: 'DELEGATION_CREATED',
+  /**
+   * Somebody took a decision under a delegation.
+   *
+   * Written per decision, in the same transaction as the decision's own `APPROVED` or `REJECTED`
+   * event, through `AdministeredWriter.record`. It is filed against the **delegation** rather than
+   * the task, which is what makes "everything done under this arrangement" a trail query on one
+   * subject rather than a join through `approval_task` — and it is what *attests* the link, since
+   * Phase 9's digest covers `on_behalf_of_id` but not the foreign key added by this phase.
+   */
+  DELEGATION_USED: 'DELEGATION_USED',
+  /** Ended before its end date. In-flight tasks revert to the delegator from this instant (§4). */
+  DELEGATION_REVOKED: 'DELEGATION_REVOKED',
+  /**
+   * Its period ended.
+   *
+   * Written by the nightly sweep, and never the thing that makes the delegation inert — the
+   * authority predicate is. The event exists so the trail can answer "which delegations ended last
+   * quarter" without the answer depending on whether anybody happened to look.
+   */
+  DELEGATION_EXPIRED: 'DELEGATION_EXPIRED',
+} as const;
+
+export type DelegationAuditAction = (typeof DelegationAudit)[keyof typeof DelegationAudit];

@@ -67,6 +67,23 @@ export function ApprovalInboxScreen({
                 {row.documentNumber !== null && <Badge tone="muted">{row.documentNumber}</Badge>}
                 <Badge tone="muted">{row.documentTypeName}</Badge>
                 {row.overdue && <Badge tone="danger">{translate('approvals.overdue')}</Badge>}
+                {/*
+                  Phase 11. This row is here because the caller holds a delegation, not because the
+                  task is theirs — the task is still the delegator's, and `assigneeId` says so
+                  beside this badge. `approvals.onBehalfOf` is the key Phase 4 wrote for exactly
+                  this moment and left in both catalogues unused.
+
+                  Rendered from the row rather than by comparing `assigneeId` to the signed-in
+                  user, because that comparison is the one that would silently be wrong the day
+                  somebody reads another person's inbox.
+                */}
+                {row.onBehalfOf !== null && (
+                  <Badge tone="muted">
+                    {translate('approvals.onBehalfOf', {
+                      name: row.onBehalfOf.delegatorName ?? row.onBehalfOf.delegatorId,
+                    })}
+                  </Badge>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center gap-3 text-sm opacity-70">

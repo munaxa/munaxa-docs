@@ -10,10 +10,13 @@ import {
 import { DefaultAuthenticationService } from './application/authentication.service';
 import {
   CREDENTIAL_REPOSITORY,
+  DELEGATION_REPOSITORY,
+  DELEGATION_SERVICE,
   PROVISIONING_REPOSITORY,
   SESSION_REPOSITORY,
   USER_DIRECTORY,
 } from './application/ports';
+import { DefaultDelegationService } from './application/delegation.service';
 import { ProvisioningService } from './application/provisioning.service';
 import {
   IDENTITY_ADMIN_REPOSITORY,
@@ -24,6 +27,8 @@ import { RoleAdminService } from './application/role-admin.service';
 import { UserAdminService } from './application/user-admin.service';
 import { JwtTokenService } from './infrastructure/jwt.token-service';
 import { PrismaCredentialRepository } from './infrastructure/prisma-credential.repository';
+import { DelegationLaneConsumer } from './infrastructure/delegation-lane.consumer';
+import { PrismaDelegationRepository } from './infrastructure/prisma-delegation.repository';
 import { PrismaIdentityAdminRepository } from './infrastructure/prisma-identity-admin.repository';
 import { PrismaProvisioningRepository } from './infrastructure/prisma-provisioning.repository';
 import { PrismaSessionRepository } from './infrastructure/prisma-session.repository';
@@ -32,6 +37,7 @@ import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
 import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
 import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
 import { AuthController } from './presentation/auth.controller';
+import { DelegationController } from './presentation/delegation.controller';
 import { RoleAdminController, UserAdminController } from './presentation/identity-admin.controller';
 
 /**
@@ -47,15 +53,17 @@ import { RoleAdminController, UserAdminController } from './presentation/identit
  *
  * Phase 1 implemented authentication: sign-in, refresh with rotation and reuse detection, and
  * sign-out. Phase 2 adds the administration of people and access — users, roles, the permission
- * matrix and the eight seeded roles — behind `user:manage` and `role:manage`. Delegation and MFA
- * arrive with the phases that own them; see `README.md` in this folder.
+ * matrix and the eight seeded roles — behind `user:manage` and `role:manage`. Phase 11 binds
+ * `DELEGATION_REPOSITORY` and `DELEGATION_SERVICE`, declared and unbound since Phase 0.5, and
+ * with them the `identity.delegation` lane. MFA arrives with the phase that owns it; see
+ * `README.md` in this folder.
  *
  * The administration services are **not exported**. Nothing outside this module has any business
  * creating a user or editing a role, and `USER_DIRECTORY` remains the whole of what other modules
  * may know about a person: an address and a name.
  */
 @Module({
-  controllers: [AuthController, UserAdminController, RoleAdminController],
+  controllers: [AuthController, UserAdminController, RoleAdminController, DelegationController],
   providers: [
     { provide: AUTHENTICATION_SERVICE, useClass: DefaultAuthenticationService },
     { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
@@ -67,6 +75,11 @@ import { RoleAdminController, UserAdminController } from './presentation/identit
     { provide: IDENTITY_ADMIN_REPOSITORY, useClass: PrismaIdentityAdminRepository },
     { provide: USER_ADMIN_SERVICE, useClass: UserAdminService },
     { provide: ROLE_ADMIN_SERVICE, useClass: RoleAdminService },
+    { provide: DELEGATION_REPOSITORY, useClass: PrismaDelegationRepository },
+    { provide: DELEGATION_SERVICE, useClass: DefaultDelegationService },
+    // The lane's consumer, declared here rather than in a worker for the reason every consumer
+    // since Phase 4 is: `apps/worker` composes none of the domain modules.
+    DelegationLaneConsumer,
     { provide: PASSWORD_HASHER, useClass: ScryptPasswordHasher },
     { provide: REFRESH_TOKEN_FACTORY, useClass: RandomRefreshTokenFactory },
     // The issuer and the verifier are one class: they share the secret, the algorithm and the
@@ -82,6 +95,10 @@ import { RoleAdminController, UserAdminController } from './presentation/identit
     PASSWORD_HASHER,
     CREDENTIAL_REPOSITORY,
     USER_DIRECTORY,
+    // Phase 11: the workflow engine asks whether one person may decide for another, and the
+    // approval inbox asks whom a delegate may act for. Through this service, never by reading
+    // Identity's tables.
+    DELEGATION_SERVICE,
     ProvisioningService,
   ],
 })

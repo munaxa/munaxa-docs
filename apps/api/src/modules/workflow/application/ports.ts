@@ -1,5 +1,6 @@
 import type {
   ApprovalTaskId,
+  PermissionKey,
   ApprovalTaskStateKey,
   DocumentId,
   DocumentStatusKey,
@@ -94,6 +95,14 @@ export interface ApprovalTaskRecord {
   readonly decidedById: UserId | null;
   /** Set when the decision was taken under a delegation; the audit records both people. */
   readonly onBehalfOfId: UserId | null;
+  /**
+   * Which delegation authorised it — Phase 11.
+   *
+   * A third identifier rather than an inference from the pair above, because two people may have
+   * delegated to each other more than once and "under which arrangement" is what an investigation
+   * into a since-revoked delegation asks.
+   */
+  readonly delegationId: string | null;
   readonly decidedAt: Date | null;
   readonly comment: string | null;
   readonly dueAt: Date | null;
@@ -218,6 +227,8 @@ export interface WorkflowEngineRepository {
     readonly decision: TaskDecisionKey;
     readonly decidedById: string;
     readonly onBehalfOfId: string | null;
+    /** Set with `onBehalfOfId` or with neither — a check constraint refuses one without the other. */
+    readonly delegationId: string | null;
     readonly comment: string | null;
     readonly at: Date;
     readonly autoDecided: boolean;
@@ -276,6 +287,14 @@ export interface WorkflowEngineRepository {
 
 export interface ApprovalInboxRequest extends PageRequest {
   readonly assigneeId: string;
+  /**
+   * Whom this caller is covering, and under which delegation — Phase 11.
+   *
+   * Passed in rather than resolved in the repository, because who may be covered is Identity's
+   * answer and a read model that asked it would be a read model holding a policy. Empty for the
+   * ordinary case, which is the ordinary query unchanged.
+   */
+  readonly cover?: readonly DelegatorCover[] | undefined;
   readonly state?: ApprovalTaskStateKey | undefined;
   readonly overdue?: boolean | undefined;
   readonly sortBy?: string | undefined;
@@ -284,6 +303,12 @@ export interface ApprovalInboxRequest extends PageRequest {
 
 export interface ApprovalInboxRow {
   readonly task: ApprovalTaskRecord;
+  /**
+   * Set when this row is here because the caller holds a delegation, not because the task is
+   * theirs. The task is still the assignee's — nothing moved — so this is what tells the screen to
+   * render "on behalf of" rather than the reader having to compare identifiers.
+   */
+  readonly onBehalfOf?: { readonly delegationId: string; readonly delegatorId: string } | undefined;
   readonly stage: WorkflowStageRecord;
   readonly documentId: string;
   readonly documentTitle: string;
@@ -324,6 +349,8 @@ export interface ApprovalQueryRepository {
   instance(id: WorkflowInstanceId): Promise<WorkflowInstanceView | null>;
   /** How many approvals bound to a version — what makes a published version undeletable. */
   countInstancesByVersion(versionIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
+  /** Display names for the people a screen names — the inbox's delegators, Phase 11. */
+  displayNames(userIds: readonly string[]): Promise<ReadonlyMap<string, string>>;
 }
 
 // --- What the engine needs from other modules -------------------------------------------------
@@ -410,6 +437,60 @@ export interface RoleScope {
 export interface ManagerSubject {
   readonly of: ManagerOfSubjectKey;
   readonly userId: UserId | null;
+}
+
+export const WORKFLOW_DELEGATION_GATE = Symbol('WorkflowDelegationGate');
+
+/**
+ * What Workflow needs from Identity's delegations, in Workflow's own words — Phase 11.
+ *
+ * Two questions, and neither can be asked without naming a permission. That is not ceremony: §4
+ * requires the delegator's authority to be checked **at decision time**, so a port that could
+ * answer "is A a delegate of B" without saying what for would be a port whose cheapest call is the
+ * one that permits a delegate to exceed the delegator. There is no such method here.
+ *
+ * The engine holds this rather than `DELEGATION_SERVICE` for the reason it holds
+ * `WORKFLOW_DIRECTORY` rather than `USER_DIRECTORY`: a narrow port is what stops a module growing
+ * a dependency on the rest of another one.
+ */
+export interface WorkflowDelegationGate {
+  /**
+   * May `actorId` decide a task assigned to `assigneeId`, and under which delegation?
+   *
+   * Called inside the deciding transaction, after the instance's row lock is taken — so a
+   * revocation committed a moment earlier is already visible, and one arriving a moment later
+   * waits. `delegationId` null means no; `refusal` says which rule refused, so the approver is
+   * told something they can act on rather than a bare 403.
+   */
+  authorityFor(input: {
+    readonly actorId: UserId;
+    readonly assigneeId: UserId;
+    readonly permission: PermissionKey;
+    readonly at: Date;
+  }): Promise<DelegatedAuthority>;
+
+  /**
+   * Whom this person is currently covering for, given one permission.
+   *
+   * The inbox's read. It returns delegators rather than tasks, because which tasks follow is
+   * Workflow's question — Identity has no business knowing what an approval task is.
+   */
+  coverFor(input: {
+    readonly actorId: UserId;
+    readonly permission: PermissionKey;
+    readonly at: Date;
+  }): Promise<readonly DelegatorCover[]>;
+}
+
+export interface DelegatedAuthority {
+  readonly delegationId: string | null;
+  /** Null when authorised. Otherwise a `DelegationRefusal` key, for the message. */
+  readonly refusal: string | null;
+}
+
+export interface DelegatorCover {
+  readonly delegationId: string;
+  readonly delegatorId: UserId;
 }
 
 export const WORKFLOW_CALENDAR = Symbol('WorkflowCalendar');

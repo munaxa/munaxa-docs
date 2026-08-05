@@ -15,7 +15,7 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 10 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 11 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
@@ -26,7 +26,9 @@ caller may not see, the read half of the audit trail — the timeline, the audit
 daily verification with its signed checkpoints, and the evidence bundle — and the deletion half:
 one answer to what deleting a document reaches, the recycle bin, the retention schedule, the legal
 hold that refuses regardless of permission, and the purge that destroys a record while its trail
-survives it. Its map is
+survives it, and the delegation that lets one person decide another's approvals without the task
+ever moving — a routing overlay whose trail names both people and the arrangement that authorised
+them. Its map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
 
@@ -85,6 +87,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 11 — delegation
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 11 — Delegation](./reports/phase-11-delegation.md) | The most carefully pre-cut seam in the product, bound at last: `DELEGATION_REPOSITORY` and `DELEGATION_SERVICE` given a table, the one check Phase 4 named relaxed in the one place it lives, a task that never moves so a revocation has nothing to reassign, authority read at the instant of the decision rather than copied at creation, a chain bounded by arithmetic and a cycle refused before any setting is consulted, an emergency delegation whose bypass is recorded in the trail's own attested column, expiry as a predicate with a lane that only records it — the decisions 07 §4 left open, why 08 §3 lost a clause rather than the resolver gaining a subject, what the phase costs, and what it deliberately does not do |
 
 ### Phase 10 — soft delete & retention
 

@@ -52,7 +52,7 @@ scan, which is most of them.
 | Rows | Owner |
 | --- | --- |
 | `ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN` | The phase that builds ACL entries |
-| `DELEGATION_*` (4 rows) | Phase 11 — delegation |
+| ~~`DELEGATION_CREATED`, `DELEGATION_USED`, `DELEGATION_REVOKED`, `DELEGATION_EXPIRED`~~ | Phase 11 — written |
 | ~~`SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED`~~ | Phase 10 — written |
 | `MFA_ENROLLED`, `MFA_FAILED`, `SESSION_REVOKED` | Phase 14 — security |
 | `REPORT_EXPORTED` | Phase 15 — reporting |
@@ -61,6 +61,23 @@ scan, which is most of them.
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
 A row here with no owner is an oversight; a row with an owner is a schedule.
+
+**Phase 11's four, and where each is written.** `DELEGATION_CREATED`, `DELEGATION_REVOKED` and
+`DELEGATION_EXPIRED` are Identity's. `DELEGATION_USED` is the **workflow engine's**, written through
+`AdministeredWriter.record` in the same transaction as the decision it describes — §1's third
+principle admits no other placement, and the act being recorded is a decision on an approval task
+rather than a change to a delegation.
+
+All four are filed against a new subject type, `DELEGATION`, for the reason `EXPORT` was added in
+Phase 9: a delegation is not a `USER`. It is an arrangement *between* two people, and filing it
+under either party's user timeline would hide it from the other.
+
+Two absences in this group are decisions rather than gaps. There is **no fifth action for an
+emergency delegation**: the catalogue names four, and the emergency path is distinguished by
+something stronger than a name — its `DELEGATION_CREATED` event carries the stated ground in the
+trail's own `reason` column, which §5's widened digest attests and a verifier can address, where an
+ordinary delegation leaves it null. And there is **no action for a declined request**: a delegation
+that never came into force authorised nothing, and the refusal with its ground is on the row.
 
 The catalogue names **one action per area**, not one per resource and verb. A company, an entity, a
 branch and a department all write `ORG_CHANGED`; a library created, renamed, deleted or restored writes

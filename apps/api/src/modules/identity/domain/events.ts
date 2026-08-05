@@ -57,6 +57,35 @@ export const userRolesChangedEvent = defineEvent<
   UserRolesChangedPayload
 >(USER_ROLES_CHANGED, 1, IDENTITY_AGGREGATE);
 
+/**
+ * Somebody has asked to delegate, and somebody has to agree.
+ *
+ * Added by Phase 11 beside the two Phase 1 declared. It is a separate event from
+ * `delegation.approved` rather than a status field on it because the audiences differ: this one is
+ * addressed to whoever must approve, and the approval is addressed to the two parties. A single
+ * event carrying a status would make every consumer branch on it to find out whether it was for
+ * them.
+ *
+ * Delivery is Phase 12's. The outbox row is the record until a consumer exists — the position
+ * Phase 4 took for `workflow.*`, Phase 9 for `audit.chain-broken` and Phase 10 for `retention.due`.
+ */
+export const DELEGATION_REQUESTED = 'delegation.requested' as const;
+
+export interface DelegationRequestedPayload {
+  readonly delegationId: string;
+  readonly delegatorId: string;
+  readonly delegateId: string;
+  /** Who may agree to it — the delegator's managers, resolved when the request was made. */
+  readonly approverIds: readonly string[];
+  readonly startsAt: string;
+  readonly endsAt: string;
+}
+
+export const delegationRequestedEvent = defineEvent<
+  typeof DELEGATION_REQUESTED,
+  DelegationRequestedPayload
+>(DELEGATION_REQUESTED, 1, IDENTITY_AGGREGATE);
+
 /** The delegate may act for the delegator within the stated scope and period. */
 export const DELEGATION_APPROVED = 'delegation.approved' as const;
 
@@ -87,13 +116,38 @@ export const delegationRevokedEvent = defineEvent<
   DelegationRevokedPayload
 >(DELEGATION_REVOKED, 1, IDENTITY_AGGREGATE);
 
+/**
+ * A delegation's period ended.
+ *
+ * Published by the nightly sweep, one per delegation it records. Both parties are told, because
+ * §4's visibility rule runs in both directions: the delegator's cover has ended and the delegate
+ * is no longer able to act, and neither of them asked for it to happen — a clock did.
+ */
+export const DELEGATION_EXPIRED = 'delegation.expired' as const;
+
+export interface DelegationExpiredPayload {
+  readonly delegationId: string;
+  readonly delegatorId: string;
+  readonly delegateId: string;
+  readonly endsAt: string;
+  /** How many decisions were taken under it, so the notice can say whether it was used at all. */
+  readonly useCount: number;
+}
+
+export const delegationExpiredEvent = defineEvent<
+  typeof DELEGATION_EXPIRED,
+  DelegationExpiredPayload
+>(DELEGATION_EXPIRED, 1, IDENTITY_AGGREGATE);
+
 /** Every event type this module publishes, for the outbox's routing table. */
 export const IDENTITY_EVENT_TYPES: readonly string[] = Object.freeze([
   USER_CREATED,
   USER_DISABLED,
   USER_ROLES_CHANGED,
+  DELEGATION_REQUESTED,
   DELEGATION_APPROVED,
   DELEGATION_REVOKED,
+  DELEGATION_EXPIRED,
 ]);
 
 export type IdentityEvent = DomainEventDraft;
