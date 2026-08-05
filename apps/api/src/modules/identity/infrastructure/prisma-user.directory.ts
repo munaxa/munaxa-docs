@@ -121,6 +121,41 @@ export class PrismaUserDirectory implements UserDirectory {
     return rows.map((row) => asId<UserId>(row.id));
   }
 
+  /**
+   * Whoever this person manages — `managersOf` read the other way (Phase 11).
+   *
+   * The members of every department where this person is marked a manager, and nobody else. Not
+   * transitive down the department tree: `is_manager` is a membership fact rather than a position
+   * in a hierarchy, and reading a manager of "Engineering" as the manager of everybody in
+   * "Engineering.Platform.Storage" would be inventing a reporting line the data does not state.
+   * `managersOf` looks *up* only at the departments somebody actually belongs to, and this is the
+   * exact inverse of that — which is what stops the delegation approval queue and the approval
+   * refusal disagreeing about who is in it.
+   */
+  async subordinatesOf(userId: UserId): Promise<readonly UserId[]> {
+    const tx = requireTransaction();
+    const managed = await tx.userDepartment.findMany({
+      where: { userId, tenantId: this.tenantId(), isManager: true },
+      select: { departmentId: true },
+    });
+    if (managed.length === 0) {
+      return [];
+    }
+
+    const rows = await tx.user.findMany({
+      where: {
+        ...this.live(),
+        id: { not: userId },
+        departments: {
+          some: { departmentId: { in: managed.map((row) => row.departmentId) } },
+        },
+      },
+      select: { id: true },
+      orderBy: { displayName: 'asc' },
+    });
+    return rows.map((row) => asId<UserId>(row.id));
+  }
+
   async activeAmong(userIds: readonly UserId[]): Promise<readonly UserId[]> {
     if (userIds.length === 0) {
       return [];

@@ -59,6 +59,10 @@ enum AuditSubjectType {
   FILE
   SEARCH
   EXPORT
+  /// A delegation — Phase 11's addition, and for the same reason `EXPORT` was Phase 9's: it is not
+  /// a `USER`. A delegation is an arrangement *between* two people, and filing its four actions on
+  /// either party's timeline would hide it from the other.
+  DELEGATION
 
   @@map("audit_subject_type")
 }
@@ -143,6 +147,7 @@ model Tenant {
   retentionSchedules    RetentionSchedule[]
   legalHolds            LegalHold[]
   documentTombstones    DocumentTombstone[]
+  delegations           Delegation[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -158,8 +163,8 @@ model Tenant {
 /// Audit outlives its subject: it is never soft-deleted, and a purged document leaves its
 /// trail behind. There is deliberately no `deleted_at` on this model.
 model AuditEvent {
-  id            String           @id @db.Uuid
-  tenantId      String           @map("tenant_id") @db.Uuid
+  id               String           @id @db.Uuid
+  tenantId         String           @map("tenant_id") @db.Uuid
   /// Per-tenant, monotonic and **gap-free** (`13-audit-architecture.md` §3).
   ///
   /// The hash chain proves that no record was altered, but on its own it cannot prove that
@@ -167,27 +172,27 @@ model AuditEvent {
   /// perfectly. A contiguous sequence is what makes a hole visible, and it is why this is
   /// allocated as `max + 1` under a per-tenant advisory lock rather than from a PostgreSQL
   /// sequence — those gap on rollback, and a gap is indistinguishable from a deletion.
-  sequence      BigInt
-  occurredAt    DateTime         @map("occurred_at") @db.Timestamptz(6)
+  sequence         BigInt
+  occurredAt       DateTime         @map("occurred_at") @db.Timestamptz(6)
   /// Null when the system acted alone — a retention purge, a scheduled verification.
-  actorId       String?          @map("actor_id") @db.Uuid
+  actorId          String?          @map("actor_id") @db.Uuid
   /// Recorded when the actor was acting under a delegation. Both people are in the trail.
-  onBehalfOfId  String?          @map("on_behalf_of_id") @db.Uuid
-  channel       ActorChannel
-  action        String
-  subjectType   AuditSubjectType @map("subject_type")
-  subjectId     String           @map("subject_id") @db.Uuid
-  outcome       AuditOutcome
+  onBehalfOfId     String?          @map("on_behalf_of_id") @db.Uuid
+  channel          ActorChannel
+  action           String
+  subjectType      AuditSubjectType @map("subject_type")
+  subjectId        String           @map("subject_id") @db.Uuid
+  outcome          AuditOutcome
   /// Minimised: enough to reconstruct what happened, never a document's content and never a
   /// personal identifier that is not already in the subject.
-  payload       Json             @default("{}")
+  payload          Json             @default("{}")
   /// Required where a confidentiality level or policy demands a stated reason for access.
-  reason        String?
-  correlationId String           @map("correlation_id")
-  ipAddress     String?          @map("ip_address")
-  userAgent     String?          @map("user_agent")
-  hash          String           @db.Char(64)
-  previousHash  String           @map("previous_hash") @db.Char(64)
+  reason           String?
+  correlationId    String           @map("correlation_id")
+  ipAddress        String?          @map("ip_address")
+  userAgent        String?          @map("user_agent")
+  hash             String           @db.Char(64)
+  previousHash     String           @map("previous_hash") @db.Char(64)
   /// Which field set this row's digest covers (`core/audit/hash-chain.ts`).
   ///
   /// `1` is Phase 1's nine fields; `2` adds `sequence`, `channel`, `on_behalf_of_id`, `reason`,
@@ -196,7 +201,7 @@ model AuditEvent {
   /// refuses `UPDATE` to every role, owner included, which is precisely the property that makes
   /// the trail worth having. Verification dispatches on this, and an evidence bundle's manifest
   /// reports it, so a bundle never claims to attest a field the digest did not cover.
-  chainHashVersion Int           @default(1) @map("chain_hash_version") @db.SmallInt
+  chainHashVersion Int              @default(1) @map("chain_hash_version") @db.SmallInt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
@@ -390,6 +395,8 @@ model User {
   documentLocks           DocumentLock[]
   savedSearches           SavedSearch[]
   recentSearches          RecentSearch[]
+  delegationsGiven        Delegation[]             @relation("DelegationDelegator")
+  delegationsReceived     Delegation[]             @relation("DelegationDelegate")
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -2220,6 +2227,18 @@ model ApprovalTask {
   /// are here and in the audit event, which is what makes "who decided, and for whom" answerable
   /// before delegation is built.
   onBehalfOfId    String?           @map("on_behalf_of_id") @db.Uuid
+  /// Which delegation authorised the decision, when one did (Phase 11).
+  ///
+  /// A third column rather than an inference from the pair above, and it earns its place: the pair
+  /// cannot say *which* arrangement, and two people may have delegated to each other more than once.
+  /// The foreign key restricts, so the delegation a decision was taken under can never be deleted —
+  /// a revoked delegation is exactly the one an investigation asks about, and revocation is a status
+  /// change here rather than a deletion.
+  ///
+  /// It is deliberately **not** what makes the decision attestable. Phase 9's digest covers
+  /// `on_behalf_of_id` and not a column added after it, so this is a queryable link and the
+  /// `DELEGATION_USED` audit event written in the same transaction is the attested one.
+  delegationId    String?           @map("delegation_id") @db.Uuid
   decidedAt       DateTime?         @map("decided_at") @db.Timestamptz(6)
   /// Required for a rejection and for a request for changes (`06-document-lifecycle.md` §3).
   comment         String?
@@ -2238,6 +2257,7 @@ model ApprovalTask {
   assignee      User              @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: Restrict)
   escalatedFrom ApprovalTask?     @relation("TaskEscalation", fields: [escalatedFromId], references: [id], onDelete: Restrict)
   escalations   ApprovalTask[]    @relation("TaskEscalation")
+  delegation    Delegation?       @relation(fields: [delegationId], references: [id], onDelete: Restrict)
   comments      WorkflowComment[]
   timers        WorkflowTimer[]
 
@@ -2472,52 +2492,52 @@ enum SearchRebuildState {
 /// (`08-permission-model.md` §7) — one implementation, two call sites, so the index can never
 /// disagree with a direct read. `acl_hash` fingerprints that computation for staleness checks.
 model SearchIndexEntry {
-  documentId          String              @id @map("document_id") @db.Uuid
-  tenantId            String              @map("tenant_id") @db.Uuid
-  titleRaw            String              @map("title_raw")
+  documentId          String                  @id @map("document_id") @db.Uuid
+  tenantId            String                  @map("tenant_id") @db.Uuid
+  titleRaw            String                  @map("title_raw")
   /// The assigned document number, exactly as issued — matched by prefix, never stemmed.
-  numberExact         String?             @map("number_exact")
+  numberExact         String?                 @map("number_exact")
   /// Weighted lexemes: A number+title, B filename+metadata, C description, D body.
   tsv                 Unsupported("tsvector")
   /// Tenant-defined metadata values keyed by field id, for display and `meta.<fieldId>` filters.
-  metadata            Json                @default("{}")
-  documentTypeId      String              @map("document_type_id") @db.Uuid
-  categoryId          String?             @map("category_id") @db.Uuid
+  metadata            Json                    @default("{}")
+  documentTypeId      String                  @map("document_type_id") @db.Uuid
+  categoryId          String?                 @map("category_id") @db.Uuid
   status              DocumentStatus
-  confidentialityRank Int                 @map("confidentiality_rank") @db.SmallInt
-  entityId            String?             @map("entity_id") @db.Uuid
-  branchId            String?             @map("branch_id") @db.Uuid
-  departmentId        String?             @map("department_id") @db.Uuid
-  libraryId           String              @map("library_id") @db.Uuid
-  folderId            String              @map("folder_id") @db.Uuid
-  folderPath          String              @map("folder_path")
-  ownerId             String              @map("owner_id") @db.Uuid
+  confidentialityRank Int                     @map("confidentiality_rank") @db.SmallInt
+  entityId            String?                 @map("entity_id") @db.Uuid
+  branchId            String?                 @map("branch_id") @db.Uuid
+  departmentId        String?                 @map("department_id") @db.Uuid
+  libraryId           String                  @map("library_id") @db.Uuid
+  folderId            String                  @map("folder_id") @db.Uuid
+  folderPath          String                  @map("folder_path")
+  ownerId             String                  @map("owner_id") @db.Uuid
   /// Everyone who decided an approval task on this document, for `approver:` queries.
-  approverIds         String[]            @map("approver_ids") @db.Uuid
-  revisionOrdinal     Int?                @map("revision_ordinal")
-  revisionLabel       String?             @map("revision_label")
+  approverIds         String[]                @map("approver_ids") @db.Uuid
+  revisionOrdinal     Int?                    @map("revision_ordinal")
+  revisionLabel       String?                 @map("revision_label")
   filename            String?
   /// Detected per revision, never per tenant (`12-search-architecture.md` §4).
   language            String
   /// The indexed text, stored so highlighting reads what was matched. Capped by configuration.
   body                String
-  bodySource          SearchContentSource? @map("body_source")
+  bodySource          SearchContentSource?    @map("body_source")
   /// True while the preview pipeline has not yet answered for the current revision — the
   /// materialisation of `preview_render.state`, refreshed by the events that change it, never
   /// a second status of its own (`12-search-architecture.md` §4).
-  contentPending      Boolean             @map("content_pending")
+  contentPending      Boolean                 @map("content_pending")
   /// True when the body is an OCR read below the confidence threshold.
-  lowConfidence       Boolean             @default(false) @map("low_confidence")
-  documentCreatedAt   DateTime            @map("document_created_at") @db.Timestamptz(6)
-  documentUpdatedAt   DateTime            @map("document_updated_at") @db.Timestamptz(6)
-  publishedAt         DateTime?           @map("published_at") @db.Timestamptz(6)
-  effectiveFrom       DateTime?           @map("effective_from") @db.Date
-  aclSubjects         String[]            @map("acl_subjects")
-  aclDenySubjects     String[]            @map("acl_deny_subjects")
-  aclHash             String              @map("acl_hash")
-  indexedAt           DateTime            @map("indexed_at") @db.Timestamptz(6)
+  lowConfidence       Boolean                 @default(false) @map("low_confidence")
+  documentCreatedAt   DateTime                @map("document_created_at") @db.Timestamptz(6)
+  documentUpdatedAt   DateTime                @map("document_updated_at") @db.Timestamptz(6)
+  publishedAt         DateTime?               @map("published_at") @db.Timestamptz(6)
+  effectiveFrom       DateTime?               @map("effective_from") @db.Date
+  aclSubjects         String[]                @map("acl_subjects")
+  aclDenySubjects     String[]                @map("acl_deny_subjects")
+  aclHash             String                  @map("acl_hash")
+  indexedAt           DateTime                @map("indexed_at") @db.Timestamptz(6)
   /// The document's own optimistic-lock version as of projection, for staleness detection.
-  sourceVersion       Int                 @map("source_version")
+  sourceVersion       Int                     @map("source_version")
 
   @@index([tenantId, status], map: "ix_search_entry_status")
   @@index([tenantId, documentTypeId], map: "ix_search_entry_type")
@@ -2534,41 +2554,41 @@ model SearchIndexEntry {
 /// sees a half-built index, and no truncate ever empties the live one. Between swaps this table
 /// is scratch: the next rebuild truncates it on start.
 model SearchIndexEntryShadow {
-  documentId          String              @id @map("document_id") @db.Uuid
-  tenantId            String              @map("tenant_id") @db.Uuid
-  titleRaw            String              @map("title_raw")
-  numberExact         String?             @map("number_exact")
+  documentId          String                  @id @map("document_id") @db.Uuid
+  tenantId            String                  @map("tenant_id") @db.Uuid
+  titleRaw            String                  @map("title_raw")
+  numberExact         String?                 @map("number_exact")
   tsv                 Unsupported("tsvector")
-  metadata            Json                @default("{}")
-  documentTypeId      String              @map("document_type_id") @db.Uuid
-  categoryId          String?             @map("category_id") @db.Uuid
+  metadata            Json                    @default("{}")
+  documentTypeId      String                  @map("document_type_id") @db.Uuid
+  categoryId          String?                 @map("category_id") @db.Uuid
   status              DocumentStatus
-  confidentialityRank Int                 @map("confidentiality_rank") @db.SmallInt
-  entityId            String?             @map("entity_id") @db.Uuid
-  branchId            String?             @map("branch_id") @db.Uuid
-  departmentId        String?             @map("department_id") @db.Uuid
-  libraryId           String              @map("library_id") @db.Uuid
-  folderId            String              @map("folder_id") @db.Uuid
-  folderPath          String              @map("folder_path")
-  ownerId             String              @map("owner_id") @db.Uuid
-  approverIds         String[]            @map("approver_ids") @db.Uuid
-  revisionOrdinal     Int?                @map("revision_ordinal")
-  revisionLabel       String?             @map("revision_label")
+  confidentialityRank Int                     @map("confidentiality_rank") @db.SmallInt
+  entityId            String?                 @map("entity_id") @db.Uuid
+  branchId            String?                 @map("branch_id") @db.Uuid
+  departmentId        String?                 @map("department_id") @db.Uuid
+  libraryId           String                  @map("library_id") @db.Uuid
+  folderId            String                  @map("folder_id") @db.Uuid
+  folderPath          String                  @map("folder_path")
+  ownerId             String                  @map("owner_id") @db.Uuid
+  approverIds         String[]                @map("approver_ids") @db.Uuid
+  revisionOrdinal     Int?                    @map("revision_ordinal")
+  revisionLabel       String?                 @map("revision_label")
   filename            String?
   language            String
   body                String
-  bodySource          SearchContentSource? @map("body_source")
-  contentPending      Boolean             @map("content_pending")
-  lowConfidence       Boolean             @default(false) @map("low_confidence")
-  documentCreatedAt   DateTime            @map("document_created_at") @db.Timestamptz(6)
-  documentUpdatedAt   DateTime            @map("document_updated_at") @db.Timestamptz(6)
-  publishedAt         DateTime?           @map("published_at") @db.Timestamptz(6)
-  effectiveFrom       DateTime?           @map("effective_from") @db.Date
-  aclSubjects         String[]            @map("acl_subjects")
-  aclDenySubjects     String[]            @map("acl_deny_subjects")
-  aclHash             String              @map("acl_hash")
-  indexedAt           DateTime            @map("indexed_at") @db.Timestamptz(6)
-  sourceVersion       Int                 @map("source_version")
+  bodySource          SearchContentSource?    @map("body_source")
+  contentPending      Boolean                 @map("content_pending")
+  lowConfidence       Boolean                 @default(false) @map("low_confidence")
+  documentCreatedAt   DateTime                @map("document_created_at") @db.Timestamptz(6)
+  documentUpdatedAt   DateTime                @map("document_updated_at") @db.Timestamptz(6)
+  publishedAt         DateTime?               @map("published_at") @db.Timestamptz(6)
+  effectiveFrom       DateTime?               @map("effective_from") @db.Date
+  aclSubjects         String[]                @map("acl_subjects")
+  aclDenySubjects     String[]                @map("acl_deny_subjects")
+  aclHash             String                  @map("acl_hash")
+  indexedAt           DateTime                @map("indexed_at") @db.Timestamptz(6)
+  sourceVersion       Int                     @map("source_version")
 
   @@index([tenantId, status], map: "ix_search_entry_shadow_status")
   @@index([tenantId, documentTypeId], map: "ix_search_entry_shadow_type")
@@ -2822,4 +2842,120 @@ model DocumentTombstone {
   /// "What has this tenant destroyed, and when" — the disposition register, newest first.
   @@index([tenantId, purgedAt(sort: Desc)], map: "ix_tombstone_tenant")
   @@map("document_tombstone")
+}
+
+// =================================================================================================
+// Delegation — Phase 11 (07-workflow-architecture.md §4)
+// =================================================================================================
+
+/// Where a delegation is in its life.
+///
+/// Five values rather than a pair of booleans, because a compliance report asks about each
+/// separately: what is awaiting agreement, what is in force, what somebody refused, what was cut
+/// short, and what simply ran out. A `revoked_at IS NOT NULL` on a row whose `ends_at` is also past
+/// cannot say which of the last two happened, and those are different facts — one is a decision
+/// somebody took and the other is a clock.
+enum DelegationStatus {
+  PENDING_APPROVAL
+  ACTIVE
+  DECLINED
+  REVOKED
+  EXPIRED
+
+  @@map("delegation_status")
+}
+
+/// How a delegation came to be in force.
+///
+/// The column exists because an emergency delegation *bypasses the approval an ordinary one
+/// requires*, and something has to say so afterwards without replaying the row's history.
+enum DelegationKind {
+  STANDARD
+  EMERGENCY
+
+  @@map("delegation_kind")
+}
+
+/// One person acting for another, for a bounded period, over a stated set of permissions.
+///
+/// A **routing overlay, never a permission grant** (§4). Nothing here grants reach: an approval
+/// task is never reassigned, `assignee_id` is never rewritten, and no ACL entry may name a
+/// delegation. What the row authorises is one thing only — that the delegate may take a decision on
+/// a task that stays the delegator's, with both identities recorded on it.
+///
+/// Three properties of this table are the section's rules made unrepresentable to get wrong.
+///
+/// **The period is bounded and ordered** by a check constraint, so §4's "open-ended delegations are
+/// refused" is the database's answer rather than a validation somebody can route around. How long
+/// it may be is a tenant setting and lives in the use case, because it is policy rather than
+/// structure.
+///
+/// **The authority is never copied here.** `permissions` is what the delegator chose to pass, not
+/// what they held: §4 checks authority at decision time, so a snapshot of the delegator's grants
+/// taken at creation is exactly the wrong thing to store. The delegator's current grants are read
+/// when a decision is taken, and a delegation created while they held `document:approve` refuses
+/// the moment their role is edited.
+///
+/// **Nothing is ever deleted.** Revocation and expiry are status changes, and `approval_task`
+/// carries a restricting foreign key to this table — so the delegation that authorised a decision
+/// is still identifiable years later, which is the one thing an investigation into a revoked
+/// delegation needs and the one thing a deletion would take away.
+model Delegation {
+  id          String           @id @db.Uuid
+  tenantId    String           @map("tenant_id") @db.Uuid
+  /// Whose authority is being passed. The task stays theirs throughout.
+  delegatorId String           @map("delegator_id") @db.Uuid
+  /// Who may act on it. Never an assignee, and never an ACL subject.
+  delegateId  String           @map("delegate_id") @db.Uuid
+  kind        DelegationKind   @default(STANDARD)
+  status      DelegationStatus @default(PENDING_APPROVAL)
+  /// The permission keys this delegation passes, from `@edms/domain`'s catalogue. A key that is
+  /// not in the catalogue does not exist, and one the delegator does not hold refuses at use.
+  permissions String[]
+  startsAt    DateTime         @map("starts_at") @db.Timestamptz(6)
+  endsAt      DateTime         @map("ends_at") @db.Timestamptz(6)
+  /// Why it was needed. Mandatory for an emergency delegation, and the same sentence is written to
+  /// `audit_event.reason` — the attested column — rather than only to a payload field.
+  reason      String?
+  /// Zero for a delegation of the delegator's own authority; one for a re-delegation.
+  ///
+  /// Stored rather than derived at read time because the rule that bounds it is evaluated against
+  /// the graph as it stood when the row was written: a chain permitted at creation must not become
+  /// retrospectively illegal because an unrelated delegation elsewhere expired. One hop is the
+  /// maximum any setting can permit, and the check constraint says so.
+  depth       Int              @default(0)
+
+  requestedAt   DateTime  @map("requested_at") @db.Timestamptz(6)
+  /// Who agreed to it — a manager of the delegator, or a delegation administrator who is party to
+  /// neither side. Null for an emergency delegation, which is what the bypass looks like on the row.
+  approvedById  String?   @map("approved_by_id") @db.Uuid
+  approvedAt    DateTime? @map("approved_at") @db.Timestamptz(6)
+  declineReason String?   @map("decline_reason")
+  revokedById   String?   @map("revoked_by_id") @db.Uuid
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokeReason  String?   @map("revoke_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy String?  @map("created_by") @db.Uuid
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?  @map("updated_by") @db.Uuid
+  /// Optimistic locking, and the revocation race's answer: a revoke and a decision arriving at the
+  /// same instant serialise on the approval instance's lock, and this stops two revocations of one
+  /// delegation from each believing they were the one that ended it.
+  version   Int      @default(1)
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  delegator User           @relation("DelegationDelegator", fields: [delegatorId], references: [id], onDelete: Restrict)
+  delegate  User           @relation("DelegationDelegate", fields: [delegateId], references: [id], onDelete: Restrict)
+  tasks     ApprovalTask[]
+
+  /// The authority predicate's own index: "which delegations let this person act, right now".
+  /// Partial on the live rows, in the migration, because a tenant's delegation history is almost
+  /// all of it and the question is only ever about the handful in force.
+  @@index([tenantId, delegateId, status], map: "ix_delegation_delegate")
+  /// "What have I given away", and the approval queue's lookup of a request's delegator.
+  @@index([tenantId, delegatorId, status], map: "ix_delegation_delegator")
+  /// The nightly sweep: which live delegations have run out. Partial, on `ACTIVE` rows only.
+  @@index([tenantId, endsAt], map: "ix_delegation_expiry")
+  @@map("delegation")
 }

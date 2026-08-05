@@ -148,6 +148,50 @@ Guarantees:
 Delegation is a **routing overlay**, never a permission grant: the task stays the delegator's, and
 the delegate acts on it. This is what makes the audit answer "who actually decided" and "for whom".
 
+### Phase 11 — what §4 turned out to require, and the four decisions it left open
+
+Every row above is built. `assigneeId` is never rewritten by anything, which is the overlay stated
+as a property rather than as a sentence: a revocation reassigns nothing because nothing ever moved,
+and "in-flight tasks revert to the delegator" is what *already being* the delegator's means.
+
+**Authority is Identity's answer, not the ACL resolver's.** `DelegationService.authorityFor` takes
+the permission as a parameter and reads the **delegator's current grants** at the instant of the
+decision; nothing about them is stored on the delegation, so there is no stale copy for a role
+change to invalidate. There is deliberately no cheaper call — an `isDelegate(a, b)` with no
+permission in it is the one that lets a delegate exceed the delegator. See
+[08 §3](./08-permission-model.md) for why a delegation is not an ACL subject.
+
+**Approval is by the manager relationship**, from `user_department.is_manager` through
+`UserDirectory` — the same relationship Phase 4 added for `MANAGER_OF` — or by a holder of
+`user:manage` who is party to neither side. Not `delegation:manage`: 08 §6 marks that `own`, every
+author holds it, and a request context carries a permission with no scope beside it. A delegation
+approved by a *workflow instance* was considered and refused: `workflow_instance.document_id` is
+`NOT NULL` and the engine's every path begins and ends at a document, so a non-document subject
+would mean either a fabricated document or a nullable subject widening every query in the engine
+for one case that needs one person to agree once.
+
+**A chain is bounded by arithmetic, not by configuration.** The tenant setting
+`delegation.allowChaining` opens the first hop and can never open a second; the cycle refusal is
+not configurable at all, and is checked *before* the depth rules, because A → B and B → A are two
+edges of depth one each and a hop counter would wave them through.
+
+**Emergency delegation bypasses the approval and nothing else.** It is bounded by its own much
+shorter setting, and its mandatory stated ground is written to `audit_event.reason` — the column
+[13 §5](./13-audit-architecture.md)'s widened digest attests and a verifier can address — rather
+than to a payload field. An ordinary delegation leaves that column null, so the difference between
+the two paths is legible in the trail rather than only on the row.
+
+**Expiry is a predicate; the schedule only records it.** A delegation past its `ends_at` authorises
+nothing from the millisecond it passes, because the period is in the authority query's `WHERE`. The
+`identity.expire-delegations` lane exists because `DELEGATION_EXPIRED` is in 13 §2's catalogue and
+an action has to be written by something — never because a job is what makes a delegation inert.
+
+**The delegation that authorised a decision stays identifiable forever.**
+`approval_task.delegation_id` is a restricting foreign key, so a revoked delegation — exactly the
+one an investigation asks about — can never be deleted. The key is the *queryable* link; the
+`DELEGATION_USED` audit row written in the same transaction is the *attested* one, because Phase
+9's digest covers `on_behalf_of_id` and cannot be extended to a column added after it.
+
 ## 5. Escalation
 
 | Trigger | Action options |

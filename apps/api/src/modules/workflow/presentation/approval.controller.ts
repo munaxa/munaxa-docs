@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Inject,
+  Optional,
   Param,
   Post,
   Query,
@@ -48,11 +49,13 @@ import { DOCUMENT_SERVICE } from '../../document/application/ports';
 import type { DefaultDocumentService } from '../../document/application/document.service';
 import { actionableTasks, approvalsRequired } from '../domain/completion';
 import { ApprovalService } from '../application/approval.service';
-import type {
-  ApprovalInboxRow,
-  ApprovalTaskRecord,
-  WorkflowInstanceView as InstanceView,
-  WorkflowStageRecord,
+import {
+  WORKFLOW_DELEGATION_GATE,
+  type ApprovalInboxRow,
+  type ApprovalTaskRecord,
+  type WorkflowInstanceView as InstanceView,
+  type WorkflowDelegationGate,
+  type WorkflowStageRecord,
 } from '../application/ports';
 import { WorkflowEngine } from '../application/workflow-engine.service';
 
@@ -81,6 +84,13 @@ export class ApprovalController {
     private readonly engine: WorkflowEngine,
     private readonly approvals: ApprovalService,
     @Inject(DOCUMENT_SERVICE) private readonly documents: DefaultDocumentService,
+    /**
+     * `@Optional` for the same reason the engine's is: a composition without delegation bound
+     * serves every inbox exactly as Phase 4 did. The seam degrades to the narrower list.
+     */
+    @Optional()
+    @Inject(WORKFLOW_DELEGATION_GATE)
+    private readonly delegations: WorkflowDelegationGate | null = null,
   ) {}
 
   // --- The inbox ----------------------------------------------------------------------------
@@ -103,18 +113,48 @@ export class ApprovalController {
     if (query.assigneeId !== undefined && query.assigneeId !== caller) {
       throw new ForbiddenError('read somebody else’s approval inbox');
     }
+
+    /**
+     * Whom this caller is covering — Phase 11, and the reason the check above did not have to
+     * change.
+     *
+     * Phase 4 wrote that refusal "for a delegate who has to see what they may act on", and the
+     * shape it anticipated was a delegate asking for the *delegator's* inbox behind
+     * `delegation:manage`. What was built instead is narrower and needs no permission at all: a
+     * delegate's own inbox contains the delegator's tasks, because "what needs my decision" is one
+     * question rather than two lists somebody has to know to ask for. Naming another person is
+     * still refused, and still means what it meant.
+     *
+     * Resolved for the caller's own inbox only. An administrator reading somebody else's — which
+     * this endpoint refuses today — would need *that* person's cover, not their own, and silently
+     * mixing the two is the defect this comment exists to prevent.
+     */
+    const cover =
+      this.delegations === null || (query.assigneeId ?? caller) !== caller
+        ? []
+        : await this.delegations.coverFor({
+            actorId: caller,
+            // The inbox is what somebody may *act* on, and approving is the act it exists for. A
+            // delegation covering only `document:reject` puts nothing here — which is right: there
+            // is no such thing as a task you may only refuse.
+            permission: Permission.DOCUMENT_APPROVE,
+            at: new Date(),
+          });
+
     const page = await this.approvals.inbox({
       page: query.page,
       pageSize: query.pageSize,
       assigneeId: query.assigneeId ?? caller,
+      cover,
       ...(query.state !== undefined && { state: query.state }),
       ...(query.sortBy !== undefined && { sortBy: query.sortBy }),
       ...(query.overdue !== undefined && { overdue: query.overdue === 'true' }),
       sortDirection: query.sortDirection,
     });
     const now = new Date();
+    const names = await this.approvals.namesOf(cover.map((entry) => entry.delegatorId));
     return {
-      data: page.data.map((row) => toInboxItem(row, now)),
+      data: page.data.map((row) => toInboxItem(row, now, names)),
       meta: page.meta,
     };
   }
@@ -286,7 +326,11 @@ export class ApprovalController {
 
 // --- Mappers ---------------------------------------------------------------------------------
 
-function toInboxItem(row: ApprovalInboxRow, now: Date): ApprovalInboxItem {
+function toInboxItem(
+  row: ApprovalInboxRow,
+  now: Date,
+  delegatorNames: ReadonlyMap<string, string>,
+): ApprovalInboxItem {
   return {
     ...toTask(row.task, row.stage, new Map([[row.task.assigneeId, row.assigneeName ?? '']]), true),
     documentId: row.documentId,
@@ -295,6 +339,16 @@ function toInboxItem(row: ApprovalInboxRow, now: Date): ApprovalInboxItem {
     documentTypeName: row.documentTypeName,
     // Computed server-side, so two clients in two timezones cannot disagree about "overdue".
     overdue: row.task.dueAt !== null && row.task.dueAt.getTime() < now.getTime(),
+    // Present only when this row is here because of a delegation. The task's `assigneeId` is
+    // unchanged beside it, which is the routing overlay visible on the wire.
+    onBehalfOf:
+      row.onBehalfOf === undefined
+        ? null
+        : {
+            delegationId: row.onBehalfOf.delegationId,
+            delegatorId: row.onBehalfOf.delegatorId,
+            delegatorName: delegatorNames.get(row.onBehalfOf.delegatorId) ?? null,
+          },
   };
 }
 
@@ -386,6 +440,7 @@ function toTask(
     decidedById: task.decidedById,
     decidedByName: task.decidedById === null ? null : (people.get(task.decidedById) ?? null),
     onBehalfOfId: task.onBehalfOfId,
+    delegationId: task.delegationId,
     decidedAt: task.decidedAt?.toISOString() ?? null,
     comment: task.comment,
     dueAt: task.dueAt?.toISOString() ?? null,

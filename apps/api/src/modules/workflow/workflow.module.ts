@@ -15,6 +15,7 @@ import {
   DOCUMENT_NUMBER_ALLOCATOR,
   WORKFLOW_CALENDAR,
   WORKFLOW_DIRECTORY,
+  WORKFLOW_DELEGATION_GATE,
   WORKFLOW_DOCUMENT_GATE,
   WORKFLOW_ENGINE,
   WORKFLOW_ENGINE_REPOSITORY,
@@ -24,6 +25,7 @@ import { WorkflowAdminService } from './application/workflow-admin.service';
 import { WorkflowEngine } from './application/workflow-engine.service';
 import { WorkflowTimers } from './application/workflow-timers.service';
 import { DocumentContextAdapter } from './infrastructure/document-context.adapter';
+import { WorkflowDelegationAdapter } from './infrastructure/workflow-delegation.adapter';
 import { DocumentNumberAllocatorAdapter } from './infrastructure/document-number-allocator.adapter';
 import { PrismaApprovalQueryRepository } from './infrastructure/prisma-approval-query.repository';
 import { PrismaWorkflowAdminRepository } from './infrastructure/prisma-workflow-admin.repository';
@@ -70,6 +72,14 @@ import { WorkflowAdminController } from './presentation/workflow-admin.controlle
  * what made every completed approval numbered — the engine's completion path did not change,
  * which was the test of whether the seam was cut correctly. The port stays `@Optional` in the
  * engine, so a composition without the binding still produces the honest unnumbered outcome.
+ *
+ * `WORKFLOW_DELEGATION_GATE` — the second seam of the same kind, and the one Phase 4 named in a
+ * comment. It binds to an adapter over Identity's `DELEGATION_SERVICE`, and binding it is what
+ * relaxed the engine's single "the task belongs to you" check — which did not move, and did not
+ * grow a second copy. It is `@Optional` in the engine and in `ApprovalController` for the same
+ * reason the allocator is, with one difference worth stating: an unbound allocator degrades to an
+ * unnumbered approval, and an unbound delegation gate degrades to the *stricter* behaviour, where
+ * only the assignee decides. A seam whose absence loosens a control would be the wrong seam.
  */
 @Module({
   imports: [DocumentModule, IdentityModule, AdministrationModule],
@@ -87,6 +97,8 @@ import { WorkflowAdminController } from './presentation/workflow-admin.controlle
     // --- Phase 5: numbering, through the seam Phase 4 left for it ---
     { provide: DOCUMENT_NUMBER_ALLOCATOR, useClass: DocumentNumberAllocatorAdapter },
     { provide: WORKFLOW_DIRECTORY, useClass: WorkflowDirectoryAdapter },
+    // --- Phase 11: the check Phase 4 said this phase relaxes ---
+    { provide: WORKFLOW_DELEGATION_GATE, useClass: WorkflowDelegationAdapter },
     { provide: WORKFLOW_CALENDAR, useClass: WorkflowCalendarAdapter },
     ParticipantResolver,
     WorkflowTimers,

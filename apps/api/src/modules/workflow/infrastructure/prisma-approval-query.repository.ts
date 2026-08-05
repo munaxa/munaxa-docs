@@ -48,9 +48,26 @@ export class PrismaApprovalQueryRepository implements ApprovalQueryRepository {
 
   async inbox(request: ApprovalInboxRequest): Promise<Page<ApprovalInboxRow>> {
     const tx = requireTransaction();
+
+    /**
+     * Whose tasks. The caller's own, plus — Phase 11 — the tasks of everybody they are currently
+     * covering for.
+     *
+     * `assigneeId` is matched with `in` rather than rewritten, and that is the routing overlay in
+     * one line: the delegate's inbox contains the *delegator's* tasks, still assigned to the
+     * delegator, rather than tasks that were moved to the delegate. Nothing in the database says
+     * these are the delegate's work; the query says they may act on it.
+     *
+     * The set is exactly what Identity authorised — one entry per delegation in force, whose
+     * period covers now and whose delegator still holds the permission — so "exactly what they may
+     * act on and nothing more" is a property of the `IN` list rather than a filter applied after.
+     */
+    const cover = request.cover ?? [];
+    const assigneeIds = [request.assigneeId, ...cover.map((entry) => entry.delegatorId as string)];
+
     const where: Prisma.ApprovalTaskWhereInput = {
       tenantId: this.tenantId(),
-      assigneeId: request.assigneeId,
+      assigneeId: assigneeIds.length === 1 ? request.assigneeId : { in: assigneeIds },
       // Defaults to what is waiting, because that is what "my approvals" means. A caller asking for
       // a decided state gets their history from the same endpoint rather than a second one.
       state: request.state ?? ApprovalTaskState.PENDING,
@@ -59,6 +76,9 @@ export class PrismaApprovalQueryRepository implements ApprovalQueryRepository {
         OR: [{ dueAt: null }, { dueAt: { gte: this.stamps.now() } }],
       }),
     };
+
+    /** Which delegation put a covered row in this list, keyed by the delegator it covers. */
+    const coverByDelegator = new Map(cover.map((entry) => [entry.delegatorId as string, entry]));
 
     const [rows, total] = await Promise.all([
       tx.approvalTask.findMany({
@@ -75,7 +95,26 @@ export class PrismaApprovalQueryRepository implements ApprovalQueryRepository {
       tx.approvalTask.count({ where }),
     ]);
 
-    return toPage(rows.map(toInboxRow), total, request);
+    return toPage(
+      rows.map((row) => {
+        const covered = coverByDelegator.get(row.assigneeId);
+        return {
+          ...toInboxRow(row),
+          // Absent for the caller's own tasks. Present for a covered one, so the screen renders
+          // "on behalf of" from the row rather than by comparing the assignee to the signed-in
+          // user — which is the comparison that would silently be wrong for an administrator
+          // reading somebody else's inbox.
+          ...(covered !== undefined && {
+            onBehalfOf: {
+              delegationId: covered.delegationId,
+              delegatorId: covered.delegatorId,
+            },
+          }),
+        };
+      }),
+      total,
+      request,
+    );
   }
 
   async instancesForDocument(documentId: DocumentId): Promise<readonly WorkflowInstanceView[]> {
@@ -93,6 +132,18 @@ export class PrismaApprovalQueryRepository implements ApprovalQueryRepository {
       include: VIEW_INCLUDE,
     });
     return row === null ? null : toView(row);
+  }
+
+  /** Display names for the people a screen names — the inbox's delegators, Phase 11. */
+  async displayNames(userIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+    const rows = await requireTransaction().user.findMany({
+      where: { tenantId: this.tenantId(), id: { in: [...userIds] } },
+      select: { id: true, displayName: true },
+    });
+    return new Map(rows.map((row) => [row.id, row.displayName]));
   }
 
   /**
@@ -250,6 +301,7 @@ function toTask(row: {
   decision: string | null;
   decidedById: string | null;
   onBehalfOfId: string | null;
+  delegationId: string | null;
   decidedAt: Date | null;
   comment: string | null;
   dueAt: Date | null;
@@ -268,6 +320,7 @@ function toTask(row: {
     decision: row.decision as TaskDecisionKey | null,
     decidedById: row.decidedById === null ? null : asId<UserId>(row.decidedById),
     onBehalfOfId: row.onBehalfOfId === null ? null : asId<UserId>(row.onBehalfOfId),
+    delegationId: row.delegationId,
     decidedAt: row.decidedAt,
     comment: row.comment,
     dueAt: row.dueAt,

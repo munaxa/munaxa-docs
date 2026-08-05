@@ -83,7 +83,7 @@ graph TB
 Resolution algorithm — pure, cached, and the only place a decision is made:
 
 ```text
-1. Collect the caller's subjects: user id, role ids, department ids, active delegations.
+1. Collect the caller's subjects: user id, role ids, department ids.
 2. Walk the scope chain from the document up to the tenant (one query, using the ltree paths).
 3. Collect every ACL entry on that chain matching any subject and the requested permission.
 4. If any matching entry has effect DENY  → denied. (Deny wins, at any level.)
@@ -95,6 +95,26 @@ Resolution algorithm — pure, cached, and the only place a decision is made:
 
 [ADR-0005](./adr/0005-hierarchical-acl-with-deny-precedence.md) records why deny wins and why the
 default is closed.
+
+**Step 1 said "and active delegations" until Phase 11, and that phase removed it deliberately.**
+The clause had been unbound since Phase 0.5 — `AuthorizationSubject.delegationIds` was passed `[]`
+by all three of its call sites — and building delegation is what forced the question of whether it
+should ever be filled in. The answer is no, and the reason is
+[07 §4](./07-workflow-architecture.md)'s own first sentence: delegation is a **routing overlay,
+never a permission grant**.
+
+Making a delegation an ACL subject would make it a grant. An ACL entry could then name a delegation
+on a scope node, and the delegate would gain *reach* — the ability to see or act on things the
+delegator never could — which is precisely the privilege escalation §8's table forbids. It would
+also make the authority question unanswerable in the place §4 requires it: the walk answers "may
+this subject reach this node", and "does the delegator still hold `document:approve` right now" is
+a different question about a different thing.
+
+So delegation is resolved where it belongs. `DelegationService.authorityFor` takes the permission as
+a parameter, reads the delegator's current grants at the instant of the decision, and returns the
+delegation that authorises the act — or the rule that refused. `AuthorizationSubject.delegationIds`
+remains on the interface and remains empty; removing the field would be a wider change than the
+decision warrants, and it documents a subject the resolver deliberately does not have.
 
 **Breaking inheritance:** a folder may set `inherit_acl = false`, which stops the walk at that node
 for ACL purposes. Administrative permissions (`*:manage`, `audit:*`) are never blocked this way —

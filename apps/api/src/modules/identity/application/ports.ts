@@ -1,6 +1,10 @@
 import type {
   AnyId,
+  DelegationEdge,
   DelegationId,
+  DelegationKindKey,
+  DelegationRefusalKey,
+  DelegationStatusKey,
   PermissionKey,
   RoleId,
   TenantId,
@@ -54,20 +58,129 @@ export interface RoleRepository {
   listAll(): Promise<readonly RoleRecord[]>;
 }
 
+/**
+ * One delegation, as the use case holds it.
+ *
+ * The Phase 0.5 sketch of this interface carried six fields and was bound to nothing. It is
+ * widened rather than replaced, because the six it guessed at were all right — and the shape it
+ * was missing is the whole of what §4 turned out to require: who agreed to it, whether it was
+ * declared rather than requested, how deep in a chain it sits, and what became of it.
+ *
+ * `permissions` is what the delegator chose to pass, and deliberately **not** a snapshot of what
+ * they held. §4 checks authority at decision time; a copy of the delegator's grants taken at
+ * creation is precisely the "checked at creation" the section forbids, and it would go stale in
+ * the direction that matters — a role withdrawn afterwards would still authorise.
+ */
 export interface DelegationRecord {
   readonly id: DelegationId;
   readonly delegatorId: UserId;
   readonly delegateId: UserId;
+  readonly kind: DelegationKindKey;
+  readonly status: DelegationStatusKey;
   readonly startsAt: Date;
   readonly endsAt: Date;
   readonly permissions: readonly PermissionKey[];
+  readonly reason: string | null;
+  readonly depth: number;
+  readonly requestedAt: Date;
+  readonly approvedById: UserId | null;
+  readonly approvedAt: Date | null;
+  readonly declineReason: string | null;
+  readonly revokedById: UserId | null;
+  readonly revokedAt: Date | null;
+  readonly revokeReason: string | null;
+  readonly version: number;
+}
+
+/** A delegation with the names and the use count the screens render. */
+export interface DelegationView extends DelegationRecord {
+  readonly delegatorName: string | null;
+  readonly delegateName: string | null;
+  readonly approvedByName: string | null;
+  /** How many decisions were taken under it — §4's visibility rule, as a number. */
+  readonly useCount: number;
+}
+
+/** One decision taken under a delegation, projected from `approval_task`. */
+export interface DelegationUseRecord {
+  readonly taskId: string;
+  readonly documentId: string;
+  readonly documentTitle: string;
+  readonly documentNumber: string | null;
+  readonly decision: string | null;
+  readonly decidedById: UserId;
+  readonly decidedByName: string | null;
+  readonly onBehalfOfId: UserId;
+  readonly decidedAt: Date | null;
 }
 
 export interface DelegationRepository {
   findById(id: DelegationId): Promise<DelegationRecord | null>;
-  /** Active at a point in time — the resolver asks for "now", a report asks for a past date. */
-  listActiveFor(userId: UserId, at: Date): Promise<readonly DelegationRecord[]>;
-  save(delegation: DelegationRecord): Promise<void>;
+  /**
+   * Takes a row lock, and returns false when there is no such delegation.
+   *
+   * Every write path calls it first, for the reason the workflow engine locks its instance: a
+   * revocation and an approval arriving at the same instant would otherwise both read
+   * `PENDING_APPROVAL` and both write, and the second would silently undo the first.
+   */
+  lock(id: DelegationId): Promise<boolean>;
+  /**
+   * In force for this delegate at this instant.
+   *
+   * The authority predicate's own read, and the only one on a request's hot path. "At this
+   * instant" is a parameter rather than `now()` because the same question is asked of a past date
+   * by a report, and two implementations of "was this in force" would be two answers.
+   */
+  listActiveFor(delegateId: UserId, at: Date): Promise<readonly DelegationRecord[]>;
+  /**
+   * Every delegation in force in the tenant, as chain edges.
+   *
+   * A whole-tenant read for one decision, and the right shape anyway: a cycle is a property of the
+   * graph rather than of any pair in it. The graph is tiny — a delegation is a temporary
+   * arrangement a handful of people have at any moment, not a row per document.
+   */
+  liveEdges(at: Date): Promise<readonly DelegationEdge[]>;
+  /** Delegations in force whose period has ended — the sweep's read, oldest first. */
+  listEndedButActive(at: Date, limit: number): Promise<readonly DelegationRecord[]>;
+
+  create(delegation: DelegationRecord): Promise<void>;
+  /**
+   * Moves a delegation to a new status only if it is still in the one the caller read.
+   *
+   * Returns false when zero rows matched, which means somebody moved it first. A conflict rather
+   * than an overwrite: approving a delegation somebody revoked a moment ago would put an authority
+   * back that its delegator had taken away, and that is the one race in this module worth making
+   * impossible rather than unlikely.
+   */
+  transition(input: {
+    readonly id: DelegationId;
+    readonly from: readonly DelegationStatusKey[];
+    readonly to: DelegationStatusKey;
+    readonly at: Date;
+    readonly approvedById?: UserId | null;
+    readonly declineReason?: string | null;
+    readonly revokedById?: UserId | null;
+    readonly revokeReason?: string | null;
+  }): Promise<boolean>;
+
+  // --- The read side ---
+  list(request: DelegationListRequest): Promise<Page<DelegationView>>;
+  usesOf(id: DelegationId): Promise<readonly DelegationUseRecord[]>;
+}
+
+export interface DelegationListRequest extends PageRequest {
+  /** Whose list, and from which side. Never absent: a delegation list with no subject is a register. */
+  readonly userId: UserId;
+  readonly direction: 'GIVEN' | 'RECEIVED' | 'AWAITING_MY_APPROVAL';
+  readonly status?: DelegationStatusKey | undefined;
+  readonly includeEnded: boolean;
+  /**
+   * Whose requests this caller may approve, for `AWAITING_MY_APPROVAL`.
+   *
+   * Passed in rather than resolved here because "who may approve this" is the phase's own decision
+   * and it is made in the service — the repository's job is to filter, not to hold a policy.
+   */
+  readonly approvableDelegatorIds?: readonly UserId[] | undefined;
 }
 
 /**
@@ -273,6 +386,21 @@ export interface UserDirectory {
    */
   managersOf(userId: UserId): Promise<readonly UserId[]>;
 
+  /**
+   * Whoever this person manages — `managersOf` asked in the other direction. Phase 11's addition.
+   *
+   * The members of every department this person manages, excluding themselves for the reason
+   * `managersOf` excludes them: somebody who manages their own department is not their own
+   * subordinate, and a queue that said otherwise would show a manager their own request.
+   *
+   * It exists because a delegation's approval queue is the inverse of its approval rule. The rule
+   * is "a manager of the delegator may agree"; the queue is "whose requests may I agree to". Both
+   * have to read the same relationship or the queue shows a request the approval then refuses, and
+   * deriving one from the other in the caller would mean loading every pending delegation in the
+   * tenant and asking `managersOf` per row.
+   */
+  subordinatesOf(userId: UserId): Promise<readonly UserId[]>;
+
   /** Which of these are live and active. The filter every resolver ends with. */
   activeAmong(userIds: readonly UserId[]): Promise<readonly UserId[]>;
 }
@@ -301,6 +429,63 @@ export interface UserService {
   }>;
 }
 
+/**
+ * Whether one person may act for another, right now, on one permission — and under which
+ * delegation.
+ *
+ * `null` for the delegation when nobody may, with `refusal` saying which rule refused. The pair
+ * rather than a boolean because a refusal that cannot say *why* is a refusal an approver reads as
+ * "the system is broken": "your delegation ended on Friday" and "Alice no longer holds
+ * `document:approve`" are two different sentences and two different things to go and fix.
+ */
+export interface DelegationAuthority {
+  readonly delegation: DelegationRecord | null;
+  readonly refusal: DelegationRefusalKey | null;
+}
+
+/**
+ * The surface other modules call. They never reach into Identity's repositories.
+ *
+ * `authorityFor` is the whole of what Workflow needs, and its shape is §4's central rule made
+ * unavoidable: the *permission* is a parameter, and the answer is computed from the delegator's
+ * grants **as they are at `at`** rather than from anything stored on the delegation. A caller
+ * cannot ask a cheaper question — there is no `isDelegate(a, b)` here — because the cheaper
+ * question is the one that lets a delegate exceed the delegator's authority.
+ *
+ * It lives in Identity rather than in the ACL resolver deliberately, and the decision is recorded
+ * in `docs/reports/phase-11-delegation.md`. `PrismaAclResolver` answers "may this subject reach
+ * this node", walking a scope chain; "what does this person hold tenant-wide right now" is a
+ * different question with a different answer, and Identity is what owns users, roles and the
+ * permission sets they resolve to. Routing it through the ACL resolver would also make a
+ * delegation an ACL *subject*, which would turn a routing overlay into a grant — the one thing §4
+ * says it must never be.
+ */
 export interface DelegationService {
+  /** In force for this person at this instant, in either direction of the arrangement. */
   listActive(userId: UserId, at: Date): Promise<readonly DelegationRecord[]>;
+  /**
+   * May `delegateId` exercise `permission` on behalf of `delegatorId` at `at`?
+   *
+   * Called inside the deciding transaction, so the delegation it returns is the one the decision
+   * is written with — a revocation committed a moment earlier is already visible, and one arriving
+   * a moment later waits on the approval instance's lock.
+   */
+  authorityFor(input: {
+    readonly delegateId: UserId;
+    readonly delegatorId: UserId;
+    readonly permission: PermissionKey;
+    readonly at: Date;
+  }): Promise<DelegationAuthority>;
+  /**
+   * Everybody this person may currently act for, given one permission.
+   *
+   * The inbox's read: "show me exactly what I may act on and nothing more". It answers with the
+   * delegators rather than with tasks, because which tasks follow from that is Workflow's
+   * question and Identity has no business knowing what an approval task is.
+   */
+  delegatorsFor(input: {
+    readonly delegateId: UserId;
+    readonly permission: PermissionKey;
+    readonly at: Date;
+  }): Promise<readonly DelegationRecord[]>;
 }

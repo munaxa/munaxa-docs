@@ -60,6 +60,20 @@ export const WorkflowAudit = {
    * The payload says which effect it had.
    */
   TIMER_FIRED: 'TIMER_FIRED',
+  /**
+   * A decision taken under a delegation — `13-audit-architecture.md` §2's Delegation group.
+   *
+   * Written by the engine rather than by Identity, and that is deliberate rather than a boundary
+   * slip: the *act* being recorded is a decision on an approval task, and it is written in the
+   * same transaction as that decision through `AdministeredWriter.record`. Identity owns the
+   * delegation and writes the other three of the group's four actions; this one belongs to
+   * whoever writes the decision, because an event in a different transaction from the act it
+   * describes is the one thing 13 §1 forbids.
+   *
+   * Its subject is the **delegation**, not the task, so "everything done under this arrangement"
+   * is a trail query on one subject.
+   */
+  DELEGATION_USED: 'DELEGATION_USED',
 } as const;
 
 export type WorkflowAuditAction = (typeof WorkflowAudit)[keyof typeof WorkflowAudit];

@@ -122,6 +122,16 @@ export const approvalTaskSchema = z.object({
   decidedByName: z.string().nullable(),
   /** The delegator, when somebody decided for another person. Both identities travel together. */
   onBehalfOfId: uuidSchema.nullable(),
+  /**
+   * Which delegation authorised it, when one did (Phase 11).
+   *
+   * A third identifier rather than an inference from the pair above, because the pair cannot
+   * answer it: two people may have delegated to each other twice in a year, and "under which
+   * arrangement" is precisely what an investigation into a since-revoked delegation asks. The row
+   * keeps it whatever becomes of the delegation — revoked and expired are both status changes, and
+   * the foreign key refuses the deletion that would orphan it.
+   */
+  delegationId: uuidSchema.nullable(),
   decidedAt: isoDateTimeSchema.nullable(),
   comment: z.string().nullable(),
   dueAt: isoDateTimeSchema.nullable(),
@@ -223,6 +233,26 @@ export const approvalInboxItemSchema = approvalTaskSchema.extend({
   documentTypeName: z.string(),
   /** Past its deadline, computed server-side so two clients cannot disagree about "overdue". */
   overdue: z.boolean(),
+  /**
+   * Set when this row is in the caller's inbox because they hold a delegation, not because the
+   * task is theirs (Phase 11, `07-workflow-architecture.md` §4).
+   *
+   * The task is still the assignee's — delegation is a routing overlay and never moves it — so
+   * `assigneeId` is unchanged and this is what tells the screen to render "on behalf of". Null for
+   * an ordinary row, which is what makes a delegate's inbox legible: their own work and the work
+   * they are covering are distinguishable without comparing identifiers.
+   *
+   * It carries the delegation's identifier rather than a boolean because a delegate covering two
+   * people at once has two arrangements running, and "under which one" is the question the
+   * delegator's own history is keyed on.
+   */
+  onBehalfOf: z
+    .object({
+      delegationId: uuidSchema,
+      delegatorId: uuidSchema,
+      delegatorName: z.string().nullable(),
+    })
+    .nullable(),
 });
 
 export const approvalInboxQuerySchema = pageQuerySchema

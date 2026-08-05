@@ -30,13 +30,15 @@ react to its **events** — never through its repositories or its Prisma models.
 | `user.created` | A user record exists; it may not have signed in yet. |
 | `user.disabled` | Sessions are revoked and the user holds no access from this moment. |
 | `user.roles-changed` | Forces permission re-evaluation and cache invalidation. |
+| `delegation.requested` | Somebody has asked to delegate; the named approvers must agree. |
 | `delegation.approved` | The delegate may act for the delegator within the stated scope and period. |
 | `delegation.revoked` | Ends a delegation before its end date. |
+| `delegation.expired` | A delegation's period ended. Recorded by the sweep; never what makes it inert. |
 
 ## Authentication
 
-Sign-in, refresh and sign-out are implemented; user and role administration, delegation and
-MFA are not yet.
+Sign-in, refresh and sign-out are implemented; user and role administration and delegation are
+too. MFA is not.
 
 | Route | Public | Notes |
 | --- | --- | --- |
@@ -176,10 +178,44 @@ resolving to me is an escalation that goes nowhere and hides that there is nobod
 tenant. Widening is the dangerous default — it would route an approval meant for one department's
 quality manager to every quality manager in the organisation, silently.
 
+## Delegation (Phase 11)
+
+`DELEGATION_REPOSITORY` and `DELEGATION_SERVICE`, declared and unbound since Phase 0.5, are bound.
+The whole of it is `07-workflow-architecture.md` §4, and one sentence from that section explains
+every shape here: **delegation is a routing overlay, never a permission grant.** The task stays the
+delegator's, the delegate acts on it, and nothing in this module grants reach.
+
+| Route | Notes |
+| --- | --- |
+| `GET /api/v1/delegations` | Given, received, or awaiting my approval. The third is not a filter over the other two |
+| `GET /api/v1/delegations/{id}/uses` | Everything decided under it — §4's visibility rule, projected from `approval_task` |
+| `POST /api/v1/delegations` | A request. **No `delegatorId` on the wire**: the subject is the caller, enforced by absence |
+| `POST /api/v1/delegations/emergency` | Its own route, not a flag, so the path that bypasses the approval is a different URL |
+| `POST /api/v1/delegations/{id}/approve` · `/decline` | A manager of the delegator, or `user:manage`; never a party to it |
+| `POST /api/v1/delegations/{id}/revoke` | Immediate. Nothing is reassigned, because nothing ever moved |
+
+Four decisions worth knowing before changing anything here.
+
+**`authorityFor` is the only method other modules call, and the permission is a parameter.** There
+is deliberately no `isDelegate(a, b)`: the cheap question is the one that lets a delegate exceed
+what the delegator holds. The delegator's grants are read *at the instant of the decision* and
+nothing about them is stored on the delegation, which is §4's "checked at decision time, not at
+creation" made unrepresentable to get wrong.
+
+**Approval is `user:manage`, not `delegation:manage`.** The latter is `own`-scoped in the Phase 1
+seed — every author holds it — and the request context carries a permission key with no scope
+beside it. Reading it as "may administer delegations generally" would let any author approve any
+other author's request, which is the control not existing.
+
+**Expiry is a predicate; the lane only records it.** `listActiveFor` filters on the period in SQL,
+so a delegation past its end date authorises nothing whether or not `identity.expire-delegations`
+has run. The schedule exists because `DELEGATION_EXPIRED` is in 13 §2 and an action has to be
+written by something.
+
+**Nothing is ever deleted.** Revocation and expiry are status changes, and
+`approval_task.delegation_id` restricts — so the delegation a decision was taken under is still
+identifiable years later, which is what an investigation into a revoked delegation needs.
+
 ## Still to build
 
-Delegation, MFA enrolment, and the events listed above — none of which are published yet.
-
-Delegation is Phase 11's and Phase 4 was careful not to make it unbuildable: an approval task carries
-`decided_by_id` and `on_behalf_of_id` already, the audit payload reads both, and the one check that
-phase relaxes — "the task belongs to you" — is in a single place in the engine.
+MFA enrolment, and its three audit actions, which are Phase 14's.

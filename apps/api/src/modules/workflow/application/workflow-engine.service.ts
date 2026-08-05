@@ -12,6 +12,8 @@ import {
   RejectBehaviour,
   StageSkipReason,
   TaskDecision,
+  type PermissionKey,
+  Permission,
   type TaskDecisionKey,
   type UserId,
   WorkflowCancellationReason,
@@ -71,10 +73,12 @@ import {
   type NewTimer,
   type SubmitResult,
   WORKFLOW_CALENDAR,
+  WORKFLOW_DELEGATION_GATE,
   WORKFLOW_DOCUMENT_GATE,
   WORKFLOW_ENGINE_REPOSITORY,
   type WorkflowAggregate,
   type WorkflowCalendarReader,
+  type WorkflowDelegationGate,
   type WorkflowDocumentGate,
   type WorkflowEngineRepository,
   type WorkflowStageRecord,
@@ -137,6 +141,15 @@ export class WorkflowEngine {
     @Optional()
     @Inject(DOCUMENT_NUMBER_ALLOCATOR)
     private readonly numbering: DocumentNumberAllocator | null = null,
+    /**
+     * Bound by this module since Phase 11, and `@Optional` for the same reason the allocator is:
+     * a composition without it — Phase 4's state, and the engine's own test doubles — refuses
+     * every decision on somebody else's task, which is exactly what the engine did before
+     * delegation existed. The seam degrades to the stricter behaviour, never to the looser one.
+     */
+    @Optional()
+    @Inject(WORKFLOW_DELEGATION_GATE)
+    private readonly delegations: WorkflowDelegationGate | null = null,
   ) {}
 
   // --- Submission -------------------------------------------------------------------------
@@ -340,12 +353,42 @@ export class WorkflowEngine {
           { field: 'status', message: aggregate.instance.status },
         ]);
       }
+      const now = this.writer.clock.now();
+
+      // The one check Phase 4 said this phase relaxes, relaxed in the one place it lives.
+      //
+      // Delegation is a **routing overlay** (§4): the task stays the delegator's and the delegate
+      // acts on it. So nothing below rewrites `assigneeId`, and the task is not reassigned — the
+      // actor is simply permitted to decide it, and both identities are recorded.
+      //
+      // The authority is asked for *now*, inside this transaction, after the instance's row lock.
+      // That ordering is what makes revocation immediate in the sense §4 means: a revocation
+      // committed before this read is already visible, and one arriving after it waits on the lock
+      // and finds the decision already taken. There is no window in which a revoked delegation
+      // decides anything.
+      let delegationId: string | null = null;
       if (task.assigneeId !== actor) {
-        // The task belongs to one person. Delegation is Phase 11's and is a *routing overlay* — the
-        // task stays the delegator's and the delegate acts on it (§4) — so this is the check that
-        // phase relaxes, in one place, by asking whether the actor holds a delegation for this
-        // assignee. Until it does, only the assignee decides.
-        throw new ForbiddenError('decide a task assigned to somebody else');
+        if (this.delegations === null) {
+          // Phase 4's state, kept composable: with nothing bound, only the assignee decides.
+          throw new ForbiddenError('decide a task assigned to somebody else');
+        }
+        const authority = await this.delegations.authorityFor({
+          actorId: actor,
+          assigneeId: task.assigneeId,
+          // The permission the delegate is exercising. Named rather than assumed, because §4's
+          // rule is about *this* permission: a delegation covering `document:approve` does not
+          // authorise a rejection, which the catalogue and the matrix treat as a separate grant.
+          permission: permissionFor(input.decision),
+          at: now,
+        });
+        if (authority.delegationId === null) {
+          // The refusal names which rule refused, so an approver is told something they can act
+          // on — "that delegation ended on Friday" rather than a bare "not yours".
+          throw new ForbiddenError(
+            `decide a task assigned to somebody else (${authority.refusal ?? 'NONE'})`,
+          );
+        }
+        delegationId = authority.delegationId;
       }
       if (input.decision !== TaskDecision.APPROVED && input.comment === null) {
         throw new ValidationError('A rejection or a request for changes has to say why.', [
@@ -367,14 +410,19 @@ export class WorkflowEngine {
         ]);
       }
 
-      const now = this.writer.clock.now();
       const claimed = await this.repository.decideIfPending({
         taskId: task.id,
         decision: input.decision,
+        // Who *actually* decided. The delegate, when one did.
         decidedById: actor,
-        // Set only when somebody decided for another person. Phase 11 fills it; the column and the
-        // audit payload read it already, which is what keeps delegation from needing a migration.
-        onBehalfOfId: null,
+        // The delegator, set only when somebody decided for another person — Phase 11 filling the
+        // field Phase 4 left, with no migration, exactly as that phase intended. `assigneeId` is
+        // untouched: the task never moved.
+        onBehalfOfId: delegationId === null ? null : task.assigneeId,
+        // The arrangement that authorised it. Written with the pair or with neither — a check
+        // constraint refuses a row that carries one and not the other, because a trail that names
+        // a delegation but no delegator cannot answer "who decided, and for whom".
+        delegationId,
         comment: input.comment,
         at: now,
         autoDecided: false,
@@ -405,9 +453,35 @@ export class WorkflowEngine {
           workflowInstanceId: aggregate.instance.id,
           decision: input.decision,
           decidedBy: actor,
-          onBehalfOfId: null,
+          onBehalfOfId: delegationId === null ? null : task.assigneeId,
         }),
       ]);
+
+      if (delegationId !== null) {
+        // The **second** audit event, in the same transaction as the decision's own, through the
+        // `record` method Phase 10 added for exactly this shape. It is what makes the delegated
+        // decision *attested*: Phase 9 widened the chain's digest to cover `on_behalf_of_id`, and
+        // it does not cover `approval_task.delegation_id`, which this phase added afterwards — the
+        // table refuses the `UPDATE` that would rehash the trail, so the column can never become
+        // covered. This row is chained like every other, and it is filed against the **delegation**
+        // rather than the task, which is what makes "everything decided under this arrangement" a
+        // query on one subject rather than a join through a table an investigation has to know
+        // about.
+        await this.writer.record({
+          action: WorkflowAudit.DELEGATION_USED,
+          subjectType: AuditSubjectType.DELEGATION,
+          subjectId: asId<AnyId>(delegationId),
+          operation: AdministrativeOperation.UPDATED,
+          after: {
+            taskId: task.id,
+            workflowInstanceId: aggregate.instance.id,
+            documentId: aggregate.instance.documentId,
+            decision: input.decision,
+            decidedBy: actor,
+            onBehalfOf: task.assigneeId,
+          },
+        });
+      }
 
       const after = await this.requireAggregate(aggregate.instance.id);
       const outcome = await this.settleStage(after, stage, scheduled);
@@ -429,7 +503,8 @@ export class WorkflowEngine {
             stageName: stage.name,
             decision: input.decision,
             decidedBy: actor,
-            onBehalfOf: null,
+            onBehalfOf: delegationId === null ? null : task.assigneeId,
+            delegationId,
             comment: input.comment,
             stageOutcome: outcome,
           },
@@ -672,6 +747,8 @@ export class WorkflowEngine {
             // The system decided, and the trail says so rather than naming a person who did not.
             decidedById: task.assigneeId,
             onBehalfOfId: null,
+            // The system decided under no delegation, and the trail must not imply one.
+            delegationId: null,
             comment: 'Approved automatically when the stage deadline passed.',
             at: now,
             autoDecided: true,
@@ -1281,6 +1358,21 @@ export class WorkflowEngine {
       after: { effect: 'none' },
     };
   }
+}
+
+/**
+ * The permission a decision exercises — Phase 11.
+ *
+ * The catalogue and 08 §6's matrix treat approving and rejecting as two grants, and the approval
+ * controller already enforces the second separately on the same route. A delegation covering
+ * `document:approve` therefore does not authorise a rejection, and naming the permission here is
+ * what makes that true of a delegate as well as of an assignee. `CHANGES_REQUESTED` is a refusal
+ * that sends a document back, so it takes the same key as a rejection.
+ */
+function permissionFor(decision: TaskDecisionKey): PermissionKey {
+  return decision === TaskDecision.APPROVED
+    ? Permission.DOCUMENT_APPROVE
+    : Permission.DOCUMENT_REJECT;
 }
 
 function auditActionFor(decision: TaskDecisionKey): string {

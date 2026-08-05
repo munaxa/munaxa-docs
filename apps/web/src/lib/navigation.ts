@@ -88,6 +88,17 @@ const DESTINATIONS: readonly NavigationDestination[] = Object.freeze([
     permission: Permission.DOCUMENT_RESTORE,
   },
   {
+    // Phase 11. `delegation:manage` — 08 §6 marks it `own` for authors and approvers, which is
+    // exactly right for this row: the screen is where somebody arranges their *own* cover, and the
+    // API enforces that by never putting a delegator on the wire. Narrower than the approvals row
+    // beside it on purpose: everybody with `document:view` has an inbox, and only somebody who may
+    // delegate has anything to do here.
+    id: 'delegations',
+    href: '/delegations' as Route,
+    labelKey: 'nav.delegations',
+    permission: Permission.DELEGATION_MANAGE,
+  },
+  {
     id: 'admin',
     href: '/admin',
     labelKey: 'nav.admin',

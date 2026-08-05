@@ -30,6 +30,17 @@ export const AuditSubjectType = {
    * put a row in the timeline of whichever document happened to be first in the range.
    */
   EXPORT: 'EXPORT',
+  /**
+   * A delegation — the Phase 11 addition, and for the same reason `EXPORT` was Phase 9's.
+   *
+   * A delegation is not a `USER`. Filing its four actions under the user type would put them on
+   * *somebody's* user timeline, and there is no honest answer to whose: a delegation is an
+   * arrangement between two people, and picking the delegator would hide from the delegate every
+   * record of an authority they were given. It has its own identifier, its own life and its own
+   * history screen, so it is its own subject — which is also what makes "everything decided under
+   * this arrangement" a query on one subject.
+   */
+  DELEGATION: 'DELEGATION',
 } as const;
 
 export type AuditSubjectTypeKey = (typeof AuditSubjectType)[keyof typeof AuditSubjectType];

@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 10**:
+and the product is built through **Phase 11**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -134,12 +134,29 @@ and the product is built through **Phase 10**:
   cannot reach, because `audit_event` refuses `DELETE` to every role and the payloads already
   written cannot be rewritten to carry it.
 
-Delegation is Phase 11, and each report says what its phase deliberately left out.
+- **Phase 11** — delegation. The most carefully pre-cut seam in the product, bound at last:
+  `DELEGATION_REPOSITORY` and `DELEGATION_SERVICE` had been declared since Phase 0.5 with no table
+  behind them, and `Permission.DELEGATION_MANAGE` had been seeded to two roles as an `own` scope
+  whose use case did not exist. 07 §4's first sentence decides the shape — delegation is a **routing
+  overlay, never a permission grant** — so nothing in this phase writes `assignee_id`: a delegate
+  decides a task that stays the delegator's, and a revocation reverts in-flight work by having
+  nothing to reassign. Authority is read at the instant of the decision from the delegator's current
+  grants rather than copied onto the delegation at creation, which is §4's rule made
+  unrepresentable to get wrong; a chain is bounded by arithmetic and a cycle refused before any
+  tenant setting is consulted; an emergency delegation bypasses the approval and nothing else, with
+  its stated ground in `audit_event.reason` where Phase 9's digest attests it. Expiry is a predicate
+  in the authority query, so a stalled queue can never leave an authority in place — the
+  `identity.delegation` lane exists only to *record* what the predicate already enforced. And 08 §3
+  lost its "active delegations" clause rather than the ACL resolver gaining a subject, because a
+  delegation that could be named in an ACL entry would be the permission grant §4 says it must never
+  be.
+
+Notifications are Phase 12, and each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-10-soft-delete-and-retention.md`](./docs/reports/phase-10-soft-delete-and-retention.md);
+[`phase-11-delegation.md`](./docs/reports/phase-11-delegation.md);
 the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

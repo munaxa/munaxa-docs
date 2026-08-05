@@ -68,6 +68,7 @@ const users: UserDirectory = {
   // list, so a future caller that reaches for one here fails loudly instead of quietly finding
   // nobody.
   holdersOfRole: () => Promise.reject(new Error('Notification does not resolve role holders.')),
+  subordinatesOf: () => Promise.reject(new Error('Notification does not resolve reporting lines.')),
   membersOfDepartment: () =>
     Promise.reject(new Error('Notification does not resolve department members.')),
   managersOf: () => Promise.reject(new Error('Notification does not resolve managers.')),

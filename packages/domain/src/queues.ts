@@ -23,6 +23,7 @@ export const QueueName = {
   WORKFLOW_TIMERS: 'workflow.timers',
   NOTIFICATIONS_DELIVER: 'notifications.deliver',
   RETENTION_RUN: 'retention.run',
+  IDENTITY_DELEGATION: 'identity.delegation',
   AUDIT_EXPORT: 'audit.export',
   OUTBOX_DISPATCH: 'outbox.dispatch',
 } as const;
@@ -105,6 +106,14 @@ export const QUEUES: readonly QueueDefinition[] = Object.freeze([
       'Disposition review and purge, tenant-partitioned. Single consumer: destruction is never run concurrently with itself.',
   },
   {
+    name: QueueName.IDENTITY_DELEGATION,
+    concurrency: 1,
+    retry: { attempts: 3, backoffMs: 60_000, backoff: 'fixed' },
+    timeoutMs: 120_000,
+    description:
+      'Records delegations whose end date has passed. A lane of its own because one BullMQ worker consumes one lane: a second subscriber on `retention.run` would race its consumer for that lane’s jobs.',
+  },
+  {
     name: QueueName.AUDIT_EXPORT,
     concurrency: 2,
     retry: { attempts: 3, backoffMs: 30_000, backoff: 'exponential' },
@@ -149,6 +158,27 @@ export const SCHEDULE: readonly ScheduledJob[] = Object.freeze([
     cron: '30 1 * * *',
     lockKey: 'schedule:audit.verify-chain',
     description: 'Daily hash-chain verification; a break is the highest-severity alert.',
+  },
+  {
+    /**
+     * Records the delegations whose end date has passed — and records only.
+     *
+     * A delegation is expired by a **predicate**, not by this job: the authority check asks
+     * whether the period covers the instant, so a delegation past its end date authorises nothing
+     * from the millisecond it passes, whether or not anything ran. That is deliberate and it is
+     * the reason this entry can be a plain nightly sweep rather than a per-delegation timer.
+     *
+     * It exists anyway because `DELEGATION_EXPIRED` is in `13-audit-architecture.md` §2 and an
+     * audit action has to be written by something. Lazily writing it when somebody next looks
+     * would date the event to whenever that was — and for a delegation nobody looks at again, to
+     * never, which makes "every delegation that ended last quarter" a question the trail answers
+     * wrongly.
+     */
+    name: 'identity.expire-delegations',
+    queue: QueueName.IDENTITY_DELEGATION,
+    cron: '10 1 * * *',
+    lockKey: 'schedule:identity.expire-delegations',
+    description: 'Records delegations whose period has ended; never what makes them inert.',
   },
   {
     name: 'storage.sweep-upload-sessions',

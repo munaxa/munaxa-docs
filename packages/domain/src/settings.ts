@@ -195,6 +195,69 @@ export const Settings = {
     { min: 0, max: 365 },
   ),
 
+  /**
+   * Whether a delegation waits for somebody's agreement before it is in force.
+   *
+   * `07-workflow-architecture.md` §4 does not require an approval, and the phase brief does — so
+   * it is a setting rather than a constant, and the product's opinion is that it is required. A
+   * delegation moves an approval authority to somebody else; the tenants that need one at all are
+   * the tenants with a control environment, and a control somebody grants themselves silently is
+   * not one.
+   *
+   * Turning it off makes an ordinary delegation active on creation. It does *not* make it
+   * unaudited, and it does not turn every delegation into an emergency one: the kind still records
+   * which path the row took, and `delegation.emergencyMaximumHours` still binds the emergency one.
+   */
+  DELEGATION_REQUIRE_APPROVAL: booleanSetting(
+    'delegation.requireApproval',
+    true,
+    'A delegation waits for the delegator’s manager, or another delegation administrator, before it is in force.',
+  ),
+
+  /**
+   * Whether an authority somebody already holds by delegation may be delegated onward.
+   *
+   * §4's row verbatim: "a delegated authority may not be re-delegated by default; a tenant setting
+   * allows one hop, never a cycle". This is that setting. The hop count is not configurable and
+   * the cycle refusal is not configurable — both are in `delegation.ts` as arithmetic, because a
+   * tenant that could raise the hop count could build a chain nobody can read, and no tenant has a
+   * legitimate need for a cycle.
+   */
+  DELEGATION_ALLOW_CHAINING: booleanSetting(
+    'delegation.allowChaining',
+    false,
+    'Somebody acting under a delegation may delegate that authority onward, exactly one further hop.',
+  ),
+
+  /**
+   * The longest ordinary delegation the tenant accepts.
+   *
+   * §4 refuses open-ended delegations, and "bounded" needs a number. Ninety days is a quarter — a
+   * secondment, a parental leave, a long project — and a delegation meant to outlast one is an
+   * arrangement that should be a role change instead.
+   */
+  DELEGATION_MAXIMUM_DAYS: integerSetting(
+    'delegation.maximumDays',
+    90,
+    'The longest period an ordinary delegation may cover.',
+    { min: 1, max: 365 },
+  ),
+
+  /**
+   * The longest emergency delegation the tenant accepts.
+   *
+   * Much shorter than the ordinary maximum, deliberately, and that ratio is the whole design of
+   * the emergency path: it buys the bypass of an approval with a period short enough that the
+   * approval can happen afterwards. Seventy-two hours covers a weekend plus the Monday somebody
+   * discovers the problem.
+   */
+  DELEGATION_EMERGENCY_MAXIMUM_HOURS: integerSetting(
+    'delegation.emergencyMaximumHours',
+    72,
+    'The longest period an emergency delegation may cover, declared without approval.',
+    { min: 1, max: 720 },
+  ),
+
   CHECKOUT_EXPIRY_HOURS: integerSetting(
     'documents.checkoutExpiryHours',
     // Three working days, roughly: long enough to edit a real document offline over a weekend,

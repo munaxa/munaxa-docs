@@ -60,6 +60,21 @@ export class ApprovalService {
     };
   }
 
+  /**
+   * Display names for a handful of people — Phase 11's inbox needs the delegator's.
+   *
+   * Through the read side rather than through `WORKFLOW_DIRECTORY`, because the directory's
+   * `displayNames` is the *engine's* lookup and this is a screen's: the engine asks at stage
+   * activation inside a write, and a read model asking a write-path port would be a read that
+   * could not be served from the same transaction as the rows it decorates.
+   */
+  namesOf(userIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
+    if (userIds.length === 0) {
+      return Promise.resolve(new Map());
+    }
+    return this.writer.read(() => this.queries.displayNames(userIds));
+  }
+
   instance(id: string): Promise<WorkflowInstanceView | null> {
     return this.writer.read(() => this.queries.instance(id as never));
   }
