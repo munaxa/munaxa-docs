@@ -111,7 +111,8 @@ decision — it asks the authorization service.
 | Audit | AuditEvent, hash chain, export | — (written by everyone via the audit service) |
 | Notification | Template, message, delivery, preference, digest | Identity |
 | Retention | Retention run, legal hold, disposition, purge | Document, Storage |
-| Reporting | Read models, dashboards, exports | Search, Audit, Workflow |
+| Reporting | Read models, exports, scheduling | Search, Audit, Workflow |
+| Dashboard | Composition over other modules' read models — owns no data of its own | Document, Workflow, Storage, Identity, Organization, Retention, Notification |
 
 ## 4. Ports and dependency injection
 

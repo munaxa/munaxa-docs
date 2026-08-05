@@ -52,6 +52,12 @@
  * itself the authority the approval exists to gate. The emergency path is a second body rather
  * than a flag on the first, so the bypass is never one character away from the ordinary request.
  *
+ * Phase 13 adds `dashboard/` — the two dashboards of 16 §2's `page.tsx`. The shape worth noticing
+ * is that every administrator tile is *nullable and three-valued*: a tile the caller may not see
+ * is `FORBIDDEN` with a null count, never `READY` with a zero. Those are different answers, and
+ * collapsing them would make the first screen of the product a report on how much exists in the
+ * parts of the tenant somebody cannot see into.
+ *
  * These schemas are the *only* definition of each shape. The API validates with them and the web
  * forms validate with them, so a filter the UI can build is a filter the API accepts by
  * construction, and a field one side adds is a field the other side's build sees
@@ -85,3 +91,4 @@ export * from './search/search';
 export * from './audit/audit';
 export * from './retention/retention';
 export * from './notifications/notification';
+export * from './dashboard/dashboard';

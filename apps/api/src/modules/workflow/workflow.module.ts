@@ -37,6 +37,8 @@ import { WorkflowTimerConsumer } from './infrastructure/workflow-timer.consumer'
 import { ApprovalController } from './presentation/approval.controller';
 import { WorkflowAdminController } from './presentation/workflow-admin.controller';
 
+import { WorkflowDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
+import { DASHBOARD_APPROVAL_METRICS } from '../dashboard/application/ports';
 /**
  * Workflow — Who must agree before this becomes official?
  *
@@ -85,6 +87,9 @@ import { WorkflowAdminController } from './presentation/workflow-admin.controlle
   imports: [DocumentModule, IdentityModule, AdministrationModule],
   controllers: [WorkflowAdminController, ApprovalController],
   providers: [
+    // Phase 13: the dashboard's approval counts, built from the inbox's own predicate — one
+    // definition of "overdue" in this module and it is `approvalTaskWhere`.
+    { provide: DASHBOARD_APPROVAL_METRICS, useClass: WorkflowDashboardMetrics },
     // --- Phase 2: definitions ---
     { provide: WORKFLOW_ADMIN_REPOSITORY, useClass: PrismaWorkflowAdminRepository },
     { provide: WORKFLOW_ADMIN_SERVICE, useClass: WorkflowAdminService },
@@ -111,6 +116,11 @@ import { WorkflowAdminController } from './presentation/workflow-admin.controlle
     // around a use case, and this is the module that owns the use case.
     WorkflowTimerConsumer,
   ],
-  exports: [WORKFLOW_ENGINE, APPROVAL_SERVICE, APPROVAL_QUERY_REPOSITORY],
+  exports: [
+    DASHBOARD_APPROVAL_METRICS,
+    WORKFLOW_ENGINE,
+    APPROVAL_SERVICE,
+    APPROVAL_QUERY_REPOSITORY,
+  ],
 })
 export class WorkflowModule {}

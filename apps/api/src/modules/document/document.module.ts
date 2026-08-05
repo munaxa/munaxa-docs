@@ -35,6 +35,8 @@ import { StorageContentGateAdapter } from './infrastructure/storage-content-gate
 import { DocumentsController } from './presentation/documents.controller';
 import { DocumentPreviewController } from './presentation/document-preview.controller';
 import { RevisionControlController } from './presentation/revision-control.controller';
+import { DocumentDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
+import { DASHBOARD_DOCUMENT_METRICS } from '../dashboard/application/ports';
 
 /**
  * Document — What is this document, in the business's terms?
@@ -84,6 +86,9 @@ import { RevisionControlController } from './presentation/revision-control.contr
   ],
   controllers: [DocumentsController, RevisionControlController, DocumentPreviewController],
   providers: [
+    // Phase 13: what the dashboard needs from Document, answered over this module's own list
+    // predicate — see `dashboard-metrics.adapter.ts`.
+    { provide: DASHBOARD_DOCUMENT_METRICS, useClass: DocumentDashboardMetrics },
     PrismaDocumentRepository,
     { provide: DOCUMENT_REPOSITORY, useExisting: PrismaDocumentRepository },
     { provide: DOCUMENT_ACTIVITY_REPOSITORY, useClass: PrismaDocumentActivityRepository },
@@ -108,7 +113,12 @@ import { RevisionControlController } from './presentation/revision-control.contr
   ],
   // `DOCUMENT_NUMBER_SERVICE` is exported for exactly one consumer: Workflow's allocator
   // adapter, which is how the engine's `DOCUMENT_NUMBER_ALLOCATOR` seam gets its binding.
-  exports: [DOCUMENT_SERVICE, DOCUMENT_NUMBER_SERVICE, DOCUMENT_DISPOSITION],
+  exports: [
+    DOCUMENT_SERVICE,
+    DOCUMENT_NUMBER_SERVICE,
+    DOCUMENT_DISPOSITION,
+    DASHBOARD_DOCUMENT_METRICS,
+  ],
 })
 export class DocumentModule implements OnModuleInit {
   constructor(

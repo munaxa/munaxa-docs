@@ -138,6 +138,19 @@ import {
   PrismaSearchRebuildRepository,
 } from '../modules/search/infrastructure/prisma-search.repositories';
 
+import { AuditActivityReader } from '../modules/audit/infrastructure/audit-activity.reader';
+import { DefaultDashboardService } from '../modules/dashboard/application/dashboard.service';
+import type {
+  DashboardDelegationMetrics,
+  DashboardDocumentMetrics,
+  DashboardNotificationMetrics,
+} from '../modules/dashboard/application/ports';
+import { DocumentDashboardMetrics } from '../modules/document/infrastructure/dashboard-metrics.adapter';
+import { IdentityDashboardMetrics } from '../modules/identity/infrastructure/dashboard-metrics.adapter';
+import { OrganizationDashboardMetrics } from '../modules/organization/infrastructure/dashboard-metrics.adapter';
+import { RetentionDashboardMetrics } from '../modules/retention/infrastructure/dashboard-metrics.adapter';
+import { StorageDashboardMetrics } from '../modules/storage/infrastructure/dashboard-metrics.adapter';
+import { WorkflowDashboardMetrics } from '../modules/workflow/infrastructure/dashboard-metrics.adapter';
 /**
  * Real collaborators, wired the way the container wires them.
  *
@@ -1331,4 +1344,60 @@ export function realNotifications(options: {
     batches,
     transport,
   };
+}
+
+// --- Phase 13: the dashboard ------------------------------------------------------------------
+
+export interface DashboardStack {
+  readonly dashboard: DefaultDashboardService;
+  /** The repository the library itself serves from — so a suite can compare a tile to its list. */
+  readonly documents: PrismaDocumentRepository;
+  readonly acl: PrismaAclResolver;
+}
+
+/**
+ * The dashboard, wired the way `DashboardModule` wires it.
+ *
+ * Seven real adapters over seven real modules, the real `PrismaAclResolver` and the real
+ * `ACTIVITY_READER`. That composition is the point rather than a convenience: the phase's whole
+ * claim is that the dashboard's numbers are *somebody else's* — the list's, the inbox's, the
+ * resolver's — and a stack of doubles would assert only that the suite and the code share a belief.
+ *
+ * Delegation and notifications are passed in, because each is optional in the real composition and
+ * a suite needs to be able to run without them: `null` is a deployment that does not have the
+ * capability, which must render as `UNAVAILABLE` rather than as zero.
+ *
+ * It lives here rather than in the suite for the reason every other stack does — the boundary lint
+ * forbids one module reaching into another's `infrastructure/`, and a dashboard suite composing
+ * itself would have to reach into seven.
+ */
+export function realDashboard(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly delegations?: DashboardDelegationMetrics | null;
+  readonly notifications?: DashboardNotificationMetrics | null;
+  /** Overridden by the suite that asserts a failing source degrades one card, not the page. */
+  readonly documentMetrics?: DashboardDocumentMetrics;
+}): DashboardStack {
+  const stamps = new RecordStamps(options.clock);
+  const documents = new PrismaDocumentRepository(stamps);
+  const acl = new PrismaAclResolver(options.unitOfWork);
+
+  const dashboard = new DefaultDashboardService(
+    options.unitOfWork,
+    acl,
+    new AuditActivityReader(new PrismaAuditRepository()),
+    options.documentMetrics ?? new DocumentDashboardMetrics(documents),
+    new WorkflowDashboardMetrics(stamps),
+    new StorageDashboardMetrics(),
+    new IdentityDashboardMetrics(),
+    new OrganizationDashboardMetrics(),
+    new RetentionDashboardMetrics(),
+    silentLogger(),
+    options.clock,
+    options.delegations ?? null,
+    options.notifications ?? null,
+  );
+
+  return { dashboard, documents, acl };
 }

@@ -1206,6 +1206,85 @@ export const en = {
       folder: 'Folder',
     },
   },
+  /**
+   * The dashboard — Phase 13.
+   *
+   * `tile.forbidden` and `tile.unavailable` are two sentences rather than one, because the API
+   * answers two different things and a screen that phrased both as "not available" would send
+   * somebody to ask for a permission they already hold.
+   */
+  dashboard: {
+    title: 'Home',
+    subtitle: 'What needs your attention right now.',
+    myWork: 'My work',
+    organisation: 'Organisation',
+    organisationHint: 'Across the whole tenant. Each figure needs its own permission.',
+    seeAll: 'See all',
+    tile: {
+      forbidden: 'You do not have permission to see this figure.',
+      unavailable: 'Could not be loaded just now.',
+    },
+    user: {
+      drafts: 'Drafts',
+      draftsHint: 'Documents you own that have not been submitted',
+      rejected: 'Rejected',
+      rejectedHint: 'Returned to you without approval',
+      pending: 'Awaiting my decision',
+      pendingHint: 'Including anything you are covering for',
+      overdue: 'Overdue',
+      overdueHint: 'Past the deadline the workflow set',
+      checkedOut: 'Checked out',
+      checkedOutHint: 'You are holding the lock on these',
+      favorites: 'Favourites',
+      unread: 'Unread notifications',
+    },
+    admin: {
+      documents: 'Documents',
+      documentsHint: 'By lifecycle status',
+      workflow: 'Workflow',
+      workflowHint: 'Approvals by state',
+      approvals: 'Approvals',
+      approvalsPending: 'Pending',
+      approvalsOverdue: 'Overdue',
+      storage: 'Storage',
+      stored: 'Stored',
+      referenced: 'Before deduplication',
+      saved: 'Saved by deduplication',
+      blobs: '{count} files',
+      unreferenced: '{count} unreferenced',
+      users: 'Users',
+      userState: {
+        ACTIVE: 'Active',
+        INVITED: 'Invited',
+        DISABLED: 'Disabled',
+      },
+      departments: 'Departments',
+      dispositions: 'Due for disposition review',
+      legalHolds: 'Records under legal hold',
+    },
+    recent: {
+      title: 'Recently opened',
+      empty: 'Nothing opened yet.',
+    },
+    favorites: {
+      title: 'Favourites',
+      empty: 'You have not marked anything as a favourite.',
+    },
+    activity: {
+      title: 'My recent activity',
+      empty: 'Nothing recorded yet.',
+      hint: 'What you did, from the audit trail.',
+    },
+    delegations: {
+      title: 'Delegation',
+      empty: 'No cover is in place.',
+      given: 'Covered by {name}',
+      received: 'Covering for {name}',
+      unknownPerson: 'Someone',
+      until: 'until {date}',
+      indefinite: 'no end date',
+    },
+  },
   error: {
     VALIDATION_FAILED: 'Some of the details are not valid.',
     NOT_FOUND: 'That item does not exist, or you do not have access to it.',

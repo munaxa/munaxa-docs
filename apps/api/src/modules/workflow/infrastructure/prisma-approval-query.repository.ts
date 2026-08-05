@@ -65,17 +65,13 @@ export class PrismaApprovalQueryRepository implements ApprovalQueryRepository {
     const cover = request.cover ?? [];
     const assigneeIds = [request.assigneeId, ...cover.map((entry) => entry.delegatorId as string)];
 
-    const where: Prisma.ApprovalTaskWhereInput = {
+    const where = approvalTaskWhere({
       tenantId: this.tenantId(),
-      assigneeId: assigneeIds.length === 1 ? request.assigneeId : { in: assigneeIds },
-      // Defaults to what is waiting, because that is what "my approvals" means. A caller asking for
-      // a decided state gets their history from the same endpoint rather than a second one.
-      state: request.state ?? ApprovalTaskState.PENDING,
-      ...(request.overdue === true && { dueAt: { lt: this.stamps.now() } }),
-      ...(request.overdue === false && {
-        OR: [{ dueAt: null }, { dueAt: { gte: this.stamps.now() } }],
-      }),
-    };
+      assigneeIds,
+      state: request.state,
+      overdue: request.overdue,
+      now: this.stamps.now(),
+    });
 
     /** Which delegation put a covered row in this list, keyed by the delegator it covers. */
     const coverByDelegator = new Map(cover.map((entry) => [entry.delegatorId as string, entry]));
@@ -170,6 +166,42 @@ export class PrismaApprovalQueryRepository implements ApprovalQueryRepository {
   private tenantId(): string {
     return requireContext().tenantId;
   }
+}
+
+/**
+ * The one definition of "a task waiting for somebody", and of "overdue".
+ *
+ * Extracted from the inbox by Phase 13 and shared with the dashboard's metrics adapter, because
+ * the alternative is the failure the dashboard module's README names in its first sentence: a
+ * widget counting rows itself is a second answer to a question the product has already answered,
+ * and the day the two disagree the dashboard is the one people believe. There is exactly one
+ * `dueAt < now` in this module and it is here.
+ *
+ * `assigneeIds` carries Phase 11's cover already resolved. Whether one person may be covered by
+ * another is Identity's answer, and this predicate never asks it — it filters on the set it was
+ * given, which is what keeps the read model free of policy.
+ */
+export function approvalTaskWhere(input: {
+  readonly tenantId: string;
+  readonly assigneeIds: readonly string[];
+  readonly state?: ApprovalTaskStateKey | undefined;
+  readonly overdue?: boolean | undefined;
+  readonly now: Date;
+}): Prisma.ApprovalTaskWhereInput {
+  return {
+    tenantId: input.tenantId,
+    ...(input.assigneeIds.length > 0 && {
+      assigneeId:
+        input.assigneeIds.length === 1 ? input.assigneeIds[0] : { in: [...input.assigneeIds] },
+    }),
+    // Defaults to what is waiting, because that is what "my approvals" means. A caller asking for
+    // a decided state gets their history from the same endpoint rather than a second one.
+    state: input.state ?? ApprovalTaskState.PENDING,
+    ...(input.overdue === true && { dueAt: { lt: input.now } }),
+    ...(input.overdue === false && {
+      OR: [{ dueAt: null }, { dueAt: { gte: input.now } }],
+    }),
+  };
 }
 
 const INBOX_INCLUDE = {
