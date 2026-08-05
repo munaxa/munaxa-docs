@@ -162,6 +162,36 @@ schedule in the broker, so every instance that boots declares the same one and t
 rather than one per instance. It runs in the API process behind `queue.consumersEnabled`, which is
 where every consumer since Phase 4 lives.
 
+### The chain as a stream — Phase 17
+
+13 §6's SIEM row, and this module supplies its source rather than owning it.
+`AUDIT_STREAM_SOURCE` is declared by `modules/integration/` and implemented here by
+`AuditStreamSourceAdapter`, which is Phase 13's shape and for its reason: `AuditModule` exports
+`AUDIT_REPOSITORY`, so a sink injecting it directly would compile — and would hold a handle able to
+`append` to the hash chain. A module that can write the trail is a module that can be made to write
+a false one.
+
+The adapter is `sliceBySequence` and nothing else: the **same** method the daily verifier and the
+evidence exporter walk the chain with, so a sink can never see a different trail from the one a
+bundle attests. Deliberately not `search`, whose offset paging would answer differently depending on
+when it was asked — and the whole reason a SIEM wants this is that `sequence` is gap-free, so a
+consumer that has stored N and receives N+2 *knows* it missed one.
+
+`ip_address` and `user_agent` are absent from the stream, exactly as they are from the audit wire
+contract. A SIEM that needs them has the evidence bundle.
+
+### The chain digest widened again — Phase 17
+
+`CHAIN_HASH_V3` adds `api_client_id`, by the same versioned mechanism Phase 9 used to add seven
+fields in v2 and for the same reason: the table refuses `UPDATE` to every role including the owner,
+so rows already written cannot be rehashed and must keep verifying against the field set they were
+written under. `attestedFields(3)` reports it, so an evidence bundle's manifest never claims to
+attest a column the digest did not cover.
+
+The column exists because "which credential took this action" is the first question an incident
+asks, and a value only a `jsonb` payload carried would be attested as part of a blob the verifier
+cannot address — which is precisely 13 §4's argument for `reason` being a column.
+
 ## Still to build
 
 Monthly range partitions and cold-storage tiering (13 §6): deferred with a stated trigger — Phase 10's

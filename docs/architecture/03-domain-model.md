@@ -81,8 +81,35 @@ outside references are by id only.
 | `User` | User | Credentials, MFA enrolment, sessions, preferences | Email unique per tenant; a disabled user holds no active session |
 | `Role` | Role | Permission grants | System roles are not editable; a role always belongs to exactly one tenant |
 | `Delegation` | Delegation | Scope, period, delegated permissions | End date after start; a delegation may not delegate what the delegator lacks; no cyclic chains |
+| `ApiClient` | ApiClient | Key digest, subject, scopes, expiry, revocation | **Always bound to a user** ([ADR-0018](./adr/0018-machine-identity-as-a-delegated-subject.md)); a key's effective permissions are its subject's grants ∩ its scopes, and it can never exceed the subject |
+| `IdentityProvider` | IdentityProvider | Issuer, discovery, claim mapping, role mapping, domains | At most one per tenant; a mapping runs provider-value → role-key and never the reverse; a mapped role that does not exist is dropped, never created |
 
-Value objects: `UserId`, `EmailAddress`, `PermissionKey` (`resource:action`).
+Value objects: `UserId`, `EmailAddress`, `PermissionKey` (`resource:action`), `ApiScope`.
+
+**A machine caller is not a new kind of principal — Phase 17.** It was the obvious modelling and it
+is refused: `RequestContext.userId` is the subject of every reach decision in this product, and a
+second kind of subject would have to be understood by the ACL resolver, the search index's
+materialised subjects, every `@ScopedTo` route and the permissions screen. An `ApiClient` therefore
+*names a person* and acts as them, which is Phase 11's decision about delegation applied to a
+credential — and for the same reason: a key nameable in an ACL entry would be a permission grant
+outside the role model, held by whoever has the string.
+
+### Integration
+
+| Aggregate | Root | Contains | Invariants |
+| --- | --- | --- | --- |
+| `WebhookEndpoint` | WebhookEndpoint | URL, signing secret, subscriptions, failure state | An empty subscription list means *every* event; consecutive failures disable it, and re-enabling clears the count |
+| `WebhookDelivery` | WebhookDelivery | The exact signed bytes, attempts, next attempt, outcome | One row per (event, endpoint); the payload is stored so a dead delivery is replayable, and a dead delivery is never re-attempted |
+| `AuditSink` | AuditSink | Kind, collector, action filter, cursor | At most one per tenant; the cursor is `audit_event.sequence` and only ever advances |
+
+Value objects: `WebhookDeliveryState`, `AuditSinkKind`.
+
+**A webhook is addressed to a system, not to a person**, which is why these are their own aggregates
+rather than a notification channel — [ADR-0019](./adr/0019-webhooks-are-not-notifications.md). The
+delivery envelope carries *identity, type and time* and never document content: an outbound webhook
+has no subject to resolve reach against, so anything it carried would leave the tenant on the
+strength of a URL somebody typed. The receiver calls back through the ordinary API with its own
+credential and gets what that credential's subject may see.
 
 ### Organization
 

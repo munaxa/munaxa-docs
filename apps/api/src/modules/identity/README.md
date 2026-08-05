@@ -276,10 +276,73 @@ password and not the factor" is the only signal that says a password has leaked)
 `SESSION_REVOKED`, was **already** written by Phase 1's replay detection; this adds a third call
 site.
 
+## Phase 17 — the machine caller, and federation
+
+Two capabilities that both answer this module's own question — *who is this, and what may they do
+anywhere* — and neither is a second sign-in.
+
+### An API key is a delegated subject
+
+[ADR-0018](../../../../../docs/architecture/adr/0018-machine-identity-as-a-delegated-subject.md), and
+it is the phase's most dangerous decision because of where `userId` sits in this codebase. It is the
+subject of every reach decision in the product, and
+`PrismaDocumentRepository.visibilityCondition` answers a subject-less caller with an **empty
+predicate** — which is every document in the tenant. Had a key authenticated with `userId: null`,
+every list route would have become a full tenant dump for anybody holding one, with nothing logging
+an error and every `403` passing.
+
+So `api_client.subject_user_id` is `NOT NULL`: a key is bound to a person and acts as them, and its
+effective permissions are that person's grants ∩ the key's scopes. Both are read at **authentication
+time**, on every request, which is Phase 11's rule for delegation authority applied to a credential
+— removing a role removes it from every key bound to them on the next call, and disabling the
+account stops every key they back.
+
+A key exchanges for **no session and no token**. It is resolved on every request, which is what
+makes revocation immediate. `mdk.<prefix>.<secret>`: the prefix is the indexed selector so the
+lookup is one read rather than a scan verifying every digest; the secret is scrypt-hashed with the
+same parameters and the same verifier a password uses.
+
+There is no `update` — a key's subject and scopes are what its holder was told they had, and
+changing either silently changes what a running integration can do.
+
+### Federation is one adapter, and three of the brief's items are it
+
+SSO, Microsoft Entra ID and Google Workspace differ in a discovery URL and in which claim carries
+the groups; both are columns. **LDAP is a wire protocol rather than an HTTP redirect flow** and
+needs a dependency the lockfile cannot gain; **SAML** needs XML canonicalisation and DSig and there
+is no XML parser here at any level; **Microsoft 365** is not authentication at all.
+
+`domain/oidc.ts` verifies ID tokens over `node:crypto` and writes **no cryptography** — Node imports
+a JWK and verifies RS256 and ES256 natively. What it writes is four checks, each a string or number
+comparison a reader can check by eye: an `alg` allow-list matched to the key type (closing `none`
+and the RS256→HS256 confusion attack), an exact issuer, an audience including `azp`, and a
+constant-time nonce. That is why it is not the trade refused for CBOR and XML-DSig, where the
+*parsing* is the hard part.
+
+A provider asserts identity and groups, never authority: `roleMappings` runs provider-value →
+role-key, and a mapped key matching no role in the tenant is dropped rather than created. Returning
+users' roles are deliberately **not** re-synchronised, or the provider would become the authority on
+Munaxa roles and an administrator's local grant would vanish at the next sign-in.
+
+`user.identity_source` closes the phase's first finding: `password_hash` has been nullable since
+Phase 1 and nothing recorded *where an identity came from*, so "no password because they federate"
+and "no password because the invitation is open" were indistinguishable.
+
 ## Still to build
 
 **WebAuthn**, and the *policy* half of 17 §2 — "required by policy for `TENANT_ADMIN`,
-`DOCUMENT_CONTROLLER` and `AUDITOR`". `isRequired` answers only whether *this person* has enrolled;
-refusing a sign-in from somebody who holds one of those roles and has not enrolled is a lock-out of
-exactly the accounts that administer the tenant, on the deployment where nobody has enrolled yet. It
-belongs with 17's federation work, where an operator can be given a way out.
+`DOCUMENT_CONTROLLER` and `AUDITOR`". Both are unchanged after Phase 17 and both have named
+blockers.
+
+WebAuthn needs CBOR decoding, COSE key parsing and attestation formats; `cbor`, `fido2-lib` and
+`@simplewebauthn/server` are absent from the store entirely, and this is exactly the
+hand-written-parser trade `domain/totp.ts` explains why TOTP is *not*.
+
+The role policy is not a dependency problem. `isRequired` answers only whether this person has
+enrolled; refusing a sign-in from somebody who holds one of those roles and has not is a lock-out of
+exactly the accounts that administer the tenant — and the only way back in is
+[ADR-0013](../../../../../docs/architecture/adr/0013-operator-console-as-separate-surface.md)'s
+operator console, which no phase has built. Phase 12's chain-broken alert reaches tenant
+administrators as a stand-in for an operator *channel*, and a stand-in is not a recovery path for
+people who cannot sign in. Phase 17 declines it for that reason rather than deferring it again to a
+phase that will meet the same wall.

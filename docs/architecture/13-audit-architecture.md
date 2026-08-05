@@ -33,6 +33,7 @@
 | Numbering (Phase 5) | `NUMBER_RESERVED`, `NUMBER_ASSIGNED`, `NUMBER_VOIDED` |
 | Search (Phase 8) | `SEARCH_PERFORMED`, `SEARCH_REBUILD_REQUESTED` |
 | Export | `AUDIT_EXPORTED`, `REPORT_EXPORTED`, `BULK_DOWNLOAD` |
+| Integration (Phase 17) | `API_CLIENT_CREATED`, `API_CLIENT_REVOKED`, `USER_PROVISIONED_FROM_PROVIDER`, `IDENTITY_PROVIDER_CHANGED`, `WEBHOOK_ENDPOINT_CHANGED`, `AUDIT_SINK_CHANGED` |
 | Document (Phase 16) | `DOCUMENT_SIGNED`, `DOCUMENT_TEMPLATE_CHANGED` |
 | Bulk (Phase 16) | `BULK_OPERATION` |
 
@@ -58,10 +59,34 @@ scan, which is most of them.
 | ~~`SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED`~~ | Phase 10 — written |
 | ~~`MFA_ENROLLED`, `MFA_FAILED`~~ | Phase 14 — written |
 | ~~`REPORT_EXPORTED`~~ | Phase 15 — written |
-| `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability — **still owing after Phase 16**, which built neither archiving, reinstatement nor document links; see below |
+| ~~The Integration group~~ | Phase 17 — written, all six |
+| `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability — **still owing after Phase 17**, which built none of them either: an integration platform archives nothing, reinstates nothing and links nothing |
 | `INTEGRITY_MISMATCH` | Phase 18 — the integrity sweep that would detect one |
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
+
+**Phase 17's six, and why they are six rather than one.** The Integration group departs from this
+section's usual convention — *one action per area, the operation in the payload* — and the departure
+earns itself on Retention's and Delegation's reasoning: each answers a question somebody asks on its
+own, and three of them are security events rather than configuration changes. "Which credentials
+were issued last quarter, to act as whom" is an access review; "which accounts exist because Entra
+said so, and what did the mapping give them" is a privilege review; "where do this tenant's events
+go" is a leak investigation. One `INTEGRATION_CHANGED` would make all three payload filters over
+one action, and the highest-privilege act among them — minting a key bound to a tenant administrator
+— would be indistinguishable at a glance from somebody renaming a webhook.
+
+They are written from **two modules**, because each module owns the actions it writes: Identity
+writes the three about credentials and identity, Integration the two about where data goes. One
+group in this catalogue, two files in the code — the same shape `SecurityAudit` and
+`IdentityAdminAudit` already have.
+
+**`api_client_id` is a column rather than a payload field**, and this section's argument for
+`reason` is why: the chain's digest covers columns, so a value in `jsonb` is attested only as part
+of a blob the verifier cannot address. "Which credential took this action" is the first question an
+incident asks, and an answer somebody with write access could change without breaking a hash is not
+an answer. `chain_hash_version` 3 covers it, widened by the same versioned mechanism Phase 9 used
+for v2 and for the same reason — rows already written cannot be rehashed, because the table refuses
+`UPDATE` to every role including the owner.
 
 **Phase 15's one row, and the two it declined.** `REPORT_EXPORTED` is written twice per export —
 when it is requested, carrying **the parameters that produced it**, and when the run completes or
@@ -281,7 +306,40 @@ exempt — §2's prints are audited unconditionally and synchronously.
 | Activity feed | Recent events across the caller's scope |
 | Audit search | `audit:view`, filterable by actor, action, target, date, correlation id |
 | Evidence export | `audit:export` produces a signed bundle (CSV/JSONL + checkpoint hashes + a manifest) written to storage and downloaded via a signed URL. The export itself is audited |
-| SIEM | Optional per-tenant streaming of security events to an external sink |
+| SIEM | Optional per-tenant streaming to an external sink, by **pull cursor** or **push**. **Built in Phase 17** — see below |
+
+### What Phase 17 built for the SIEM row
+
+**Both shapes, because they are not alternatives.** `PULL` is a cursor the customer's collector
+polls with an ordinary API key; it makes no outbound request at all, which is what a collector
+inside the customer's own network needs and which means it cannot be the source of an SSRF. `PUSH`
+posts signed batches to an HTTPS collector on the deployment's outbound allow-list, and costs the
+whole of 17 §6's SSRF row — which is why the two are configured separately rather than one being a
+mode of the other.
+
+**The cursor is `audit_event.sequence`, and that is why this integration is worth having.** §3
+allocates it as `max + 1` under a per-tenant advisory lock rather than from a PostgreSQL sequence,
+precisely so a hole is visible — and that makes it a **completeness guarantee a consumer can
+check**: a collector that has stored N and receives N+2 knows it missed one, rather than hoping a
+timestamp window caught everything. Most SIEM integrations cannot offer that. Every streamed row
+carries its `hash`, `previous_hash` and `chain_hash_version`, so a collector can verify the chain it
+stored without asking again.
+
+**Not ACL-filtered**, which is 08 §10's decision rather than an omission: the trail spans subjects,
+so there is no single object to resolve. The pull route carries `audit:export`, and the only scope
+that admits it to a machine token admits `audit:view` and nothing else.
+
+**`ip_address` and `user_agent` are absent from the stream**, exactly as they are from the audit
+wire contract. A SIEM that needs them has the evidence bundle, which is the surface an investigation
+uses; a continuous feed of every colleague's address into a third-party system is a disclosure
+nobody asked for when they turned streaming on.
+
+**A filtered sink is no longer gap-free, and says so.** A sink may name the actions it carries — how
+a volume-priced SIEM stays affordable — and the cursor then advances past the whole slice rather
+than past the last carried event, so the stream terminates instead of re-reading ten thousand
+document views for ever. The gaps are the rows the tenant asked not to receive. An **unfiltered**
+sink, which is the default, keeps the guarantee in full, and that is the configuration a consumer
+relying on completeness must use.
 
 Retention: audit is kept for the tenant's compliance period (default 7 years), partitioned monthly,
 and moved to cold storage after 12 months. **Partitioning is still not built** — Phase 9 added the

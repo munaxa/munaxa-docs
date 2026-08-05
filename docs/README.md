@@ -95,10 +95,18 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0015](./architecture/adr/0015-database-per-tenant.md) | One database, storage location and search index per tenant; where each lives is a placement resolved through a registry |
 | [0016](./architecture/adr/0016-inheritance-break-truncates-the-chain.md) | An inheritance break truncates the ACL chain, for both effects; the list predicate is regions |
 | [0017](./architecture/adr/0017-electronic-signature-as-witnessed-attestation.md) | A signature is a witnessed 21 CFR Part 11 attestation over a revision's content digest, never a qualified signature |
+| [0018](./architecture/adr/0018-machine-identity-as-a-delegated-subject.md) | A machine caller is bound to a person and acts as them, narrowed by scopes — never a principal of its own |
+| [0019](./architecture/adr/0019-webhooks-are-not-notifications.md) | A webhook is its own delivery path; `NotificationChannel.WEBHOOK` is a value nothing uses |
 
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 17 — API and integration
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 17 — API & Integration](./reports/phase-17-api-integration.md) | Eleven brief items that are four groups, and sorting them was the first decision: SSO, Azure AD and Google Workspace are one OIDC adapter; LDAP and Microsoft 365 are two different things and neither is federation; migration and import APIs are mostly Phase 16's. Why a machine caller is a delegated subject and what the alternative would have cost; why a webhook is not a notification; why the outbox routing table's default changed; what `jose`, `ldapjs`, `samlify` and `cbor` actually are, answered with commands, and why hand-writing OIDC verification is not the trade SAML refuses; how 17 §6's SSRF row stopped being unfalsifiable; why the OpenAPI document and the OpenAPI explorer are two things; what the phase costs, and what it deliberately does not do |
 
 ### Phase 16 — advanced document features
 

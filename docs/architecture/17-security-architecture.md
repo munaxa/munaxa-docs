@@ -21,11 +21,57 @@
 | Control | Rule |
 | --- | --- |
 | Local credentials | Argon2id hashing, breach-list check, no composition rules beyond length, no forced rotation |
-| Federation | Per-tenant OIDC/SAML; the tenant's domain determines the provider; JIT provisioning to pre-mapped roles |
-| MFA | TOTP and WebAuthn. Required by policy for `TENANT_ADMIN`, `DOCUMENT_CONTROLLER` and `AUDITOR`; available to all |
+| Federation | Per-tenant **OIDC**; the tenant's domain determines the provider; JIT provisioning to pre-mapped roles. **Built in Phase 17** — see below |
+| MFA | TOTP built (Phase 14). WebAuthn is not, and the role policy below is not enforced — both are limits with named blockers, not omissions |
 | Sessions | Short access token, rotating refresh token in an `httpOnly`, `Secure`, `SameSite=Lax` cookie; reuse detection kills the family |
 | Lockout | Progressive delay then temporary lock, per account **and** per IP; every failure audited |
 | Revocation | Disabling a user, changing a role, or an administrator ending a session invalidates within one access-token lifetime; `permVersion` in the claim forces immediate re-evaluation on the next call |
+
+### What Phase 17 built from the federation row, and what it did not
+
+**"OIDC/SAML" is now honestly "OIDC".** One adapter serves SSO, Microsoft Entra ID and Google
+Workspace, because those three are not three integrations: the two named providers differ in a
+discovery URL and in which claim carries the groups, and both are columns on `identity_provider`.
+SAML is absent for a reason a command answered rather than a preference — verifying an assertion
+needs XML canonicalisation and XML-DSig, there is no XML parser in this lockfile at any level, and
+hand-writing C14N in a security product is the trade Phase 14 refused for WebAuthn's CBOR.
+`identity_provider_kind` has one value so that adding `SAML` later is a migration rather than a
+redesign.
+
+**LDAP is not federation and is not built.** It is a wire protocol rather than an HTTP redirect
+flow — BER-encoded ASN.1 over a socket with its own bind, search and TLS negotiation — and needs a
+dependency the lockfile cannot gain. **Microsoft 365 is a third thing again**: it is not
+authentication at all but a *content* integration (SharePoint and OneDrive as a document source),
+and conflating it with Entra ID because both say "Microsoft" is the mistake the phase report names.
+
+**ID-token verification is hand-written over `node:crypto` and that is not the same trade SAML
+refuses.** Node 22 imports a JWK and verifies RS256 and ES256 natively, so no cryptography is
+written here — what is written is a base64url split, an `alg` allow-list matched to the key type
+(closing `none` and the RS256→HS256 confusion attack), an exact issuer comparison, an audience
+comparison including `azp`, an expiry, and a constant-time nonce check. Every one is a string or a
+number comparison a reader can check by eye. CBOR, COSE and XML-DSig are the opposite: formats
+where the *parsing* is the hard part and a subtly wrong implementation still accepts valid input.
+
+**A provider asserts identity and group membership, never authority.** `role_mappings` runs one way
+— provider value → Munaxa role key — so nothing in a token can name a role, which is what
+"pre-mapped" above means. A mapped key that matches no role in the tenant is **dropped rather than
+created**. A returning federated user's roles are deliberately *not* re-synchronised on each
+sign-in: that would make the provider the authority on Munaxa roles, so an administrator's local
+grant would silently vanish at the person's next sign-in.
+
+### The MFA row, and why it is still not enforced
+
+`MFA_REQUIRED_ROLES` names `TENANT_ADMIN`, `DOCUMENT_CONTROLLER` and `AUDITOR` and nothing reads it.
+Phase 14 deferred enforcement here and Phase 17 declines it again, for the reason Phase 14 gave and
+which has not changed: **switching it on locks out exactly the accounts that administer a tenant,
+and the only way back in is [ADR-0013](./adr/0013-operator-console-as-separate-surface.md)'s
+operator console, which no phase has built.** Phase 12's chain-broken alert reaches tenant
+administrators as a stand-in for an operator channel, and a stand-in is not a recovery path for
+people who cannot sign in.
+
+WebAuthn is unbuilt for a dependency reason answered with a command: `cbor`, `fido2-lib` and
+`@simplewebauthn/server` are absent from the store entirely, and attestation formats are the
+hand-written-parser trade above.
 
 ## 3. Authorization
 
@@ -69,10 +115,40 @@ Migrations run as a separate owner role. **Weakening or bypassing any layer is p
 | Clickjacking | `frame-ancestors 'none'` |
 | Headers | `nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` minimal |
 | Injection | Parameterised queries only; no string-built SQL; search filters allow-listed, never passed through |
-| SSRF | No user-supplied URL is fetched by the server; the OIDC discovery endpoint is the only outbound URL, from a configured allow-list |
+| SSRF | Every outbound request to a tenant-chosen address goes through `OUTBOUND_HTTP_PORT` and nothing else. **Built in Phase 17** — see below |
 | Mass assignment | DTO whitelisting with `forbidNonWhitelisted` |
 | Rate limiting | Per IP and per identity on auth, search, presign and export ([15](./15-api-architecture.md)) |
 | Dependencies | Lockfile, automated advisories, no unpinned transitive fetch at build time |
+
+### The outbound boundary, built in Phase 17
+
+This row was unfalsifiable for sixteen phases: nothing fetched a user-supplied URL because nothing
+fetched anything except the mail provider's fixed endpoint, and the allow-list did not exist because
+nothing needed one. Phase 17 is where it describes a real risk — a webhook endpoint, an OIDC
+discovery document and a SIEM collector are all *URLs a tenant administrator types*, and tenant
+administrators are a role every customer has several of.
+
+`OUTBOUND_HTTP_PORT` is the only path, and it refuses in this order, each check closing a bypass
+for the one before it:
+
+1. **Scheme.** `https` only, except where a deployment explicitly permits `http` for a development
+   collector — refused outright in production.
+2. **Host, against `OUTBOUND_HTTP_ALLOWLIST`.** An **operator's** setting and the only configuration
+   in the phase a tenant cannot touch, because a boundary the people inside it can edit is not one.
+   **Empty by default**, so webhooks, federation and audit push are inert until an operator names a
+   host.
+3. **Every resolved address**, against the private, loopback, link-local, CGNAT and unique-local
+   ranges — `169.254.169.254` first among them. Every answer, not the first: a name resolving to one
+   public and one private address is a rebinding attack pre-assembled.
+4. **The connection is made to the address that was checked**, with the hostname restored in `Host`
+   and SNI. Resolve-validate-then-fetch-by-name is a control that does not control anything, because
+   the stack resolves again.
+5. **No redirects, at all.** A permitted host answering `302 http://169.254.169.254/` would
+   otherwise carry the request past every check above.
+
+A refusal names the rule and never the resolution, so it is not a DNS oracle for the network the
+server sits in. `permits()` answers the policy question without opening a socket, which is why an
+administrator saving a webhook is told at that moment rather than in a delivery log an hour later.
 
 ## 7. Data protection
 

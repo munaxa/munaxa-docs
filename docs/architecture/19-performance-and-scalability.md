@@ -74,6 +74,8 @@ correctness bug wearing a performance costume.
 | `retention.run` | Serialised per tenant, off-peak | |
 | `exports` | Low, streamed to storage | Large jobs never buffer in memory |
 | `documents.bulk` | Medium, **capped per tenant** | Phase 16. N transactions per operation; the contended resource is one tenant's own audit chain |
+| `webhooks.deliver` | High, **capped per tenant** | Phase 17. The slots are spent *waiting* on somebody else's server, not computing |
+| `audit.stream` | Low, **serialised per tenant** | Phase 17. A push is a contiguous range of one chain; two at once would break the cursor |
 
 Fairness: jobs carry their tenant id, and per-tenant concurrency caps stop one large tenant's bulk
 import from monopolising a pool.
@@ -96,6 +98,23 @@ one of the lane's retry attempts.
 Adding a cap to `documents.ocr` or `documents.preview` is now a one-line change in `@edms/domain`
 rather than a change to the adapter. It has not been made: neither lane has a producer that one
 tenant can flood, and a cap nobody needs is a bound somebody hits during an incident.
+
+**Phase 17's two lanes are the second and third to declare a cap, and each contends on something
+new.** `webhooks.deliver` is the first lane in the product whose work is an HTTP request to
+*somebody else's server*: every other lane's slowest job is bounded by something this deployment
+controls — a renderer's CPU cap, a query's row limit, a statement timeout — and a webhook's is
+bounded by a receiver who may accept a connection and never answer. That is why its concurrency is
+12 against work that computes almost nothing, why `webhook.timeoutSeconds` is a tenant setting with
+a low default, and why it caps at 4: a tenant with eight endpoints subscribed to everything produces
+eight deliveries per event, and one such tenant during a bulk import would otherwise be every slot
+in the lane while everybody else's approval notifications wait behind a stranger's unresponsive URL.
+
+`audit.stream` caps at **1**, which is not fairness at all — it is correctness. A push is a
+contiguous range of one tenant's hash chain, and the next may not begin until the last one's cursor
+has advanced; two concurrent pushes for one tenant would either send a range twice or advance past
+events nobody sent, and the gap-free sequence that makes the stream worth trusting would stop being
+a guarantee this end can make. Concurrency 2 across tenants with a per-tenant cap of 1 is what says
+"two customers' sinks proceed together, one customer's sink is strictly serial with itself".
 
 **What makes `documents.bulk` unusual is what it contends on.** A bulk operation is N transactions,
 each writing an audit row onto a chain that serialises per tenant under an advisory lock — so the
