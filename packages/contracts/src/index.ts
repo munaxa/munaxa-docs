@@ -56,3 +56,4 @@ export * from './documents/document';
 export * from './documents/revision-control';
 export * from './documents/preview';
 export * from './workflow/approval';
+export * from './search/search';

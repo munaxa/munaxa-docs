@@ -15,12 +15,14 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 7 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 8 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
-revision control that publishes what was approved and produces the next controlled version, and the
-preview pipeline that shows a controlled document without handing its bytes over. Its
+revision control that publishes what was approved and produces the next controlled version, the
+preview pipeline that shows a controlled document without handing its bytes over, and the search
+that finds a document by its number, its words and its people without ever disclosing one the
+caller may not see. Its
 map is
 [`apps/api/src/modules/README.md`](../apps/api/src/modules/README.md), and each module carries
 its own contract — what it owns, what it depends on, which core port it binds.
@@ -80,6 +82,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 8 — search
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 8 — Search](./reports/phase-8-search.md) | The search architecture made real: the `search.index` lane finally consumed, the weighted index with its materialised ACL subjects, the permission predicate inside the query, Arabic beside English in the query path, the resumable shadow-table rebuild, saved and recent searches — the decision that finally bound `ACL_RESOLVER` and why search is what forced it, what the phase costs, and what it deliberately does not do |
 
 ### Phase 7 — document preview
 

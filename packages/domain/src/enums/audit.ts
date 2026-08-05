@@ -20,6 +20,8 @@ export const AuditSubjectType = {
   CONFIGURATION: 'CONFIGURATION',
   SESSION: 'SESSION',
   FILE: 'FILE',
+  /** A search or an index operation — the Phase 8 additions: an audited `search:all` query, a rebuild. */
+  SEARCH: 'SEARCH',
 } as const;
 
 export type AuditSubjectTypeKey = (typeof AuditSubjectType)[keyof typeof AuditSubjectType];

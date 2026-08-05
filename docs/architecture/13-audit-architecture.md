@@ -214,3 +214,26 @@ payload is not something anybody searches for.
 **`TIMER_FIRED` is written even when nothing changed.** A `NOTIFY_ONLY` deadline changes no state, and
 a trail that recorded only the firings which caused one could not distinguish a stage nobody chased
 from one the engine never noticed.
+
+## Phase 8 — the actions search writes
+
+| Action | Subject | Written when |
+| --- | --- | --- |
+| `SEARCH_PERFORMED` | `SEARCH` | A `search:all` query ran — the ACL predicate was bypassed |
+| `SEARCH_REBUILD_REQUESTED` | `SEARCH` | An operator asked for a full index rebuild |
+
+Both are worth justifying.
+
+**`SEARCH_PERFORMED` is written only for `search:all`.** 12 §3's rule is that the bypass is
+audited, not that curiosity is: auditing every ordinary search would hash-chain a row per
+keystroke, and the ordinary search discloses nothing the caller could not read directly. The
+payload carries the query text and filters, because "what did the auditor search for" is the
+question the row exists to answer. `SEARCH` joined `audit_subject_type` for these two actions —
+a search is about the capability, not about any one document.
+
+**The rebuild has two records for two facts.** `SEARCH_REBUILD_REQUESTED` is the operator act,
+in the trail; `search.rebuild-completed` is the outcome, in the event stream — the same split
+as a decision's audit row against its domain event.
+
+**What is deliberately not audited: saved and recent searches.** One person's shortcuts are
+facts about a menu, exactly as favourites are (Phase 3's row above).

@@ -139,6 +139,21 @@ export const configSchema = z
     STORAGE_PUBLIC_URL: z.string().url().optional(),
 
     SEARCH_DRIVER: z.enum(['POSTGRES', 'OPENSEARCH']).default('POSTGRES'),
+    /**
+     * The coalescing window (`12-search-architecture.md` §6): changes to one document inside
+     * it project once. Also the projection's added latency, so the default sits under the
+     * two-second freshness target with room for the projection itself.
+     */
+    SEARCH_DEBOUNCE_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+    /** Documents per rebuild batch — one transaction and one resume point each. */
+    SEARCH_REBUILD_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(200),
+    /** How many recent searches each person keeps. */
+    SEARCH_RECENT_LIMIT: z.coerce.number().int().min(1).max(100).default(20),
+    /**
+     * The most body text one entry stores, in characters. A cap because the index row serves
+     * highlighting and ranking, not archival: past this point more text sharpens nothing.
+     */
+    SEARCH_MAX_BODY_CHARS: z.coerce.number().int().min(10_000).max(5_000_000).default(1_000_000),
     OCR_DRIVER: z.enum(['NONE', 'TESSERACT', 'HOSTED']).default('NONE'),
     /** Where the `TESSERACT` driver finds its binary. A path, so an installer can pin one. */
     OCR_TESSERACT_PATH: z.string().default('tesseract'),
@@ -376,6 +391,12 @@ export interface AppConfig {
     readonly tesseractPath: string;
     readonly languages: string;
   };
+  readonly search: {
+    readonly debounceMs: number;
+    readonly rebuildBatchSize: number;
+    readonly recentLimit: number;
+    readonly maxBodyChars: number;
+  };
   readonly office: {
     readonly libreofficePath: string;
   };
@@ -498,6 +519,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     ocr: {
       tesseractPath: raw.OCR_TESSERACT_PATH,
       languages: raw.OCR_LANGUAGES,
+    },
+    search: {
+      debounceMs: raw.SEARCH_DEBOUNCE_MS,
+      rebuildBatchSize: raw.SEARCH_REBUILD_BATCH_SIZE,
+      recentLimit: raw.SEARCH_RECENT_LIMIT,
+      maxBodyChars: raw.SEARCH_MAX_BODY_CHARS,
     },
     office: {
       libreofficePath: raw.OFFICE_LIBREOFFICE_PATH,

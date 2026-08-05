@@ -9,7 +9,7 @@ import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
 import { NOTIFICATION_PORT } from '../ports/notification.port';
 import { QUEUE_CONSUMER, QUEUE_PORT } from '../ports/queue.port';
 import { OCR_PORT, type OcrPort } from '../ports/ocr.port';
-import { SEARCH_PORT } from '../ports/search.port';
+import { INDEX_PORT, SEARCH_PORT, type IndexPort } from '../ports/search.port';
 import { STORAGE_PORT, type StoragePort } from '../ports/storage.port';
 import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-registry.port';
 import { RedisCacheAdapter } from './cache/redis-cache.adapter';
@@ -20,9 +20,10 @@ import {
   UnconfiguredAntivirusAdapter,
   UnconfiguredNotificationAdapter,
   UnconfiguredOcrAdapter,
-  UnconfiguredSearchAdapter,
   UnconfiguredStorageAdapter,
 } from './providers/unconfigured.adapters';
+import { PostgresIndexAdapter } from './search/postgres-index.adapter';
+import { PostgresSearchAdapter } from './search/postgres-search.adapter';
 import { LocalTransferController } from './storage/local-transfer.controller';
 import { LOCAL_TRANSFER_PATH } from './storage/local-transfer-token';
 import { LocalStorageAdapter } from './storage/local.adapter';
@@ -173,6 +174,34 @@ function ocrAdapterFor(config: AppConfig): OcrPort {
   }
 }
 
+/**
+ * The search engine, chosen by configuration — Phase 8 replaces the unconfigured refusal.
+ *
+ * `OPENSEARCH` is accepted by the schema — ADR-0008's promise of the second generation — and
+ * refused here, at boot, because no OpenSearch adapter exists yet and a value that boots but
+ * never answers would be an outage discovered at the first query rather than the deployment.
+ * The refusal names the variable — the `OCR_DRIVER=HOSTED` precedent, exactly.
+ */
+function searchAdapterFor(config: AppConfig): PostgresSearchAdapter {
+  switch (config.providers.search) {
+    case 'OPENSEARCH':
+      throw new Error('SEARCH_DRIVER=OPENSEARCH has no adapter yet; use POSTGRES.');
+    case 'POSTGRES':
+    default:
+      return new PostgresSearchAdapter();
+  }
+}
+
+function indexAdapterFor(config: AppConfig, clock: ClockPort): IndexPort {
+  switch (config.providers.search) {
+    case 'OPENSEARCH':
+      throw new Error('SEARCH_DRIVER=OPENSEARCH has no adapter yet; use POSTGRES.');
+    case 'POSTGRES':
+    default:
+      return new PostgresIndexAdapter(clock);
+  }
+}
+
 function requireBucket(config: AppConfig): string {
   // Boot validation already refuses a remote driver with no bucket, so this narrows rather than
   // decides — and it throws rather than defaulting, because a default bucket name is a default
@@ -209,8 +238,19 @@ function requireBucket(config: AppConfig): string {
       useFactory: localAdapterFor,
       inject: [APP_CONFIG, CLOCK_PORT],
     },
-    { provide: PLACED_SEARCH_PORT, useClass: UnconfiguredSearchAdapter },
+    // The engine, chosen by configuration, bound *underneath* the tenant scoping — the
+    // Phase 2.5 wrapper is untouched, so the adapter inherits isolation it cannot opt out of.
+    {
+      provide: PLACED_SEARCH_PORT,
+      useFactory: searchAdapterFor,
+      inject: [APP_CONFIG],
+    },
     { provide: SEARCH_PORT, useClass: TenantScopedSearch },
+    {
+      provide: INDEX_PORT,
+      useFactory: indexAdapterFor,
+      inject: [APP_CONFIG, CLOCK_PORT],
+    },
     // `PREVIEW_PORT` and `RENDERER_REGISTRY` are bound by the Preview module, which is what
     // "binds in core" has meant in its contract since Phase 0.5: the renderers are that
     // module's plugins, and this file would otherwise have to import them all.
@@ -226,6 +266,7 @@ function requireBucket(config: AppConfig): string {
     STORAGE_PORT,
     LOCAL_STORAGE_ADAPTER,
     SEARCH_PORT,
+    INDEX_PORT,
     OCR_PORT,
     NOTIFICATION_PORT,
     ANTIVIRUS_PORT,

@@ -10,8 +10,6 @@ import type {
   NotificationPort,
 } from '../../ports/notification.port';
 import type { OcrPort, OcrRequest, OcrResult } from '../../ports/ocr.port';
-import type { SearchQuery, SearchResults, SearchSubject } from '../../ports/search.port';
-import type { PlacedSearchPort } from '../tenancy/tenant-scoped-search';
 import type {
   BlobMetadata,
   DownloadOptions,
@@ -106,23 +104,10 @@ export class UnconfiguredAntivirusAdapter implements AntivirusPort {
   }
 }
 
-/**
- * Search, until the phase that builds it.
- *
- * Bound rather than left unbound, and the difference matters: an unbound port is a container that fails
- * to resolve at boot, which reads as a broken deployment. A bound one that refuses is a deployment that
- * works and tells you, when something searches, that no engine is configured.
- *
- * It implements `PlacedSearchPort` rather than `SearchPort`, so it sits underneath the tenant scoping
- * like every real adapter will — the isolation layer is exercised in every environment rather than only
- * once an engine exists.
- */
-@Injectable()
-export class UnconfiguredSearchAdapter implements PlacedSearchPort {
-  query(_index: string, _subject: SearchSubject, _query: SearchQuery): Promise<SearchResults> {
-    return Promise.reject(new ProviderNotConfiguredError('Search', 'SEARCH_DRIVER'));
-  }
-}
+// `UnconfiguredSearchAdapter` lived here from Phase 2.5 until Phase 8 bound the PostgreSQL
+// engine underneath the tenant scoping. It is gone rather than kept: `SEARCH_DRIVER` has no
+// `NONE` value, so there is no configuration in which "search refuses" is the intended
+// deployment — the same deletion Phase 7 made of `UnconfiguredPreviewAdapter`.
 
 /** Every scan status other than CLEAN keeps content unreachable; the constant is here so the
  *  gate's meaning is defined next to the adapters that produce it. */
