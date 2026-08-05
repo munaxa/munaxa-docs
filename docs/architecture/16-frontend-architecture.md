@@ -42,6 +42,7 @@ app/
     │   ├── permissions/          effective and explicit ACL
     │   └── audit/                the document timeline
     ├── search/                   results, facets, saved searches
+    ├── notifications/            the notification centre: inbox, per-user preferences, quiet hours
     ├── reports/
     ├── admin/                    types · fields · numbering · workflows · retention ·
     │                             confidentiality · libraries · users · roles · settings
@@ -50,6 +51,13 @@ app/
 
 Route groups map to shells, not to features. The document record page is a **tabbed record
 workspace**: identity and actions stay fixed while tabs change, so a user never loses their place.
+
+`notifications/` was added by Phase 12 and is deliberately **outside `admin/`**. 18 §5's
+preferences are per *user* — which channels, which digest, which quiet hours — and Administration
+is where somebody configures the tenant. Notification **templates** genuinely are tenant
+configuration, and they live at `admin/notification-templates` instead: an override changes the
+words everybody in the tenant is told, and the only thing that would otherwise separate the two
+surfaces is a permission check somebody can forget to add.
 
 ## 3. Feature modules
 

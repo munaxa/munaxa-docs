@@ -67,7 +67,12 @@ export function render(
       failures.push({ reason: 'MISSING_VALUE', variable: name });
       return '';
     }
-    return options.escape ? escapeHtml(value) : value;
+    // Escaped *first*, then its line breaks turned into markup. The order is the whole of the
+    // safety property: a value containing `<br>` is escaped to `&lt;br&gt;` and stays text, while
+    // a value that genuinely spans lines — a digest's list of items — keeps its shape in an HTML
+    // body instead of collapsing into one run-on sentence. This is a rendering rule about
+    // *whitespace*, not a way for a value to introduce markup.
+    return options.escape ? escapeHtml(value).replaceAll('\n', '<br>') : value;
   });
 
   return { text, failures };

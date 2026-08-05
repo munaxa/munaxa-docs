@@ -73,6 +73,30 @@ function stringSetting<const TKey extends string>(
   };
 }
 
+/**
+ * A string setting whose empty value is a real answer rather than "unset".
+ *
+ * `stringSetting` treats blank as no value and falls back to the default, which is right for a
+ * locale or a timezone — there is no such thing as an empty one. It is wrong for a setting whose
+ * whole point is that a tenant may have nothing to put there: a logo URL that cannot be cleared
+ * is a logo a tenant can add and never remove.
+ */
+function optionalStringSetting<const TKey extends string>(
+  key: TKey,
+  defaultValue: string,
+  description: string,
+): SettingDefinition<string> & { readonly key: TKey } {
+  return {
+    key,
+    defaultValue,
+    description,
+    kind: 'string',
+    parse(raw) {
+      return typeof raw === 'string' ? raw.trim() : null;
+    },
+  };
+}
+
 function integerSetting<const TKey extends string>(
   key: TKey,
   defaultValue: number,
@@ -265,6 +289,86 @@ export const Settings = {
     72,
     'How long a check-out lock lasts before any later operation may sweep it aside as expired.',
     { min: 1, max: 8_760 },
+  ),
+
+  // --- Notifications (Phase 12) ---------------------------------------------------------------
+
+  /**
+   * The three values 18 §6 calls "tenant branding", for the one surface that cannot read a
+   * stylesheet: HTML email.
+   *
+   * §6 names `platform/themes/docs/brand.ts` as the source of the hex, and the default below is
+   * that file's `brand.color.DEFAULT` for the Docs theme, recorded here with its provenance
+   * rather than imported. The API depends on no `@munaxa/*` package — it renders no UI — and
+   * pulling the design system into a NestJS process to read one string would add a React peer
+   * dependency to avoid a default. Making it a *setting* is also the stronger answer: a tenant
+   * with its own brand gets its own colour, which a fixed import could never have given.
+   *
+   * This is the only raw hex in this repository, and §6 is the sentence that permits it.
+   */
+  NOTIFICATION_BRAND_NAME: stringSetting(
+    'notification.brand.name',
+    'Munaxa Docs',
+    'The name shown in the header and footer of notification emails.',
+  ),
+
+  NOTIFICATION_BRAND_COLOR: stringSetting(
+    'notification.brand.color',
+    '#6B8E62',
+    'The header colour of notification emails, as `#RRGGBB`.',
+  ),
+
+  NOTIFICATION_BRAND_LOGO_URL: optionalStringSetting(
+    'notification.brand.logoUrl',
+    // Empty means "render the name as a wordmark". A logo has to be an absolute URL a mail
+    // client can fetch without a session, and most tenants do not have one hosted — so blank is
+    // the default *and* a value a tenant may return to, which is why this one is optional.
+    '',
+    'An absolute URL to the logo shown in notification emails, or blank for a text wordmark.',
+  ),
+
+  /**
+   * The hour of the tenant's own day a daily or weekly digest is delivered at.
+   *
+   * Not midnight: a digest exists to be read, and one delivered at 00:05 competes with
+   * everything that arrived overnight. Resolved against `locale.timezone`, because the cron that
+   * fires the collection fires in one zone and a tenant lives in its own.
+   */
+  NOTIFICATION_DIGEST_HOUR: integerSetting(
+    'notification.digestHour',
+    7,
+    'The local hour a daily or weekly notification digest is delivered at.',
+    { min: 0, max: 23 },
+  ),
+
+  /**
+   * How many permanent refusals suppress an address — 18 §7's "repeated hard bounces".
+   *
+   * Three rather than one, because a provider occasionally reports a transient condition as
+   * permanent, and cutting somebody off from every notification in the product on one such
+   * report is a worse failure than three wasted sends. A tenant running its own mail server
+   * with reliable classification may set it to one.
+   */
+  NOTIFICATION_BOUNCE_THRESHOLD: integerSetting(
+    'notification.bounceThreshold',
+    3,
+    'How many permanent delivery failures suppress an email address.',
+    { min: 1, max: 20 },
+  ),
+
+  /**
+   * How long a bulk operation's coalescing window stays open — 18 §7's last row.
+   *
+   * "Bulk operations emit one summary notification, never one per object", and the window is
+   * what decides an operation has finished producing objects. Long enough that a nightly sweep
+   * over five hundred schedules lands in one summary; short enough that a person waiting on a
+   * single one is not left wondering.
+   */
+  NOTIFICATION_COALESCE_MINUTES: integerSetting(
+    'notification.coalesceMinutes',
+    15,
+    'How long notifications from one bulk operation are collected before one summary is sent.',
+    { min: 1, max: 1_440 },
   ),
 } as const;
 

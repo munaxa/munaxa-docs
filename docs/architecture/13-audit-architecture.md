@@ -25,7 +25,7 @@
 | Permission | `ACL_GRANTED`, `ACL_REVOKED`, `INHERITANCE_BROKEN`, `ROLE_ASSIGNED`, `ROLE_PERMISSION_CHANGED`, `ACCESS_DENIED` |
 | Delegation | `DELEGATION_CREATED`, `DELEGATION_USED`, `DELEGATION_REVOKED`, `DELEGATION_EXPIRED` |
 | Retention | `SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED` |
-| Security | `LOGIN_SUCCEEDED`, `LOGIN_FAILED`, `MFA_ENROLLED`, `MFA_FAILED`, `PASSWORD_CHANGED`, `SESSION_REVOKED`, `FILE_DOWNLOAD_ISSUED`, `FILE_SCANNED`, `INTEGRITY_MISMATCH` |
+| Security | `LOGIN_SUCCEEDED`, `LOGIN_FAILED`, `MFA_ENROLLED`, `MFA_FAILED`, `PASSWORD_CHANGED`, `SESSION_REVOKED`, `FILE_DOWNLOAD_ISSUED`, `FILE_SCANNED`, `INTEGRITY_MISMATCH`, `NOTIFICATION_SUPPRESSED` |
 | Administration | `SETTING_CHANGED`, `TYPE_CHANGED`, `FIELD_CHANGED`, `POLICY_CHANGED`, `USER_CREATED`, `USER_CHANGED`, `USER_DISABLED`, `ORG_CHANGED`, `LIBRARY_CHANGED`, `FOLDER_CHANGED` |
 | Document (Phase 3) | `DOCUMENT_CHANGED`, `DOCUMENT_MOVED`, `DOCUMENT_VIEWED`, `DOCUMENT_PRINTED`, `FILE_UPLOADED` |
 | Workflow (Phase 4) | `SUBMITTED`, `STAGE_ACTIVATED`, `APPROVED`, `REJECTED`, `CHANGES_REQUESTED`, `ESCALATED`, `AUTO_APPROVED`, `WITHDRAWN`, `WORKFLOW_PAUSED`, `TIMER_FIRED`, `ROUTING_CHANGED` |
@@ -61,6 +61,40 @@ scan, which is most of them.
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
 A row here with no owner is an oversight; a row with an owner is a schedule.
+
+**Phase 12's one, and why the group has one rather than several.** `NOTIFICATION_SUPPRESSED` is
+added to the Security group and written by the delivery service when repeated hard bounces suppress
+an address (`18-notification-architecture.md` §7). It is the only notification act in this
+catalogue, and that is the decision rather than the starting point.
+
+Most notification acts do not belong here, because of 18 §8's second prohibition: a notification is
+**never the only record of anything**. Every fact one carries is already an audited act — a
+document was approved, a delegation revoked, a chain failed verification — so a row saying "and we
+told somebody" would be a second entry per event, on a table that already carries one per document
+view, answering no question the first does not. A *preference* is somebody's own arrangement about
+their own mail; it grants nothing and withdraws nothing from anyone else, and a row per checkbox
+would bury this one in a table of them.
+
+Suppressing an address is the exception because it is not a record of somebody being told. It is a
+record of somebody **ceasing to be told**, and nothing else in the product writes it down: the
+messages that follow are `SUPPRESSED` rows in a table nobody reads for compliance, and the state
+that caused them is one column an administrator may clear at any time. "When did this account stop
+receiving mail, and on what grounds" would otherwise be unanswerable — and it is exactly the
+question asked after somebody says they were never told about an approval.
+
+It is filed in **Security** rather than in a Notification group of its own because §2 "names one
+action per area, not one per resource and verb", and one row does not make an area. It sits beside
+`SESSION_REVOKED` for a reason: both are the product deciding to stop doing something for an
+account, on evidence, without the account's consent. The provider's bounce reason goes in the
+trail's own attested `reason` column, and the address is **masked** in both the reason and the
+payload — §3 requires payloads to minimise personal data, and an administrator needs to recognise
+which mailbox stopped working rather than to find a copy of the directory in the trail.
+
+A **template** edit is audited as `SETTING_CHANGED`, not as a Notification action: a template is
+tenant configuration in exactly the way a setting is, and the payload names which template changed.
+The bodies are deliberately absent from `before`/`after` — a template is up to twenty thousand
+characters, and copying two of them into a payload would make the trail a second store of the thing
+it is describing (§3).
 
 **Phase 11's four, and where each is written.** `DELEGATION_CREATED`, `DELEGATION_REVOKED` and
 `DELEGATION_EXPIRED` are Identity's. `DELEGATION_USED` is the **workflow engine's**, written through

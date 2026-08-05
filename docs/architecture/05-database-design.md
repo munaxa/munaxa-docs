@@ -179,7 +179,10 @@ CREATE INDEX ix_document_updated    ON document (tenant_id, updated_at DESC) WHE
 | `outbox_message` | `aggregate_type`, `aggregate_id`, `event_type`, `payload jsonb`, `available_at`, `processed_at`, `attempts` — `ix (processed_at, available_at)` |
 | `idempotency_key` | `(tenant_id, key)` unique, stored response, TTL |
 | `search_index_entry` | `document_id`, `tsv tsvector`, `metadata jsonb`, `acl_hash`, GIN on `tsv` |
-| `notification_message` | `recipient_id`, `channel`, `template_key`, `payload`, `state`, `attempts`, `read_at` |
+| `notification_message` | `recipient_id`, `channel`, `type_key`, the *rendered* subject and body, `state`, `attempts`, `read_at` — plus, from Phase 12, `release_at`, `digest_window` and `digest_message_id`. The rendered text is stored rather than a payload re-rendered at delivery: what was sent is a fact, and a template edited afterwards must not change the record of it |
+| `notification_quiet_hours` | Per **person**, not per type: minutes past local midnight and an IANA zone. `ck` bounds both to a day |
+| `notification_suppression` | Keyed by `(tenant_id, address)`. A fact about a mailbox rather than about a user — a corrected address is reachable again at once, and an inherited one does not inherit its predecessor's bounces |
+| `notification_batch` | One open coalescing window per bulk operation, with a count that increments (18 §7). A delayed job keyed on the batch would coalesce and keep the *first* payload, so the summary would say "1" |
 | `saved_search`, `report_definition` | Owner-scoped, shareable by ACL |
 
 ## 4. Soft delete strategy

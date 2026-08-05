@@ -197,6 +197,16 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = Object.freeze([
         descriptionKey: 'admin.settings.description',
         permission: Permission.SETTINGS_MANAGE,
       },
+      {
+        // Phase 12. Tenant configuration, not a person's own preferences: an override changes the
+        // words everybody in the tenant is told. The per-user half of 18 §5 is at
+        // `/notifications`, outside Administration entirely.
+        id: 'notification-templates',
+        href: '/admin/notification-templates',
+        titleKey: 'admin.notificationTemplates.title',
+        descriptionKey: 'admin.notificationTemplates.description',
+        permission: Permission.SETTINGS_MANAGE,
+      },
     ],
   },
 ]);

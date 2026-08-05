@@ -54,6 +54,7 @@ export const en = {
     search: 'Search',
     audit: 'Audit',
     delegations: 'Delegations',
+    notifications: 'Notifications',
     recycleBin: 'Recycle bin',
   },
   /**
@@ -574,6 +575,32 @@ export const en = {
       day7: 'Sunday',
       lastDefault: 'Make another calendar the default before removing this one.',
     },
+    /** Phase 12: tenant-editable notification wording, and the addresses mail stopped reaching. */
+    notificationTemplates: {
+      title: 'Notification templates',
+      description:
+        'The wording of every notification this organisation sends, and the addresses mail can no longer reach.',
+      editTitle: 'Edit template',
+      subject: 'Subject',
+      bodyText: 'Message',
+      bodyHtml: 'HTML message',
+      bodyHtmlHint:
+        'Optional. Leave blank to send plain text only. The product wraps it in the branded layout.',
+      placeholderHint:
+        'Use {placeholders} exactly as the shipped wording does — a name this notification does not provide will be refused when you save.',
+      reset: 'Reverted to the shipped wording',
+      resetAction: 'Reset',
+      shippedUnavailable: 'The shipped wording could not be loaded.',
+      suppressions: 'Suppressed addresses',
+      suppressionsHint:
+        'Mail to these addresses was refused permanently and is no longer attempted. In-app notifications are unaffected.',
+      noSuppressions: 'No address has been suppressed.',
+      bounces: '{count} refusals',
+      releaseLabel: 'Resume mail to',
+      releaseHint: 'Type the whole address. The list above shows masked ones deliberately.',
+      release: 'Resume',
+      released: 'Mail to that address will be attempted again',
+    },
     settings: {
       title: 'Settings',
       description: 'Locale, security and audit policy for this organisation.',
@@ -1077,6 +1104,80 @@ export const en = {
       DECLINED: 'Declined',
       REVOKED: 'Revoked',
       EXPIRED: 'Ended',
+    },
+  },
+  /**
+   * Notifications — Phase 12.
+   *
+   * The type labels are a table rather than the keys themselves, because a key is a routing
+   * identifier and a label is a sentence: `workflow.task-assigned` tells a developer where a
+   * notification comes from and tells a user nothing.
+   */
+  notifications: {
+    title: 'Notifications',
+    subtitle: 'What the product has told you, and what it will tell you next.',
+    empty: 'Nothing yet',
+    emptyUnread: 'Nothing unread',
+    emptyHint: 'Approvals, publications and anything else that needs you will appear here.',
+    unread: 'Unread',
+    unreadCount: '{count} unread',
+    markRead: 'Mark read',
+    markAllRead: 'Mark all read',
+    allRead: 'Everything marked read',
+    mandatory: 'Cannot be turned off',
+    filter: {
+      label: 'What to show',
+      all: 'Everything',
+      unread: 'Unread only',
+    },
+    channel: {
+      email: 'Email',
+      inApp: 'In-app',
+    },
+    digest: {
+      label: 'How often',
+      immediate: 'As it happens',
+      hourly: 'Hourly summary',
+      daily: 'Daily summary',
+      weekly: 'Weekly summary',
+    },
+    quietHours: {
+      from: 'Quiet from',
+      to: 'Quiet until',
+      save: 'Save quiet hours',
+      clear: 'Clear',
+      saved: 'Quiet hours saved',
+      hint: 'Urgent notifications are delivered regardless. Everything else is held until the quiet period ends. Times are read in your own timezone.',
+    },
+    preferences: {
+      toggle: 'Preferences',
+      title: 'What you receive',
+      hint: 'Choose the channels for each kind of notification. Some cannot be turned off — you can still choose where they go.',
+      reset: 'Use defaults',
+    },
+    type: {
+      unknown: 'Notification',
+      securityNewDevice: 'Sign-in from a new device',
+      securityPasswordChanged: 'Password changed',
+      securitySessionRevoked: 'Session ended',
+      approvalAssigned: 'An approval needs you',
+      approvalReminder: 'Approval reminder',
+      approvalOverdue: 'Approval overdue',
+      documentApproved: 'Document approved',
+      documentRejected: 'Document rejected',
+      documentPublished: 'Document published',
+      documentCheckedOut: 'Document checked out',
+      documentCheckedIn: 'Document checked in',
+      delegationRequested: 'Delegation awaiting agreement',
+      delegationApproved: 'Delegation in force',
+      delegationRevoked: 'Delegation revoked',
+      delegationExpired: 'Delegation expired',
+      retentionReviewDue: 'Retention review due',
+      legalHoldPlaced: 'Legal hold placed',
+      legalHoldReleased: 'Legal hold released',
+      fileQuarantined: 'File quarantined',
+      addressSuppressed: 'Email address suppressed',
+      auditChainBroken: 'Audit chain failed verification',
     },
   },
   recycleBin: {

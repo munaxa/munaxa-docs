@@ -1,7 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
-import { type UserId, UserStatus, asId } from '@edms/domain';
+import {
+  type AnyId,
+  type PermissionKey,
+  type RoleId,
+  type UserId,
+  UserStatus,
+  asId,
+} from '@edms/domain';
 
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -65,6 +72,59 @@ export class PrismaUserDirectory implements UserDirectory {
       orderBy: { displayName: 'asc' },
     });
     return rows.map((row) => asId<UserId>(row.id));
+  }
+
+  /**
+   * Everybody who holds a permission through any of their roles.
+   *
+   * One query rather than "list roles carrying the permission, then list their holders": the
+   * second shape reads the whole role table for a tenant to answer a question about a handful of
+   * people, and it goes stale between the two reads.
+   */
+  async holdersOfPermission(permission: PermissionKey): Promise<readonly UserId[]> {
+    const rows = await requireTransaction().user.findMany({
+      where: {
+        ...this.live(),
+        roles: {
+          some: {
+            role: {
+              deletedAt: null,
+              permissions: { some: { permission } },
+            },
+          },
+        },
+      },
+      select: { id: true },
+      orderBy: { displayName: 'asc' },
+    });
+    return rows.map((row) => asId<UserId>(row.id));
+  }
+
+  /**
+   * One person's roles and departments, for an authorisation decision taken about somebody other
+   * than the caller.
+   *
+   * Null for a user who is not live, which is a real answer: a disabled account's subject is not
+   * "no roles" — it is "there is nobody to decide about", and a caller that treated the two the
+   * same would silently refuse rather than skip.
+   */
+  async authorizationSubjectFor(
+    userId: UserId,
+  ): Promise<{ roleIds: readonly RoleId[]; departmentIds: readonly AnyId[] } | null> {
+    const row = await requireTransaction().user.findFirst({
+      where: { ...this.live(), id: userId },
+      select: {
+        roles: { select: { roleId: true } },
+        departments: { select: { departmentId: true } },
+      },
+    });
+    if (row === null) {
+      return null;
+    }
+    return {
+      roleIds: row.roles.map((entry) => asId<RoleId>(entry.roleId)),
+      departmentIds: row.departments.map((entry) => asId<AnyId>(entry.departmentId)),
+    };
   }
 
   async membersOfDepartment(

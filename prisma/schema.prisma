@@ -101,53 +101,55 @@ model Tenant {
   updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime?    @map("deleted_at") @db.Timestamptz(6)
 
-  auditEvents           AuditEvent[]
-  outbox                OutboxMessage[]
-  idempotency           IdempotencyKey[]
-  users                 User[]
-  roles                 Role[]
-  sessions              SessionFamily[]
-  notificationTemplates NotificationTemplate[]
-  notifications         NotificationMessage[]
-  companies             Company[]
-  entities              Entity[]
-  branches              Branch[]
-  departments           Department[]
-  confidentialityLevels ConfidentialityLevel[]
-  retentionPolicies     RetentionPolicy[]
-  numberingRules        NumberingRule[]
-  numberSequences       NumberSequence[]
-  numberReservations    NumberReservation[]
-  categories            Category[]
-  metadataFields        MetadataField[]
-  documentTypes         DocumentType[]
-  libraries             Library[]
-  folders               Folder[]
-  workflowDefinitions   WorkflowDefinition[]
-  workflowVersions      WorkflowVersion[]
-  fileObjects           FileObject[]
-  uploadSessions        UploadSession[]
-  documents             Document[]
-  documentRevisions     DocumentRevision[]
-  previewArtifacts      PreviewArtifact[]
-  previewRenders        PreviewRender[]
-  ocrResults            OcrResult[]
-  workflowInstances     WorkflowInstance[]
-  workflowStages        WorkflowStage[]
-  approvalTasks         ApprovalTask[]
-  workflowComments      WorkflowComment[]
-  workflowTimers        WorkflowTimer[]
-  approvalGroups        ApprovalGroup[]
-  workingCalendars      WorkingCalendar[]
-  documentLocks         DocumentLock[]
-  savedSearches         SavedSearch[]
-  recentSearches        RecentSearch[]
-  searchRebuilds        SearchRebuild[]
-  auditExports          AuditExport[]
-  retentionSchedules    RetentionSchedule[]
-  legalHolds            LegalHold[]
-  documentTombstones    DocumentTombstone[]
-  delegations           Delegation[]
+  auditEvents              AuditEvent[]
+  outbox                   OutboxMessage[]
+  idempotency              IdempotencyKey[]
+  users                    User[]
+  roles                    Role[]
+  sessions                 SessionFamily[]
+  notificationTemplates    NotificationTemplate[]
+  notifications            NotificationMessage[]
+  notificationSuppressions NotificationSuppression[]
+  notificationBatches      NotificationBatch[]
+  companies                Company[]
+  entities                 Entity[]
+  branches                 Branch[]
+  departments              Department[]
+  confidentialityLevels    ConfidentialityLevel[]
+  retentionPolicies        RetentionPolicy[]
+  numberingRules           NumberingRule[]
+  numberSequences          NumberSequence[]
+  numberReservations       NumberReservation[]
+  categories               Category[]
+  metadataFields           MetadataField[]
+  documentTypes            DocumentType[]
+  libraries                Library[]
+  folders                  Folder[]
+  workflowDefinitions      WorkflowDefinition[]
+  workflowVersions         WorkflowVersion[]
+  fileObjects              FileObject[]
+  uploadSessions           UploadSession[]
+  documents                Document[]
+  documentRevisions        DocumentRevision[]
+  previewArtifacts         PreviewArtifact[]
+  previewRenders           PreviewRender[]
+  ocrResults               OcrResult[]
+  workflowInstances        WorkflowInstance[]
+  workflowStages           WorkflowStage[]
+  approvalTasks            ApprovalTask[]
+  workflowComments         WorkflowComment[]
+  workflowTimers           WorkflowTimer[]
+  approvalGroups           ApprovalGroup[]
+  workingCalendars         WorkingCalendar[]
+  documentLocks            DocumentLock[]
+  savedSearches            SavedSearch[]
+  recentSearches           RecentSearch[]
+  searchRebuilds           SearchRebuild[]
+  auditExports             AuditExport[]
+  retentionSchedules       RetentionSchedule[]
+  legalHolds               LegalHold[]
+  documentTombstones       DocumentTombstone[]
+  delegations              Delegation[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -385,6 +387,7 @@ model User {
   roles                   UserRole[]
   sessions                SessionFamily[]
   notificationPreferences NotificationPreference[]
+  notificationQuietHours  NotificationQuietHours?
   notifications           NotificationMessage[]
   departments             UserDepartment[]
   favorites               DocumentFavorite[]
@@ -540,6 +543,10 @@ enum DeliveryState {
   DELIVERED
   FAILED
   SUPPRESSED
+  /// Waiting for a window to open — quiet hours, or the digest it will be rolled into (§5).
+  HELD
+  /// Went out inside a summary rather than on its own; never delivered individually.
+  DIGESTED
 
   @@map("delivery_state")
 }
@@ -599,6 +606,94 @@ model NotificationPreference {
   @@map("notification_preference")
 }
 
+/// One person's quiet hours — 18 §5's "quiet hours with a timezone, during which non-urgent
+/// notifications are held and released afterwards".
+///
+/// Its own table rather than columns on `notification_preference`, because that table is keyed
+/// by `(user, type)` and quiet hours are a property of the *person*. Storing them per type would
+/// invite a user to be quiet for approvals and loud for publications at three in the morning,
+/// which is not a preference anybody has.
+///
+/// The window is minutes past local midnight, not two timestamps: "do not write to me between
+/// 19:00 and 07:00" is a rule about a clock face, and instants would expire. A start after the
+/// end wraps midnight, which is the ordinary case rather than a special one.
+model NotificationQuietHours {
+  tenantId    String   @map("tenant_id") @db.Uuid
+  userId      String   @id @map("user_id") @db.Uuid
+  startMinute Int      @map("start_minute")
+  endMinute   Int      @map("end_minute")
+  /// An IANA zone. Validated by the API against `Intl`, which is the only list that matters.
+  timezone    String
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_notification_quiet_hours_tenant")
+  @@map("notification_quiet_hours")
+}
+
+/// An address this tenant has stopped writing to — 18 §7's "repeated hard bounces suppress the
+/// address and alert an administrator".
+///
+/// Keyed by the **address**, not the user. Identity owns users and nobody reads its tables, but
+/// the stronger reason is that suppression is a fact about a mailbox: somebody who corrects
+/// their address is reachable again at once, and somebody who inherits a colleague's old address
+/// does not inherit their bounces.
+///
+/// `bounce_count` accumulates and `suppressed_at` is set only when it crosses the tenant's
+/// threshold, so one provider misclassifying a transient condition as permanent does not cut a
+/// person off from every notification in the product.
+model NotificationSuppression {
+  id            String    @id @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  /// Lower-cased at the application boundary; mail addresses are matched case-insensitively.
+  address       String
+  bounceCount   Int       @default(0) @map("bounce_count")
+  /// Null while the address is merely accumulating failures. Set once it is refused.
+  suppressedAt  DateTime? @map("suppressed_at") @db.Timestamptz(6)
+  lastReason    String?   @map("last_reason")
+  lastBouncedAt DateTime? @map("last_bounced_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, address], map: "uq_notification_suppression")
+  @@index([tenantId, suppressedAt], map: "ix_notification_suppression_active")
+  @@map("notification_suppression")
+}
+
+/// One open coalescing window — 18 §7's "bulk operations emit **one summary notification**,
+/// never one per object".
+///
+/// A row rather than a delayed job whose id encodes the batch. The queue would coalesce too, and
+/// would keep the *first* payload and discard the rest — so the summary would say "1" however
+/// many objects the operation touched. A row that increments is the only shape that can count.
+///
+/// The window's end is set when it opens and never extended, so a sweep that runs for an hour
+/// produces one summary at the window mark and another for the remainder, rather than a window
+/// that never closes because objects keep arriving.
+model NotificationBatch {
+  id           String   @id @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  /// What is being coalesced — a cascade identifier, or a sweep and the day it ran.
+  key          String
+  typeKey      String   @map("type_key")
+  /// Who the one summary goes to. Resolved when the window opens and unioned as it grows.
+  recipientIds String[] @map("recipient_ids") @db.Uuid
+  itemCount    Int      @default(0) @map("item_count")
+  /// Placeholder values the summary renders with, beyond the count.
+  values       Json     @default("{}")
+  releaseAt    DateTime @map("release_at") @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, key], map: "uq_notification_batch")
+  @@index([tenantId, releaseAt], map: "ix_notification_batch_due")
+  @@map("notification_batch")
+}
+
 /// One notification, to one person, on one channel.
 ///
 /// The rendered subject and body are stored rather than re-rendered at delivery: what was sent
@@ -607,39 +702,60 @@ model NotificationPreference {
 /// In-app delivery *is* this row — there is no adapter, which is why a mail provider outage
 /// never affects it (§7).
 model NotificationMessage {
-  id             String              @id @db.Uuid
-  tenantId       String              @map("tenant_id") @db.Uuid
-  recipientId    String              @map("recipient_id") @db.Uuid
-  typeKey        String              @map("type_key")
-  channel        NotificationChannel
-  locale         String
+  id              String              @id @db.Uuid
+  tenantId        String              @map("tenant_id") @db.Uuid
+  recipientId     String              @map("recipient_id") @db.Uuid
+  typeKey         String              @map("type_key")
+  channel         NotificationChannel
+  locale          String
   /// The channel address this went to, captured when the message was created.
   ///
   /// Stored rather than looked up at delivery: what was sent, and where, is a fact. A person
   /// who changes their email afterwards must not retroactively change the record of what was
   /// already sent to the old one.
-  address        String
-  subject        String
-  bodyText       String              @map("body_text")
-  bodyHtml       String?             @map("body_html")
-  state          DeliveryState       @default(QUEUED)
-  attempts       Int                 @default(0)
+  address         String
+  subject         String
+  bodyText        String              @map("body_text")
+  bodyHtml        String?             @map("body_html")
+  state           DeliveryState       @default(QUEUED)
+  attempts        Int                 @default(0)
   /// Deterministic per (event, recipient, channel). A second delivery attempt for the same
   /// key is a no-op rather than a duplicate in somebody's inbox (§7).
-  idempotencyKey String              @map("idempotency_key")
-  failureReason  String?             @map("failure_reason")
-  sentAt         DateTime?           @map("sent_at") @db.Timestamptz(6)
-  readAt         DateTime?           @map("read_at") @db.Timestamptz(6)
-  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  idempotencyKey  String              @map("idempotency_key")
+  failureReason   String?             @map("failure_reason")
+  sentAt          DateTime?           @map("sent_at") @db.Timestamptz(6)
+  readAt          DateTime?           @map("read_at") @db.Timestamptz(6)
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// When a held message may go out — quiet hours' end, or its digest window's (Phase 12).
+  ///
+  /// It gates the delivery claim as well as explaining the state: a row whose `release_at` is in
+  /// the future is not claimable, which is what makes a quiet-hours hold survive a restart with
+  /// no scheduler state of its own.
+  releaseAt       DateTime?           @map("release_at") @db.Timestamptz(6)
+  /// The digest window this message is waiting for, or null when it is not waiting for one.
+  ///
+  /// Stored on the row rather than re-read from the preference at collection time, because the
+  /// two answers differ the moment somebody changes their mind mid-window — and the honest one
+  /// is the choice that was in force when the message was held. It is also what lets the
+  /// quiet-hours release and the digest collection be two plain queries over the same state
+  /// instead of one correlated against `notification_preference` per row.
+  digestWindow    DigestFrequency?    @map("digest_window")
+  /// The digest that carried this message, once one collected it.
+  ///
+  /// A self-relation rather than a flag, so "what was in Tuesday's digest" is a query rather
+  /// than an inference from timestamps.
+  digestMessageId String?             @map("digest_message_id") @db.Uuid
 
-  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  recipient User   @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  tenant    Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  recipient User                  @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  digest    NotificationMessage?  @relation("NotificationDigestMembers", fields: [digestMessageId], references: [id], onDelete: SetNull)
+  digested  NotificationMessage[] @relation("NotificationDigestMembers")
 
   @@unique([tenantId, idempotencyKey], map: "uq_notification_idempotency")
   /// The inbox query: one person's unread, newest first.
   @@index([tenantId, recipientId, readAt, createdAt(sort: Desc)], map: "ix_notification_inbox")
-  /// The dispatcher's claim query.
-  @@index([tenantId, state, createdAt], map: "ix_notification_pending")
+  /// The dispatcher's claim query, and the release sweep's — both filter on `release_at`.
+  @@index([tenantId, state, releaseAt, createdAt], map: "ix_notification_pending")
   @@map("notification_message")
 }
 

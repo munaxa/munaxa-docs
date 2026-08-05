@@ -90,6 +90,28 @@ export async function adminGet<TResult>(path: string): Promise<TResult> {
 }
 
 /**
+ * A read whose failure is a *result* rather than an exception — Phase 12's addition.
+ *
+ * `adminGet` throws, which is right for a server component: a page that cannot load its data has
+ * nothing to render, and the error boundary is the honest response. It is wrong for a read a
+ * *client* asks for mid-interaction — opening a template editor — where the screen is already
+ * rendered and the right answer is a message beside the button rather than an unmounted page.
+ *
+ * The same shape as `adminWrite`, for the same reason: a server action returns to a component
+ * that has to decide what to show, and an exception crossing that boundary is a discarded screen.
+ */
+export async function adminRead<TResult>(path: string): Promise<ActionResult<TResult>> {
+  try {
+    return succeeded(await apiFetch<TResult>({ path, accessToken: await token() }));
+  } catch (error) {
+    if (error instanceof DomainError && error.code === ErrorCode.UNAUTHENTICATED) {
+      redirect('/login');
+    }
+    return toActionResult<TResult>(error);
+  }
+}
+
+/**
  * A list fetched to fill a picker.
  *
  * Bounded at the API's maximum page rather than "all of them", because there is no such request.

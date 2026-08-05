@@ -98,17 +98,25 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<SystemRoleKey, readonly P
     [SystemRole.TENANT_ADMIN]: TENANT_ADMIN_PERMISSIONS,
     [SystemRole.DOCUMENT_CONTROLLER]: DOCUMENT_CONTROLLER_PERMISSIONS,
     // Every cell in this column is `S`, `T` or `—`. Reach comes from ACL entries on the libraries
-    // this role is responsible for; nothing is conferred tenant-wide.
-    [SystemRole.LIBRARY_MANAGER]: Object.freeze([]),
+    // this role is responsible for; nothing is conferred tenant-wide — except `notification:manage`,
+    // which every role below holds for the reason its catalogue entry gives: everybody who can
+    // receive a notification must be able to read it, and its scope is their own inbox.
+    [SystemRole.LIBRARY_MANAGER]: Object.freeze([Permission.NOTIFICATION_MANAGE]),
     // `delegation:manage` is `own`: an author may delegate their own approvals, and the use case
     // enforces the subject. Everything else in the column is `S`.
-    [SystemRole.AUTHOR]: Object.freeze([Permission.DELEGATION_MANAGE]),
-    [SystemRole.APPROVER]: Object.freeze([Permission.DELEGATION_MANAGE]),
-    [SystemRole.READER]: Object.freeze([]),
+    [SystemRole.AUTHOR]: Object.freeze([
+      Permission.DELEGATION_MANAGE,
+      Permission.NOTIFICATION_MANAGE,
+    ]),
+    [SystemRole.APPROVER]: Object.freeze([
+      Permission.DELEGATION_MANAGE,
+      Permission.NOTIFICATION_MANAGE,
+    ]),
+    [SystemRole.READER]: Object.freeze([Permission.NOTIFICATION_MANAGE]),
     [SystemRole.AUDITOR]: AUDITOR_PERMISSIONS,
     // Time-boxed, explicitly granted access to one document or folder. Nothing by default, by
-    // definition.
-    [SystemRole.GUEST]: Object.freeze([]),
+    // definition — beyond their own inbox, which is not access to anything of the tenant's.
+    [SystemRole.GUEST]: Object.freeze([Permission.NOTIFICATION_MANAGE]),
   });
 
 /** The name each seeded role is created with. A tenant renames them freely; the keys are fixed. */

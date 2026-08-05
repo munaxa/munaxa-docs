@@ -30,6 +30,24 @@ export const Permission = {
   FOLDER_MANAGE: 'folder:manage',
   WORKFLOW_MANAGE: 'workflow:manage',
   DELEGATION_MANAGE: 'delegation:manage',
+  /**
+   * A person's own notifications — Phase 12's addition, and the widest `own` scope in the
+   * catalogue.
+   *
+   * It exists because 15 §5's boot-time assertion is right: every mutating route declares a
+   * permission or a stated reason for being public, and marking "mark my notification read"
+   * public would be marking it *unauthenticated*, which it emphatically is not. There was no
+   * existing permission to gate it on. `document:view` was the near miss — it is what the
+   * approvals and search rows use — and it is wrong: a person with no document permission still
+   * receives the security notifications 18 §4 says they must, and could then not read them.
+   *
+   * Seeded to **every** role, including `GUEST`, and that is the point rather than an oversight:
+   * everybody who can receive a notification must be able to read it, and 18 §3 calls the in-app
+   * inbox authoritative. Its scope is `own` and enforced by absence — no route under
+   * `/notifications` takes a user identifier, so there is no request by which one person could
+   * reach another's inbox, whatever they hold.
+   */
+  NOTIFICATION_MANAGE: 'notification:manage',
   NUMBERING_MANAGE: 'numbering:manage',
   RETENTION_MANAGE: 'retention:manage',
   LEGAL_HOLD_MANAGE: 'legal-hold:manage',

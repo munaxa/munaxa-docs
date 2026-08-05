@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 11**:
+and the product is built through **Phase 12**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -151,12 +151,27 @@ and the product is built through **Phase 11**:
   delegation that could be named in an ACL entry would be the permission grant §4 says it must never
   be.
 
-Notifications are Phase 12, and each report says what its phase deliberately left out.
+- **Phase 12** — notifications. The framework Phase 1 built and gave no producers, finally called:
+  `notifications.deliver` was the last declared lane in the product without a subscriber, and the
+  four phases that deferred delivery here in the same words — *the outbox row is the record until a
+  consumer exists* — are discharged. Nineteen catalogue entries with EN and AR templates for every
+  channel each offers; three workflow events where one had been carrying three meanings; a digest
+  whose list is composed in code and handed to a renderer that still does substitution and nothing
+  else; quiet hours as a clock face rather than two timestamps; a suppression keyed by the mailbox
+  rather than by a person, alerting once and recorded in the trail under the one audit action this
+  phase added; and one summary where a sweep would otherwise have sent five hundred. Its central
+  safety property is that **no recipient list derived from a document reaches a renderer without
+  every name in it passing the ACL resolver** — a notification that tells somebody a document
+  exists is a disclosure even when the link then refuses them. And the outbox routing table was
+  found to have been silently discarding every `delegation.*` event since Phase 11, which is now a
+  test rather than an assumption.
+
+Each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-11-delegation.md`](./docs/reports/phase-11-delegation.md);
+[`phase-12-notifications.md`](./docs/reports/phase-12-notifications.md);
 the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).

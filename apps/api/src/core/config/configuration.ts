@@ -160,6 +160,33 @@ export const configSchema = z
     /** The languages the engine is asked to read, in its own syntax. */
     OCR_LANGUAGES: z.string().default('ara+eng'),
     MAIL_DRIVER: z.enum(['NONE', 'SMTP', 'RESEND']).default('NONE'),
+    /**
+     * The hosted provider's API key and endpoint.
+     *
+     * The endpoint is configurable so a deployment can point at a compatible gateway, an egress
+     * proxy or a test double, rather than at a hostname compiled into the adapter.
+     */
+    MAIL_RESEND_API_KEY: z.string().min(1).optional(),
+    MAIL_RESEND_ENDPOINT: z.string().url().default('https://api.resend.com/emails'),
+    /** How long one send may take before it is abandoned and retried as a transient failure. */
+    MAIL_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
+    /**
+     * Who the mail comes from.
+     *
+     * Deployment configuration rather than a tenant setting: the address has to be one the
+     * sending domain is authorised for — SPF, DKIM and DMARC are properties of the deployment —
+     * and letting a tenant choose it would be letting a tenant fail everybody else's deliverability.
+     */
+    MAIL_FROM_ADDRESS: z.string().email().optional(),
+    MAIL_FROM_NAME: z.string().min(1).default('Munaxa Docs'),
+    /**
+     * Where a notification's deep links point.
+     *
+     * 18 §4: "a notification carries a deep link and enough context to act". The link resolves
+     * through ordinary authorisation like any other route — §8's third prohibition is that a
+     * notification never grants access *by virtue of* a link, and this one grants nothing.
+     */
+    WEB_BASE_URL: z.string().url().default('http://localhost:3000'),
     AV_DRIVER: z.enum(['NONE', 'ICAP', 'HOSTED']).default('NONE'),
     /**
      * The office-to-PDF converter. `NONE` degrades honestly: Office documents keep their
@@ -358,6 +385,31 @@ export const configSchema = z
         });
       }
     }
+    if (config.MAIL_DRIVER === 'SMTP') {
+      // The enum has named SMTP since Phase 0.5 and Phase 12 built the hosted adapter instead
+      // (`docs/reports/phase-12-notifications.md` §3). Refused at boot rather than at the first
+      // send, because a deployment that discovers its mail driver has no adapter when an
+      // approval assignment fails to reach an approver has discovered it far too late.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_DRIVER'],
+        message: 'MAIL_DRIVER=SMTP has no adapter in this build. Use RESEND.',
+      });
+    }
+    if (config.MAIL_DRIVER === 'RESEND' && config.MAIL_RESEND_API_KEY === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_RESEND_API_KEY'],
+        message: 'MAIL_DRIVER=RESEND requires an API key.',
+      });
+    }
+    if (config.MAIL_DRIVER !== 'NONE' && config.MAIL_FROM_ADDRESS === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_FROM_ADDRESS'],
+        message: 'A mail driver needs an address to send from.',
+      });
+    }
     if (config.OPENAPI_ENABLED) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -455,6 +507,15 @@ export interface AppConfig {
   readonly ocr: {
     readonly tesseractPath: string;
     readonly languages: string;
+  };
+  /** Outbound mail, and where a notification's deep links point (`18-notification-architecture.md`). */
+  readonly mail: {
+    readonly resendApiKey: string | null;
+    readonly resendEndpoint: string;
+    readonly timeoutMs: number;
+    readonly fromAddress: string | null;
+    readonly fromName: string;
+    readonly webBaseUrl: string;
   };
   readonly search: {
     readonly debounceMs: number;
@@ -605,6 +666,15 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     ocr: {
       tesseractPath: raw.OCR_TESSERACT_PATH,
       languages: raw.OCR_LANGUAGES,
+    },
+    mail: {
+      resendApiKey: raw.MAIL_RESEND_API_KEY ?? null,
+      resendEndpoint: raw.MAIL_RESEND_ENDPOINT,
+      timeoutMs: raw.MAIL_TIMEOUT_MS,
+      fromAddress: raw.MAIL_FROM_ADDRESS ?? null,
+      fromName: raw.MAIL_FROM_NAME,
+      // Trailing slashes removed once, here, so every link builder can concatenate.
+      webBaseUrl: raw.WEB_BASE_URL.replace(/\/+$/, ''),
     },
     search: {
       debounceMs: raw.SEARCH_DEBOUNCE_MS,

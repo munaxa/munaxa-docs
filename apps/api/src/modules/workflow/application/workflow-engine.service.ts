@@ -55,6 +55,9 @@ import {
   approvalTaskEscalatedEvent,
   workflowCancelledEvent,
   workflowCompletedEvent,
+  approvalOverdueEvent,
+  approvalReminderDueEvent,
+  approvalTaskAssignedEvent,
   workflowStageActivatedEvent,
   workflowStartedEvent,
 } from '../domain/events';
@@ -674,12 +677,15 @@ export class WorkflowEngine {
 
       if (timer.kind === WorkflowTimerKind.REMINDER) {
         // A reminder is a notification and nothing else — it changes no state, which is why it is
-        // published rather than acted on. Notification delivery is Phase 12's; the event is durable
-        // in the outbox until something consumes it.
+        // published rather than acted on. Phase 12 consumes it: it publishes `workflow.reminder-due`
+        // rather than a second `stage-activated`, because "this is still waiting for you" and "your
+        // approval is needed" are two different things to say to the same person.
         await this.outbox.publish([
-          workflowStageActivatedEvent(asId<AnyId>(aggregate.instance.id), {
+          approvalReminderDueEvent(asId<AnyId>(aggregate.instance.id), {
             workflowInstanceId: aggregate.instance.id,
+            documentId: aggregate.instance.documentId,
             stageIndex: stage.index,
+            stageName: stage.name,
             assigneeIds: aggregate.tasks
               .filter(
                 (task) => task.stageId === stage.id && task.state === ApprovalTaskState.PENDING,
@@ -801,9 +807,11 @@ export class WorkflowEngine {
         // `NOTIFY_ONLY`. The stage stays exactly as it was and somebody is told, which is a
         // notification rather than a state change — so it goes to the outbox and nowhere else.
         await this.outbox.publish([
-          workflowStageActivatedEvent(asId<AnyId>(aggregate.instance.id), {
+          approvalOverdueEvent(asId<AnyId>(aggregate.instance.id), {
             workflowInstanceId: aggregate.instance.id,
+            documentId: aggregate.instance.documentId,
             stageIndex: stage.index,
+            stageName: stage.name,
             assigneeIds: pending.map((task) => task.assigneeId),
             dueAt: stage.dueAt?.toISOString() ?? null,
           }),
@@ -1113,6 +1121,17 @@ export class WorkflowEngine {
         workflowStageActivatedEvent(asId<AnyId>(aggregate.instance.id), {
           workflowInstanceId: aggregate.instance.id,
           stageIndex: index,
+          assigneeIds: tasks.map((task) => task.assigneeId),
+          dueAt: withTasks.dueAt?.toISOString() ?? null,
+        }),
+        // Beside it rather than instead of it: `stage-activated` is the *workflow* fact and is
+        // wanted whether or not anybody is told, while this one is addressed to the people who
+        // now have work and carries what a notification needs to name it (18 §4's first row).
+        approvalTaskAssignedEvent(asId<AnyId>(aggregate.instance.id), {
+          workflowInstanceId: aggregate.instance.id,
+          documentId: context.documentId,
+          stageIndex: index,
+          stageName: authored.name,
           assigneeIds: tasks.map((task) => task.assigneeId),
           dueAt: withTasks.dueAt?.toISOString() ?? null,
         }),

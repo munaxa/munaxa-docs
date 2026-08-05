@@ -187,4 +187,62 @@ export const SCHEDULE: readonly ScheduledJob[] = Object.freeze([
     lockKey: 'schedule:storage.sweep-upload-sessions',
     description: 'Expires abandoned upload sessions and their partial objects.',
   },
+  {
+    /**
+     * Drains what `NotificationService` queued.
+     *
+     * A schedule rather than a delayed job per message, because delivery is a *batch* property:
+     * a provider is either reachable or it is not, and fifty delayed jobs discovering that
+     * separately is fifty backoff curves where one belongs. Every minute is the shortest cron
+     * expresses, and it is the added latency an email inherits — acceptable for mail, and
+     * irrelevant to in-app, which is delivered by being written and never reaches this lane.
+     */
+    name: 'notifications.deliver',
+    queue: QueueName.NOTIFICATIONS_DELIVER,
+    cron: '* * * * *',
+    lockKey: 'schedule:notifications.deliver',
+    description: 'Sends queued email, and releases whatever quiet hours were holding.',
+  },
+  {
+    name: 'notifications.digest-hourly',
+    queue: QueueName.NOTIFICATIONS_DELIVER,
+    cron: '5 * * * *',
+    lockKey: 'schedule:notifications.digest-hourly',
+    description: 'Collects an hour of held messages per recipient into one summary.',
+  },
+  {
+    /**
+     * The daily and weekly digests fire in the morning rather than at midnight.
+     *
+     * A digest exists to be *read*, and one delivered at 02:00 competes with everything that
+     * arrived overnight. The hour is the tenant's, resolved through `locale.timezone` — the cron
+     * fires the fan-out and each tenant's pass decides whether its own morning has arrived.
+     */
+    name: 'notifications.digest-daily',
+    queue: QueueName.NOTIFICATIONS_DELIVER,
+    cron: '0 * * * *',
+    lockKey: 'schedule:notifications.digest-daily',
+    description: 'Collects a day of held messages per recipient, at the tenant’s own morning.',
+  },
+  {
+    name: 'notifications.digest-weekly',
+    queue: QueueName.NOTIFICATIONS_DELIVER,
+    cron: '0 * * * *',
+    lockKey: 'schedule:notifications.digest-weekly',
+    description: 'Collects a week of held messages per recipient, at the tenant’s own Monday.',
+  },
+  {
+    /**
+     * Closes coalescing windows.
+     *
+     * 18 §7's last row — "bulk operations emit one summary notification, never one per object" —
+     * needs something to decide the window has ended, and it cannot be the events themselves: the
+     * five-hundredth is indistinguishable from the first while it is arriving.
+     */
+    name: 'notifications.release-batches',
+    queue: QueueName.NOTIFICATIONS_DELIVER,
+    cron: '*/5 * * * *',
+    lockKey: 'schedule:notifications.release-batches',
+    description: 'Emits one summary per closed coalescing window, and discards the window.',
+  },
 ]);

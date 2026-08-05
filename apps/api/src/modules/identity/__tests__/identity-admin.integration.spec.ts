@@ -430,7 +430,12 @@ describe('the seeded roles', () => {
     // Every cell in that column is `S`, `T` or `—`. Seeding an `S` as a tenant-level grant would make
     // it apply everywhere, and `document:delete` is one of them — a library manager would be able to
     // delete any document in a tenant that had configured no ACLs.
-    expect(manager?.permissions).toEqual([]);
+    //
+    // `notification:manage` is the one exception, added by Phase 12 and held by every role: its
+    // scope is the holder's own inbox, and no route under `/notifications` takes a user identifier
+    // for it to widen. It confers no reach over anything of the tenant's, which is what this
+    // assertion is about.
+    expect(manager?.permissions).toEqual([Permission.NOTIFICATION_MANAGE]);
   });
 
   it('refuses to name a role a key another role already holds', async () => {

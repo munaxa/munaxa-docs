@@ -1,19 +1,43 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type NotificationChannelKey, DeliveryState, NotificationChannel } from '@edms/domain';
+import {
+  type NotificationChannelKey,
+  type UserId,
+  AuditSubjectType,
+  DeliveryState,
+  NotificationChannel,
+  Permission,
+  Settings,
+  asId,
+} from '@edms/domain';
 
 import { LOGGER, type Logger } from '../../../core/observability/logger';
+import {
+  AdministeredWriter,
+  AdministrativeOperation,
+} from '../../../core/persistence/administered-writer';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
+import { SETTINGS_READER, type SettingsReader } from '../../../core/settings/settings.port';
 import { NOTIFICATION_PORT, type NotificationPort } from '../../../ports/notification.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
+import { USER_DIRECTORY, type UserDirectory } from '../../identity/application/ports';
+import { NotificationAudit } from '../domain/audit-actions';
+import { NotificationType } from '../domain/notification-types';
 import {
   NOTIFICATION_MESSAGE_REPOSITORY,
+  NOTIFICATION_SUPPRESSION_REPOSITORY,
+  NOTIFICATION_SERVICE,
   type NotificationMessageRecord,
   type NotificationMessageRepository,
+  type NotificationService,
+  type NotificationSuppressionRepository,
 } from './notification.ports';
 
 /** How many a single pass takes. Small enough that a failure loses little, large enough to matter. */
 const BATCH_SIZE = 50;
+
+/** How many held messages one release pass moves back into the queue. */
+const RELEASE_BATCH = 500;
 
 export interface DeliveryOutcome {
   readonly attempted: number;
@@ -35,16 +59,34 @@ export interface DeliveryOutcome {
  * fix it. That is the correct behaviour for an unconfigured deployment and the reason this
  * class needs no special case for one: a refusal is recorded like any other failure, and
  * nothing is silently dropped.
+ *
+ * ## Bounces — §7's row, built here
+ *
+ * A permanent failure is not merely "do not retry this message". It is evidence about an
+ * *address*, and §7 says repeated hard bounces suppress it and alert an administrator. So
+ * `deliverOne` records the failure against the address, and the call that crosses the tenant's
+ * threshold does three further things in one transaction: it suppresses, it writes
+ * `NOTIFICATION_SUPPRESSED` to the trail, and it notifies the administrators.
+ *
+ * The alert goes out **once**, on the crossing, not on every subsequent bounce — an
+ * administrator told forty times about one dead mailbox stops reading the alert, which is the
+ * failure §1's fifth principle exists to prevent.
  */
 @Injectable()
 export class DeliveryService {
   constructor(
     @Inject(NOTIFICATION_MESSAGE_REPOSITORY)
     private readonly messages: NotificationMessageRepository,
+    @Inject(NOTIFICATION_SUPPRESSION_REPOSITORY)
+    private readonly suppressions: NotificationSuppressionRepository,
+    @Inject(NOTIFICATION_SERVICE) private readonly notifications: NotificationService,
     @Inject(NOTIFICATION_PORT) private readonly transport: NotificationPort,
+    @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
+    @Inject(USER_DIRECTORY) private readonly users: UserDirectory,
     @Inject(LOGGER) private readonly logger: Logger,
+    private readonly writer: AdministeredWriter,
   ) {}
 
   /**
@@ -63,7 +105,8 @@ export class DeliveryService {
       );
     }
 
-    const claimed = await this.unitOfWork.run(() => this.messages.claimQueued(channel, limit));
+    const now = this.clock.now();
+    const claimed = await this.unitOfWork.run(() => this.messages.claimQueued(channel, limit, now));
 
     let sent = 0;
     let failed = 0;
@@ -77,6 +120,17 @@ export class DeliveryService {
     }
 
     return { attempted: claimed.length, sent, failed };
+  }
+
+  /**
+   * Moves quiet-hours holds whose window has closed back into the queue.
+   *
+   * Its own pass rather than a branch of the claim query, because the two are different
+   * statements: one selects work and one changes state, and folding the change into the claim
+   * would make every delivery pass write to rows it is not going to send.
+   */
+  releaseHeld(): Promise<number> {
+    return this.unitOfWork.run(() => this.messages.releaseHeld(this.clock.now(), RELEASE_BATCH));
   }
 
   private async deliverOne(message: NotificationMessageRecord): Promise<boolean> {
@@ -127,6 +181,99 @@ export class DeliveryService {
         reason: receipt.failureReason,
       });
     }
+    if (receipt.permanentFailure) {
+      await this.recordBounce(message.address, receipt.failureReason ?? 'permanent failure', at);
+    }
     return receipt.accepted;
   }
+
+  /**
+   * One hard bounce, counted against the address — and the suppression when the count crosses.
+   *
+   * Its own transaction, separate from the one that recorded the delivery, because the two are
+   * about different things: what happened to *this message* is a fact whatever the address's
+   * history, and a failure to write the suppression must not lose the record of the send.
+   */
+  private async recordBounce(address: string, reason: string, at: Date): Promise<void> {
+    const threshold = await this.settings.get(Settings.NOTIFICATION_BOUNCE_THRESHOLD);
+
+    const outcome = await this.writer.read(() =>
+      this.suppressions.recordPermanentFailure(address, reason, threshold, at),
+    );
+    if (!outcome.crossedThreshold) {
+      return;
+    }
+
+    const administrators = await this.writer.read(() =>
+      this.users.holdersOfPermission(Permission.USER_MANAGE),
+    );
+    if (administrators.length === 0) {
+      // Nobody holds the permission — a tenant mid-provisioning, or one whose only administrator
+      // is the address that just bounced. The trail still records it below, which is the point
+      // of writing the audit event separately from sending the alert.
+      this.logger.warn('An address was suppressed with no administrator to tell', {
+        bounceCount: outcome.bounceCount,
+      });
+    }
+
+    await this.writer.write(async () => {
+      await this.notifications.notify({
+        // Deterministic, so a redelivered delivery pass that bounces the same address again
+        // cannot alert twice for one suppression.
+        eventId: `suppression:${maskAddress(address)}:${String(outcome.bounceCount)}`,
+        typeKey: NotificationType.SECURITY_ADDRESS_SUPPRESSED.key,
+        recipientIds: administrators,
+        values: {
+          maskedAddress: maskAddress(address),
+          bounceCount: String(outcome.bounceCount),
+          occurredAt: at.toISOString(),
+        },
+      });
+      return {
+        result: undefined,
+        change: {
+          action: NotificationAudit.SUPPRESSED,
+          subjectType: AuditSubjectType.USER,
+          // The subject is the *address*, not a user: a mailbox has no identifier of its own in
+          // this product, and filing it under whichever person happened to hold it would make
+          // "was this address ever suppressed" a question about people instead of about mail.
+          subjectId: asId<UserId>(SUPPRESSION_SUBJECT_ID),
+          operation: AdministrativeOperation.UPDATED,
+          after: {
+            address: maskAddress(address),
+            bounceCount: outcome.bounceCount,
+            threshold,
+          },
+          reason,
+        },
+      };
+    });
+  }
+}
+
+/**
+ * The subject a suppression is filed against.
+ *
+ * 13 §2 has no subject type for a mailbox, and adding one for a single action would be a
+ * vocabulary change every compliance report has to learn. The nil UUID under `USER` says "a
+ * person's contactability, not a particular person" — and the masked address is in the payload,
+ * where a filter can find it.
+ */
+const SUPPRESSION_SUBJECT_ID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * What an alert and a trail entry may say about an address.
+ *
+ * 13 §3: "personal data in payloads is minimised". An administrator needs to recognise which
+ * mailbox stopped working, which the domain and the first character give them; the whole address
+ * in an audit payload would make the trail a second copy of the directory.
+ */
+export function maskAddress(address: string): string {
+  const at = address.lastIndexOf('@');
+  if (at <= 0) {
+    return '***';
+  }
+  const local = address.slice(0, at);
+  const domain = address.slice(at);
+  return `${local.slice(0, 1)}***${domain}`;
 }

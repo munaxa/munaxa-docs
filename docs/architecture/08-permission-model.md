@@ -43,6 +43,7 @@ export const Permission = {
   FOLDER_MANAGE: 'folder:manage',
   WORKFLOW_MANAGE: 'workflow:manage',
   DELEGATION_MANAGE: 'delegation:manage',
+  NOTIFICATION_MANAGE: 'notification:manage',
   NUMBERING_MANAGE: 'numbering:manage',
   RETENTION_MANAGE: 'retention:manage',
   LEGAL_HOLD_MANAGE: 'legal-hold:manage',
@@ -177,6 +178,7 @@ assigned to them · `—` never.
 | `folder:manage` | ✓ | ✓ | S | — | — | — | — | — |
 | `workflow:manage` | ✓ | ✓ | — | — | — | — | — | — |
 | `delegation:manage` | ✓ | ✓ | — | own | own | — | — | — |
+| `notification:manage` | own | own | own | own | own | own | own | own |
 | `numbering:manage` | ✓ | ✓ | — | — | — | — | — | — |
 | `retention:manage` | ✓ | ✓ | — | — | — | — | — | — |
 | `legal-hold:manage` | ✓ | ✓ | — | — | — | — | — | — |
@@ -190,7 +192,19 @@ assigned to them · `—` never.
 | `org:manage` | ✓ | — | — | — | — | — | — | — |
 | `settings:manage` | ✓ | — | — | — | — | — | — | — |
 
-Two deliberate rows:
+Three deliberate rows:
+
+- **`notification:manage` is `own` for every role, including `GUEST`** — the only row in this matrix
+  that is granted to everybody, and the only one where that is not a mistake. It is not reach over
+  anything of the tenant's: it is a person's own inbox and their own preferences, and 18 §3 makes
+  the in-app inbox authoritative, so everybody who can *receive* a notification must be able to read
+  it. It exists at all because 15 §5 asserts at boot that every mutating route declares a
+  permission, and no existing one fits: `document:view` was the near miss and is wrong, because
+  somebody holding no document permission still receives the security notifications 18 §4 says they
+  must, and could then not read them. The `own` scope is enforced by **absence** — no route under
+  `/notifications` takes a recipient identifier — which is the same enforcement `delegation:manage`
+  uses for its delegator.
+
 
 - **Tenant admin cannot approve.** Approval authority comes from being assigned a task, never from
   seniority. An administrator who needs to approve is assigned or delegated the task, and the audit
