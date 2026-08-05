@@ -39,6 +39,8 @@ import { WorkflowAdminController } from './presentation/workflow-admin.controlle
 
 import { WorkflowDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
 import { DASHBOARD_APPROVAL_METRICS } from '../dashboard/application/ports';
+import { REPORT_WORKFLOW_SOURCE } from '../reporting/application/ports';
+import { WorkflowReportSource } from './infrastructure/report-source.adapter';
 /**
  * Workflow — Who must agree before this becomes official?
  *
@@ -87,6 +89,9 @@ import { DASHBOARD_APPROVAL_METRICS } from '../dashboard/application/ports';
   imports: [DocumentModule, IdentityModule, AdministrationModule],
   controllers: [WorkflowAdminController, ApprovalController],
   providers: [
+    // Phase 15: the approvals and workflow reports, composed with `approvalTaskWhere` so there is
+    // still exactly one `dueAt < now` in this module, and reach-scoped through the document.
+    { provide: REPORT_WORKFLOW_SOURCE, useClass: WorkflowReportSource },
     // Phase 13: the dashboard's approval counts, built from the inbox's own predicate — one
     // definition of "overdue" in this module and it is `approvalTaskWhere`.
     { provide: DASHBOARD_APPROVAL_METRICS, useClass: WorkflowDashboardMetrics },
@@ -117,6 +122,7 @@ import { DASHBOARD_APPROVAL_METRICS } from '../dashboard/application/ports';
     WorkflowTimerConsumer,
   ],
   exports: [
+    REPORT_WORKFLOW_SOURCE,
     DASHBOARD_APPROVAL_METRICS,
     WORKFLOW_ENGINE,
     APPROVAL_SERVICE,

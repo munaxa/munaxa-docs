@@ -77,6 +77,35 @@ enum AuditExportState {
   @@map("audit_export_state")
 }
 
+/// The states a report export moves through — Phase 15.
+///
+/// The same four names as `AuditExportState`, and deliberately a **separate type**. They are two
+/// tables with two lifecycles that happen to agree today; sharing an enum would mean a fifth state
+/// added for one silently appearing in the other's column, and a check constraint that no longer
+/// means what its name says.
+enum ReportExportState {
+  REQUESTED
+  RUNNING
+  COMPLETED
+  FAILED
+
+  @@map("report_export_state")
+}
+
+/// What a report export was produced as — Phase 15.
+///
+/// `SPREADSHEET_XML` is SpreadsheetML 2003, which is a real Excel format and is **not** XLSX.
+/// Naming it for what it is rather than calling it `XLSX` is the whole point: a column that said
+/// XLSX would be the product asserting a container it never wrote. `apps/api/src/modules/reporting/
+/// domain/report-catalogue.ts` records why, including the three answers that were not taken.
+enum ReportExportFormat {
+  CSV
+  SPREADSHEET_XML
+  PDF
+
+  @@map("report_export_format")
+}
+
 enum ActorChannel {
   WEB
   API
@@ -146,6 +175,8 @@ model Tenant {
   recentSearches           RecentSearch[]
   searchRebuilds           SearchRebuild[]
   auditExports             AuditExport[]
+  reportDefinitions        ReportDefinition[]
+  reportExports            ReportExport[]
   retentionSchedules       RetentionSchedule[]
   legalHolds               LegalHold[]
   documentTombstones       DocumentTombstone[]
@@ -401,6 +432,8 @@ model User {
   documentLocks           DocumentLock[]
   savedSearches           SavedSearch[]
   recentSearches          RecentSearch[]
+  reportDefinitions       ReportDefinition[]
+  reportExports           ReportExport[]
   delegationsGiven        Delegation[]             @relation("DelegationDelegator")
   delegationsReceived     Delegation[]             @relation("DelegationDelegate")
   mfaEnrolment            MfaEnrolment?
@@ -3231,4 +3264,97 @@ model MfaRecoveryCode {
 
   @@index([tenantId, enrolmentId, usedAt], map: "ix_mfa_recovery_code_live")
   @@map("mfa_recovery_code")
+}
+
+/// A saved report — Phase 15, and what `REPORT_DEFINITION_REPOSITORY` has meant since Phase 0.5.
+///
+/// **It holds parameters, never a query.** `key` names an entry in the code catalogue and `query`
+/// holds the parameter map that was saved with it. That split is the enforcement of the constraint
+/// at the head of `reporting/application/ports.ts` — *"reports read from read models, never from
+/// another module's tables … what keeps a reporting query from quietly becoming the reason a schema
+/// cannot change"*. A definition that could carry SQL, a column list or a table name would be a
+/// tenant pinning a column, and no migration would ever again be a decision this repository alone
+/// could take.
+///
+/// Personal, like a saved search: one owner, listed for them, and nothing here is shared with the
+/// tenant. `report:manage` is what a *shared* definition would need and nothing writes one yet —
+/// the Phase 15 report names that as owed rather than half-building it.
+model ReportDefinition {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  ownerUserId String    @map("owner_user_id") @db.Uuid
+  /// The catalogue key this definition parameterises. Not a foreign key: the catalogue is code.
+  key         String
+  name        String
+  /// The saved parameter map, in the wire shape `GET /reports/{key}` accepts.
+  query       Json      @default("{}")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy   String?   @map("created_by") @db.Uuid
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy   String?   @map("updated_by") @db.Uuid
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy   String?   @map("deleted_by") @db.Uuid
+  version     Int       @default(1)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+
+  /// One name per owner among live rows — partial, in the migration; Prisma cannot express it.
+  @@index([tenantId, ownerUserId, updatedAt(sort: Desc)], map: "ix_report_definition_owner")
+  @@map("report_definition")
+}
+
+/// A queued report export — Phase 15.
+///
+/// Its own table beside `audit_export` rather than a shared one, and the difference is not
+/// cosmetic: an evidence bundle is a range of the trail with a chain verification and a signed
+/// manifest, and a report export is one file of rows produced **under the requester's own reach**.
+/// One table would need both sets of columns, half of them null on every row, and a `kind`
+/// discriminator that every query then has to remember.
+///
+/// `requested_by_id` is never null, and that is load-bearing twice over: an export is always
+/// somebody's act, and the lane reads this column to reconstitute *whose* reach the rows are
+/// filtered by. A nullable requester would be an export that ran with no subject — which, given
+/// `visibilityCondition` returns an empty predicate for a system caller, would be an export of
+/// every row in the tenant.
+model ReportExport {
+  id            String             @id @db.Uuid
+  tenantId      String             @map("tenant_id") @db.Uuid
+  /// The catalogue key. Not a foreign key: the catalogue is code, and a key that has been
+  /// retired fails the run loudly rather than being resolved to something else.
+  reportKey     String             @map("report_key")
+  format        ReportExportFormat
+  state         ReportExportState  @default(REQUESTED)
+  /// Exactly what was asked for. The trail records this too, and the PDF prints it under its
+  /// title — a report without its parameters is a page of numbers nobody can reproduce.
+  parameters    Json               @default("{}")
+  requestedById String             @map("requested_by_id") @db.Uuid
+  requestedAt   DateTime           @map("requested_at") @db.Timestamptz(6)
+  rowCount      Int                @default(0) @map("row_count")
+  /// Where the artefact is, and the `file_object` it was stored as — the download signs through
+  /// Storage's own audited path rather than a second signing path beside it.
+  storageKey    String?            @map("storage_key")
+  fileObjectId  String?            @map("file_object_id") @db.Uuid
+  sizeBytes     BigInt             @default(0) @map("size_bytes")
+  /// The digest of the bytes actually written, accumulated as they streamed past.
+  sha256        String?
+  /// Whether the row cap cut the report short. On the record, on the wire and in the audit row —
+  /// a spreadsheet truncated at a round number looks exactly like a complete one.
+  truncated     Boolean            @default(false)
+  /// How many characters the PDF's standard font could not encode. Zero for every other format,
+  /// and the reason the download screen can warn that a PDF of Arabic content is lossy.
+  substitutions Int                @default(0)
+  completedAt   DateTime?          @map("completed_at") @db.Timestamptz(6)
+  /// Operator-readable, set exactly when the state is FAILED.
+  error         String?
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?            @map("created_by") @db.Uuid
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?            @map("updated_by") @db.Uuid
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  requestedBy User   @relation(fields: [requestedById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, requestedAt(sort: Desc)], map: "ix_report_export_tenant")
+  @@map("report_export")
 }

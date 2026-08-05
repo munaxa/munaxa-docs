@@ -14,6 +14,8 @@ import { UploadsController } from './presentation/uploads.controller';
 
 import { StorageDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
 import { DASHBOARD_STORAGE_METRICS } from '../dashboard/application/ports';
+import { REPORT_STORAGE_SOURCE } from '../reporting/application/ports';
+import { StorageReportSource } from './infrastructure/report-source.adapter';
 /**
  * Storage — Where are the bytes, and are they intact?
  *
@@ -35,6 +37,8 @@ import { DASHBOARD_STORAGE_METRICS } from '../dashboard/application/ports';
 @Module({
   controllers: [UploadsController],
   providers: [
+    // Phase 15: the storage report — bytes held and bytes referenced, per library. Still no quota.
+    { provide: REPORT_STORAGE_SOURCE, useClass: StorageReportSource },
     // Phase 13: bytes held and bytes deduplication saved. No quota — that is ADR-0012's and
     // Phase 21's, and Phase 10 recorded its absence deliberately.
     { provide: DASHBOARD_STORAGE_METRICS, useClass: StorageDashboardMetrics },
@@ -46,6 +50,6 @@ import { DASHBOARD_STORAGE_METRICS } from '../dashboard/application/ports';
     // from storage, and the first caller `StoragePort.delete` has had outside the upload path.
     { provide: BLOB_REAPER, useClass: StorageBlobReaper },
   ],
-  exports: [DASHBOARD_STORAGE_METRICS, STORAGE_SERVICE, BLOB_REAPER],
+  exports: [DASHBOARD_STORAGE_METRICS, REPORT_STORAGE_SOURCE, STORAGE_SERVICE, BLOB_REAPER],
 })
 export class StorageModule {}

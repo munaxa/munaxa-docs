@@ -512,6 +512,25 @@ export class DefaultStorageService implements StorageService {
       throw new StorageUnavailableError('The artefact was stored without a digest.');
     }
 
+    // **Deduplicated, like every other blob in this product** — Phase 15's correction.
+    //
+    // ADR-0007 makes blobs content-addressed and `uq_file_object_checksum` enforces one row per
+    // digest per tenant, and the *upload* path has honoured that since Phase 3 (`alreadyStored`).
+    // This path did not, and nothing noticed for six phases because Phase 9's artefacts can never
+    // collide: an evidence manifest names its own export identifier, so two bundles differ in their
+    // bytes by construction. A report export has no such field — the same report, run twice by the
+    // same person, is byte-for-byte identical — and it hit the unique index on the second run.
+    //
+    // Returning the existing row is what content addressing *means*: the bytes are the same bytes,
+    // and the download names its own filename, so nothing about the second export is misdescribed.
+    // The object just written under this artefact's own key is left unreferenced, which is the same
+    // benign direction the comment above describes and the same class of leftover an interrupted
+    // upload produces.
+    const existing = await this.writer.read(() => this.files.findByChecksum(checksumSha256));
+    if (existing !== null) {
+      return existing;
+    }
+
     return this.writer.write<FileObjectRecord>(async () => {
       const id = this.writer.clock.nextId();
       await this.files.insert({

@@ -296,6 +296,35 @@ export const configSchema = z
     AUDIT_EXPORT_BATCH_SIZE: z.coerce.number().int().min(100).max(50_000).default(2_000),
 
     /**
+     * Rows read per page while a report export streams to storage — Phase 15.
+     *
+     * Its own knob rather than sharing `AUDIT_EXPORT_BATCH_SIZE`, because the two read different
+     * things: an evidence batch is a slice of one table by sequence, and a report page is a joined,
+     * ACL-filtered query whose cost per row is an order of magnitude higher. Tuning one to the
+     * other's shape would make whichever was tuned second worse.
+     */
+    REPORTING_EXPORT_BATCH_SIZE: z.coerce.number().int().min(50).max(10_000).default(500),
+
+    /**
+     * The most rows a report export writes before it stops and says it stopped.
+     *
+     * A bound rather than a preference: an unbounded export is an unbounded job on a lane with a
+     * fifteen-minute budget, and the failure mode is a file that never appears rather than one that
+     * is honest about its size. Reaching it sets `truncated` on the record, on the wire and in the
+     * audit row — a silently capped report is one somebody reconciles against.
+     */
+    REPORTING_EXPORT_MAX_ROWS: z.coerce.number().int().min(1_000).max(5_000_000).default(250_000),
+
+    /**
+     * And the smaller bound a PDF gets, because a PDF is assembled rather than streamed.
+     *
+     * Its cross-reference table states the byte offset of every object, so the document exists in
+     * memory before it can be written. That is the format, not the library, and it is why this
+     * number is two orders of magnitude below the one above.
+     */
+    REPORTING_PDF_MAX_ROWS: z.coerce.number().int().min(100).max(200_000).default(5_000),
+
+    /**
      * How much of a streamed object is held in memory before it is sent.
      *
      * The multipart minimum at every S3-compatible store is 5 MiB, which is the floor rather
@@ -590,6 +619,13 @@ export interface AppConfig {
     readonly verifyMaxEvents: number;
     readonly exportBatchSize: number;
   };
+  /** What a report export is bounded by (`docs/architecture/19-performance-and-scalability.md`). */
+  readonly reporting: {
+    readonly exportBatchSize: number;
+    readonly exportMaxRows: number;
+    /** Smaller than `exportMaxRows`: a PDF is assembled in memory rather than streamed. */
+    readonly pdfMaxRows: number;
+  };
   /** The render sandbox's resource caps (`14-preview-architecture.md` §5). */
   readonly preview: {
     readonly timeoutMs: number;
@@ -708,6 +744,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       verifyBatchSize: raw.AUDIT_VERIFY_BATCH_SIZE,
       verifyMaxEvents: raw.AUDIT_VERIFY_MAX_EVENTS,
       exportBatchSize: raw.AUDIT_EXPORT_BATCH_SIZE,
+    },
+    reporting: {
+      exportBatchSize: raw.REPORTING_EXPORT_BATCH_SIZE,
+      exportMaxRows: raw.REPORTING_EXPORT_MAX_ROWS,
+      pdfMaxRows: raw.REPORTING_PDF_MAX_ROWS,
     },
     providers: {
       search: raw.SEARCH_DRIVER,

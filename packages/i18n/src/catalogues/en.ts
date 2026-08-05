@@ -85,6 +85,7 @@ export const en = {
     delegations: 'Delegations',
     notifications: 'Notifications',
     recycleBin: 'Recycle bin',
+    reports: 'Reports',
   },
   /**
    * Administration.
@@ -1393,6 +1394,156 @@ export const en = {
     MFA_REQUIRED: 'Enter the code from your authenticator app.',
     DEPENDENCY_UNAVAILABLE: 'A service this action needs is unavailable.',
     INTERNAL: 'Something went wrong on our side.',
+  },
+  /**
+   * Reports — Phase 15.
+   *
+   * Three groups, and the split matters. `name.*` and `column.*` are the *catalogue's* keys given
+   * English words, so a screen can render `hoursToDecide` as something a person reads. `parameter.*`
+   * are the filters. And `scoping.*` are the two sentences that explain why two people running the
+   * same report see different totals — the most alarming thing a report can do silently, and the
+   * reason it is said on the screen rather than left to be discovered.
+   *
+   * What is deliberately *not* translated anywhere here: a status, a state, an audit action code, a
+   * disposition or a document number. Those are values a person filters and exports by, and a phrase
+   * in their place would give one value two names — Phase 9's rule for action codes, restated by
+   * Phase 13, and it applies to every cell in a report because a report is the artefact those rules
+   * exist to protect.
+   */
+  reports: {
+    title: 'Reports',
+    subtitle: 'Ask a question about this organisation, then take the answer with you.',
+    available: 'Reports you can run',
+    noneAvailable: 'You do not have access to any reports.',
+    chooseOne: 'Choose a report to begin.',
+    notRunYet: 'Set the filters you need, then run the report.',
+    parameters: 'Filters',
+    run: 'Run report',
+    any: 'Any',
+    empty: 'No rows matched those filters.',
+    rowCount: '{count} row(s)',
+    scoping: {
+      /** Said out loud, because otherwise two colleagues compare totals and one of them panics. */
+      reach: 'Scoped to what you can see',
+      tenant: 'Whole organisation',
+    },
+    chart: {
+      breakdown: 'Breakdown by the selected dimension',
+      trend: 'Approvals started, completed and rejected per month',
+    },
+    format: {
+      csv: 'CSV',
+      /** Named for what it is. This is not XLSX, and calling it Excel would claim a container
+       *  this product never wrote — see the reporting module's catalogue. */
+      spreadsheet: 'Excel (SpreadsheetML)',
+      pdf: 'PDF',
+    },
+    export: {
+      queued: 'The export was queued. It will appear below when it is ready.',
+      failed: 'The export could not be started.',
+    },
+    exports: {
+      title: 'Recent exports',
+      download: 'Download',
+      truncated: 'Truncated',
+      lossy: 'Some characters could not be rendered',
+    },
+    definitions: {
+      title: 'Saved reports',
+      save: 'Save these filters',
+      saved: 'Saved.',
+      failed: 'That could not be saved.',
+      remove: 'Remove',
+      namePrompt: 'Name this saved report',
+    },
+    name: {
+      documents: 'Documents',
+      documentsByDimension: 'Documents by dimension',
+      approvals: 'Approvals',
+      workflow: 'Workflow over time',
+      storage: 'Storage',
+      departments: 'Departments',
+      users: 'Users',
+      deletedDocuments: 'Deleted documents',
+      expiredDocuments: 'Expired documents',
+      audit: 'Audit',
+    },
+    parameter: {
+      from: 'From',
+      to: 'To',
+      libraryId: 'Library',
+      folderId: 'Folder',
+      documentTypeId: 'Document type',
+      categoryId: 'Category',
+      ownerUserId: 'Owner',
+      status: 'Status',
+      state: 'State',
+      dimension: 'Group by',
+      assigneeId: 'Assignee',
+      overdueOnly: 'Overdue only',
+      action: 'Action',
+      actorId: 'Actor',
+      subjectType: 'Subject type',
+      outcome: 'Outcome',
+    },
+    column: {
+      documentNumber: 'Number',
+      title: 'Title',
+      status: 'Status',
+      documentType: 'Type',
+      category: 'Category',
+      confidentiality: 'Confidentiality',
+      library: 'Library',
+      folderPath: 'Folder',
+      owner: 'Owner',
+      revisionCount: 'Revisions',
+      createdAt: 'Created',
+      updatedAt: 'Updated',
+      label: 'Group',
+      count: 'Count',
+      documentTitle: 'Document',
+      stage: 'Stage',
+      assignee: 'Assignee',
+      state: 'State',
+      assignedAt: 'Assigned',
+      dueAt: 'Due',
+      decidedAt: 'Decided',
+      hoursToDecide: 'Hours to decide',
+      overdue: 'Overdue',
+      period: 'Month',
+      started: 'Started',
+      completed: 'Completed',
+      rejected: 'Rejected',
+      running: 'Running',
+      documents: 'Documents',
+      revisions: 'Revisions',
+      storedBytes: 'Stored bytes',
+      referencedBytes: 'Referenced bytes',
+      department: 'Department',
+      entity: 'Entity',
+      members: 'Members',
+      managers: 'Managers',
+      displayName: 'Name',
+      email: 'Email address',
+      roles: 'Roles',
+      mfaEnrolled: 'Second factor',
+      lastSignInAt: 'Last signed in',
+      deletedAt: 'Deleted',
+      deletedBy: 'Deleted by',
+      deleteReason: 'Reason',
+      cascaded: 'By cascade',
+      trigger: 'Trigger',
+      disposition: 'Disposition',
+      overdueDays: 'Days overdue',
+      onLegalHold: 'On legal hold',
+      occurredAt: 'Occurred',
+      action: 'Action',
+      outcome: 'Outcome',
+      subjectType: 'Subject type',
+      subjectId: 'Subject',
+      actor: 'Actor',
+      reason: 'Reason',
+    },
   },
 } as const;
 

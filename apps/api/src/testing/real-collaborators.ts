@@ -103,6 +103,25 @@ import { PrismaWorkflowEngineRepository } from '../modules/workflow/infrastructu
 import { PrismaWorkflowVersionReader } from '../modules/workflow/infrastructure/prisma-workflow-version.reader';
 import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/workflow-calendar.adapter';
 import type { QueuePort } from '../ports/queue.port';
+import { RecordingQueue } from './fake-ports';
+import { DefaultReportingService } from '../modules/reporting/application/reporting.service';
+import { ReportDefinitionService } from '../modules/reporting/application/report-definition.service';
+import { ReportExportService } from '../modules/reporting/application/report-export.service';
+import type { ReportSource, ReportSubjectReader } from '../modules/reporting/application/ports';
+import {
+  PrismaReportDefinitionRepository,
+  PrismaReportExportRepository,
+} from '../modules/reporting/infrastructure/prisma-reporting.repositories';
+import { DocumentReportSource } from '../modules/document/infrastructure/report-source.adapter';
+import { WorkflowReportSource } from '../modules/workflow/infrastructure/report-source.adapter';
+import { StorageReportSource } from '../modules/storage/infrastructure/report-source.adapter';
+import {
+  IdentityReportSource,
+  IdentityReportSubjectReader,
+} from '../modules/identity/infrastructure/report-source.adapter';
+import { OrganizationReportSource } from '../modules/organization/infrastructure/report-source.adapter';
+import { RetentionReportSource } from '../modules/retention/infrastructure/report-source.adapter';
+import { AuditReportSource } from '../modules/audit/infrastructure/report-source.adapter';
 import { DefaultLegalHoldService } from '../modules/retention/application/legal-hold.service';
 import type { DocumentDisposition } from '../modules/retention/application/ports';
 import { DefaultRecycleBinService } from '../modules/retention/application/recycle-bin.service';
@@ -1522,4 +1541,102 @@ export function realDashboard(options: {
   );
 
   return { dashboard, documents, acl };
+}
+
+/**
+ * Reporting, wired the way the container wires it — Phase 15.
+ *
+ * Seven **real** source adapters, the real ACL resolver, the real document repository. A stubbed
+ * source would be asserting the suite's own belief about what a report contains, and the entire
+ * claim of this phase is that a report's rows are *somebody else's* predicate: the document list's,
+ * the inbox's, the audit reader's.
+ *
+ * The queue and the subject reader are the two seams a suite genuinely needs to hold. The queue is
+ * recorded rather than run, so `requestExport` can be asserted to have **queued** rather than
+ * produced — the property `REPORTING_SERVICE`'s own contract states. The subject reader is real by
+ * default and overridable, because "whose reach does a queued export run under" is the question the
+ * export half of the suite exists to ask.
+ */
+export interface ReportingStack {
+  readonly reports: DefaultReportingService;
+  readonly exports: ReportExportService;
+  readonly definitions: ReportDefinitionService;
+  readonly documents: PrismaDocumentRepository;
+  readonly acl: PrismaAclResolver;
+  readonly queue: RecordingQueue;
+}
+
+export function realReporting(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config: AppConfig;
+  readonly storage: DefaultStorageService;
+  readonly subjects?: ReportSubjectReader;
+}): ReportingStack {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const acl = realAclResolver(options);
+  const documents = new PrismaDocumentRepository(stamps, acl);
+  const queue = new RecordingQueue();
+  const exportRepository = new PrismaReportExportRepository(stamps);
+
+  const sources: Record<string, ReportSource> = {
+    document: new DocumentReportSource(documents),
+    workflow: new WorkflowReportSource(stamps, acl),
+    storage: new StorageReportSource(),
+    people: new IdentityReportSource(),
+    organization: new OrganizationReportSource(),
+    retention: new RetentionReportSource(stamps, acl),
+    audit: new AuditReportSource(
+      new AuditReadService(
+        new PrismaAuditRepository(),
+        acl,
+        new AccessDenialRecorder(
+          realAuditWriter(options.clock, options.unitOfWork),
+          silentLogger(),
+        ),
+        writer,
+      ),
+    ),
+  };
+  const source = (key: string): ReportSource => sources[key] as ReportSource;
+
+  return {
+    reports: new DefaultReportingService(
+      acl,
+      exportRepository,
+      source('document'),
+      source('workflow'),
+      source('storage'),
+      source('people'),
+      source('organization'),
+      source('retention'),
+      source('audit'),
+      queue,
+      options.storage,
+      writer,
+    ),
+    exports: new ReportExportService(
+      exportRepository,
+      options.subjects ?? new IdentityReportSubjectReader(),
+      acl,
+      source('document'),
+      source('workflow'),
+      source('storage'),
+      source('people'),
+      source('organization'),
+      source('retention'),
+      source('audit'),
+      options.storage,
+      outbox,
+      options.unitOfWork,
+      options.clock,
+      options.config,
+      silentLogger(),
+      writer,
+    ),
+    definitions: new ReportDefinitionService(new PrismaReportDefinitionRepository(stamps), writer),
+    documents,
+    acl,
+    queue,
+  };
 }

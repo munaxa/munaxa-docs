@@ -42,8 +42,29 @@ GET    /api/v1/search?q=…&type=…&facets=…
 GET    /api/v1/admin/document-types
 GET    /api/v1/admin/numbering-rules
 GET    /api/v1/admin/workflows
-GET    /api/v1/reports/{key}
+GET    /api/v1/reports                              # the reports this caller may run
+GET    /api/v1/reports/{key}?from=…&status=…        # one page; parameters are the report's own
+POST   /api/v1/reports/{key}/exports                # 202; queued, never streamed
+GET    /api/v1/reports/exports
+GET    /api/v1/reports/exports/{id}
+GET    /api/v1/reports/exports/{id}/download        # → signed URL
+GET    /api/v1/reports/definitions                  # the caller's own saved reports
+POST   /api/v1/reports/definitions
+DELETE /api/v1/reports/definitions/{id}
 ```
+
+**`GET /reports/{key}` is the one endpoint in this API whose query string is not fully enumerated by
+a schema** — Phase 15. Paging is the list contract's; everything else is the report's, declared by
+the catalogue entry the key names and validated against it. An unknown parameter is **refused**
+rather than ignored, which is the opposite of what most query parsers do and is the right direction
+here: a misspelled filter that was silently dropped produces a report over more rows than somebody
+asked about, and they cannot tell by looking at it.
+
+**There is no endpoint that streams a report body.** `REPORTING_SERVICE` has said since Phase 0.5
+that "large exports are queued and audited rather than streamed from a request", so an export is a
+`202` and a job. It is also the only path on which a report's bytes reach `file_object` and acquire
+a digest — a `GET` that rendered a CSV inline would hand a file to somebody with nothing recording
+that it left.
 
 ## 2. Requests
 

@@ -55,11 +55,23 @@ scan, which is most of them.
 | ~~`DELEGATION_CREATED`, `DELEGATION_USED`, `DELEGATION_REVOKED`, `DELEGATION_EXPIRED`~~ | Phase 11 — written |
 | ~~`SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED`~~ | Phase 10 — written |
 | ~~`MFA_ENROLLED`, `MFA_FAILED`~~ | Phase 14 — written |
-| `REPORT_EXPORTED` | Phase 15 — reporting |
+| ~~`REPORT_EXPORTED`~~ | Phase 15 — written |
 | `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability |
 | `INTEGRITY_MISMATCH` | Phase 18 — the integrity sweep that would detect one |
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
+
+**Phase 15's one row, and the two it declined.** `REPORT_EXPORTED` is written twice per export —
+when it is requested, carrying **the parameters that produced it**, and when the run completes or
+fails. The parameters are the point: "Ada exported the deleted-documents report" is not answerable
+six months later without the library, the date range and the status that narrowed it.
+
+It declined a row for *running* a report, because a read is not an act this catalogue has a row for
+and a row per page would put one event per scroll into a table that already carries one per document
+view. And it declined a second row for *taking* the file: Phase 9 wrote `BULK_DOWNLOAD` beside
+`AUDIT_EXPORTED` because an evidence bundle is three artefacts signed as a set, and a report export
+is one `file_object` whose signed URL already produces `FILE_DOWNLOAD_ISSUED`. Adding a second would
+give one act two names, which this section's own reconciliation exists to prevent.
 A row here with no owner is an oversight; a row with an owner is a schedule.
 
 **`SESSION_REVOKED` was already written, and this table was wrong about it.** Phase 14 went looking

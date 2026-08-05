@@ -25,6 +25,7 @@ export const QueueName = {
   RETENTION_RUN: 'retention.run',
   IDENTITY_DELEGATION: 'identity.delegation',
   AUDIT_EXPORT: 'audit.export',
+  REPORTING_EXPORT: 'reporting.export',
   OUTBOX_DISPATCH: 'outbox.dispatch',
 } as const;
 
@@ -119,6 +120,30 @@ export const QUEUES: readonly QueueDefinition[] = Object.freeze([
     retry: { attempts: 3, backoffMs: 30_000, backoff: 'exponential' },
     timeoutMs: 900_000,
     description: 'Evidence bundles, streamed to storage rather than held in memory.',
+  },
+  {
+    /**
+     * Report exports — Phase 15, and a lane of its own rather than a second workload on
+     * `audit.export`.
+     *
+     * The two are similar in shape and different in every property a lane is separated by
+     * (§8: *by cost, not by module*). An evidence bundle reads one table by sequence with no
+     * permission predicate, because `audit:export` is the filter; a report export runs the
+     * *caller's own* query — joins, an ACL predicate, a page at a time — for as many pages as the
+     * row cap allows. Putting them on one lane at concurrency 2 would let a tenant's month-end
+     * batch of reports sit in front of the nightly chain verification, which is the one job in the
+     * product whose lateness is itself a compliance finding.
+     *
+     * Concurrency 2 for the same reason `audit.export` has it: an export is bounded by rows rather
+     * than by milliseconds, and a single consumer would make the second requester wait for the
+     * first's whole range.
+     */
+    name: QueueName.REPORTING_EXPORT,
+    concurrency: 2,
+    retry: { attempts: 3, backoffMs: 30_000, backoff: 'exponential' },
+    timeoutMs: 900_000,
+    description:
+      'Report exports, streamed to storage a page at a time under the requester’s own reach.',
   },
 ]);
 

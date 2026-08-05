@@ -17,11 +17,8 @@ import type {
 } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
-import {
-  ACL_RESOLVER,
-  type AclResolver,
-  type VisibilityRegion,
-} from '../../../core/authorization/acl-resolver.port';
+import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
+import { documentVisibilityWhere } from '../../../core/authorization/document-visibility';
 import { VersionConflictError } from '../../../core/errors/application-errors';
 import {
   RecordStamps,
@@ -439,27 +436,12 @@ export class PrismaDocumentRepository implements DocumentRepository {
       },
       Permission.DOCUMENT_VIEW,
     );
-
-    const allowed = filter.allowedRegions.map((region) => regionCondition(region));
-    const denied = filter.deniedRegions
-      .map((region) => regionCondition(region))
-      .filter((condition) => !isUnconditional(condition));
-
-    // An **unconditional** allowed region — the tenant-level role grant with no inheritance break
-    // to cut out of it — is not `OR: [{}]`. Prisma does not read an empty object inside an `OR` as
-    // "everything"; it reads it as a branch with no condition and drops it, so a caller who could
-    // see the whole tenant would see nothing. The unconditional case is the overwhelming majority
-    // of requests, so it is spelled as the absence of an allow clause rather than as a branch.
-    const unconditional = allowed.some(isUnconditional);
-    return {
-      AND: [
-        // No allowed region at all is the closed default, spelled as a predicate that matches
-        // nothing rather than as an omitted clause — an omitted clause is one refactor away from
-        // reading as "no restriction", which is the wrong direction for this file to fail in.
-        ...(unconditional ? [] : [allowed.length === 0 ? { id: NO_SUCH_ID } : { OR: allowed }]),
-        ...(denied.length === 0 ? [] : [{ NOT: { OR: denied } }]),
-      ],
-    };
+    // The translation is `core/authorization/document-visibility.ts` since Phase 15, which gave it
+    // a second caller: the approvals report filters tasks by the reach of the document each belongs
+    // to, which is this same predicate on this same model. Its own header records why one
+    // translation of one decision matters as much as one decision — the `OR: [{}]` note in
+    // particular is the sort of thing a second implementer rediscovers by shipping a hole.
+    return documentVisibilityWhere(filter);
   }
 
   private async versioned(
@@ -734,42 +716,3 @@ function toRow(row: JoinedRow, _actorId: string | null): DocumentRow {
  * the branch almost every request in almost every tenant takes.
  */
 /** `{}` is Prisma's "no condition", and the one shape that must never sit inside an `OR`. */
-function isUnconditional(condition: Prisma.DocumentWhereInput): boolean {
-  return Object.keys(condition).length === 0;
-}
-
-function regionCondition(region: VisibilityRegion): Prisma.DocumentWhereInput {
-  const bases: Prisma.DocumentWhereInput[] = [];
-  if (region.tenantWide) {
-    bases.push({});
-  }
-  if (region.libraryIds.length > 0) {
-    bases.push({ folder: { libraryId: { in: [...region.libraryIds] } } });
-  }
-  for (const path of region.folderPaths) {
-    bases.push({ folder: { OR: [{ path }, { path: { startsWith: `${path}.` } }] } });
-  }
-  if (region.documentIds.length > 0) {
-    bases.push({ id: { in: [...region.documentIds] } });
-  }
-  if (bases.length === 0) {
-    return { id: NO_SUCH_ID };
-  }
-  const base: Prisma.DocumentWhereInput =
-    bases.length === 1 ? (bases[0] as Prisma.DocumentWhereInput) : { OR: bases };
-  if (region.excludedFolderPaths.length === 0) {
-    return base;
-  }
-  return {
-    AND: [
-      base,
-      {
-        NOT: {
-          OR: region.excludedFolderPaths.map((path) => ({
-            folder: { OR: [{ path }, { path: { startsWith: `${path}.` } }] },
-          })),
-        },
-      },
-    ],
-  };
-}
