@@ -147,6 +147,23 @@ export interface DocumentListRequest extends PageRequest {
   readonly status?: DocumentStatusKey | undefined;
   readonly ownerUserId?: string | undefined;
   readonly favorite?: boolean | undefined;
+  /**
+   * Documents the *acting caller* holds a live check-out lock on — Phase 13's "Checked Out".
+   *
+   * A flag rather than a `lockedByUserId`, and the asymmetry with `ownerUserId` beside it is the
+   * decision rather than an oversight. `DocumentRow.liveLock` already names the holder on every
+   * row, so this is not a secrecy argument; it is a scope one. "What have I got checked out" is a
+   * navigation question and the schema anticipated it — `ix_document_lock_holder` is indexed
+   * `(tenant_id, locked_by)` and commented "What do I have checked out". "What has Bob got checked
+   * out" is a *report* on a person's work in progress, and reports are Phase 15's, with their own
+   * permission and their own export. Adding the identifier here would have shipped the second
+   * question as a side effect of needing the first.
+   *
+   * "Live" means unexpired as well as unreleased: an expired lock excludes nobody and the next
+   * operation on the document sweeps it aside (`10-revision-architecture.md`), so counting one
+   * would tell somebody they still hold a claim the product has already let go of.
+   */
+  readonly lockedByMe?: boolean | undefined;
 }
 
 export interface NewDocument {

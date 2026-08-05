@@ -17,6 +17,8 @@ import {
   PrismaTombstoneRepository,
 } from './infrastructure/prisma-retention.repositories';
 
+import { RetentionDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
+import { DASHBOARD_RETENTION_METRICS } from '../dashboard/application/ports';
 /**
  * Retention — How long must it be kept, and what happens then?
  *
@@ -34,6 +36,9 @@ import {
  */
 @Module({
   providers: [
+    // Phase 13: the disposition queue's depth and the live-hold count, each behind its own
+    // permission at the composing service — see `dashboard-metrics.adapter.ts`.
+    { provide: DASHBOARD_RETENTION_METRICS, useClass: RetentionDashboardMetrics },
     { provide: RETENTION_SCHEDULE_REPOSITORY, useClass: PrismaRetentionScheduleRepository },
     { provide: LEGAL_HOLD_REPOSITORY, useClass: PrismaLegalHoldRepository },
     { provide: TOMBSTONE_REPOSITORY, useClass: PrismaTombstoneRepository },
@@ -42,6 +47,7 @@ import {
     { provide: RETENTION_SCHEDULER, useClass: RetentionSchedulerService },
   ],
   exports: [
+    DASHBOARD_RETENTION_METRICS,
     RETENTION_SCHEDULE_REPOSITORY,
     LEGAL_HOLD_REPOSITORY,
     TOMBSTONE_REPOSITORY,

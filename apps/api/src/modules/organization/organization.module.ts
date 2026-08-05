@@ -12,6 +12,8 @@ import { PrismaScopeAdminRepository } from './infrastructure/prisma-scope-admin.
 import { PrismaScopeRepository } from './infrastructure/prisma-scope.repository';
 import { OrganizationController } from './presentation/organization.controller';
 
+import { OrganizationDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
+import { DASHBOARD_ORGANIZATION_METRICS } from '../dashboard/application/ports';
 /**
  * Organisation — Where in the business does this belong?
  *
@@ -33,11 +35,13 @@ import { OrganizationController } from './presentation/organization.controller';
 @Module({
   controllers: [OrganizationController],
   providers: [
+    // Phase 13: the department count behind the administrator tile.
+    { provide: DASHBOARD_ORGANIZATION_METRICS, useClass: OrganizationDashboardMetrics },
     { provide: SCOPE_REPOSITORY, useClass: PrismaScopeRepository },
     { provide: ORGANIZATION_SERVICE, useClass: DefaultOrganizationService },
     { provide: SCOPE_ADMIN_REPOSITORY, useClass: PrismaScopeAdminRepository },
     { provide: SCOPE_ADMIN_SERVICE, useClass: ScopeAdminService },
   ],
-  exports: [ORGANIZATION_SERVICE, SCOPE_REPOSITORY],
+  exports: [DASHBOARD_ORGANIZATION_METRICS, ORGANIZATION_SERVICE, SCOPE_REPOSITORY],
 })
 export class OrganizationModule {}

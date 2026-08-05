@@ -40,6 +40,12 @@ import { AuthController } from './presentation/auth.controller';
 import { DelegationController } from './presentation/delegation.controller';
 import { RoleAdminController, UserAdminController } from './presentation/identity-admin.controller';
 
+import { IdentityDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
+import { IdentityDashboardDelegationMetrics } from './infrastructure/dashboard-delegation.adapter';
+import {
+  DASHBOARD_DELEGATION_METRICS,
+  DASHBOARD_PEOPLE_METRICS,
+} from '../dashboard/application/ports';
 /**
  * Identity — Who is this person, and what may they do anywhere?
  *
@@ -65,6 +71,10 @@ import { RoleAdminController, UserAdminController } from './presentation/identit
 @Module({
   controllers: [AuthController, UserAdminController, RoleAdminController, DelegationController],
   providers: [
+    // Phase 13: account counts for the administrator tile, and Phase 11's deferred delegation
+    // card — both answered by the module that owns the tables, never read from the dashboard.
+    { provide: DASHBOARD_PEOPLE_METRICS, useClass: IdentityDashboardMetrics },
+    { provide: DASHBOARD_DELEGATION_METRICS, useClass: IdentityDashboardDelegationMetrics },
     { provide: AUTHENTICATION_SERVICE, useClass: DefaultAuthenticationService },
     { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
     { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
@@ -88,6 +98,8 @@ import { RoleAdminController, UserAdminController } from './presentation/identit
     { provide: ACCESS_TOKEN_ISSUER, useExisting: JwtTokenService },
   ],
   exports: [
+    DASHBOARD_PEOPLE_METRICS,
+    DASHBOARD_DELEGATION_METRICS,
     AUTHENTICATION_SERVICE,
     // Phase 3: a metadata field of type USER names somebody, and Document checks that the
     // somebody exists. Through this service, never by reading Identity's tables.

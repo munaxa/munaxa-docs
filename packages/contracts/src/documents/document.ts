@@ -259,6 +259,15 @@ export const documentListQuerySchema = adminListQuerySchema([
   status: documentStatusSchema.optional(),
   ownerUserId: uuidSchema.optional(),
   favorite: queryFlagSchema.optional(),
+  /**
+   * Phase 13's "Checked Out": documents the *caller* holds a live check-out lock on.
+   *
+   * A flag rather than a holder identifier, unlike `ownerUserId` beside it. "What have I got
+   * checked out" is navigation and the schema anticipated it (`ix_document_lock_holder` is
+   * commented "What do I have checked out"); "what has Bob got checked out" is a report on
+   * somebody's work in progress, and reports are Phase 15's.
+   */
+  lockedByMe: queryFlagSchema.optional(),
 });
 
 /** What a duplicate check found. Returned by the check endpoint and by a refused create. */

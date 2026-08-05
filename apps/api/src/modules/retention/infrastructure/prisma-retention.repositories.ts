@@ -36,6 +36,24 @@ const LIVE_STATES: readonly RetentionScheduleStateKey[] = [
 ];
 
 /**
+ * What "due for disposition" means, in one place.
+ *
+ * `SUSPENDED` is deliberately absent: a held schedule is not due, it is waiting, and the release
+ * is what puts it back. `ix_retention_schedule_due` covers exactly this predicate.
+ *
+ * Exported since Phase 13, so the dashboard's "due for review" tile counts the same rows the
+ * disposition queue lists. `listDue` takes a `limit` because the sweep processes in batches, and a
+ * tile that counted `min(rows, 200)` would stop rising at two hundred and quietly stop being true.
+ */
+export function dueScheduleWhere(tenantId: string, at: Date): Prisma.RetentionScheduleWhereInput {
+  return {
+    tenantId,
+    dueAt: { lte: at },
+    state: { in: [RetentionScheduleState.PENDING, RetentionScheduleState.IN_REVIEW] },
+  };
+}
+
+/**
  * The disposition schedule, in the database.
  *
  * `save` is an upsert on the live `(document, trigger)` row rather than an insert, and
@@ -74,13 +92,7 @@ export class PrismaRetentionScheduleRepository implements RetentionScheduleRepos
 
   async listDue(at: Date, limit: number): Promise<readonly RetentionScheduleRecord[]> {
     const rows = await requireTransaction().retentionSchedule.findMany({
-      // `SUSPENDED` is deliberately absent: a held schedule is not due, it is waiting, and the
-      // release is what puts it back. `ix_retention_schedule_due` covers exactly this predicate.
-      where: {
-        tenantId: this.tenantId(),
-        dueAt: { lte: at },
-        state: { in: [RetentionScheduleState.PENDING, RetentionScheduleState.IN_REVIEW] },
-      },
+      where: dueScheduleWhere(this.tenantId(), at),
       orderBy: { dueAt: Prisma.SortOrder.asc },
       take: limit,
     });

@@ -340,7 +340,16 @@ export class PrismaDocumentRepository implements DocumentRepository {
 
   // --- Internals ---------------------------------------------------------------------------
 
-  private async whereFor(request: DocumentListRequest): Promise<Prisma.DocumentWhereInput> {
+  /**
+   * The predicate every list, count and metric in this module is built from.
+   *
+   * `public` since Phase 13, and that is the whole of how the dashboard avoids inventing a second
+   * definition of anything: `DashboardDocumentMetrics` counts through *this* function, so the tile
+   * that says "4 drafts" and the list the tile links to cannot describe different sets of rows.
+   * A metrics adapter with its own `where` object would have been four lines shorter and one
+   * release away from disagreeing.
+   */
+  async whereFor(request: DocumentListRequest): Promise<Prisma.DocumentWhereInput> {
     const tenantId = this.tenantId();
     const subtree =
       request.underFolderId === undefined
@@ -373,6 +382,9 @@ export class PrismaDocumentRepository implements DocumentRepository {
       ...(request.ownerUserId !== undefined && { ownerUserId: request.ownerUserId }),
       ...(request.favorite === true && {
         favorites: { some: { userId: this.actorId() ?? NO_SUCH_ID } },
+      }),
+      ...(request.lockedByMe === true && {
+        locks: { some: liveLockOf(this.actorId() ?? NO_SUCH_ID, this.stamps.now()) },
       }),
       OR: searchConditions(request.search, ['title', 'description', 'documentNumber']),
     };
@@ -457,6 +469,18 @@ const DUPLICATE_LIMIT = 20;
 
 /** A UUID nothing will ever have, for a filter that must match no rows rather than all of them. */
 const NO_SUCH_ID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * One person's *live* check-out claims — the predicate behind "Checked Out".
+ *
+ * Exported so the dashboard's metrics adapter counts through the same three conditions the list
+ * filters on. All three matter: released locks are history and the table keeps them on purpose,
+ * and an expired lock is one the next operation on the document will sweep aside — counting either
+ * would tell somebody they hold a claim they do not.
+ */
+export function liveLockOf(userId: string, now: Date): Prisma.DocumentLockWhereInput {
+  return { lockedBy: userId, releasedAt: null, expiresAt: { gt: now } };
+}
 
 // --- Mapping ----------------------------------------------------------------------------
 

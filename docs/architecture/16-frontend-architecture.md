@@ -30,7 +30,8 @@ Next.js 15 (App Router), React 19, TypeScript, Tailwind v4, `@munaxa/ui` with th
 app/
 ├── (auth)/                       login · forgot-password · mfa            (no shell)
 └── (workspace)/                  authenticated shell: top bar, sidebar, command palette
-    ├── page.tsx                  dashboard: my tasks, my documents, recent activity
+    ├── page.tsx                  dashboard: my tasks, my documents, recent activity —
+    │                             plus the tenant-wide panel, when the caller holds a tile's permission
     ├── inbox/                    approval tasks, delegations
     ├── libraries/
     │   └── [libraryId]/
@@ -51,6 +52,15 @@ app/
 
 Route groups map to shells, not to features. The document record page is a **tabbed record
 workspace**: identity and actions stay fixed while tabs change, so a user never loses their place.
+
+**The administrator dashboard is a panel on `page.tsx`, not a screen under `admin/`** — Phase 13.
+`admin/` is where somebody *configures* the tenant, and a page of counts configures nothing; an
+administrator is also a person with drafts and an inbox, and putting the tenant's health one
+navigation away from their own work means they see one of the two. Each tile is gated individually on
+the API against the permission that already governs the screen it summarises, and a tile the caller
+may not see is **absent rather than zero** — those are different answers, and collapsing them would
+make the first screen everybody opens a daily report on how much exists in the parts of the tenant
+they cannot see into. No navigation row was added: `nav.home` already pointed here.
 
 `notifications/` was added by Phase 12 and is deliberately **outside `admin/`**. 18 §5's
 preferences are per *user* — which channels, which digest, which quiet hours — and Administration

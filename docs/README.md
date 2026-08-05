@@ -15,7 +15,7 @@ docs/
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 
-The code the architecture describes exists through Phase 12 — the platform foundation, the whole of
+The code the architecture describes exists through Phase 13 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
 that is the first thing to hold a customer's own content, the approval engine that moves a document
 through it, the numbering engine that gives an approved document its permanent identifier, the
@@ -89,6 +89,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 13 — dashboard
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 13 — Dashboard](./reports/phase-13-dashboard.md) | The last Phase 0.5 module whose contracts shipped and were never implemented, bound at last — and bound so that its own rule cannot be broken: the module has no `infrastructure/` and no Prisma import, so a widget has nothing to count rows with, and every figure is built from the predicate the list or the inbox it summarises is built from. Why a count is a disclosure and why a refused tile is *absent* rather than zero; the decisions the brief left open — where "Checked Out" comes from, whether the activity feed gains a tenant-wide reader, where the administrator dashboard lives, where Phase 15 begins, and why storage reports bytes but never a quota; why nothing is cached on the busiest route in the product; what the phase costs, and what it deliberately does not do |
 
 ### Phase 12 — notifications
 

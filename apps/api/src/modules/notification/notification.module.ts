@@ -28,6 +28,8 @@ import {
 import { NotificationAdminController } from './presentation/notification-admin.controller';
 import { NotificationController } from './presentation/notification.controller';
 
+import { NotificationDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
+import { DASHBOARD_NOTIFICATION_METRICS } from '../dashboard/application/ports';
 /**
  * Notification — Who needs to be told, and how?
  *
@@ -66,6 +68,8 @@ import { NotificationController } from './presentation/notification.controller';
   imports: [IdentityModule, DocumentModule, LibraryModule],
   controllers: [NotificationController, NotificationAdminController],
   providers: [
+    // Phase 13: the unread badge Phase 12 built `/notifications/unread-count` for.
+    { provide: DASHBOARD_NOTIFICATION_METRICS, useClass: NotificationDashboardMetrics },
     { provide: NOTIFICATION_SERVICE, useClass: DefaultNotificationService },
     { provide: NOTIFICATION_TEMPLATE_REPOSITORY, useClass: PrismaNotificationTemplateRepository },
     { provide: NOTIFICATION_MESSAGE_REPOSITORY, useClass: PrismaNotificationMessageRepository },
@@ -89,6 +93,6 @@ import { NotificationController } from './presentation/notification.controller';
     // answered by a single class.
     NotificationLaneConsumer,
   ],
-  exports: [NOTIFICATION_SERVICE, DeliveryService, DigestService],
+  exports: [DASHBOARD_NOTIFICATION_METRICS, NOTIFICATION_SERVICE, DeliveryService, DigestService],
 })
 export class NotificationModule {}

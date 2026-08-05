@@ -12,6 +12,8 @@ import { PrismaUploadSessionRepository } from './infrastructure/prisma-upload-se
 import { StorageBlobReaper } from './infrastructure/blob-reaper.adapter';
 import { UploadsController } from './presentation/uploads.controller';
 
+import { StorageDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
+import { DASHBOARD_STORAGE_METRICS } from '../dashboard/application/ports';
 /**
  * Storage — Where are the bytes, and are they intact?
  *
@@ -33,6 +35,9 @@ import { UploadsController } from './presentation/uploads.controller';
 @Module({
   controllers: [UploadsController],
   providers: [
+    // Phase 13: bytes held and bytes deduplication saved. No quota — that is ADR-0012's and
+    // Phase 21's, and Phase 10 recorded its absence deliberately.
+    { provide: DASHBOARD_STORAGE_METRICS, useClass: StorageDashboardMetrics },
     { provide: FILE_OBJECT_REPOSITORY, useClass: PrismaFileObjectRepository },
     { provide: UPLOAD_SESSION_REPOSITORY, useClass: PrismaUploadSessionRepository },
     { provide: STORAGE_SERVICE, useClass: DefaultStorageService },
@@ -41,6 +46,6 @@ import { UploadsController } from './presentation/uploads.controller';
     // from storage, and the first caller `StoragePort.delete` has had outside the upload path.
     { provide: BLOB_REAPER, useClass: StorageBlobReaper },
   ],
-  exports: [STORAGE_SERVICE, BLOB_REAPER],
+  exports: [DASHBOARD_STORAGE_METRICS, STORAGE_SERVICE, BLOB_REAPER],
 })
 export class StorageModule {}

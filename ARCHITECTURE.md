@@ -67,7 +67,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 12**:
+and the product is built through **Phase 13**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -166,12 +166,34 @@ and the product is built through **Phase 12**:
   found to have been silently discarding every `delegation.*` event since Phase 11, which is now a
   test rather than an assumption.
 
+- **Phase 13** — the dashboard. The last Phase 0.5 module whose contracts shipped and were never
+  implemented, and the one whose own README named the way it would most likely be got wrong: *the
+  dashboard owns no data; it composes what other modules already expose, so a widget cannot become a
+  second, divergent definition of "overdue"*. That is a rule a dashboard can break on every widget,
+  so it is enforced rather than written down — **the module has no `infrastructure/` and no reachable
+  Prisma import**, and what it needs is declared as eight ports the owning modules implement, each
+  built from the predicate its own list is built from. Three predicates were extracted to make that
+  literal, and there is now exactly one `dueAt < now` in the workflow module. Its central safety
+  property is that **a count is a disclosure**: every user widget is a query whose predicate names the
+  caller, with no parameter by which to ask about anybody else; every tenant-wide widget is gated on
+  the permission that already governs the screen it summarises, and is **absent rather than zero**
+  when the caller does not hold it — because "you may not ask" and "there are none" are different
+  answers, and collapsing them would make the first screen everybody opens a daily report on how much
+  exists in the parts of the tenant they cannot see into. Nothing is cached, on the most-loaded route
+  in the product, because a cached count is a stale count somebody acts on; each widget composes in
+  its own transaction so a failing source degrades one card rather than the page; and the whole
+  screen costs a number of queries bounded by widgets and independent of rows, asserted rather than
+  assumed. It adds no table, no permission and no audit action — a dashboard that writes nothing
+  needs none — and it discharges four earlier phases' limit rows: Phase 9's activity feed, as the
+  caller's own; Phase 10's disposition and hold figures; Phase 11's delegation widget, including the
+  "who is covering for whom" clause, by declining it; and Phase 12's unread badge.
+
 Each report says what its phase deliberately left out.
 
 The rules above are enforced rather than described: layer and module boundaries are lint rules
 in `apps/api/eslint.config.mjs`, and the cross-product ban is the `boundaries` job in CI.
 
 Each phase's report records what it left owing, in `docs/reports/`. The most recent is
-[`phase-12-notifications.md`](./docs/reports/phase-12-notifications.md);
+[`phase-13-dashboard.md`](./docs/reports/phase-13-dashboard.md);
 the original gate is
 [`phase-0.5-architecture-compliance-report.md`](./docs/reports/phase-0.5-architecture-compliance-report.md).
