@@ -13,6 +13,7 @@ import { EMPTY_FORM_STATE, type SignInFormState, signInAction } from './actions'
 const REASON_MESSAGE: Record<string, MessageKey> = {
   REJECTED: 'auth.signInRejected',
   UNAVAILABLE: 'auth.signInUnavailable',
+  MFA_REQUIRED: 'auth.mfaRequired',
 };
 
 /**
@@ -63,6 +64,22 @@ export function LoginForm({ next }: { next: string }): React.ReactNode {
       <Field label={translate('auth.passwordLabel')} required>
         <Input name="password" type="password" autoComplete="current-password" required />
       </Field>
+
+      {state.mfaRequired === true ? (
+        <Field label={translate('auth.mfaCodeLabel')} hint={translate('auth.mfaCodeHint')} required>
+          <Input
+            name="mfaCode"
+            // `one-time-code` so a password manager and an SMS autofill both offer the right thing,
+            // and `inputMode` so a phone shows digits — a six-digit field behind a QWERTY keyboard
+            // is the most-reported friction in every MFA rollout.
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            spellCheck={false}
+            required
+            autoFocus
+          />
+        </Field>
+      ) : null}
 
       <Field label={translate('auth.organisationLabel')} hint={translate('auth.organisationHint')}>
         {/* Optional: on a tenant subdomain the API reads it from the host. It is here for the

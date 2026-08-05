@@ -38,12 +38,25 @@ export interface SignInInput {
   readonly email: string;
   readonly password: string;
   readonly tenant?: string;
+  /**
+   * A TOTP code or a recovery code, when the account has an authenticator (Phase 14).
+   *
+   * Sent with the password rather than in a second call, because a two-call flow would have to
+   * carry a token between the calls proving the password was right — a credential with a lifetime
+   * and a revocation story, minted for one purpose, of exactly the kind that gets reused.
+   */
+  readonly mfaCode?: string;
 }
 
 export type SignInOutcome =
   | { readonly ok: true }
-  /** `REJECTED` is every credential failure; the API does not distinguish them and nor do we. */
-  | { readonly ok: false; readonly reason: 'REJECTED' | 'UNAVAILABLE' };
+  /**
+   * `REJECTED` is every credential failure; the API does not distinguish them and nor do we.
+   * `MFA_REQUIRED` is the one exception, and it is not a leak: it is only ever returned after the
+   * password has been verified, so it tells the caller nothing they could not learn by holding the
+   * account.
+   */
+  | { readonly ok: false; readonly reason: 'REJECTED' | 'UNAVAILABLE' | 'MFA_REQUIRED' };
 
 export async function signIn(input: SignInInput): Promise<SignInOutcome> {
   try {
@@ -55,6 +68,12 @@ export async function signIn(input: SignInInput): Promise<SignInOutcome> {
     await storeSession(result);
     return { ok: true };
   } catch (error) {
+    if (error instanceof DomainError && error.code === ErrorCode.MFA_REQUIRED) {
+      // The password was right and a code is owed. Distinguished from a rejection so the form can
+      // ask for the code rather than telling somebody their correct password was wrong — which
+      // would be untrue and would train people to retype it.
+      return { ok: false, reason: 'MFA_REQUIRED' };
+    }
     if (error instanceof DomainError && error.code === ErrorCode.UNAUTHENTICATED) {
       return { ok: false, reason: 'REJECTED' };
     }

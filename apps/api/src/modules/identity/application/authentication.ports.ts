@@ -130,6 +130,8 @@ export interface SessionContext {
 export interface SignInCommand extends SessionContext {
   readonly email: string;
   readonly password: string;
+  /** A TOTP code or a recovery code, when the account has a confirmed authenticator (Phase 14). */
+  readonly mfaCode?: string;
 }
 
 export interface AuthenticationService {

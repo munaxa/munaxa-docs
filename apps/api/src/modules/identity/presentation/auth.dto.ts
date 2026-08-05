@@ -22,6 +22,22 @@ export const signInSchema = z.object({
     .max(63)
     .regex(/^[a-z0-9][a-z0-9-]*$/)
     .optional(),
+  /**
+   * The second factor, when the account has one (Phase 14).
+   *
+   * On the sign-in body rather than at a separate `/auth/mfa` endpoint, and the reason is what a
+   * two-call flow would have to carry between the calls: a token proving the password was right.
+   * That token is a credential with a lifetime and a revocation story, minted for one purpose, and
+   * it is exactly the sort of thing that is issued once and then reused. One call spends the
+   * password and the code together and issues nothing until both are right.
+   *
+   * Optional, because the client cannot know whether a factor is owed until it has tried — and the
+   * API will not tell it before the password is verified, since "this address has MFA" is a fact
+   * about who holds an account.
+   *
+   * Also accepts a recovery code, which is why the length allows more than six digits.
+   */
+  mfaCode: z.string().min(1).max(32).optional(),
 });
 
 export type SignInBody = z.infer<typeof signInSchema>;

@@ -49,6 +49,7 @@ export class AuthController {
       await this.authentication.signIn({
         email: body.email,
         password: body.password,
+        ...(body.mfaCode !== undefined && { mfaCode: body.mfaCode }),
         ...sessionContext(request, body.tenant),
       }),
     );

@@ -38,6 +38,35 @@ export const en = {
     // was wrong tells an attacker the same thing.
     signInRejected: 'Those credentials were not accepted.',
     signInUnavailable: 'Sign-in is unavailable right now. Try again in a moment.',
+    /**
+     * The second factor — Phase 14.
+     *
+     * `mfaRequired` is the one sign-in message that is *not* the uniform rejection above, and it is
+     * not a leak: it is only ever shown after the password has been accepted, so it tells the
+     * person nothing they could not learn by holding the account.
+     */
+    mfaRequired: 'Enter the code from your authenticator app to finish signing in.',
+    mfaCodeLabel: 'Authentication code',
+    mfaCodeHint: 'Six digits from your authenticator app, or one of your recovery codes.',
+    mfaTitle: 'Two-step verification',
+    mfaNotEnrolledHint:
+      'Add an authenticator app so a stolen password is not enough to reach your documents.',
+    mfaEnrolledHint: 'An authenticator app is set up. You have {count} unused recovery codes left.',
+    mfaStart: 'Set up an authenticator',
+    mfaStartAgain: 'Start setting up again',
+    mfaRemove: 'Remove the authenticator',
+    mfaRemoved: 'The authenticator was removed, and every session was ended.',
+    mfaSetUpTitle: 'Add this account to your authenticator',
+    mfaSetUpHint:
+      'Open the link below on the device with your authenticator app, or type the key into it by hand. Then enter the code it shows.',
+    mfaOpenInApp: 'Open in an authenticator app',
+    mfaConfirm: 'Confirm',
+    mfaRecoveryTitle: 'Your recovery codes',
+    mfaRecoveryWarning:
+      'Save these now. Each works once, they are the only way in if you lose your authenticator, and they are never shown again.',
+    mfaSessionsEnded:
+      'Every session has been ended, including this one. Sign in again to continue.',
+    mfaDone: 'Done',
   },
   nav: {
     main: 'Main',
@@ -1361,6 +1390,7 @@ export const en = {
     UNSUPPORTED_CONTENT: 'That file type is not accepted.',
     CONTENT_NOT_SCANNED: 'This file is still being checked for malware.',
     TENANT_READ_ONLY: 'Your organisation is currently read-only.',
+    MFA_REQUIRED: 'Enter the code from your authenticator app.',
     DEPENDENCY_UNAVAILABLE: 'A service this action needs is unavailable.',
     INTERNAL: 'Something went wrong on our side.',
   },
