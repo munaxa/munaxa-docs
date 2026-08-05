@@ -281,6 +281,27 @@ export const configSchema = z
      */
     AUDIT_CHECKPOINT_SECRET: z.string().min(32).optional(),
 
+    /**
+     * The key the server witnesses an electronic signature with — Phase 16, ADR-0017.
+     *
+     * **Its own secret rather than the checkpoint's**, and the separation is the point. The two
+     * attest different things on different clocks: a checkpoint attests a day of the audit trail
+     * and can be rotated whenever an operator likes, because every old checkpoint has already been
+     * verified. A signature attests a person's act and must go on verifying for as long as the
+     * record is retained — seven years, frequently more — so its rotation is an event with a
+     * migration behind it. Sharing one key would tie the cheap rotation to the expensive one.
+     *
+     * The key *identifier* is derived from the key itself rather than configured beside it, so an
+     * operator who rotates the secret cannot forget to change the name — and every signature made
+     * under the old key keeps naming it, which is what makes a rotation survivable instead of a
+     * mass invalidation.
+     *
+     * Optional in the schema and required in production, exactly like the checkpoint secret. A
+     * deployment without one refuses to sign rather than writing an unwitnessed signature, because
+     * a signature nothing witnessed is a row that looks identical to one that was.
+     */
+    SIGNATURE_WITNESS_SECRET: z.string().min(32).optional(),
+
     /** Events read per pass while verifying, and the ceiling on one pass's work. */
     AUDIT_VERIFY_BATCH_SIZE: z.coerce.number().int().min(100).max(100_000).default(5_000),
     /**
@@ -486,6 +507,16 @@ export const configSchema = z
         message: 'The OpenAPI explorer is not served in production.',
       });
     }
+    if (config.SIGNATURE_WITNESS_SECRET === undefined) {
+      // A production deployment with signatures turned on and no witness key would refuse every
+      // signing attempt at the use case — correct, and discovered by whoever tries to sign rather
+      // than by whoever deploys. This is the same trade the checkpoint secret makes below.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SIGNATURE_WITNESS_SECRET'],
+        message: 'Electronic signatures must be witnessed in production.',
+      });
+    }
     if (config.AUDIT_CHECKPOINT_SECRET === undefined) {
       // Without it the daily pass still verifies and still alerts, but it records nothing an
       // auditor can hold against a later reading of the table — which is the whole of §4's
@@ -619,6 +650,10 @@ export interface AppConfig {
     readonly verifyMaxEvents: number;
     readonly exportBatchSize: number;
   };
+  /** The signature witness — Phase 16, ADR-0017. Null in a deployment without a key. */
+  readonly signature: {
+    readonly witnessSecret: string | null;
+  };
   /** What a report export is bounded by (`docs/architecture/19-performance-and-scalability.md`). */
   readonly reporting: {
     readonly exportBatchSize: number;
@@ -744,6 +779,9 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       verifyBatchSize: raw.AUDIT_VERIFY_BATCH_SIZE,
       verifyMaxEvents: raw.AUDIT_VERIFY_MAX_EVENTS,
       exportBatchSize: raw.AUDIT_EXPORT_BATCH_SIZE,
+    },
+    signature: {
+      witnessSecret: raw.SIGNATURE_WITNESS_SECRET ?? null,
     },
     reporting: {
       exportBatchSize: raw.REPORTING_EXPORT_BATCH_SIZE,

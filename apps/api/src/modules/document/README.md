@@ -214,3 +214,50 @@ What changed here:
 - **`DocumentFolderContentsParticipant`** fills the slot Library declares, so a folder's delete
   finally reaches the documents inside it. Before this, they stayed live in a deleted folder —
   reachable by search and by nothing else.
+
+## Phase 16 — bulk operations, templates and signatures
+
+Three capabilities, and the first two of them are the same argument in different clothing: neither
+adds a second way to do something this module already does.
+
+**Bulk metadata, bulk restore, bulk upload and bulk export** live in `application/bulk-*.service.ts`
+and reimplement nothing. Every `apply` is a call to `DefaultDocumentService`'s own single-object use
+case, so a bulk restore reverses exactly one cascade because `restore` does, a bulk edit refuses a
+frozen document because `update` does, and `ErrorCode.LEGAL_HOLD` refuses one document and lets the
+batch finish because Phase 10 put it in the delete path and nothing here reaches around it. The
+choreography — a transaction per object, the caller's reach resolved *per object* through
+`ACL_RESOLVER`, the tally, the operation record and the one operation-level audit row — is
+`core/bulk/`, which owns no rules.
+
+The fast implementation of a bulk metadata edit is one `UPDATE … WHERE id IN (…)`. It is one to two
+orders of magnitude quicker and skips six correctness properties: the reach check per object, the
+frozen-status check, the optimistic lock, the per-document audit row, the outbox event and the
+search re-projection. The report states the cost of not taking it.
+
+**`DOCUMENT_CONTENT_GATE` gained one method** — `storeManifest` — and the narrowing that file has
+carried since Phase 3 still holds. Document still may not create an upload, complete one, or delete
+a blob; it may now write one derived artefact whose content it composed, which is the same
+permission the preview pipeline has for a thumbnail. The alternative was for the bulk export to hold
+`STORAGE_SERVICE`, which would have handed this module `abandonUploadSession` to obtain one call.
+
+**Templates** are configuration that *produces* documents, not documents in a hidden folder. The
+distinction is the whole design: modelling one as a document would have given every blank form a
+workflow, a retention schedule and a row in everybody's search results. Authoring is
+`template:manage`; *using* one is an ordinary `document:create`, and `createFrom` calls `create` so
+every rule the manual path enforces still runs. The body is a **reference** to the same
+content-addressed blob ADR-0007 deduplicates, so a thousand documents from one template are one blob
+with a thousand and one references — obtained by not writing a copy path rather than by adding one.
+
+**Signatures** are [ADR-0017](../../../../../docs/architecture/adr/0017-electronic-signature-as-witnessed-attestation.md)'s
+reading of a word that means four different things: a 21 CFR Part 11 §11.50 manifestation — printed
+name, instant, meaning — bound under §11.70 to the signed revision's content digest and witnessed by
+the server with the construction Phase 9 uses for audit checkpoints. It is **not** an eIDAS
+qualified signature and nothing here may say it is. `document:sign` is seeded to no role including
+the tenant administrator, which is 08 §6's first deliberate row applied a second time: a signatory
+conferred by seniority is what an electronic-signature regime exists to prevent.
+
+Two ports Identity answers: `SIGNER_AUTHENTICATOR` re-proves the signer's credentials at the moment
+of signing (§11.200), reusing `MfaService.challenge` so the recovery-code path and the replay window
+come with it, and `DocumentConfiguration.signer` supplies the printed name — read once, copied into
+the signed bytes, and never re-resolved, because a person who changes their surname must not
+retroactively change what the record says was signed.

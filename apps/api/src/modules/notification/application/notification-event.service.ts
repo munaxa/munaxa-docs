@@ -133,6 +133,9 @@ export class NotificationEventService {
       case 'retention.hold-released':
         return this.documentEvent(eventId, payload, NotificationType.LEGAL_HOLD_RELEASED.key, {});
 
+      case 'bulk.operation-completed':
+        return this.bulkOperation(payload);
+
       case 'audit.chain-broken':
         return this.chainBroken(eventId, payload);
       case 'storage.file-quarantined':
@@ -402,6 +405,57 @@ export class NotificationEventService {
     });
     // Nothing is sent yet, and that is the answer rather than a shortfall. `releaseBatches`
     // produces the one summary this window is for.
+    return 0;
+  }
+
+  // --- Bulk operations -----------------------------------------------------------------------
+
+  /**
+   * 18 §7's storm-control row, finally with a storm to control — Phase 16.
+   *
+   * Phase 12 built `notification_batch` and its own report said plainly that **nothing currently
+   * produces a storm**, with `retention.due` the only coalesced family. This is the second, and
+   * unlike the first its window is keyed on the *operation* rather than on the day: a bulk restore
+   * and a bulk metadata edit run ten minutes apart are two acts, and one summary covering both
+   * would be a message nobody can act on.
+   *
+   * **Coalesced even though a bulk operation publishes exactly one event.** That looks redundant
+   * and is not, for two reasons. A caller running six imports in a morning gets one message rather
+   * than six, which is the same relief coalescing gives anywhere. And an operation that exceeds
+   * `bulk.synchronousLimit` is queued, so a large import may be split by an operator across several
+   * requests — the window is what makes those one arrival.
+   *
+   * The recipient is the **requester alone**. The alternative — telling whoever would have been
+   * told about each object — is a disclosure risk rather than a nicety: 18 §8 and Phase 12's
+   * `RecipientVisibilityService` require every name in a recipient list derived from documents to
+   * pass the ACL resolver, and a *summary* cannot satisfy that. "412 documents were restored"
+   * describes a set the recipient may only partly reach, and there is no honest per-recipient count
+   * without resolving 412 times per recipient. The per-object notifications those people already
+   * receive are the ones they act on; this one tells the person who pressed the button what
+   * happened.
+   */
+  private async bulkOperation(payload: Readonly<Record<string, unknown>>): Promise<number> {
+    const operationId = asString(payload['operationId']);
+    const requestedById = asString(payload['requestedById']);
+    if (operationId === null || requestedById === null) {
+      return 0;
+    }
+    const minutes = await this.settings.get(Settings.NOTIFICATION_COALESCE_MINUTES);
+    const now = this.clock.now();
+    await this.batches.accumulate({
+      key: `bulk:${requestedById}`,
+      typeKey: NotificationType.BULK_OPERATION_COMPLETED.key,
+      recipientIds: [asId<UserId>(requestedById)],
+      values: {
+        operationKind: asString(payload['kind']) ?? '—',
+        appliedCount: (asNumber(payload['applied']) ?? 0).toString(),
+        refusedCount: (asNumber(payload['refused']) ?? 0).toString(),
+        operationLink: `${this.config.mail.webBaseUrl}/documents/bulk/${operationId}`,
+      },
+      releaseAt: new Date(now.getTime() + minutes * 60_000),
+    });
+    // Nothing is sent yet, exactly as `retentionDue` sends nothing: `releaseBatches` produces the
+    // one summary this window exists for.
     return 0;
   }
 

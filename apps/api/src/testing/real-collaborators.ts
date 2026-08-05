@@ -145,6 +145,10 @@ import { PrismaRevisionQueryRepository } from '../modules/revision/infrastructur
 import { PostgresIndexAdapter } from '../infrastructure/search/postgres-index.adapter';
 import { PostgresSearchAdapter } from '../infrastructure/search/postgres-search.adapter';
 import { TenantScopedSearch } from '../infrastructure/tenancy/tenant-scoped-search';
+import { DefaultBulkExecutor } from '../core/bulk/bulk-executor';
+import { PrismaBulkOperationRepository } from '../core/bulk/prisma-bulk.repository';
+import { BulkDocumentService } from '../modules/document/application/bulk-document.service';
+import { BulkExportService } from '../modules/document/application/bulk-export.service';
 import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
 import { DefaultPermissionService } from '../modules/library/application/permission.service';
 import { PrismaAclRepository } from '../modules/library/infrastructure/prisma-acl.repository';
@@ -1639,4 +1643,56 @@ export function realReporting(options: {
     acl,
     queue,
   };
+}
+
+// --- Phase 16: bulk operations ---------------------------------------------------------------
+//
+// The executor and the record, wired the way `BulkModule` wires them, over the *real* ACL
+// resolver. A double would defeat the point of every assertion the phase's suite makes: what is
+// under test is that the caller's reach is resolved **per object**, and a stub resolver would be
+// asserting the suite's own belief about permissions rather than the product's.
+
+export interface BulkStack {
+  readonly executor: DefaultBulkExecutor;
+  readonly operations: PrismaBulkOperationRepository;
+  readonly documents: BulkDocumentService;
+  readonly exports: BulkExportService;
+  readonly acl: PrismaAclResolver;
+}
+
+export function realBulk(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config: AppConfig;
+  readonly library: DocumentLibraryStack;
+  readonly settings?: Readonly<Record<string, unknown>>;
+}): BulkStack {
+  const { stamps, audit, outbox } = realWriteStack(options.clock, options.unitOfWork);
+  const acl = realAclResolver(options);
+  const operations = new PrismaBulkOperationRepository(stamps);
+  const executor = new DefaultBulkExecutor(
+    options.unitOfWork,
+    acl,
+    operations,
+    audit,
+    outbox,
+    settingsReaderFor(options.settings ?? {}),
+    stamps,
+    silentLogger(),
+  );
+  const documents = new BulkDocumentService(
+    executor,
+    realDocumentRepository(options),
+    options.unitOfWork,
+    options.library.documents,
+  );
+  const exports = new BulkExportService(
+    executor,
+    operations,
+    realDocumentRepository(options),
+    new StorageContentGateAdapter(options.library.storage),
+    options.unitOfWork,
+    acl,
+  );
+  return { executor, operations, documents, exports, acl };
 }

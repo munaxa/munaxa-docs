@@ -153,6 +153,14 @@ export default async function DocumentsPage({
         label: department.name,
       }))}
       canCreate={access.permissions.includes(Permission.DOCUMENT_CREATE)}
+      // 16 §5's *"bulk actions gated by `capabilities`"*, resolved on the server from the caller's
+      // own grants. The tenant-wide floor only: whether they reach a *particular* document is the
+      // API's per-object answer, and the result dialogue is where they learn it.
+      canBulk={{
+        edit: access.permissions.includes(Permission.DOCUMENT_EDIT),
+        restore: access.permissions.includes(Permission.DOCUMENT_RESTORE),
+        download: access.permissions.includes(Permission.DOCUMENT_DOWNLOAD),
+      }}
     />
   );
 }

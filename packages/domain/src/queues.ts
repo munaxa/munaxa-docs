@@ -26,6 +26,7 @@ export const QueueName = {
   IDENTITY_DELEGATION: 'identity.delegation',
   AUDIT_EXPORT: 'audit.export',
   REPORTING_EXPORT: 'reporting.export',
+  DOCUMENTS_BULK: 'documents.bulk',
   OUTBOX_DISPATCH: 'outbox.dispatch',
 } as const;
 
@@ -41,6 +42,25 @@ export interface QueueDefinition {
   readonly name: QueueNameKey;
   /** How many jobs this lane runs at once. Bounded by what the work costs, not by hope. */
   readonly concurrency: number;
+  /**
+   * How many of one *tenant's* jobs may occupy this lane at once — Phase 16.
+   *
+   * `concurrency` above is per lane, which is what made
+   * `19-performance-and-scalability.md` §5's fairness sentence false for fifteen phases: a tenant
+   * with five thousand jobs takes every slot and every other tenant waits behind them. Nothing had
+   * ever produced five thousand jobs, so nobody could have observed it.
+   *
+   * Declared per lane and **absent by default**, which keeps every existing lane byte-for-byte as
+   * it behaved: a lane that does not name a cap is not capped, and adding one to `documents.ocr`
+   * later is a one-line change here rather than a change to the adapter. Enforcement is the
+   * adapter's — a slot is taken in Redis before the handler runs and released after, and a job
+   * that finds the tenant at its cap is re-queued with a short delay rather than failed, because
+   * "wait your turn" is not a failure and must not consume an attempt.
+   *
+   * The number here is the product's floor; a tenant setting (`bulk.tenantConcurrency`) raises or
+   * lowers it per deployment, and the adapter takes the lower of the two.
+   */
+  readonly perTenantConcurrency?: number;
   readonly retry: RetryPolicy;
   /** Wall-clock budget for one job; a renderer that hangs must not hold a slot forever. */
   readonly timeoutMs: number;
@@ -144,6 +164,31 @@ export const QUEUES: readonly QueueDefinition[] = Object.freeze([
     timeoutMs: 900_000,
     description:
       'Report exports, streamed to storage a page at a time under the requester’s own reach.',
+  },
+  {
+    /**
+     * Bulk document operations — Phase 16, and the first lane in the product that one tenant can
+     * genuinely flood.
+     *
+     * Separated by cost like every other lane (§8), and its cost is unusual: a bulk operation is
+     * *N transactions*, each writing an audit row onto a chain that serialises per tenant under an
+     * advisory lock. So the expensive resource is not CPU and not the renderer pool — it is one
+     * tenant's own chain, and a second tenant's bulk restore does not contend with it at all. That
+     * is exactly the shape a per-lane concurrency number cannot express, and it is why this is the
+     * lane that declares `perTenantConcurrency`.
+     *
+     * Concurrency 4 with a per-tenant cap of 2: four tenants' imports proceed together, and no
+     * single tenant takes more than half the lane however many operations they queue. A bulk
+     * export also runs here — it moves *bytes* rather than rows, which is a different cost, and
+     * the report argues why it is nonetheless the same lane rather than a fourth export mechanism.
+     */
+    name: QueueName.DOCUMENTS_BULK,
+    concurrency: 4,
+    perTenantConcurrency: 2,
+    retry: { attempts: 3, backoffMs: 30_000, backoff: 'exponential' },
+    timeoutMs: 900_000,
+    description:
+      'Bulk document operations, one transaction per object, under the requester’s own reach.',
   },
 ]);
 

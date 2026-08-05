@@ -63,6 +63,9 @@ enum AuditSubjectType {
   /// a `USER`. A delegation is an arrangement *between* two people, and filing its four actions on
   /// either party's timeline would hide it from the other.
   DELEGATION
+  /// A bulk operation — Phase 16's addition, same reasoning again: an act over four hundred
+  /// documents belongs on no single document's timeline.
+  BULK_OPERATION
 
   @@map("audit_subject_type")
 }
@@ -90,6 +93,57 @@ enum ReportExportState {
   FAILED
 
   @@map("report_export_state")
+}
+
+/// Phase 16. Its own type rather than a share with `report_export_state` and
+/// `audit_export_state`, for the reason Phase 15 recorded when it declined the same share: three
+/// lifecycles that agree today, and a fifth state added for one must not appear in the others.
+enum BulkOperationState {
+  REQUESTED
+  RUNNING
+  /// The operation ran to the end. **Not** "every object succeeded" — refusals are the answer,
+  /// not a failure to produce one.
+  COMPLETED
+  /// The operation itself did not finish, so the per-object outcomes are incomplete.
+  FAILED
+
+  @@map("bulk_operation_state")
+}
+
+enum BulkOperationKind {
+  UPLOAD
+  METADATA
+  APPROVAL
+  RESTORE
+  EXPORT
+
+  @@map("bulk_operation_kind")
+}
+
+/// What one object in a bulk operation did. Four values because "it did not happen" has three
+/// distinct causes an operator must be able to tell apart.
+enum BulkItemOutcome {
+  APPLIED
+  /// The caller does not reach this object — resolved for *this* object, never inherited.
+  REFUSED
+  /// Reachable, and a rule said no: a legal hold, a version conflict, an illegal transition.
+  BLOCKED
+  FAILED
+
+  @@map("bulk_item_outcome")
+}
+
+/// What a signature means (21 CFR Part 11 §11.50(a)(3)). A closed vocabulary rather than free
+/// text, because "what did the second signatory attest to" is a question an inspection asks and a
+/// free-text column cannot be queried or translated.
+enum SignaturePurpose {
+  AUTHORSHIP
+  REVIEWED
+  APPROVAL
+  ACCEPTANCE
+  WITNESS
+
+  @@map("signature_purpose")
 }
 
 /// What a report export was produced as — Phase 15.
@@ -184,6 +238,10 @@ model Tenant {
   aclEntries               AclEntry[]
   mfaEnrolments            MfaEnrolment[]
   mfaRecoveryCodes         MfaRecoveryCode[]
+  documentTemplates        DocumentTemplate[]
+  documentSignatures       DocumentSignature[]
+  bulkOperations           BulkOperation[]
+  bulkOperationItems       BulkOperationItem[]
 
   @@index([status], map: "ix_tenant_status")
   @@map("tenant")
@@ -437,6 +495,8 @@ model User {
   delegationsGiven        Delegation[]             @relation("DelegationDelegator")
   delegationsReceived     Delegation[]             @relation("DelegationDelegate")
   mfaEnrolment            MfaEnrolment?
+  signatures              DocumentSignature[]
+  bulkOperations          BulkOperation[]
 
   @@index([tenantId, emailNormalized], map: "ix_user_email")
   @@index([tenantId, status], map: "ix_user_status")
@@ -1071,9 +1131,10 @@ model ConfidentialityLevel {
   deletedBy     String?   @map("deleted_by") @db.Uuid
   version       Int       @default(1)
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   documentTypes DocumentType[]
   documents     Document[]
+  templates     DocumentTemplate[]
 
   @@index([tenantId, rank], map: "ix_confidentiality_rank")
   @@map("confidentiality_level")
@@ -1254,10 +1315,11 @@ model Category {
   deletedBy   String?   @map("deleted_by") @db.Uuid
   version     Int       @default(1)
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children  Category[] @relation("CategoryTree")
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  parent    Category?          @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children  Category[]         @relation("CategoryTree")
   documents Document[]
+  templates DocumentTemplate[]
 
   @@index([tenantId, parentId], map: "ix_category_parent")
   @@index([tenantId, path], map: "ix_category_path")
@@ -1331,6 +1393,7 @@ model DocumentType {
   confidentiality    ConfidentialityLevel @relation(fields: [defaultConfidentialityId], references: [id], onDelete: Restrict)
   fields             TypeMetadataField[]
   documents          Document[]
+  templates          DocumentTemplate[]
 
   @@index([tenantId, isActive], map: "ix_document_type_active")
   @@index([tenantId, workflowDefinitionId], map: "ix_document_type_workflow")
@@ -1434,12 +1497,13 @@ model Folder {
   deleteCascadeId String?   @map("delete_cascade_id") @db.Uuid
   version         Int       @default(1)
 
-  tenant        Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  library       Library    @relation("FolderLibrary", fields: [libraryId], references: [id], onDelete: Restrict)
-  parent        Folder?    @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children      Folder[]   @relation("FolderTree")
-  rootOfLibrary Library[]  @relation("LibraryRoot")
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  library       Library            @relation("FolderLibrary", fields: [libraryId], references: [id], onDelete: Restrict)
+  parent        Folder?            @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children      Folder[]           @relation("FolderTree")
+  rootOfLibrary Library[]          @relation("LibraryRoot")
   documents     Document[]
+  templates     DocumentTemplate[]
 
   @@index([tenantId, libraryId, parentId], map: "ix_folder_parent")
   @@index([tenantId, path], map: "ix_folder_path")
@@ -1690,10 +1754,12 @@ model FileObject {
   deletedAt      DateTime?  @map("deleted_at") @db.Timestamptz(6)
   deletedBy      String?    @map("deleted_by") @db.Uuid
 
-  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  revisions DocumentRevision[]
-  previews  PreviewArtifact[]
-  uploads   UploadSession[]
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  revisions   DocumentRevision[]
+  previews    PreviewArtifact[]
+  uploads     UploadSession[]
+  templates   DocumentTemplate[]
+  bulkExports BulkOperation[]
 
   /// Content addressing, as a constraint. Not partial on `deleted_at`: a blob that came back from
   /// a soft delete must be *the same blob*, and a second row for the same digest would be a second
@@ -1813,6 +1879,7 @@ model Document {
   retentionPolicy    RetentionPolicy?        @relation(fields: [retentionPolicyId], references: [id], onDelete: Restrict)
   currentRevision    DocumentRevision?       @relation("DocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
   revisions          DocumentRevision[]      @relation("RevisionDocument")
+  signatures         DocumentSignature[]
   metadataValues     DocumentMetadataValue[]
   favorites          DocumentFavorite[]
   views              DocumentView[]
@@ -1900,18 +1967,19 @@ model DocumentRevision {
   deleteCascadeId        String?        @map("delete_cascade_id") @db.Uuid
   version                Int            @default(1)
 
-  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  document          Document           @relation("RevisionDocument", fields: [documentId], references: [id], onDelete: Restrict)
-  fileObject        FileObject         @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
-  restoredFrom      DocumentRevision?  @relation("RevisionRestoredFrom", fields: [restoredFromRevisionId], references: [id], onDelete: Restrict)
-  restoredTo        DocumentRevision[] @relation("RevisionRestoredFrom")
-  currentOf         Document[]         @relation("DocumentCurrentRevision")
+  tenant            Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document          Document            @relation("RevisionDocument", fields: [documentId], references: [id], onDelete: Restrict)
+  fileObject        FileObject          @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+  restoredFrom      DocumentRevision?   @relation("RevisionRestoredFrom", fields: [restoredFromRevisionId], references: [id], onDelete: Restrict)
+  restoredTo        DocumentRevision[]  @relation("RevisionRestoredFrom")
+  currentOf         Document[]          @relation("DocumentCurrentRevision")
   previews          PreviewArtifact[]
   previewRender     PreviewRender?
   ocrResult         OcrResult?
   workflowInstances WorkflowInstance[]
-  locksCheckedOut   DocumentLock[]     @relation("LockCheckedOutRevision")
-  locksDrafting     DocumentLock[]     @relation("LockDraftRevision")
+  locksCheckedOut   DocumentLock[]      @relation("LockCheckedOutRevision")
+  locksDrafting     DocumentLock[]      @relation("LockDraftRevision")
+  signatures        DocumentSignature[]
 
   /// Not partial: an ordinal is never re-used, so a deleted revision still holds its place. A
   /// history with a gap and a history with two revision 2s are both unusable as evidence.
@@ -3357,4 +3425,215 @@ model ReportExport {
 
   @@index([tenantId, requestedAt(sort: Desc)], map: "ix_report_export_tenant")
   @@map("report_export")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 16 — advanced document features
+// ---------------------------------------------------------------------------------------------
+
+/// A controlled starting point a document is created from.
+///
+/// Templates are the answer to "every deviation report in this tenant begins the same way": a
+/// body, a document type, a home folder, and the classification and metadata a new one starts
+/// with. Creating from one is an ordinary `document:create` — the template supplies defaults, and
+/// every rule the manual path enforces still runs.
+///
+/// **The body is a reference, not a copy.** `file_object_id` is the same content-addressed blob
+/// ADR-0007 deduplicates, and creating a document from a template takes a *reference* on it rather
+/// than writing the bytes again. A thousand documents from one template are one blob with a
+/// reference count of a thousand and one — which is the storage-optimisation property this phase
+/// was asked about, obtained by not building a second write path rather than by adding one.
+///
+/// Administered like every other configuration row: soft-deleted, and the partial unique index
+/// frees the name so a deleted template's name can be used again.
+model DocumentTemplate {
+  id                String    @id @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  name              String
+  description       String?
+  /// What kind of document this produces. Decides numbering, workflow and revision labelling,
+  /// so it is required: a template that did not name one would defer the only choice that
+  /// cannot be changed later.
+  documentTypeId    String    @map("document_type_id") @db.Uuid
+  categoryId        String?   @map("category_id") @db.Uuid
+  /// The classification a new document starts at. Required, and deliberately not inherited from
+  /// the folder: a template for a confidential form must produce confidential documents wherever
+  /// somebody files them.
+  confidentialityId String    @map("confidentiality_id") @db.Uuid
+  /// Where documents from this template go by default. Optional — a template usable anywhere is
+  /// a real case, and a caller may always override.
+  defaultFolderId   String?   @map("default_folder_id") @db.Uuid
+  /// The template body. Optional: a template that only carries classification and metadata
+  /// defaults is useful, and requiring a file would force somebody to upload an empty one.
+  fileObjectId      String?   @map("file_object_id") @db.Uuid
+  /// The filename a document created from this template starts with.
+  filename          String?
+  /// Metadata field values a new document starts with, keyed by the field's `key`. Validated
+  /// against the type's fields when the template is saved *and* when it is used — a field
+  /// retired between the two must not silently write a value nothing reads.
+  defaultMetadata   Json      @default("{}")
+  /// Off means it exists and may not be used. Distinct from deleted: a template withdrawn while
+  /// a revision of its content is agreed is not the same as one that was wrong.
+  isActive          Boolean   @default(true) @map("is_active")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?   @map("created_by") @db.Uuid
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy         String?   @map("updated_by") @db.Uuid
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy         String?   @map("deleted_by") @db.Uuid
+  version           Int       @default(1)
+
+  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  documentType    DocumentType         @relation(fields: [documentTypeId], references: [id], onDelete: Restrict)
+  category        Category?            @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  confidentiality ConfidentialityLevel @relation(fields: [confidentialityId], references: [id], onDelete: Restrict)
+  defaultFolder   Folder?              @relation(fields: [defaultFolderId], references: [id], onDelete: Restrict)
+  fileObject      FileObject?          @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+
+  /// Partial, so a deleted template gives its name back — the pattern every administered row here
+  /// follows since Phase 2.
+  @@index([tenantId, isActive], map: "ix_document_template_active")
+  @@index([tenantId, documentTypeId], map: "ix_document_template_type")
+  @@map("document_template")
+}
+
+/// One person's electronic signature over one revision's exact bytes.
+///
+/// [ADR-0017](../docs/architecture/adr/0017-electronic-signature-as-witnessed-attestation.md)
+/// decides what this is: a 21 CFR Part 11 §11.50 manifestation — printed name, instant, meaning —
+/// bound under §11.70 to the content digest, and witnessed by the server with the same HMAC
+/// construction Phase 9's evidence manifest and checkpoints use. It is **not** an eIDAS qualified
+/// signature; nothing here is a certificate and no key is under the signer's sole control.
+///
+/// **Append-only in practice, by having no mutable column worth rewriting.** A signature is never
+/// edited: it is either valid or it is withdrawn, and a withdrawal is its own row rather than a
+/// flag, because "this signature was later withdrawn, by whom, why and when" is the question an
+/// inspection asks and a boolean cannot answer.
+model DocumentSignature {
+  id              String           @id @db.Uuid
+  tenantId        String           @map("tenant_id") @db.Uuid
+  documentId      String           @map("document_id") @db.Uuid
+  revisionId      String           @map("revision_id") @db.Uuid
+  signerUserId    String           @map("signer_user_id") @db.Uuid
+  purpose         SignaturePurpose
+  /// The signer's own words. Never a substitute for `purpose`, which is what is queryable.
+  statement       String?
+  /// The SHA-256 of the signed revision's file, copied here rather than joined. A join would
+  /// follow the revision if its file were ever repointed; a signature must go on attesting the
+  /// bytes it was made over, and disagreeing with the current ones is the finding.
+  contentSha256   String           @map("content_sha256")
+  /// The exact serialisation the signature is over, stored verbatim. Verification hashes *these*
+  /// bytes rather than rebuilding them, so it can never depend on today's code producing the same
+  /// string as the code that signed — the property Phase 9 established for its manifest.
+  statementBody   String           @map("statement_body")
+  signature       String
+  algorithm       String           @default("HMAC-SHA256")
+  /// Which key witnessed it, so a rotation is survivable: an old signature verifies against the
+  /// key that made it, and a verification whose key is gone says so rather than saying "invalid".
+  keyId           String           @map("key_id")
+  signedAt        DateTime         @map("signed_at") @db.Timestamptz(6)
+  /// Whether the signer proved their credentials again at the moment of signing (§11.200). On the
+  /// row rather than inferred from the setting, because the setting may change afterwards and what
+  /// this signature actually required is a fact about this signature.
+  reauthenticated Boolean          @default(false)
+  /// Set when the signature was withdrawn, with the stated ground. The row itself never changes
+  /// its content columns.
+  withdrawnAt     DateTime?        @map("withdrawn_at") @db.Timestamptz(6)
+  withdrawnBy     String?          @map("withdrawn_by") @db.Uuid
+  withdrawnReason String?          @map("withdrawn_reason")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?          @map("created_by") @db.Uuid
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  document Document         @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision DocumentRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  signer   User             @relation(fields: [signerUserId], references: [id], onDelete: Restrict)
+
+  /// One live signature per person, revision and purpose. Partial on `withdrawn_at`, so a
+  /// withdrawn signature does not block the person signing again — which is the whole reason a
+  /// withdrawal is a row rather than a delete.
+  @@index([tenantId, revisionId], map: "ix_document_signature_revision")
+  @@index([tenantId, documentId, signedAt(sort: Desc)], map: "ix_document_signature_document")
+  @@index([tenantId, signerUserId], map: "ix_document_signature_signer")
+  @@map("document_signature")
+}
+
+/// One bulk operation, and what each object in it did.
+///
+/// The record exists for the reason 13 §3 gives about payloads: the operation-level audit row
+/// carries counts rather than five thousand identifiers, so *which* documents an import touched
+/// has to be answerable somewhere, and a table is where. It is also what a `202` gives a caller to
+/// poll, and what makes the queued and synchronous paths the same thing seen from different sides.
+model BulkOperation {
+  id            String             @id @db.Uuid
+  tenantId      String             @map("tenant_id") @db.Uuid
+  kind          BulkOperationKind
+  state         BulkOperationState @default(REQUESTED)
+  requestedById String             @map("requested_by_id") @db.Uuid
+  requestedAt   DateTime           @map("requested_at") @db.Timestamptz(6)
+  /// What was asked for, beyond the identifiers — the folder for an upload, the decision for an
+  /// approval, the patch for a metadata edit. Minimised like every payload: never a document's
+  /// content, never a credential.
+  parameters    Json               @default("{}")
+  requested     Int                @default(0)
+  applied       Int                @default(0)
+  refused       Int                @default(0)
+  blocked       Int                @default(0)
+  failed        Int                @default(0)
+  /// The export's artefact, for `EXPORT`. Null for every other kind — the other four produce
+  /// changes rather than files.
+  fileObjectId  String?            @map("file_object_id") @db.Uuid
+  sizeBytes     BigInt             @default(0) @map("size_bytes")
+  sha256        String?
+  startedAt     DateTime?          @map("started_at") @db.Timestamptz(6)
+  completedAt   DateTime?          @map("completed_at") @db.Timestamptz(6)
+  /// Operator-readable, set exactly when the state is FAILED — which means the *operation* did
+  /// not finish, never that some objects were refused.
+  error         String?
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy     String?            @map("created_by") @db.Uuid
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy     String?            @map("updated_by") @db.Uuid
+
+  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  requestedBy User                @relation(fields: [requestedById], references: [id], onDelete: Restrict)
+  items       BulkOperationItem[]
+  fileObject  FileObject?         @relation(fields: [fileObjectId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, requestedAt(sort: Desc)], map: "ix_bulk_operation_tenant")
+  @@index([tenantId, state], map: "ix_bulk_operation_state")
+  @@map("bulk_operation")
+}
+
+/// What one object in a bulk operation did, and why.
+///
+/// A row per object rather than a summary, because the four outcomes are not
+/// interchangeable: `REFUSED` means the caller does not reach it, `BLOCKED` means a rule said no,
+/// `FAILED` means something broke. "42 of 50 succeeded" makes all three look the same, and the
+/// three call for entirely different responses.
+///
+/// `target_id` is not a foreign key on purpose. A bulk restore names documents, a bulk approval
+/// names approval tasks, and a bulk upload names file objects — three tables — and the record must
+/// survive a purge that destroys the row it points at, exactly as `document_tombstone` does.
+model BulkOperationItem {
+  id          String          @id @db.Uuid
+  tenantId    String          @map("tenant_id") @db.Uuid
+  operationId String          @map("operation_id") @db.Uuid
+  targetId    String          @map("target_id") @db.Uuid
+  outcome     BulkItemOutcome
+  /// The `ErrorCode` that refused it, when one did — `LEGAL_HOLD`, `FORBIDDEN`, `CONFLICT`. A
+  /// code rather than a message, so a screen can translate it and a report can group by it.
+  errorCode   String?         @map("error_code")
+  /// One line, for the outcomes a code does not explain on its own.
+  detail      String?
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  operation BulkOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
+
+  /// One row per object per operation. The de-duplication in `normaliseTargets` is the first
+  /// line of defence; this is the one that survives a retry.
+  @@unique([operationId, targetId], map: "uq_bulk_operation_item")
+  @@index([tenantId, operationId, outcome], map: "ix_bulk_operation_item_outcome")
+  @@map("bulk_operation_item")
 }

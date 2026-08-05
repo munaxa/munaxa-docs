@@ -370,6 +370,122 @@ export const Settings = {
     'How long notifications from one bulk operation are collected before one summary is sent.',
     { min: 1, max: 1_440 },
   ),
+
+  // --- Phase 16: bulk operations ------------------------------------------------------------
+
+  /**
+   * The most objects one bulk request may name.
+   *
+   * A hard ceiling on the *request*, not on the work: a client with six thousand documents to
+   * restore sends six requests. It exists because the alternative is an unbounded array in a
+   * request body, and every cost this phase reasons about — the reach resolution per object, the
+   * audit chain's per-tenant advisory lock, the transaction per object — is linear in it. A number
+   * an operator can lower when a tenant's chain is the bottleneck is worth more than a constant
+   * chosen here.
+   *
+   * Five thousand is 19 §5's own example ("one large tenant's bulk import"), so the default is the
+   * figure the performance document already reasons about rather than a fresh opinion.
+   */
+  BULK_MAX_OBJECTS: integerSetting(
+    'bulk.maxObjects',
+    5_000,
+    'The most documents or tasks one bulk request may name.',
+    { min: 1, max: 50_000 },
+  ),
+
+  /**
+   * Above this many objects, a bulk operation is queued instead of run in the request.
+   *
+   * The two paths are the *same executor* over the same per-object function — what changes is who
+   * is waiting. Below the threshold the caller gets the per-object outcomes back and can act on
+   * them; above it they get a `202` and an operation to poll, because a request holding a
+   * connection open for four thousand transactions is a request that dies to a proxy timeout with
+   * half its work committed and no way to find out which half.
+   *
+   * Fifty is deliberately low. The synchronous path exists for "I selected a screenful and pressed
+   * the button", which is what 16 §5's drag-select produces; anything larger is an import.
+   */
+  BULK_SYNCHRONOUS_LIMIT: integerSetting(
+    'bulk.synchronousLimit',
+    50,
+    'Bulk operations larger than this are queued and polled rather than run in the request.',
+    { min: 1, max: 1_000 },
+  ),
+
+  /**
+   * How many jobs of one tenant a lane may run at once — 19 §5's fairness claim, made true.
+   *
+   * That section has claimed since Phase 0 that "per-tenant concurrency caps stop one large
+   * tenant's bulk import from monopolising a pool", and until Phase 16 the claim was false:
+   * `QueueDefinition.concurrency` is per *lane*, so one tenant's five thousand jobs fill every
+   * slot on it and every other tenant waits. Nothing had produced enough jobs for anyone to
+   * notice. A bulk import is what makes it matter, so the lane that carries one declares a cap and
+   * the adapter enforces it — a job over the cap is re-queued with a short delay rather than
+   * failed, because "wait your turn" is not an error.
+   */
+  BULK_TENANT_CONCURRENCY: integerSetting(
+    'bulk.tenantConcurrency',
+    2,
+    'How many bulk jobs of one tenant may run at once on the bulk lane.',
+    { min: 1, max: 64 },
+  ),
+
+  // --- Phase 16: the feature flags the brief asks for ----------------------------------------
+  //
+  // Here rather than in configuration, because 21's entitlements are ADR-0012's and Phase 21's and
+  // these are not entitlements: they are a tenant's own answer to "do we work this way". A tenant
+  // in a regulated industry turns signatures on and cannot turn bulk approval on; a tenant using
+  // this as a drawing register turns templates off. Each is read through `SETTINGS_READER` at the
+  // use case, so turning one off refuses the operation rather than merely hiding its button.
+
+  /** Whether this tenant performs bulk operations at all. */
+  FEATURE_BULK_OPERATIONS: booleanSetting(
+    'feature.bulkOperations',
+    true,
+    'Whether documents may be uploaded, edited, approved, restored or exported in bulk.',
+  ),
+
+  /**
+   * Whether bulk *approval* is available, separately from the other four.
+   *
+   * Its own flag rather than a mode of the one above, and the separation is the interesting part:
+   * the other four bulk operations are administrative convenience, and this one decides regulated
+   * records. A quality manager who wants drag-select in the folder browser and wants every
+   * approval to be a deliberate, individual act has a coherent position, and one flag would make
+   * it unexpressible.
+   */
+  FEATURE_BULK_APPROVAL: booleanSetting(
+    'feature.bulkApproval',
+    true,
+    'Whether approval tasks may be decided in bulk, rather than one at a time.',
+  ),
+
+  FEATURE_DOCUMENT_TEMPLATES: booleanSetting(
+    'feature.documentTemplates',
+    true,
+    'Whether documents may be created from controlled templates.',
+  ),
+
+  FEATURE_ELECTRONIC_SIGNATURES: booleanSetting(
+    'feature.electronicSignatures',
+    true,
+    'Whether a revision may be signed, and signatures verified.',
+  ),
+
+  /**
+   * Whether signing asks for the signer's credentials again.
+   *
+   * Default on, and the default is the whole point: 21 CFR Part 11 §11.200 requires a signature
+   * to use at least two distinct identification components, and a session cookie is one component
+   * that was checked at sign-in and has been sitting in a browser since. A tenant that is not
+   * operating under such a regime may turn it off; a tenant that is must not, and the setting's
+   * description says so rather than leaving it to be discovered.
+   */
+  SIGNATURE_REQUIRE_REAUTHENTICATION: booleanSetting(
+    'signature.requireReauthentication',
+    true,
+    'Whether signing asks for the signer’s password again. Required by 21 CFR Part 11 §11.200.',
+  ),
 } as const;
 
 export type SettingKey = (typeof Settings)[keyof typeof Settings]['key'];

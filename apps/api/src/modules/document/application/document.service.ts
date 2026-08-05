@@ -137,6 +137,21 @@ export class DefaultDocumentService {
   }
 
   /**
+   * Whether a live document with this identifier exists in this tenant.
+   *
+   * Declared on `DOCUMENT_SERVICE` since Phase 0.5 and implemented here in Phase 16, when a
+   * consumer typed against the port finally revealed that the class satisfying it did not have
+   * the method. It was never reachable at runtime — Nest's `useClass` does not structurally check
+   * a provider against its token — which is exactly why it went eleven phases unnoticed.
+   *
+   * A boolean rather than a row, and a *live* row rather than any row: the callers of this port
+   * are other modules asking "is this a document I can point at", and a deleted one is not.
+   */
+  async exists(id: DocumentId): Promise<boolean> {
+    return this.writer.read(async () => (await this.documents.findById(id, false)) !== null);
+  }
+
+  /**
    * Opens a document: returns it, remembers that this person saw it, and says so in the trail.
    *
    * Separate from `get` on purpose. A list that rendered twenty rows has not been *opened* twenty

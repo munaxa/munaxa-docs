@@ -14,6 +14,7 @@ import {
 import { MessagingModule } from './core/messaging';
 import { LoggerModule, ObservabilityModule } from './core/observability';
 import { OutboxModule } from './core/outbox';
+import { BulkModule } from './core/bulk';
 import { PersistenceModule } from './core/persistence';
 import { PrismaModule } from './core/prisma';
 import { TenancyModule, TenantIsolationGuard } from './core/tenancy';
@@ -66,6 +67,10 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     AuthModule.withVerifier(JwtTokenService),
     AuthorizationModule,
     AuditModule,
+    // Phase 16. Global, and after Auth and Authorization because it resolves the caller's reach
+    // per object through `ACL_RESOLVER` — the same decision `AclGuard` makes on a single-object
+    // route, made N times because a bulk route has N objects and `@ScopedTo` binds one.
+    BulkModule,
     OutboxModule,
     MessagingModule,
     InfrastructureModule,

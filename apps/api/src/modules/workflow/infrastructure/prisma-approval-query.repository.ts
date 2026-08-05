@@ -122,6 +122,22 @@ export class PrismaApprovalQueryRepository implements ApprovalQueryRepository {
     return rows.map(toView);
   }
 
+  /**
+   * The document a task decides — what a bulk approval resolves reach at.
+   *
+   * One join through the task's stage to its instance. Tenant-filtered like every read here, so a
+   * task identifier from another tenant answers null and the executor refuses it — which is the
+   * same answer it gives for a task that does not exist, because those must not be
+   * distinguishable.
+   */
+  async documentOfTask(taskId: ApprovalTaskId): Promise<DocumentId | null> {
+    const row = await requireTransaction().approvalTask.findFirst({
+      where: { id: taskId, tenantId: this.tenantId() },
+      select: { stage: { select: { instance: { select: { documentId: true } } } } },
+    });
+    return row === null ? null : asId<DocumentId>(row.stage.instance.documentId);
+  }
+
   async instance(id: WorkflowInstanceId): Promise<WorkflowInstanceView | null> {
     const row = await requireTransaction().workflowInstance.findFirst({
       where: { id, tenantId: this.tenantId() },

@@ -64,6 +64,64 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
     this.blocking = new Redis(config.redis.url, { maxRetriesPerRequest: null, lazyConnect: true });
   }
 
+  /**
+   * Takes one of this tenant's slots on a lane — 19 §5's fairness claim, made true.
+   *
+   * That section has said since Phase 0 that "per-tenant concurrency caps stop one large tenant's
+   * bulk import from monopolising a pool", and the claim was false for fifteen phases:
+   * `QueueDefinition.concurrency` is per *lane*, so one tenant's five thousand jobs take every
+   * slot and everybody else waits behind them. Nothing had ever produced five thousand jobs, so
+   * nobody could have observed it. Phase 16's bulk import is what makes it matter.
+   *
+   * A counter in Redis rather than a lock, because what is needed is a *count* rather than mutual
+   * exclusion, and `INCR` is atomic. The expiry is the safety net: a process killed between taking
+   * a slot and releasing it would otherwise leak one forever, and a key that outlives the lane's
+   * own wall-clock budget by a margin cannot strand a tenant for longer than one job could have
+   * legitimately run.
+   *
+   * Answers `NONE` for a lane with no declared cap — every lane but `documents.bulk` today — so
+   * the path costs nothing at all where it is not wanted, and adding a cap to another lane is a
+   * one-line change in `@edms/domain` rather than a change here.
+   */
+  private async takeTenantSlot(
+    queue: string,
+    cap: number | undefined,
+    data: unknown,
+  ): Promise<TenantSlot> {
+    if (cap === undefined) {
+      return { kind: 'NONE' };
+    }
+    const tenantId = tenantIdOf(data);
+    if (tenantId === null) {
+      // A job with no tenant is a schedule fan-out rather than one tenant's work, and capping it
+      // per tenant would cap it at nothing. The lane's own concurrency still bounds it.
+      return { kind: 'NONE' };
+    }
+    const key = `queue:slots:${queue}:${tenantId}`;
+    const taken = await this.connection.incr(key);
+    // Set on every take rather than only the first: a long-running job must not let the key expire
+    // underneath its own release, which would decrement a counter that had already been recreated.
+    await this.connection.expire(key, TENANT_SLOT_TTL_SECONDS);
+    if (taken > cap) {
+      await this.connection.decr(key);
+      return { kind: 'AT_CAP' };
+    }
+    return { kind: 'TAKEN', key };
+  }
+
+  private async releaseTenantSlot(slot: TenantSlot): Promise<void> {
+    if (slot.kind !== 'TAKEN') {
+      return;
+    }
+    const { key } = slot;
+    // Floored at zero: an expiry that fired mid-job would otherwise leave the counter negative and
+    // hand this tenant unlimited slots — the exact opposite of what the cap is for.
+    const remaining = await this.connection.decr(key);
+    if (remaining < 0) {
+      await this.connection.set(key, '0', 'EX', TENANT_SLOT_TTL_SECONDS);
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     // Workers first, so in-flight jobs are allowed to finish before the connections they need go
     // away. Killing a retention purge or an escalation halfway is how a queue system loses work it
@@ -188,11 +246,29 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
     const worker = new Worker(
       queue,
       async (job) => {
-        await handle({
-          jobId: job.id ?? '',
-          attempt: job.attemptsMade + 1,
-          payload: job.data as TPayload,
-        });
+        const slot = await this.takeTenantSlot(queue, definition.perTenantConcurrency, job.data);
+        if (slot.kind === 'AT_CAP') {
+          // Re-queued rather than failed, and this is the important half of the mechanism. A
+          // throw would consume one of the lane's retry attempts and eventually dead-letter work
+          // whose only problem was arriving behind its own tenant's other jobs — "wait your turn"
+          // is not a failure. The delay is deliberately short: the cap exists to interleave
+          // tenants, not to throttle any of them.
+          await this.producer(queue).add(queue, job.data as object, {
+            jobId: `${job.id ?? ''}:requeued:${String(job.attemptsMade)}`,
+            delay: TENANT_SLOT_RETRY_MS,
+            attempts: job.opts.attempts ?? definition.retry.attempts,
+          });
+          return;
+        }
+        try {
+          await handle({
+            jobId: job.id ?? '',
+            attempt: job.attemptsMade + 1,
+            payload: job.data as TPayload,
+          });
+        } finally {
+          await this.releaseTenantSlot(slot);
+        }
       },
       {
         connection: this.blocking,
@@ -253,4 +329,40 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
     this.producers.set(queue, created);
     return created;
   }
+}
+
+/**
+ * Whether this job holds one of its tenant's slots, and which.
+ *
+ * A tagged union rather than `string | null | 'AT_CAP'`, because that union collapses to `string |
+ * null` and the sentinel stops being distinguishable from a key — which is exactly the kind of
+ * thing that works until a Redis key happens to be spelled `AT_CAP`.
+ */
+type TenantSlot = { kind: 'NONE' } | { kind: 'TAKEN'; key: string } | { kind: 'AT_CAP' };
+
+/**
+ * How long a taken slot survives without being released.
+ *
+ * Longer than any lane's wall-clock budget, so a legitimately slow job never has its own slot
+ * expire underneath it, and short enough that a killed process does not strand a tenant for the
+ * rest of the day.
+ */
+const TENANT_SLOT_TTL_SECONDS = 1_800;
+
+/** How long a job over its tenant's cap waits before trying again. */
+const TENANT_SLOT_RETRY_MS = 2_000;
+
+/**
+ * The tenant a job belongs to.
+ *
+ * Every job the outbox dispatcher enqueues carries `tenantId` in its payload — 19 §5's "jobs carry
+ * their tenant id", which has been true since Phase 4 and had nothing reading it. A payload without
+ * one is a schedule fan-out rather than one tenant's work, and answers null.
+ */
+function tenantIdOf(data: unknown): string | null {
+  if (typeof data !== 'object' || data === null) {
+    return null;
+  }
+  const value = (data as { tenantId?: unknown }).tenantId;
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }

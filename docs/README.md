@@ -94,10 +94,17 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0014](./architecture/adr/0014-materialised-path-as-text.md) | The scope tree's ancestry is a materialised path stored as `text` |
 | [0015](./architecture/adr/0015-database-per-tenant.md) | One database, storage location and search index per tenant; where each lives is a placement resolved through a registry |
 | [0016](./architecture/adr/0016-inheritance-break-truncates-the-chain.md) | An inheritance break truncates the ACL chain, for both effects; the list predicate is regions |
+| [0017](./architecture/adr/0017-electronic-signature-as-witnessed-attestation.md) | A signature is a witnessed 21 CFR Part 11 attestation over a revision's content digest, never a qualified signature |
 
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 16 — advanced document features
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 16 — Advanced Features](./reports/phase-16-advanced-features.md) | Twelve brief items that are three groups, and sorting them was the first decision: five capabilities already built, two with no design at all, and five bulk operations over machinery built in anticipation of them. Why every bulk operation is a permission decision repeated N times and what the shortcut would have cost; why a bulk route cannot carry `@ScopedTo` and what replaced it; why one transaction per object is the difference between partial success and a silent skip; the four readings of "digital signature" and why this product means a witnessed Part 11 attestation and may never call it qualified; why a bulk operation writes N + 1 audit rows and never an identifier list; why bulk export diverges from two existing export mechanisms and produces a manifest rather than an archive; which operations notify and to whom; what `sharp` and `@pdf-lib/fontkit` actually are, answered with commands; how 19 §5's fairness claim was made true; what the phase costs, and what it deliberately does not do |
 
 ### Phase 15 — enterprise reporting
 

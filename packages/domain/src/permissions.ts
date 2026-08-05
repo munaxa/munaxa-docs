@@ -25,6 +25,37 @@ export const Permission = {
   DOCUMENT_RESTORE: 'document:restore',
   DOCUMENT_HISTORY_VIEW: 'document:history:view',
   DOCUMENT_PERMISSION_MANAGE: 'document:permission:manage',
+  /**
+   * Signing a revision — Phase 16, and deliberately **not** `document:approve`.
+   *
+   * [ADR-0017](../../../docs/architecture/adr/0017-electronic-signature-as-witnessed-attestation.md)
+   * decides that a signature in this product is a Part 11-style *electronic signature*: a named
+   * person, at a named instant, affirming a stated meaning over an exact content digest. An
+   * approval is a workflow decision that moves a document; a signature is an attestation about
+   * bytes, and the two answer different questions to an auditor — "who let this through" and "who
+   * put their name to it". They are frequently the same person and occasionally, deliberately, not.
+   *
+   * Reusing `document:approve` would have made every approver a signatory by construction, in a
+   * product whose whole reason for a signature is that signing is a *narrower* act than approving.
+   *
+   * **Seeded to no role, including the tenant administrator**, which is 08 §6's first deliberate
+   * row applied a second time. Approval is a `T` — it comes from being assigned a task, so even a
+   * tenant administrator cannot approve — and a signature is an `S`: it comes from an ACL entry on
+   * the node somebody is accountable for. A signatory conferred by seniority is the failure mode
+   * an electronic-signature regime exists to prevent, and a fresh tenant with a signatory nobody
+   * chose would ship exactly that.
+   */
+  DOCUMENT_SIGN: 'document:sign',
+  /**
+   * Authoring the controlled starting points documents are created from — Phase 16.
+   *
+   * A template is tenant *configuration* that produces documents, which is why it is neither
+   * `document:create` (using a template is that, and every author holds it) nor `settings:manage`
+   * (which would make the person who edits quiet hours the person who decides what a new SOP
+   * starts as). It ends in `:manage`, so it crosses a broken inheritance like every other
+   * administrative grant — a template lives beside the tenant, not inside a folder subtree.
+   */
+  TEMPLATE_MANAGE: 'template:manage',
   LIBRARY_VIEW: 'library:view',
   LIBRARY_MANAGE: 'library:manage',
   FOLDER_MANAGE: 'folder:manage',

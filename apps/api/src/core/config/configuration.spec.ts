@@ -56,6 +56,7 @@ describe('loadConfig', () => {
       MAIL_FROM_ADDRESS: 'docs@munaxa.com',
       AV_DRIVER: 'ICAP',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+      SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
       CORS_ORIGINS: 'https://docs.munaxa.com,https://admin.munaxa.com',
     });
     expect(config.isProduction).toBe(true);
@@ -79,6 +80,7 @@ describe('loadConfig', () => {
         MAIL_FROM_ADDRESS: 'docs@munaxa.com',
         AV_DRIVER: 'ICAP',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+        SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
       }),
     ).toThrowError(ConfigurationError);
   });
@@ -94,6 +96,7 @@ describe('loadConfig', () => {
         MAIL_DRIVER: 'RESEND',
         AV_DRIVER: 'ICAP',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+        SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
       }),
     ).toThrowError(ConfigurationError);
   });
@@ -217,6 +220,27 @@ describe('describing which tenants this deployment serves', () => {
         MAIL_FROM_ADDRESS: 'docs@munaxa.com',
         AV_DRIVER: 'ICAP',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+        SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
+      }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  // Phase 16, and the same posture the checkpoint secret takes: a production deployment with
+  // signatures enabled and no witness key would refuse every signing attempt at the use case,
+  // discovered by whoever tries to sign rather than by whoever deploys.
+  it('refuses production with no signature witness key', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'production',
+        OPENAPI_ENABLED: 'false',
+        STORAGE_DRIVER: 'S3',
+        STORAGE_BUCKET: 'edms-prod',
+        MAIL_DRIVER: 'RESEND',
+        MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
+        MAIL_FROM_ADDRESS: 'docs@munaxa.com',
+        AV_DRIVER: 'ICAP',
+        AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       }),
     ).toThrowError(ConfigurationError);
   });
@@ -234,6 +258,7 @@ describe('describing which tenants this deployment serves', () => {
       MAIL_FROM_ADDRESS: 'docs@munaxa.com',
       AV_DRIVER: 'ICAP',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+      SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
     });
     expect(config.storage.driver).toBe('LOCAL');
   });

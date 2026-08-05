@@ -132,6 +132,11 @@ import {
     USER_ADMIN_SERVICE,
     PASSWORD_HASHER,
     CREDENTIAL_REPOSITORY,
+    // Phase 16: 21 CFR Part 11 §11.200 requires a signer to prove a second identification
+    // component at the moment of signing, and Phase 14's TOTP is that component. Exported so
+    // Document's `SIGNER_AUTHENTICATOR` can reuse the challenge — with its recovery-code path,
+    // its replay window and its audit rows — rather than verifying a code a second way.
+    MFA_SERVICE,
     USER_DIRECTORY,
     // Phase 11: the workflow engine asks whether one person may decide for another, and the
     // approval inbox asks whom a delegate may act for. Through this service, never by reading

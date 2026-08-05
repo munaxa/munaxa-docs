@@ -27,6 +27,27 @@ export const DocumentAudit = {
    * Phase 7; always written, because 13 says prints are audited unconditionally.
    */
   DOCUMENT_PRINTED: 'DOCUMENT_PRINTED',
+  /**
+   * Somebody put their name to a revision's exact bytes — Phase 16, and 13 §2's one new Document
+   * row.
+   *
+   * Its own action rather than an operation on `DOCUMENT_CHANGED`, and argued in
+   * [ADR-0017](../../../../../../docs/architecture/adr/0017-electronic-signature-as-witnessed-attestation.md)
+   * §8 rather than assumed. The alternative was to overload `APPROVED`, which would make "which
+   * approvals were signed" — the one question the whole capability exists to answer —
+   * unanswerable. A withdrawal writes this action too, with `operation: DELETED` and the stated
+   * ground in the trail's own attested `reason` column.
+   */
+  DOCUMENT_SIGNED: 'DOCUMENT_SIGNED',
+  /**
+   * A controlled starting point was created, edited or withdrawn — Phase 16.
+   *
+   * Filed under Document rather than as an `Administration` `TYPE_CHANGED`, because a template
+   * produces documents and the question "where did this document's content come from" is a
+   * document question. `CONFIGURATION` is its subject type: a template is configuration, and
+   * filing it under `DOCUMENT` would put it on the timeline of no document at all.
+   */
+  DOCUMENT_TEMPLATE_CHANGED: 'DOCUMENT_TEMPLATE_CHANGED',
 } as const;
 
 export type DocumentAuditAction = (typeof DocumentAudit)[keyof typeof DocumentAudit];

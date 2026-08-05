@@ -73,9 +73,35 @@ correctness bug wearing a performance costume.
 | `notifications.deliver` | Medium | Provider rate limits respected |
 | `retention.run` | Serialised per tenant, off-peak | |
 | `exports` | Low, streamed to storage | Large jobs never buffer in memory |
+| `documents.bulk` | Medium, **capped per tenant** | Phase 16. N transactions per operation; the contended resource is one tenant's own audit chain |
 
 Fairness: jobs carry their tenant id, and per-tenant concurrency caps stop one large tenant's bulk
 import from monopolising a pool.
+
+**That sentence was false until Phase 16, and this section should say so.** Jobs have carried their
+tenant id since Phase 4 and nothing read it; `QueueDefinition.concurrency` is per *lane*, so one
+tenant's five thousand jobs take every slot and every other tenant waits behind them. Nothing had
+ever produced five thousand jobs, so nobody could have observed it — the claim was true of a
+deployment nobody had.
+
+It is now enforced. `QueueDefinition.perTenantConcurrency` is declared per lane and **absent by
+default**, so every lane behaves exactly as it did; `documents.bulk` declares 2 against a lane
+concurrency of 4, so four tenants' imports proceed together and no single tenant takes more than
+half the lane however many operations it queues. The mechanism is a counter in Redis taken before
+the handler runs and released after, with an expiry longer than the lane's own wall-clock budget so
+a killed process cannot strand a tenant. A job that finds its tenant at the cap is **re-queued with
+a short delay rather than failed**, because "wait your turn" is not a failure and must not consume
+one of the lane's retry attempts.
+
+Adding a cap to `documents.ocr` or `documents.preview` is now a one-line change in `@edms/domain`
+rather than a change to the adapter. It has not been made: neither lane has a producer that one
+tenant can flood, and a cap nobody needs is a bound somebody hits during an incident.
+
+**What makes `documents.bulk` unusual is what it contends on.** A bulk operation is N transactions,
+each writing an audit row onto a chain that serialises per tenant under an advisory lock — so the
+expensive resource is not CPU and not a renderer pool, it is *one tenant's own chain*, and a second
+tenant's bulk restore does not contend with it at all. That is precisely the shape a per-lane number
+cannot express, and it is why this is the lane that declares the cap.
 
 ## 6. Scaling path
 
@@ -107,12 +133,13 @@ a connection pooler in front of PostgreSQL before it needs anything else on this
 | Limit | Symptom | Response |
 | --- | --- | --- |
 | Postgres FTS at ~5M documents per tenant | Search p95 climbing, GIN maintenance cost | Stage 3 |
+| Audit chain serialisation during a bulk operation — Phase 16's N + 1 rows per operation, all under one tenant's advisory lock | A large import's wall-clock growing linearly while other writes in the same tenant queue behind it | `bulk.maxObjects` caps one request, `bulk.synchronousLimit` queues anything larger, and `bulk.tenantConcurrency` bounds how much of the lane one tenant holds. Batching the per-object rows is **not** the response: they are what makes a document's own timeline complete, and 13 §2 argues why |
 | Connections, at roughly `max_connections / DATABASE_POOL_SIZE` live tenants per process | Reconnect churn in the logs as clients are evicted; `too many clients` under burst | A connection pooler (PgBouncer, transaction mode — the tenant setting is transaction-local, so it is safe behind one) |
 | Migration wall-clock, linear in tenants | A release taking a maintenance window rather than a deploy step | Batch by cluster; a long backfill is a job, not a migration |
 | Folder with > 100k direct children | Listing and unique-name checks slow | Encourage sub-foldering; virtualised UI already handles it; add a covering index |
 | One number sequence at extreme concurrency | Lock wait on `number_sequence` | The row lock is microseconds; if it ever shows, shard the sequence by adding a segment to the reset scope |
 | Very large ACL subtrees on re-permission | Index re-projection backlog | Batch and coalesce; the subtree is re-projected asynchronously and reads re-check at open time |
-| Audit write volume | Chain serialisation per tenant | Advisory lock is per tenant and held briefly; batch read-audit events (already done) |
+| Audit write volume | Chain serialisation per tenant | Advisory lock is per tenant and held briefly; batch read-audit events (already done). **Phase 16 is the first real test of it**: a bulk operation over N documents writes N + 1 chained rows, measured at 26 rows for 25 objects with the chain intact and gap-free. The response is to bound the *batch* — `bulk.maxObjects`, `bulk.synchronousLimit`, `bulk.tenantConcurrency` — never to batch the rows, because a per-object row is what makes a document's own timeline complete |
 
 ## 8. Verification
 

@@ -2,17 +2,21 @@
 
 Product root for **Munaxa Docs**, the Enterprise Document Management System (EDMS).
 
-**The product is built through Phase 12: documents are created, submitted, approved, numbered,
-published, revised, previewed, found, audited, deleted, delegated — and the people who need to know
-are told.** Phase 0 designed the architecture and Phase 0.5 built the structure that implements it;
+**The product is built through Phase 16: documents are created, submitted, approved, numbered,
+published, revised, previewed, found, audited, deleted, delegated, reported on — and now done to
+many at once, started from a controlled template, and signed.** Phase 0 designed the architecture and Phase 0.5 built the structure that implements it;
 Phases 1 through 3 added authentication, the whole of Administration, per-tenant infrastructure and
 the document library; Phase 4 added the approval engine — and with it the first background work this
 product has ever run; Phase 5 gave an approved document its permanent number; Phase 6 added revision
 control; Phase 7 the preview pipeline; Phase 8 search; Phase 9 the read half of the audit trail;
-Phase 10 soft delete and retention; Phase 11 delegation; and Phase 12 notifications — the framework
-Phase 1 built with no producers, finally called.
+Phase 10 soft delete and retention; Phase 11 delegation; Phase 12 notifications — the framework
+Phase 1 built with no producers, finally called; Phase 13 the dashboard; Phase 14 the ACL model made
+real; Phase 15 enterprise reporting; and Phase 16 the advanced features — five bulk operations whose
+central rule is that each is N single-object decisions rather than one decision applied to N objects,
+controlled templates, and electronic signatures that are a witnessed Part 11 attestation and are
+never called qualified.
 
-Read the most recent report before starting: [Phase 12 — notifications](./docs/reports/phase-12-notifications.md).
+Read the most recent report before starting: [Phase 16 — advanced features](./docs/reports/phase-16-advanced-features.md).
 The original gate is the [Phase 0.5 architecture compliance report](./docs/reports/phase-0.5-architecture-compliance-report.md)
 and the [technical debt it records](./docs/reports/phase-0.5-technical-debt.md).
 

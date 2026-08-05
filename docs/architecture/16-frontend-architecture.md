@@ -89,6 +89,23 @@ nothing — and its navigation row is gated on `report:view`, which is the floor
 second permission, resolved per report by the API, and **a report the caller may not run is absent
 from the screen rather than listed and refused**.
 
+**The bulk affordances are gated twice, and the two gates are not the same** — Phase 16. The screen
+gates on the caller's tenant-wide grant, resolved on the server and passed down, so a button nobody
+could use is not offered; the API gates **per object**, against the caller's reach, and that is the
+one that decides. A bulk restore of forty documents therefore comes back with thirty-eight applied
+and two refused, and the screen renders the outcomes rather than a toast: the three ways an object
+can fail to happen — `REFUSED`, `BLOCKED`, `FAILED` — call for three different responses, and "38 of
+40 succeeded" throws all three away.
+
+**Templates and signatures add no route.** A template produces documents, so it is authored under
+`admin/` where the rest of the tenant's configuration lives and *used* from the create affordance
+the folder browser already has. A signature is part of a document's record, so it renders on the
+document workspace beside the revision it attests rather than on a tab of its own — and the word on
+screen is "signed", never "digitally signed", because
+[ADR-0017](./adr/0017-electronic-signature-as-witnessed-attestation.md) produces a Part 11
+electronic signature witnessed by this product rather than an eIDAS qualified one, and a label
+implying a certificate would be the interface asserting something nothing checked.
+
 Charts arrive here, and only here. Phase 13 declined them because "nothing on this screen has a
 time axis; the trends that would earn one are Phase 15's" — which is still true of eight of this
 phase's ten reports. Two are drawn: a horizontal bar chart for the dimension breakdown, whose
@@ -155,7 +172,7 @@ where the server's answer is the only truth worth showing.
 
 | Screen | Composition |
 | --- | --- |
-| Folder browser | Platform data grid + tree, virtualised, keyboard navigable, drag-select, bulk actions gated by `capabilities` |
+| Folder browser | Platform data grid + tree, virtualised, keyboard navigable, drag-select, bulk actions gated by `capabilities`. **Built in Phase 16**: selection is opt-in on `ResourceList` — a screen that passes no `bulkActions` gains no selection column, because a list of confidentiality levels has nothing to do in bulk. The selection is local rather than in the URL (a shared link carrying forty identifiers means nothing to whoever opens it) and is **cleared on every navigation**, because a selection that survived a filter change would let somebody act on rows they can no longer see |
 | Document overview | Header (number, title, status, revision), preview pane, metadata panel, action panel from `capabilities` |
 | Revision history | Timeline with compare selection; compare view shows metadata diff, text diff and page diff |
 | Approval inbox | Task list with deadline emphasis, inline decide with mandatory comment where the stage requires it |

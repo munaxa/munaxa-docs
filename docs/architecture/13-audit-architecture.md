@@ -33,6 +33,8 @@
 | Numbering (Phase 5) | `NUMBER_RESERVED`, `NUMBER_ASSIGNED`, `NUMBER_VOIDED` |
 | Search (Phase 8) | `SEARCH_PERFORMED`, `SEARCH_REBUILD_REQUESTED` |
 | Export | `AUDIT_EXPORTED`, `REPORT_EXPORTED`, `BULK_DOWNLOAD` |
+| Document (Phase 16) | `DOCUMENT_SIGNED`, `DOCUMENT_TEMPLATE_CHANGED` |
+| Bulk (Phase 16) | `BULK_OPERATION` |
 
 **The table above is the whole catalogue, and Phase 9 is where it became so.** The rows from
 `Document (Phase 3)` down were previously only in the per-phase addenda at the foot of this
@@ -56,7 +58,7 @@ scan, which is most of them.
 | ~~`SCHEDULE_SET`, `HOLD_PLACED`, `HOLD_RELEASED`, `DISPOSITION_APPROVED`, `PURGE_EXECUTED`, `PURGED`~~ | Phase 10 — written |
 | ~~`MFA_ENROLLED`, `MFA_FAILED`~~ | Phase 14 — written |
 | ~~`REPORT_EXPORTED`~~ | Phase 15 — written |
-| `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability |
+| `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability — **still owing after Phase 16**, which built neither archiving, reinstatement nor document links; see below |
 | `INTEGRITY_MISMATCH` | Phase 18 — the integrity sweep that would detect one |
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
@@ -73,6 +75,38 @@ view. And it declined a second row for *taking* the file: Phase 9 wrote `BULK_DO
 is one `file_object` whose signed URL already produces `FILE_DOWNLOAD_ISSUED`. Adding a second would
 give one act two names, which this section's own reconciliation exists to prevent.
 A row here with no owner is an oversight; a row with an owner is a schedule.
+
+**Phase 16's three rows, and the three it left alone.** `DOCUMENT_SIGNED` is argued in
+[ADR-0017](./adr/0017-electronic-signature-as-witnessed-attestation.md) §8 rather than assumed: the
+alternative was to overload `APPROVED`, and that would make *"which approvals were signed"* — the
+one question an electronic-signature capability exists to answer — unanswerable. It is written twice
+per signature's life, once when taken and once when withdrawn, distinguished by
+`payload.operation`, with the withdrawal's stated ground in the trail's own attested `reason`
+column. `DOCUMENT_TEMPLATE_CHANGED` is filed under Document rather than as an Administration
+`TYPE_CHANGED` because *"where did this document's content come from"* is a document question, and
+its subject type is `CONFIGURATION` because a template belongs on no document's timeline.
+`BULK_OPERATION` is one action for five kinds, with the kind in the payload — five actions would put
+`BULK_RESTORED` beside `RESTORED` in a filter and give *"every restore last quarter"* two right
+answers.
+
+**`ARCHIVED`, `REINSTATED` and `LINKED` are still owing, and Phase 16 is not their phase.** The row
+above says "the phase that builds each capability", and this one built none of them: archiving and
+reinstatement are lifecycle transitions `06-document-lifecycle.md` defines and nothing yet performs
+— `document:archive` is in the catalogue and no route declares it — and a document *link* is a
+relationship between two documents that has no table. Bulk operations do not make any of the three
+writable: a bulk restore reverses a *delete* and writes `DOCUMENT_CHANGED` with
+`operation: RESTORED`, which is the row Phase 10 established and is a different act from
+reinstating an archived record. Templates do not either — a document created from one is `CREATED`.
+
+**What a bulk operation writes, and why it is N + 1 rather than 1.** Each object's own use case
+writes its own row on its own document's timeline, exactly as a single-object request would; the
+operation adds one. Suppressing the per-object rows would make a document's history skip the day it
+was edited, which is this trail's primary query; writing only them would leave "who ran the edit
+that touched four hundred documents" unanswerable, because four hundred rows by one actor in ninety
+seconds is not the same fact as one act over four hundred documents. The operation row carries
+**counts and never the identifier list** — §3's minimised payload, and five thousand UUIDs in one
+`jsonb` would be a second copy of the operation with no retention policy. Which objects were touched
+is `bulk_operation_item`: a table, indexed, and pageable.
 
 **`SESSION_REVOKED` was already written, and this table was wrong about it.** Phase 14 went looking
 for it as one of its three and found two call sites in `authentication.service.ts`, both from Phase

@@ -61,5 +61,18 @@ export interface DocumentConfiguration {
   category(id: string): Promise<{ readonly id: string; readonly code: string } | null>;
   categoryExists(id: string): Promise<boolean>;
   userExists(id: string): Promise<boolean>;
+  /**
+   * A person's printed name and address, as they stand right now — Phase 16.
+   *
+   * Added for 21 CFR Part 11 §11.50, which requires the signer's *printed name* to be part of the
+   * signature manifestation. Read once, at the instant of signing, and copied into the signed
+   * bytes: a signature that resolved the name at read time would say something different about the
+   * same act after somebody changed their surname, which is the opposite of what a manifestation
+   * is for.
+   *
+   * Null for an unknown, deleted or other-tenant identifier, exactly as `userExists` answers false
+   * for one — and the caller falls back to the identifier rather than signing an empty name.
+   */
+  signer(id: string): Promise<{ readonly displayName: string; readonly email: string } | null>;
   departmentExists(id: string): Promise<boolean>;
 }

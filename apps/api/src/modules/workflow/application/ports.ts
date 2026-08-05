@@ -346,6 +346,20 @@ export interface ApprovalQueryRepository {
   inbox(request: ApprovalInboxRequest): Promise<Page<ApprovalInboxRow>>;
   /** Every attempt on a document, newest first. A rejected one is history, never a deleted row. */
   instancesForDocument(documentId: DocumentId): Promise<readonly WorkflowInstanceView[]>;
+  /**
+   * Which document a task belongs to — Phase 16's one addition to this interface.
+   *
+   * A bulk approval has to resolve the caller's reach *per task*, and reach in this product is
+   * resolved at a scope node: a task is not one, and the document it decides is. So the executor
+   * needs the document behind each task identifier before it can ask `ACL_RESOLVER` anything.
+   *
+   * A read on the query repository rather than the engine's, deliberately. The engine's
+   * `instanceIdOfTask` exists to *lock* an instance before deciding it, and reaching for it here
+   * would take a row lock for every task in a batch — including the ones about to be refused —
+   * turning a permission check into a contention source. This is a plain lookup and answers null
+   * for a task in another tenant, exactly as every other read here does.
+   */
+  documentOfTask(taskId: ApprovalTaskId): Promise<DocumentId | null>;
   instance(id: WorkflowInstanceId): Promise<WorkflowInstanceView | null>;
   /** How many approvals bound to a version — what makes a published version undeletable. */
   countInstancesByVersion(versionIds: readonly string[]): Promise<ReadonlyMap<string, number>>;

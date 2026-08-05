@@ -31,6 +31,17 @@ export const AuditSubjectType = {
    */
   EXPORT: 'EXPORT',
   /**
+   * A bulk operation — the Phase 16 addition, and for the same reason `EXPORT` was Phase 9's.
+   *
+   * An operation over four hundred documents is not a `DOCUMENT`. Filing it under the document
+   * type would put it on the timeline of whichever document happened to be first in the batch,
+   * and every other document's timeline would carry the per-object row with no way back to the
+   * act that caused it. It has its own identifier, its own record and its own per-object
+   * outcomes, so it is its own subject — which is also what makes "what did that import touch"
+   * a query on one subject rather than a scan.
+   */
+  BULK_OPERATION: 'BULK_OPERATION',
+  /**
    * A delegation — the Phase 11 addition, and for the same reason `EXPORT` was Phase 9's.
    *
    * A delegation is not a `USER`. Filing its four actions under the user type would put them on
