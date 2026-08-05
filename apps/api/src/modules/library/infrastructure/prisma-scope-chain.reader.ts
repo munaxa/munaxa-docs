@@ -1,13 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type AnyId, ScopeType, type ScopeRef, asId } from '@edms/domain';
+import { type AnyId, ScopeType, type ScopeRef, asId, idsInPath } from '@edms/domain';
 
 import { requireTransaction } from '../../../core/prisma';
 import { requireContext } from '../../../core/tenancy/tenant-context';
-import {
-  SCOPE_REPOSITORY,
-  type ScopeRepository,
-} from '../../organization/application/scope.ports';
+import { SCOPE_REPOSITORY, type ScopeRepository } from '../../organization/application/scope.ports';
 import type { ChainNodeRecord, ScopeChainReader } from '../application/ports';
 
 /**
@@ -85,7 +82,9 @@ export class PrismaScopeChainReader implements ScopeChainReader {
     }
     // Departments nest, so a grant on one reaches the departments beneath it too.
     if (departmentIds.size > 0) {
-      const subtree = await this.scopes.findSubtrees([...departmentIds].map((id) => asId<AnyId>(id)));
+      const subtree = await this.scopes.findSubtrees(
+        [...departmentIds].map((id) => asId<AnyId>(id)),
+      );
       for (const node of subtree) {
         departmentIds.add(String(node.id));
       }
@@ -102,7 +101,10 @@ export class PrismaScopeChainReader implements ScopeChainReader {
         deletedAt: null,
         OR: owners
           .filter((owner) => owner.ids.length > 0)
-          .map((owner) => ({ ownerScopeType: owner.ownerScopeType, ownerScopeId: { in: owner.ids } })),
+          .map((owner) => ({
+            ownerScopeType: owner.ownerScopeType,
+            ownerScopeId: { in: owner.ids },
+          })),
       },
       select: { id: true },
     });
@@ -165,9 +167,11 @@ export class PrismaScopeChainReader implements ScopeChainReader {
     if (folder === null) {
       return null;
     }
-    const ancestry = folder.path.split('.').filter((part) => part !== '');
+    // The path's own vocabulary, from `@edms/domain` rather than a second `split` here: the
+    // separator is ADR-0014's and one file re-deciding it is how two readers of one path diverge.
+    const ancestry = idsInPath(folder.path);
     const rows = await tx.folder.findMany({
-      where: { tenantId, id: { in: ancestry }, deletedAt: null },
+      where: { tenantId, id: { in: [...ancestry] }, deletedAt: null },
       select: { id: true, name: true, inheritAcl: true, path: true },
     });
     const byId = new Map(rows.map((row) => [row.id, row]));
@@ -238,7 +242,9 @@ export class PrismaScopeChainReader implements ScopeChainReader {
     }
     if (scope.type === ScopeType.ENTITY) {
       const company =
-        node.parentId === null ? null : await this.scopes.findNode(node.parentId, ScopeType.COMPANY);
+        node.parentId === null
+          ? null
+          : await this.scopes.findNode(node.parentId, ScopeType.COMPANY);
       return company === null
         ? null
         : [
@@ -248,7 +254,7 @@ export class PrismaScopeChainReader implements ScopeChainReader {
           ];
     }
 
-    const ancestry = node.path.split('.').filter((part) => part !== '');
+    const ancestry = idsInPath(node.path);
     const departments = await this.scopes.findDepartmentsByIds(ancestry);
     if (departments.length !== ancestry.length) {
       return null;

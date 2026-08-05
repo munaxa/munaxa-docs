@@ -126,9 +126,10 @@ export class DefaultPermissionService implements PermissionService {
           decidedAt: decision.decidedAt,
           decidedAtName:
             decision.decidedAt === null ? null : (names.get(String(decision.decidedAt.id)) ?? null),
-          reason: decision.reason === 'STATE' || decision.reason === 'CONFIDENTIALITY'
-            ? 'CLOSED_BY_DEFAULT'
-            : decision.reason,
+          reason:
+            decision.reason === 'STATE' || decision.reason === 'CONFIDENTIALITY'
+              ? 'CLOSED_BY_DEFAULT'
+              : decision.reason,
         });
       }
 
@@ -289,7 +290,11 @@ export class DefaultPermissionService implements PermissionService {
       departmentIds: [],
       delegationIds: [],
     };
-    const decision = await this.resolver.resolve(subject, scope, Permission.DOCUMENT_PERMISSION_MANAGE);
+    const decision = await this.resolver.resolve(
+      subject,
+      scope,
+      Permission.DOCUMENT_PERMISSION_MANAGE,
+    );
     if (!decision.allowed) {
       throw new NotFoundError('The requested resource');
     }
@@ -333,10 +338,17 @@ export class DefaultPermissionService implements PermissionService {
   private validate(scope: ScopeRef, draft: AclEntryDraft): AclEntryRecord {
     if (!isPermissionKey(draft.permission)) {
       throw new ValidationError('A permission that is not in the catalogue does not exist.', [
-        { field: 'permission', message: `${draft.permission} is not in the permission catalogue.` },
+        {
+          field: 'permission',
+          message: `${String(draft.permission)} is not in the permission catalogue.`,
+        },
       ]);
     }
-    if (draft.subjectType !== AclSubjectType.USER && draft.subjectType !== AclSubjectType.ROLE && draft.subjectType !== AclSubjectType.DEPARTMENT) {
+    if (
+      draft.subjectType !== AclSubjectType.USER &&
+      draft.subjectType !== AclSubjectType.ROLE &&
+      draft.subjectType !== AclSubjectType.DEPARTMENT
+    ) {
       throw new ValidationError('An entry names a user, a role or a department.', [
         { field: 'subjectType', message: `${String(draft.subjectType)} is not a subject type.` },
       ]);

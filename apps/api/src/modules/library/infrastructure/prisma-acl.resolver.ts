@@ -7,6 +7,7 @@ import {
   ScopeType,
   type ScopeRef,
   asId,
+  idsInPath,
   survivesBrokenInheritance,
 } from '@edms/domain';
 
@@ -148,16 +149,35 @@ export class PrismaAclResolver implements AclResolver {
     subject: AuthorizationSubject,
     permission: PermissionKey,
   ): Promise<VisibilityFilter> {
+    // Cached beside the decisions, under the same tenant prefix, so one ACL edit clears both. It
+    // matters more than the decision cache does: a dashboard page asks for it once per widget and a
+    // list asks for it once per count, so an uncached filter is the same six reads repeated across
+    // one request rather than across one session.
+    const cacheKey = this.filterKey(subject, permission);
+    const cached = await this.readCache<VisibilityFilter>(cacheKey);
+    if (cached !== null) {
+      return cached;
+    }
+    const filter = await this.computeVisibilityFilter(subject, permission);
+    await this.writeCache(cacheKey, filter);
+    return filter;
+  }
+
+  private async computeVisibilityFilter(
+    subject: AuthorizationSubject,
+    permission: PermissionKey,
+  ): Promise<VisibilityFilter> {
     return this.unitOfWork.run(async () => {
+      const roleIds = await this.roleIdsOf(subject);
       const departmentIds = await this.departmentsOf(subject);
       const subjectIds = callerSubjectIds({
         userId: String(subject.userId),
-        roleIds: subject.roleIds.map(String),
+        roleIds: roleIds.map(String),
         departmentIds: departmentIds.map(String),
       });
       const limit = this.config.acl.maxSubjectEntries;
       const [granted, entries, breaks] = await Promise.all([
-        this.grantedAmong(subject.roleIds, [permission]),
+        this.grantedAmong(roleIds, [permission]),
         this.entries.listForSubjects(subjectIds, permission, limit + 1),
         this.chains.brokenInheritancePaths(),
       ]);
@@ -170,7 +190,7 @@ export class PrismaAclResolver implements AclResolver {
 
       const tokens = callerSubjectTokens({
         userId: subject.userId,
-        roleIds: subject.roleIds,
+        roleIds,
         departmentIds,
         grantedPermissions: granted,
       });
@@ -247,13 +267,14 @@ export class PrismaAclResolver implements AclResolver {
       };
     }
 
+    const roleIds = await this.roleIdsOf(subject);
     const departmentIds = await this.departmentsOf(subject);
     const subjectIds = callerSubjectIds({
       userId: String(subject.userId),
-      roleIds: subject.roleIds.map(String),
+      roleIds: roleIds.map(String),
       departmentIds: departmentIds.map(String),
     });
-    const granted = new Set(await this.grantedAmong(subject.roleIds, permissions));
+    const granted = new Set(await this.grantedAmong(roleIds, permissions));
 
     const decisions: Partial<Record<PermissionKey, Decision>> = {};
     for (const permission of permissions) {
@@ -380,6 +401,24 @@ export class PrismaAclResolver implements AclResolver {
 
   // --- Grants and memberships ----------------------------------------------------------------
 
+  /**
+   * The caller's roles, as identifiers.
+   *
+   * `AuthorizationSubject.roleIds` is filled from the request context at every call site, and the
+   * context is filled from the access token, whose `roles` claim carries role **keys** —
+   * `TENANT_ADMIN`, `AUTHOR`. `role_permission.role_id` and `acl_entry.subject_id` are UUIDs. The
+   * two have been compared directly since Phase 8 and have never matched; nothing observed it
+   * because nothing that could was running. See `AclRepository.roleIdsFor` for the whole account,
+   * and the phase report for why the fix is here rather than in the token.
+   */
+  private async roleIdsOf(subject: AuthorizationSubject): Promise<readonly AnyId[]> {
+    if (subject.roleIds.length === 0) {
+      return [];
+    }
+    const ids = await this.entries.roleIdsFor(subject.roleIds.map(String));
+    return ids.map((id) => asId<AnyId>(id));
+  }
+
   /** Which of these permissions any of the caller's roles holds at tenant level. */
   private async grantedAmong(
     roleIds: readonly AnyId[],
@@ -417,25 +456,21 @@ export class PrismaAclResolver implements AclResolver {
     if (subject.userId === '') {
       return [];
     }
-    const tx = requireTransaction();
-    const { tenantId } = requireContext();
-    const memberships = await tx.userDepartment.findMany({
-      where: { tenantId, userId: subject.userId },
-      select: { departmentId: true },
-    });
-    if (memberships.length === 0) {
-      return [];
-    }
-    const rows = await tx.department.findMany({
-      where: { tenantId, id: { in: memberships.map((row) => row.departmentId) }, deletedAt: null },
+    // One query, through the membership relation, rather than a read of `user_department` followed
+    // by a read of `department`: this runs on every list in the product, and the second round trip
+    // bought nothing the join does not.
+    const rows = await requireTransaction().department.findMany({
+      where: {
+        tenantId: requireContext().tenantId,
+        deletedAt: null,
+        members: { some: { userId: subject.userId } },
+      },
       select: { path: true },
     });
     const ids = new Set<string>();
     for (const row of rows) {
-      for (const part of row.path.split('.')) {
-        if (part !== '') {
-          ids.add(part);
-        }
+      for (const id of idsInPath(row.path)) {
+        ids.add(id);
       }
     }
     return [...ids].map((id) => asId<AnyId>(id));
@@ -454,6 +489,12 @@ export class PrismaAclResolver implements AclResolver {
     // reason and is not used here: it changes on a role edit, which already invalidates by prefix.
     const roles = [...subject.roleIds].map(String).sort().join(',');
     return `acl:${tenantId}:d:${String(subject.userId)}:${roles}:${scope.type}:${String(scope.id)}:${permission}`;
+  }
+
+  private filterKey(subject: AuthorizationSubject, permission: PermissionKey): string {
+    const { tenantId } = requireContext();
+    const roles = [...subject.roleIds].map(String).sort().join(',');
+    return `acl:${tenantId}:v:${String(subject.userId)}:${roles}:${permission}`;
   }
 
   private chainKey(scope: ScopeRef): string {

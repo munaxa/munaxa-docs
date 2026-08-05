@@ -108,7 +108,10 @@ export interface AclRepository {
   replaceForScope(
     scope: ScopeRef,
     entries: readonly AclEntryRecord[],
-  ): Promise<{ readonly granted: readonly AclEntryRecord[]; readonly revoked: readonly AclEntryRecord[] }>;
+  ): Promise<{
+    readonly granted: readonly AclEntryRecord[];
+    readonly revoked: readonly AclEntryRecord[];
+  }>;
   /** Removes every entry on a node, for the delete path. Returns what it removed. */
   deleteForScope(scope: ScopeRef): Promise<readonly AclEntryRecord[]>;
 
@@ -134,6 +137,26 @@ export interface AclRepository {
    * exist, which the caller turns into a `404`.
    */
   rolesOf(userId: string): Promise<readonly string[] | null>;
+
+  /**
+   * Role identifiers for whatever the caller's context happens to carry.
+   *
+   * **This exists because of a defect Phase 14 found by finally exercising the resolver.** A JWT
+   * carries `roles` as role *keys* — `authentication.service.ts` fills the claim from
+   * `credential.roleKeys`, and it has since Phase 1 — while `role_permission.role_id` and an ACL
+   * entry's `subject_id` are both UUIDs. `PrismaAclResolver` has compared the two directly since
+   * Phase 8 and matched nothing, which was invisible for six phases because nothing that could
+   * *observe* a grant ran with a non-empty role list: `AclGuard` was never bound to a route, and
+   * every suite that touches the resolver builds its subject with `roles: []`. Putting `@ScopedTo`
+   * on the object routes is what made it fire, which is exactly the discovery Phase 9's limit row
+   * predicted would arrive with it.
+   *
+   * Resolved here rather than at each call site, because there are six of them and a key-to-id
+   * translation repeated six times is five chances to get it wrong. Accepts ids as well as keys, so
+   * a caller that already holds ids — `PermissionService.effectiveFor` reads `user_role` — needs no
+   * special case.
+   */
+  roleIdsFor(keysOrIds: readonly string[]): Promise<readonly string[]>;
 }
 
 export interface InheritanceRecord {

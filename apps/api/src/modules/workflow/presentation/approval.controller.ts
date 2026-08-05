@@ -39,9 +39,10 @@ import {
   WorkflowCancellationReason,
   type WorkflowInstanceId,
   asId,
+  ScopeType,
 } from '@edms/domain';
 
-import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { ForbiddenError } from '../../../core/errors/application-errors';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -163,6 +164,7 @@ export class ApprovalController {
 
   @Get('documents/:id/workflow')
   @RequirePermission(Permission.DOCUMENT_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async forDocument(@Param('id') id: string): Promise<DocumentWorkflow> {
     const documentId = asId<DocumentId>(id);
     const [approval, context, transitions] = await Promise.all([
@@ -185,6 +187,7 @@ export class ApprovalController {
 
   @Post('documents/:id/submit')
   @RequirePermission(Permission.DOCUMENT_SUBMIT)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async submit(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(submitDocumentSchema)) body: SubmitDocumentBody,
@@ -202,6 +205,7 @@ export class ApprovalController {
    */
   @Post('documents/:id/withdraw')
   @RequirePermission(Permission.DOCUMENT_SUBMIT)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async withdraw(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(withdrawSubmissionSchema)) body: WithdrawSubmissionBody,

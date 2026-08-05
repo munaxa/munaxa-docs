@@ -148,6 +148,69 @@ export class PrismaSearchSourceReader implements SearchSource {
     });
   }
 
+  /**
+   * The same enumeration, narrowed to one scope node's subtree.
+   *
+   * How a node becomes a document predicate depends on the node. A folder is a path prefix — the
+   * property ADR-0014 exists for. A library is a column. A document is itself. The organisation
+   * nodes above a library are *not* resolved here: an entry on a department reaches its libraries,
+   * and resolving that would be a second implementation of `ScopeChainReader.librariesUnder` in a
+   * module that has no business knowing the organisation tree. Those reproject the whole tenant
+   * instead, which the consumer says out loud in its log rather than doing quietly — see
+   * `search-index.consumer.ts`.
+   */
+  async findableIdsUnderScope(
+    scope: { readonly type: string; readonly id: string },
+    cursor: DocumentId | null,
+    limit: number,
+  ): Promise<readonly DocumentId[]> {
+    return this.unitOfWork.run(async () => {
+      const tx = requireTransaction();
+      const { tenantId } = requireContext();
+      const narrowing = await this.narrowingFor(scope);
+      if (narrowing === null) {
+        return [];
+      }
+      const rows = await tx.document.findMany({
+        where: {
+          tenantId,
+          deletedAt: null,
+          status: { not: 'PURGED' },
+          ...narrowing,
+          ...(cursor === null ? {} : { id: { gt: cursor } }),
+        },
+        orderBy: { id: 'asc' },
+        take: limit,
+        select: { id: true },
+      });
+      return rows.map((row) => asId<DocumentId>(row.id));
+    });
+  }
+
+  /** Null means "this node does not narrow" — the caller reprojects the tenant. */
+  private async narrowingFor(scope: {
+    readonly type: string;
+    readonly id: string;
+  }): Promise<Record<string, unknown> | null> {
+    if (scope.type === 'DOCUMENT') {
+      return { id: scope.id };
+    }
+    if (scope.type === 'LIBRARY') {
+      return { folder: { libraryId: scope.id } };
+    }
+    if (scope.type === 'FOLDER') {
+      const folder = await requireTransaction().folder.findFirst({
+        where: { id: scope.id, tenantId: requireContext().tenantId },
+        select: { path: true },
+      });
+      return folder === null
+        ? // The folder is gone. Nothing to narrow to, and nothing beneath it to reproject.
+          { id: NO_SUCH_DOCUMENT }
+        : { folder: { OR: [{ path: folder.path }, { path: { startsWith: `${folder.path}.` } }] } };
+    }
+    return null;
+  }
+
   async typeIdByCode(code: string): Promise<string | null> {
     return this.unitOfWork.run(async () => {
       const type = await requireTransaction().documentType.findFirst({
@@ -246,3 +309,6 @@ function collectMetadata(rows: readonly MetadataValueRow[]): {
   }
   return { values, searchableText: searchable.join('\n') };
 }
+
+/** A folder that vanished narrows to nothing rather than to everything. */
+const NO_SUCH_DOCUMENT = '00000000-0000-0000-0000-000000000000';

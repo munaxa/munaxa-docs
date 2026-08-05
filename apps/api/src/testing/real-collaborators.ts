@@ -347,7 +347,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     writer,
   );
 
-  const documentRepository = new PrismaDocumentRepository(stamps);
+  const documentRepository = realDocumentRepository(options);
   const documents = new DefaultDocumentService(
     documentRepository,
     new PrismaDocumentActivityRepository(documentRepository),
@@ -485,6 +485,12 @@ export interface EnqueuedTimerJob {
 export interface WorkflowEngineOptions {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
+  /**
+   * Phase 14: every document repository now carries the resolver, which reads its bounds here.
+   * Optional, because a suite about approval routing has no opinion about the ACL cache — see
+   * `UNCACHED_ACL_CONFIG`, which is what it gets.
+   */
+  readonly config?: AppConfig;
   readonly documents: DefaultDocumentService;
   readonly configuration: ConfigurationService;
   /**
@@ -547,7 +553,7 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
   } as never;
 
   const control = new RevisionControlService(
-    new PrismaDocumentRepository(stamps),
+    realDocumentRepository(options),
     new PrismaDocumentLockRepository(stamps),
     new PrismaRevisionWriter(stamps, outbox),
     new StorageContentGateAdapter(options.storage),
@@ -593,10 +599,19 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
  * cold-cache equivalence sets `ACL_CACHE_TTL_SECONDS=0` in its config, and one that wants to assert
  * invalidation can inspect this instance.
  */
+export function realDocumentRepository(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+}): PrismaDocumentRepository {
+  return new PrismaDocumentRepository(new RecordStamps(options.clock), realAclResolver(options));
+}
+
 export function realAclResolver(options: {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
-  readonly config: AppConfig;
+  readonly config?: AppConfig;
   readonly cache?: CachePort;
 }): PrismaAclResolver {
   const stamps = new RecordStamps(options.clock);
@@ -605,9 +620,33 @@ export function realAclResolver(options: {
     new PrismaAclRepository(stamps),
     new PrismaScopeChainReader(new PrismaScopeRepository()),
     options.cache ?? new FakeCache(options.clock),
-    options.config,
+    withAclDefaults(options.config),
   );
 }
+
+/**
+ * The suite's config, with an `acl` section if it did not state one.
+ *
+ * Merged rather than substituted, because most suites hand these factories a hand-built partial
+ * `AppConfig` carrying only the two or three sections they care about — and a resolver that
+ * silently used a *whole* different config than the rest of the stack would be the subtlest
+ * possible way for a suite to stop testing the product.
+ */
+function withAclDefaults(config: AppConfig | undefined): AppConfig {
+  const base = config ?? ({} as AppConfig);
+  return { ...base, acl: base.acl ?? UNCACHED_ACL };
+}
+
+/**
+ * The resolver's configuration for a suite that has not stated one: **the cache off**.
+ *
+ * Deliberately not the production default. A suite that seeds an ACL entry and then asserts what a
+ * caller sees must be asking the database, not a decision this process cached thirty seconds ago
+ * under a different set of rows — and the difference between those two is invisible in a green
+ * build. The suites that assert the cache is *correct* pass a config with a TTL and a `FakeCache`
+ * they can inspect, which is the only way to test a cache without also testing through it.
+ */
+const UNCACHED_ACL: AppConfig['acl'] = { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 };
 
 export interface PreviewStackOptions {
   readonly clock: ClockPort;
@@ -733,7 +772,7 @@ export function realDocumentPreview(options: {
   } as never;
   return new DocumentPreviewService(
     writer,
-    new PrismaDocumentRepository(stamps),
+    realDocumentRepository(options),
     new AdministrationConfigurationAdapter(
       options.configuration,
       realOrganizationService(),
@@ -829,7 +868,7 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     issuance === null
       ? null
       : new DefaultDocumentNumberService(
-          new PrismaDocumentRepository(stamps),
+          realDocumentRepository(options),
           new AdministrationConfigurationAdapter(
             options.configuration,
             realOrganizationService(),
@@ -1403,14 +1442,14 @@ export function realDashboard(options: {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
   /** Phase 14: the resolver reads its cache TTL and its walk bounds from here. */
-  readonly config: AppConfig;
+  readonly config?: AppConfig;
   readonly delegations?: DashboardDelegationMetrics | null;
   readonly notifications?: DashboardNotificationMetrics | null;
   /** Overridden by the suite that asserts a failing source degrades one card, not the page. */
   readonly documentMetrics?: DashboardDocumentMetrics;
 }): DashboardStack {
   const stamps = new RecordStamps(options.clock);
-  const documents = new PrismaDocumentRepository(stamps);
+  const documents = realDocumentRepository(options);
   const acl = realAclResolver(options);
 
   const dashboard = new DefaultDashboardService(

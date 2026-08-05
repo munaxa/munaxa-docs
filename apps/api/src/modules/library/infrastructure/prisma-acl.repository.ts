@@ -215,7 +215,30 @@ export class PrismaAclRepository implements AclRepository {
     });
     return roles.map((row) => row.roleId);
   }
+
+  async roleIdsFor(keysOrIds: readonly string[]): Promise<readonly string[]> {
+    if (keysOrIds.length === 0) {
+      return [];
+    }
+    const ids = keysOrIds.filter((value) => UUID.test(value));
+    const keys = keysOrIds.filter((value) => !UUID.test(value));
+    const rows = await requireTransaction().role.findMany({
+      where: {
+        tenantId: requireContext().tenantId,
+        deletedAt: null,
+        OR: [
+          ...(keys.length > 0 ? [{ key: { in: keys } }] : []),
+          ...(ids.length > 0 ? [{ id: { in: ids } }] : []),
+        ],
+      },
+      select: { id: true },
+    });
+    return rows.map((row) => row.id);
+  }
 }
+
+/** A key is anything that is not one of these; the column they are compared against is `uuid`. */
+const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 const SELECTION = {
   scopeType: true,

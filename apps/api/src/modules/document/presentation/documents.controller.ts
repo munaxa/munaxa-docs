@@ -30,10 +30,10 @@ import {
   moveDocumentSchema,
   updateDocumentSchema,
 } from '@edms/contracts';
-import { type DocumentId, Permission, type UserId, asId } from '@edms/domain';
+import { type DocumentId, Permission, type UserId, asId, ScopeType } from '@edms/domain';
 import type { Page } from '@edms/utils';
 
-import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { IfMatch } from '../../../core/http/admin-request';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -137,6 +137,7 @@ export class DocumentsController {
    */
   @Get(':id')
   @RequirePermission(Permission.DOCUMENT_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async get(@Param('id') id: string): Promise<Document> {
     const row = await this.documents.open(id);
     // The pending reference a reviewer holds, fetched only while it can exist: an unnumbered
@@ -159,6 +160,7 @@ export class DocumentsController {
    */
   @Post(':id/number')
   @RequirePermission(Permission.NUMBERING_MANAGE)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async assignNumber(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(assignDocumentNumberSchema)) body: AssignDocumentNumberBody,
@@ -192,6 +194,7 @@ export class DocumentsController {
 
   @Patch(':id')
   @RequirePermission(Permission.DOCUMENT_EDIT)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async update(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(updateDocumentSchema)) body: UpdateDocumentBody,
@@ -209,6 +212,7 @@ export class DocumentsController {
    */
   @Post(':id/move')
   @RequirePermission(Permission.DOCUMENT_MOVE)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async move(
     @Param('id') id: string,
     @Body(new ZodValidationPipe(moveDocumentSchema)) body: MoveDocumentBody,
@@ -227,6 +231,7 @@ export class DocumentsController {
    */
   @Delete(':id')
   @RequirePermission(Permission.DOCUMENT_DELETE)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   @HttpCode(HttpStatus.NO_CONTENT)
   async remove(
     @Param('id') id: string,
@@ -238,6 +243,7 @@ export class DocumentsController {
 
   @Post(':id/restore')
   @RequirePermission(Permission.DOCUMENT_RESTORE)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   @HttpCode(HttpStatus.NO_CONTENT)
   async restore(@Param('id') id: string, @IfMatch() version: number | undefined): Promise<void> {
     await this.documents.restore(id, version);
@@ -252,6 +258,7 @@ export class DocumentsController {
    */
   @Post(':id/content')
   @RequirePermission(Permission.DOCUMENT_DOWNLOAD)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   async download(
     @Param('id') id: string,
     @Query('inline') inline?: string,
@@ -268,6 +275,7 @@ export class DocumentsController {
    */
   @Post(':id/favorite')
   @RequirePermission(Permission.DOCUMENT_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   @HttpCode(HttpStatus.NO_CONTENT)
   async favorite(@Param('id') id: string): Promise<void> {
     await this.documents.setFavorite(id, true);
@@ -275,6 +283,7 @@ export class DocumentsController {
 
   @Delete(':id/favorite')
   @RequirePermission(Permission.DOCUMENT_VIEW)
+  @ScopedTo('id', ScopeType.DOCUMENT)
   @HttpCode(HttpStatus.NO_CONTENT)
   async unfavorite(@Param('id') id: string): Promise<void> {
     await this.documents.setFavorite(id, false);

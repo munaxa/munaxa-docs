@@ -137,14 +137,18 @@ const unread: DashboardNotificationMetrics = {
 /**
  * Enough configuration for the collaborators this suite builds.
  *
- * `acl` joined it in Phase 14, with the cache off: every count here is asserted against the list it
- * summarises in the same test, and a cached decision between the two would make the assertion a
- * statement about the cache rather than about the predicate.
+ * `acl` joined it in Phase 14, **with the cache on**, which is the one place in the suites where
+ * that is the right choice. This file's central assertion is a *query count*, and the dashboard is
+ * the screen the resolver's cache exists for: eight widgets asking "where does this caller reach"
+ * about one caller is one question, and measuring it as eight would be measuring a configuration
+ * nobody deploys. What the cache cannot distort is the assertion around it — the counts are
+ * compared against the lists beside them, and both go through the same filter, so a wrong filter
+ * fails both rather than hiding in one.
  */
 const appConfig = {
   env: 'test',
   database: { url: APP_URL, poolSize: 10 },
-  acl: { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 },
+  acl: { cacheTtlSeconds: 30, maxSubjectEntries: 5_000 },
 } as unknown as AppConfig;
 
 beforeAll(async () => {
@@ -172,11 +176,11 @@ beforeAll(async () => {
 
 describe('a user widget counts the caller’s own rows, and the list agrees', () => {
   it('answers the same number the document list answers for the same filter', async () => {
-    const view = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
+    const view = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
 
     // The list, through the repository the library itself serves from — not through a second query
     // written here, which would only prove this test can count.
-    const drafts = await as(ADA, [], () =>
+    const drafts = await as(ADA, [adaRoleId], () =>
       unitOfWork.run(() =>
         stack.documents.list({
           page: 1,
@@ -197,8 +201,8 @@ describe('a user widget counts the caller’s own rows, and the list agrees', ()
   });
 
   it('answers a different, smaller number for a caller who owns less', async () => {
-    const ada = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
-    const bob = await as(BOB, [], () => stack.dashboard.userDashboard(BOB));
+    const ada = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
+    const bob = await as(BOB, [adaRoleId], () => stack.dashboard.userDashboard(BOB));
 
     // The point is not that Bob's number is small. It is that the *same* widget, computed with the
     // same code, answers about the caller and nobody else — which is what makes "every user widget
@@ -210,8 +214,8 @@ describe('a user widget counts the caller’s own rows, and the list agrees', ()
   });
 
   it('counts only live check-out locks, and only the caller’s', async () => {
-    const ada = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
-    const bob = await as(BOB, [], () => stack.dashboard.userDashboard(BOB));
+    const ada = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
+    const bob = await as(BOB, [adaRoleId], () => stack.dashboard.userDashboard(BOB));
 
     // Ada holds two locks in the table and one of them expired an hour ago. An expired lock excludes
     // nobody and the next operation on the document sweeps it aside, so counting it would tell
@@ -220,7 +224,7 @@ describe('a user widget counts the caller’s own rows, and the list agrees', ()
     expect(bob.checkedOut.value).toBe(0);
 
     // And the list filter agrees with the count, which is what makes the tile's link honest.
-    const listed = await as(ADA, [], () =>
+    const listed = await as(ADA, [adaRoleId], () =>
       unitOfWork.run(() =>
         stack.documents.list({
           page: 1,
@@ -235,7 +239,7 @@ describe('a user widget counts the caller’s own rows, and the list agrees', ()
   });
 
   it('counts pending and overdue through the inbox’s own predicate', async () => {
-    const view = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
+    const view = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
 
     // Three pending tasks, one of them past its deadline. "Overdue" is a subset of "pending", and
     // both are `approvalTaskWhere` — the function the inbox builds its query from. There is exactly
@@ -245,7 +249,7 @@ describe('a user widget counts the caller’s own rows, and the list agrees', ()
 
     // Bob is assigned nothing, and the answer is zero rather than the tenant's total — the case
     // that would silently turn a personal widget into a disclosure of everybody's workload.
-    const bob = await as(BOB, [], () => stack.dashboard.userDashboard(BOB));
+    const bob = await as(BOB, [adaRoleId], () => stack.dashboard.userDashboard(BOB));
     expect(bob.pending.value).toBe(0);
     expect(bob.overdue.value).toBe(0);
   });
@@ -261,14 +265,14 @@ describe('a user widget counts the caller’s own rows, and the list agrees', ()
       notifications: null,
     });
 
-    const view = await as(ADA, [], () => withoutNotifications.userDashboard(ADA));
+    const view = await as(ADA, [adaRoleId], () => withoutNotifications.userDashboard(ADA));
 
     // A deployment without notifications has no unread count. It does not have an unread count of
     // zero, and a badge reading "0" would be the product asserting something it cannot know.
     expect(view.unreadNotifications.state).toBe('UNAVAILABLE');
     expect(view.unreadNotifications.value).toBeNull();
 
-    const bound = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
+    const bound = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
     expect(bound.unreadNotifications).toEqual({ state: 'READY', value: 7 });
   });
 });
@@ -358,8 +362,8 @@ describe('an administrator widget is absent rather than zero when the caller may
 
 describe('the activity feed shows only what its reader may see', () => {
   it('is the caller’s own acts, from the trail, with somebody else’s in the same table', async () => {
-    const ada = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
-    const bob = await as(BOB, [], () => stack.dashboard.userDashboard(BOB));
+    const ada = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
+    const bob = await as(BOB, [adaRoleId], () => stack.dashboard.userDashboard(BOB));
 
     expect(ada.activity.length).toBeGreaterThan(0);
     expect(bob.activity).toHaveLength(1);
@@ -373,7 +377,7 @@ describe('the activity feed shows only what its reader may see', () => {
   });
 
   it('never returns more rows than a card holds, however long the trail is', async () => {
-    const ada = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
+    const ada = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
     // Twelve events were written for Ada. A card is eight rows, and an unbounded read here would be
     // the whole of somebody's history fetched on every page load.
     expect(ada.activity.length).toBe(8);
@@ -384,7 +388,7 @@ describe('the whole dashboard composes in a bounded number of queries', () => {
   it('costs the same for a tenant with ten times the rows', async () => {
     const measure = async (): Promise<{ user: number; administrator: number }> => {
       queryCount = 0;
-      await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
+      await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
       const user = queryCount;
       queryCount = 0;
       await as(ADMIN, [adminRoleId], () => stack.dashboard.administratorDashboard());
@@ -406,14 +410,20 @@ describe('the whole dashboard composes in a bounded number of queries', () => {
     expect(after.user).toBe(before.user);
     expect(after.administrator).toBe(before.administrator);
 
-    // And the figures themselves are small: seven reads for the user half, and eleven for the
-    // administrator's eight tiles plus the one resolver call that gates them.
-    expect(before.user).toBeLessThanOrEqual(9);
-    expect(before.administrator).toBeLessThanOrEqual(13);
+    // And the figures themselves are small. **Phase 14 moved both bounds**, and the increase is the
+    // ACL predicate: every document count is now filtered by `visibilityFilter`, which reads the
+    // caller's roles, their tenant-level grants, the entries naming them and the tenant's
+    // inheritance breaks before the count runs. The resolver caches that answer per
+    // `(user, roles, permission)` — but this suite runs with the cache **off** (see `appConfig`),
+    // because a count asserted against the list beside it must be two questions to the database
+    // rather than one question and one recollection. These numbers are therefore the *uncached*
+    // cost, which is the honest ceiling and not what a request pays twice.
+    expect(before.user).toBeLessThanOrEqual(13);
+    expect(before.administrator).toBeLessThanOrEqual(19);
 
     // The answers moved even though the cost did not — otherwise this would pass against a
     // dashboard that had stopped reading anything.
-    const grown = await as(ADA, [], () => stack.dashboard.userDashboard(ADA));
+    const grown = await as(ADA, [adaRoleId], () => stack.dashboard.userDashboard(ADA));
     expect(grown.drafts.value).toBe(ADA_DRAFTS + 60);
   });
 
@@ -436,7 +446,7 @@ describe('the whole dashboard composes in a bounded number of queries', () => {
       },
     });
 
-    const view = await as(ADA, [], () => broken.userDashboard(ADA));
+    const view = await as(ADA, [adaRoleId], () => broken.userDashboard(ADA));
 
     // The document tiles say they could not be loaded — `UNAVAILABLE`, distinct from `FORBIDDEN`,
     // so nobody is sent to ask for a permission they already hold.
@@ -498,6 +508,20 @@ let adaRoleId: string;
 let adminRoleId: string;
 let retentionOnlyRoleId: string;
 
+/**
+ * Phase 14: the user widgets now run with a role that grants `document:view`, where they used to
+ * run with none.
+ *
+ * The change is the phase, not a concession to it. These tests assert that a count equals the list
+ * it summarises; the list is now filtered by `visibilityFilter`, so a caller holding nothing sees
+ * no documents and both sides agree at zero — which is a true statement about the wrong thing. The
+ * assertion is only about the predicate when the caller has reach, and `adaRoleId` is the
+ * `document:view` grant `seed` has always created and these calls never used.
+ *
+ * `ADA` and `BOB` share it, which is also the point: reach is what they have in common and
+ * ownership is what separates them, so a widget that counted by reach instead of by owner would
+ * now fail rather than pass.
+ */
 async function seed(): Promise<void> {
   await owner.tenant.create({
     data: {

@@ -370,6 +370,14 @@ describe('the chain, verified against what the database actually holds', () => {
 describe('the timeline, filtered to what the caller may see', () => {
   const document = asId<AnyId>(uuidv7());
 
+  // Phase 14: the timeline resolves its *subject* through the resolver, and the resolver now walks
+  // the object's chain. A document id naming nothing resolves to no chain and therefore to a
+  // refusal — which is `AccessDenialRecorder`'s own prediction arriving: "when the ACL walk arrives
+  // and decisions become object-dependent, the condition starts to matter". So the document exists.
+  beforeAll(async () => {
+    await seedDocument(document);
+  });
+
   it('answers a caller whose role grants document:view', async () => {
     await record('DOCUMENT_CHANGED', document);
 
@@ -615,6 +623,77 @@ describe('the evidence bundle', () => {
     expect(actions).toContain('AUDIT_EXPORTED');
   });
 });
+
+/**
+ * The smallest chain the walk can cross, with one document at the end of it.
+ *
+ * Written through the unit of work under a request context — as a request would — rather than as
+ * `edms_owner` past row-level security. The rows here are ordinary configuration, so either would
+ * work; doing it this way keeps the suite honest about which writes it is entitled to make.
+ */
+async function seedDocument(documentId: AnyId): Promise<void> {
+  const libraryId = uuidv7();
+  const folderId = uuidv7();
+  const ruleId = uuidv7();
+  const levelId = uuidv7();
+  const typeId = uuidv7();
+
+  await runWithContext(contextFor(), () =>
+    unitOfWork.run(async () => {
+      const tx = requireTransaction();
+      await tx.library.create({
+        data: {
+          id: libraryId,
+          tenantId: TENANT,
+          code: 'LIB',
+          name: 'Quality',
+          ownerScopeType: 'TENANT',
+        },
+      });
+      await tx.folder.create({
+        // `path` is the folder's own identifier: a materialised path is `pathFor(null, id)`, and a
+        // label here would send the chain reader looking for a folder called "root".
+        data: {
+          id: folderId,
+          tenantId: TENANT,
+          libraryId,
+          name: 'Root',
+          path: folderId,
+          isRoot: true,
+        },
+      });
+      await tx.library.update({ where: { id: libraryId }, data: { rootFolderId: folderId } });
+      await tx.confidentialityLevel.create({
+        data: { id: levelId, tenantId: TENANT, code: 'INTERNAL', name: 'Internal', rank: 1 },
+      });
+      await tx.numberingRule.create({
+        data: { id: ruleId, tenantId: TENANT, key: 'default', name: 'Default', segments: [] },
+      });
+      await tx.documentType.create({
+        data: {
+          id: typeId,
+          tenantId: TENANT,
+          code: 'PROC',
+          name: 'Procedure',
+          numberingRuleId: ruleId,
+          defaultConfidentialityId: levelId,
+        },
+      });
+      await tx.document.create({
+        data: {
+          id: documentId,
+          tenantId: TENANT,
+          folderId,
+          documentTypeId: typeId,
+          confidentialityId: levelId,
+          title: 'Audited Procedure',
+          status: 'DRAFT',
+          ownerUserId: uuidv7(),
+        },
+      });
+    }),
+  );
+}
 
 /** A tenant-level role grant, which is what `PrismaAclResolver` resolves today (08 §9). */
 async function grantRole(roleId: AnyId, permission: string): Promise<void> {

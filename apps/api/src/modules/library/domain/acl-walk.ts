@@ -1,4 +1,9 @@
-import { type PermissionKey, type ScopeRef, type ScopeTypeKey, survivesBrokenInheritance } from '@edms/domain';
+import {
+  type PermissionKey,
+  type ScopeRef,
+  type ScopeTypeKey,
+  survivesBrokenInheritance,
+} from '@edms/domain';
 
 import {
   departmentSubjectToken,
@@ -42,12 +47,7 @@ export interface ChainEntry {
 }
 
 export type DecisionReason =
-  | 'ALLOW'
-  | 'DENY'
-  | 'ROLE_GRANT'
-  | 'CLOSED_BY_DEFAULT'
-  | 'STATE'
-  | 'CONFIDENTIALITY';
+  'ALLOW' | 'DENY' | 'ROLE_GRANT' | 'CLOSED_BY_DEFAULT' | 'STATE' | 'CONFIDENTIALITY';
 
 export interface WalkOutcome {
   readonly allowed: boolean;

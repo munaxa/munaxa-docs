@@ -9,7 +9,14 @@ import {
   scopeTypeSchema,
   setInheritanceSchema,
 } from '@edms/contracts';
-import { type AnyId, type FolderId, Permission, ScopeType, type ScopeRef, asId } from '@edms/domain';
+import {
+  type AnyId,
+  type FolderId,
+  Permission,
+  ScopeType,
+  type ScopeRef,
+  asId,
+} from '@edms/domain';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
 import { ValidationError } from '../../../core/errors/application-errors';
