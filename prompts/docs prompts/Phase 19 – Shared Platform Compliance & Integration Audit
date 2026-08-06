@@ -1,0 +1,583 @@
+# Phase 19 – Shared Platform Compliance & Integration Audit
+
+You have completed all previous implementation phases of **Munaxa Work**.
+
+This phase is **NOT** about adding new features.
+
+This phase is **NOT** about redesigning the architecture.
+
+Your task is to ensure that **Munaxa Work fully complies with the Munaxa Shared Platform** and consumes every shared capability instead of duplicating it.
+
+Treat the **Munaxa Platform repository as the single source of truth**.
+
+---
+
+# Objective
+
+Perform a complete repository audit and, where appropriate, refactor Munaxa Work so that it conforms to the shared platform architecture.
+
+The goal is to make Munaxa Work a **thin business application** that contains only HR/business-domain logic while consuming all cross-cutting capabilities from the Platform.
+
+---
+
+# Source of Truth
+
+The Platform repository is authoritative for:
+
+* Design System
+* Design Tokens
+* UI Components
+* Theme
+* Typography
+* Icons
+* Layouts
+* Authentication
+* Authorization
+* RBAC
+* Permissions
+* Audit Framework
+* Logging
+* Notifications
+* Shared Configuration
+* Shared Utilities
+* Shared SDK
+* Shared Types
+* Shared Interfaces
+* Shared Infrastructure
+* Shared Services
+
+If Munaxa Work contains its own implementation of any of these without a justified reason, treat it as a compliance violation.
+
+---
+
+# Audit Scope
+
+Perform a complete repository-wide inspection.
+
+Inspect every:
+
+* package
+* application
+* module
+* component
+* service
+* utility
+* hook
+* middleware
+* provider
+* API
+* configuration
+* build script
+* shared library
+
+Do not assume compliance.
+
+Verify everything.
+
+---
+
+# 1. Design System Compliance
+
+Verify that every UI element comes from the shared design system.
+
+Examples:
+
+* Buttons
+* Inputs
+* Selects
+* Tables
+* Cards
+* Dialogs
+* Drawers
+* Navigation
+* Sidebar
+* Header
+* Breadcrumb
+* Tabs
+* Data Grid
+* Charts
+* Loaders
+* Empty States
+* Badges
+* Toasts
+* Modals
+
+There should be no duplicated UI components.
+
+Replace local implementations with Platform components whenever possible.
+
+---
+
+# 2. Design Tokens
+
+Verify all styling uses Platform tokens.
+
+Examples:
+
+Colors
+
+Spacing
+
+Radius
+
+Elevation
+
+Shadow
+
+Animation
+
+Breakpoints
+
+Typography
+
+Opacity
+
+Transitions
+
+Z-index
+
+Do not allow hardcoded values when Platform tokens exist.
+
+---
+
+# 3. Theme Compliance
+
+Verify usage of:
+
+Platform Theme
+
+Dark Mode
+
+Light Mode
+
+Semantic Colors
+
+Brand Colors
+
+Accessibility Colors
+
+No local theme implementation should exist.
+
+---
+
+# 4. Typography
+
+Verify usage of:
+
+Platform fonts
+
+Platform typography scale
+
+Platform heading hierarchy
+
+Platform text styles
+
+Remove local typography definitions.
+
+---
+
+# 5. Icons
+
+Verify every icon comes from the Platform icon system.
+
+No duplicate icon wrappers.
+
+---
+
+# 6. Layout System
+
+Verify usage of shared:
+
+Dashboard Layout
+
+Forms
+
+Tables
+
+Responsive Grid
+
+Page Layout
+
+Navigation Layout
+
+No duplicated layout framework.
+
+---
+
+# 7. Authentication
+
+Verify Munaxa Work uses Platform authentication completely.
+
+Examples:
+
+Login
+
+Refresh
+
+Sessions
+
+Token validation
+
+Password reset
+
+MFA
+
+OIDC
+
+Identity Providers
+
+No duplicated authentication logic.
+
+---
+
+# 8. Authorization
+
+Verify usage of Platform RBAC.
+
+Examples:
+
+Permission Guards
+
+Roles
+
+Claims
+
+Policies
+
+Feature permissions
+
+Route permissions
+
+No duplicated authorization implementation.
+
+---
+
+# 9. Audit Framework
+
+Verify every audit event uses the Platform audit package.
+
+Examples:
+
+Create
+
+Update
+
+Delete
+
+Login
+
+Logout
+
+Approval
+
+Workflow
+
+Export
+
+Configuration
+
+No local audit implementation.
+
+---
+
+# 10. Logging
+
+Verify logging uses the Platform logger.
+
+No console logging outside development.
+
+No custom logging framework.
+
+---
+
+# 11. Notifications
+
+Verify usage of Platform notifications.
+
+Email
+
+SMS
+
+Push
+
+In-App
+
+Webhooks
+
+No duplicated notification implementation.
+
+---
+
+# 12. Shared Types
+
+Verify there are no duplicated:
+
+DTOs
+
+Interfaces
+
+Enums
+
+Value Objects
+
+Constants
+
+Shared Models
+
+Import them from Platform.
+
+---
+
+# 13. Shared Utilities
+
+Verify no duplicated utilities exist.
+
+Examples:
+
+Date
+
+Money
+
+String
+
+Validation
+
+Formatting
+
+Pagination
+
+Search
+
+Filtering
+
+Sorting
+
+Move duplicates to Platform where appropriate.
+
+---
+
+# 14. Infrastructure
+
+Verify usage of Platform abstractions.
+
+Examples:
+
+Storage
+
+Email
+
+SMS
+
+Cache
+
+Queue
+
+Scheduler
+
+Configuration
+
+Secrets
+
+Encryption
+
+No direct infrastructure coupling unless explicitly allowed.
+
+---
+
+# 15. API Compliance
+
+Verify API implementation follows Platform conventions.
+
+Examples:
+
+REST conventions
+
+DTO validation
+
+Error responses
+
+Pagination
+
+Filtering
+
+Sorting
+
+Versioning
+
+Authentication
+
+Authorization
+
+Audit
+
+Logging
+
+Rate limiting
+
+---
+
+# 16. Package Compliance
+
+Inspect every package.
+
+Verify responsibilities.
+
+Remove duplicate packages.
+
+Ensure dependency direction follows Platform architecture.
+
+No circular dependencies.
+
+---
+
+# 17. Dependency Compliance
+
+Inspect package.json files.
+
+Detect duplicate dependencies already provided by Platform.
+
+Remove unnecessary packages.
+
+Prefer Platform wrappers.
+
+---
+
+# 18. Code Duplication
+
+Search the repository for duplicated implementations of Platform functionality.
+
+Examples:
+
+Authentication
+
+Audit
+
+Logging
+
+Permissions
+
+Notifications
+
+UI Components
+
+Utilities
+
+Configuration
+
+Replace duplicates with Platform equivalents.
+
+---
+
+# 19. Platform Extension Opportunities
+
+Identify reusable functionality currently living in Munaxa Work that should be promoted into the Platform because it is generic enough to benefit other Munaxa products (e.g., Work, Docs, School, CRM, ERP, AI).
+
+For each candidate:
+
+* Explain why it is generic.
+* Estimate the impact of moving it.
+* Describe the migration strategy.
+
+Do not move code automatically unless explicitly requested.
+
+---
+
+# 20. Architecture Compliance
+
+Verify Munaxa Work respects the Platform architecture.
+
+Business modules may depend on Platform.
+
+Platform must never depend on Munaxa Work.
+
+No reverse dependencies.
+
+---
+
+# 21. Performance
+
+Identify duplicated rendering.
+
+Duplicated providers.
+
+Duplicated contexts.
+
+Large bundles.
+
+Unused dependencies.
+
+Tree-shaking opportunities.
+
+---
+
+# 22. Security
+
+Verify Platform security services are used.
+
+Authentication
+
+Authorization
+
+Audit
+
+Encryption
+
+Secrets
+
+Headers
+
+Validation
+
+Rate limiting
+
+CSRF
+
+XSS
+
+CSP
+
+---
+
+# 23. Production Readiness
+
+Verify that Munaxa Work is ready to consume future Platform updates without breaking.
+
+The application should upgrade Platform packages with minimal code changes.
+
+---
+
+# Required Refactoring
+
+Where safe and appropriate:
+
+* Replace local implementations with Platform implementations.
+* Remove duplicated code.
+* Consolidate imports.
+* Eliminate unnecessary abstractions.
+* Preserve all existing business behavior.
+* Do not introduce breaking changes.
+
+If a local implementation exists because the Platform lacks an equivalent, document it as a gap instead of forcing an incorrect migration.
+
+---
+
+# Deliverables
+
+Produce a comprehensive report containing:
+
+1. Executive Summary.
+2. Overall Platform Compliance Score (0–100).
+3. Compliance score by category (UI, Design Tokens, Theme, Auth, Audit, Logging, Notifications, Infrastructure, etc.).
+4. List of all compliance violations, categorized by Critical, High, Medium, and Low severity.
+5. Repository-wide duplication report.
+6. Platform integration opportunities.
+7. Components, services, and utilities that should be migrated to the Platform.
+8. Components that incorrectly duplicate Platform functionality.
+9. Package dependency analysis.
+10. Security and performance observations.
+11. A prioritized remediation plan with estimated effort.
+12. A final verdict on whether Munaxa Work is fully compliant with the Shared Platform and ready to serve as a production-quality consumer of the Platform.
+
+**Success Criteria**
+
+Munaxa Work should contain only Work-specific business logic. All reusable cross-cutting concerns—UI, design tokens, theming, authentication, authorization, auditing, logging, notifications, configuration, shared types, utilities, and infrastructure—must be consumed from the Munaxa Platform repository, making Munaxa Work a clean, maintainable, and upgrade-friendly application built on the shared platform.
