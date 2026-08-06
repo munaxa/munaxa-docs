@@ -5,6 +5,8 @@ import Redis from 'ioredis';
 import { deadLetterQueueFor, queueDefinition, type QueueNameKey } from '@edms/domain';
 
 import { APP_CONFIG, type AppConfig } from '../../core/config';
+import { CLOCK_PORT, type ClockPort } from '../../ports/clock.port';
+import { METRICS, MetricName, type Metrics } from '../../core/observability/metrics';
 import { LOGGER, type Logger } from '../../core/observability/logger';
 import type {
   EnqueuedJob,
@@ -59,6 +61,8 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
   constructor(
     @Inject(APP_CONFIG) config: AppConfig,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
+    @Inject(CLOCK_PORT) private readonly clock: ClockPort,
   ) {
     this.connection = new Redis(config.redis.url, { maxRetriesPerRequest: 3, lazyConnect: true });
     this.blocking = new Redis(config.redis.url, { maxRetriesPerRequest: null, lazyConnect: true });
@@ -260,13 +264,26 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
           });
           return;
         }
+        // The lane, never the tenant: `queue` is drawn from `@edms/domain`'s catalogue and is a
+        // set of eleven, and a tenant label here would be one series per lane per customer — the
+        // exact cardinality explosion `metrics.ts` was written to forbid. Which tenant a slow job
+        // belonged to is a question for the log line and the job's own payload.
+        const startedAt = this.clock.timestamp();
+        let outcome = 'OK';
         try {
           await handle({
             jobId: job.id ?? '',
             attempt: job.attemptsMade + 1,
             payload: job.data as TPayload,
           });
+        } catch (error) {
+          outcome = 'FAILED';
+          throw error;
         } finally {
+          this.metrics.observe(MetricName.JOB_DURATION, this.clock.elapsedMs(startedAt), {
+            queue,
+            outcome,
+          });
           await this.releaseTenantSlot(slot);
         }
       },
@@ -283,6 +300,13 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
 
     worker.on('failed', (job, error) => {
       const exhausted = job !== undefined && job.attemptsMade >= (job.opts.attempts ?? 1);
+      // `exhausted` is the label because it is the distinction an alert cares about: a lane with
+      // failures that all retry successfully is healthy, and one dead-lettering is not. 20 §5's
+      // "queue dead-letter growth" pages on the second series and ignores the first.
+      this.metrics.increment(MetricName.JOB_FAILURES, {
+        queue,
+        exhausted: exhausted ? 'true' : 'false',
+      });
       this.logger.error('A background job failed', {
         queue,
         jobId: job?.id ?? 'unknown',

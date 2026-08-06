@@ -13,6 +13,7 @@ import {
 
 import { AUDIT_WRITER, type AuditWriter } from '../audit/audit-writer.port';
 import { LOGGER, type Logger } from '../observability/logger';
+import { METRICS, MetricName, type Metrics } from '../observability/metrics';
 import { currentContext } from '../tenancy/tenant-context';
 import { AuthorizationAudit } from './audit-actions';
 
@@ -47,6 +48,7 @@ export class AccessDenialRecorder {
   constructor(
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async record(input: {
@@ -56,6 +58,15 @@ export class AccessDenialRecorder {
     /** Why the resolver said no — `DENY`, `CLOSED_BY_DEFAULT`, `STATE`, `CONFIDENTIALITY`. */
     readonly reason: string;
   }): Promise<void> {
+    // Recorded before the trail is touched, so a refusal is counted even when the audit write
+    // fails — the two are independent evidence and the metric is the one 17 §9's "repeated
+    // ACCESS_DENIED by one actor" alert fires on. **The actor is deliberately not a label**: an
+    // alert names the permission and the reason, and *who* is a question the trail answers with a
+    // row rather than the metrics backend with a series per user.
+    this.metrics.increment(MetricName.ACCESS_DENIED, {
+      permission: input.permission,
+      reason: input.reason,
+    });
     const context = currentContext();
     if (context === null) {
       // No tenant, no chain to append to. Reachable only for a refusal outside a request, which

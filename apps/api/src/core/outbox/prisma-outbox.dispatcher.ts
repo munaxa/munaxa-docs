@@ -42,6 +42,9 @@ import type { DispatchResult, OutboxDispatcher } from './outbox.port';
  * unreachable fails its own pass and does not stop the others — which is the same reasoning that
  * makes `TenantDatabase` connect lazily.
  */
+/** The most rows one tenant contributes to the backlog gauge. See `pending()`. */
+const PENDING_SAMPLE_BOUND = 10_000;
+
 @Injectable()
 export class PrismaOutboxDispatcher implements OutboxDispatcher {
   constructor(
@@ -73,6 +76,39 @@ export class PrismaOutboxDispatcher implements OutboxDispatcher {
     }
 
     return { claimed, enqueued, failed };
+  }
+
+  /**
+   * The undelivered backlog across every placement.
+   *
+   * Bounded per tenant rather than counted exactly, for the reason 19 §3 gives for every other
+   * count in this product: an exact count over a large unprocessed table is the expensive query,
+   * and the number an alert fires on is "is the backlog above a threshold", not "is it 41,912".
+   * The bound is generous enough that the gauge is exact in every healthy deployment and
+   * saturates, visibly, in an unhealthy one.
+   */
+  async pending(): Promise<number> {
+    const placements = await this.databases.placements();
+    let pending = 0;
+    for (const placement of placements) {
+      try {
+        pending += await this.databases.withTenant(placement.id, async (tx) => {
+          const rows = await tx.$queryRaw<{ id: string }[]>`
+            SELECT id FROM outbox_message
+            WHERE processed_at IS NULL
+            LIMIT ${PENDING_SAMPLE_BOUND}`;
+          return rows.length;
+        });
+      } catch (error) {
+        // Sampling is not worth failing over. A tenant whose database is unreachable is already
+        // reported by the readiness probe, which is the surface that question belongs on.
+        this.logger.warn('The outbox backlog could not be sampled for one tenant', {
+          tenantId: placement.id,
+          reason: error instanceof Error ? error.message : 'unknown',
+        });
+      }
+    }
+    return pending;
   }
 
   private async dispatchTenant(tenantId: string, batchSize: number): Promise<DispatchResult> {

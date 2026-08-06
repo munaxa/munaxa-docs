@@ -15,6 +15,16 @@ export interface MfaEnrolmentRecord {
   readonly userId: UserId;
   /** Sealed at rest; the service unseals it and nothing above the service sees it. */
   readonly secret: string;
+  /**
+   * True when the row was sealed under a key this deployment no longer seals with — Phase 18.
+   *
+   * The rotation mechanism, and the reason it is a flag rather than a migration: re-sealing every
+   * row at deploy time would need every row's plaintext in one process at one moment, which is the
+   * one thing sealing exists to avoid. Instead a stale row is re-sealed the next time its owner
+   * proves it, inside the transaction that records the success — so a rotation completes as people
+   * sign in, and a row nobody uses stays readable under the old key until they do.
+   */
+  readonly staleSeal: boolean;
   readonly confirmedAt: Date | null;
   /** The last time step consumed, so a captured code cannot be replayed inside its own window. */
   readonly lastStep: number | null;
@@ -33,6 +43,15 @@ export interface MfaRepository {
   ): Promise<void>;
   /** Records a successful challenge: the step consumed, and the failure counter reset. */
   recordSuccess(enrolmentId: AnyId, step: number): Promise<void>;
+  /**
+   * Re-seals a secret under the deployment's current key — Phase 18's rotation path.
+   *
+   * Takes the plaintext because the caller has just unsealed it to verify a code, and a repository
+   * that re-sealed from its own read would be unsealing a second time for no reason. It writes
+   * nothing else: the value is byte-identical after the round trip, so this changes the ciphertext
+   * and never the secret.
+   */
+  reseal(enrolmentId: AnyId, secret: string): Promise<void>;
   /** Records a failure and answers how many consecutive ones there have now been. */
   recordFailure(enrolmentId: AnyId): Promise<number>;
   /** Removes the enrolment and every recovery code with it, and clears `user.mfa_enrolled`. */

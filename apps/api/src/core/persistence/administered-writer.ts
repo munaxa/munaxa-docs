@@ -1,6 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type AnyId, type AuditSubjectTypeKey, AuditOutcome, TenantStatus } from '@edms/domain';
+import {
+  type AnyId,
+  type AuditOutcomeKey,
+  type AuditSubjectTypeKey,
+  AuditOutcome,
+  TenantStatus,
+} from '@edms/domain';
 
 import { AUDIT_WRITER, type AuditActor, type AuditWriter } from '../audit/audit-writer.port';
 import { TenantReadOnlyError } from '../errors/application-errors';
@@ -64,6 +70,15 @@ export interface AdministrativeChange {
    * attested from Phase 9's digest onward as part of a blob the verifier cannot address.
    */
   readonly reason?: string;
+  /**
+   * The outcome recorded on the audit row. `SUCCESS` unless stated — Phase 18.
+   *
+   * Every administered change until now was a change that worked, so the writer hard-coded it.
+   * Phase 18's integrity sweep is the first act whose *operation* succeeds and whose *finding* is a
+   * failure: the pass read the blob, and the blob is wrong. An auditor filtering the trail for
+   * failures must find that row, and 13 §2's `INTEGRITY_MISMATCH` is meaningless as a success.
+   */
+  readonly outcome?: AuditOutcomeKey;
 }
 
 @Injectable()
@@ -91,7 +106,7 @@ export class AdministeredWriter {
         action: change.action,
         subjectType: change.subjectType,
         subjectId: change.subjectId,
-        outcome: AuditOutcome.SUCCESS,
+        outcome: change.outcome ?? AuditOutcome.SUCCESS,
         payload: {
           operation: change.operation,
           ...(change.before ? { before: change.before } : {}),
@@ -127,7 +142,7 @@ export class AdministeredWriter {
       action: change.action,
       subjectType: change.subjectType,
       subjectId: change.subjectId,
-      outcome: AuditOutcome.SUCCESS,
+      outcome: change.outcome ?? AuditOutcome.SUCCESS,
       payload: {
         operation: change.operation,
         ...(change.before ? { before: change.before } : {}),

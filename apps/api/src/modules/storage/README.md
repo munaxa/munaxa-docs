@@ -141,3 +141,48 @@ catalogue since Phase 0.5 with nothing to fire it, and it now expires abandoned 
 removes their staging objects. Removing the object is best-effort per session and logged when it
 fails — most abandoned sessions never wrote a byte, so "nothing to delete" is the common answer and
 not a fault; a store that is genuinely refusing deletes is what the log makes visible.
+
+## Phase 18 — the rolling verifier, and the audit action that waited eighteen phases
+
+`17-security-architecture.md` §8 has promised *"a rolling verifier plus verification on every
+preview fetch; mismatch quarantines and raises an incident"* since Phase 0, and
+`13-audit-architecture.md` §2 has carried `INTEGRITY_MISMATCH` with the note *"Phase 18 — the
+integrity sweep that would detect one"*. Nothing had ever written that action. This module writes
+it now, because this module owns the bytes — the same split as the reaper above: Retention decides
+*when* a schedule fires, Storage decides what a checksum means.
+
+`verifyIntegrity` reads a bounded page of blobs back from the store, re-hashes each, and records
+the finding on the row. Three things in it are decisions.
+
+**A pass carries no cursor.** The page is ordered by `integrity_checked_at`, ascending, nulls
+first — which is the column the pass itself writes. So a blob checked now sorts to the end and the
+next call naturally takes the next set, a crashed pass loses nothing, and there is no stored
+position for a restore or a failover to disagree with.
+
+**A verified blob writes no audit row.** One chained, retention-governed row per blob per pass to
+record that nothing happened would be millions of them; that is 13 §2's argument against auditing
+favourites at a far larger scale. The finding lives on the row, where the next pass reads it. Only
+a mismatch is an event — an audit row whose **outcome is `FAILED`**, carrying both digests, plus a
+domain event that reaches webhooks and any SIEM sink.
+
+**The read is bounded, and a blob too large is marked checked anyway.** `StoragePort.read` answers
+with a whole `Buffer` and the port has no streaming read, so an unbounded pass would hold a 2 GB
+scan in a background lane's memory. A blob above `STORAGE_INTEGRITY_MAX_BYTES` is skipped — and its
+`integrity_checked_at` is stamped even though its status stays `UNVERIFIED`, because without that
+stamp the ordering would hand back the same unreadable-to-us blobs on every pass for ever and the
+sweep would never reach anything else.
+
+`IntegrityStatus` is deliberately **not** a value inside `ScanStatus`. `INFECTED` means the bytes
+are what was uploaded and the upload was hostile — destroy them. `MISMATCH` means the bytes are
+*not* what was uploaded — a storage fault or a tampering incident, recovered by a restore.
+Collapsing them would make "was our object store corrupted" a question this product cannot answer.
+
+`isReachable` refuses a quarantined blob through the same gate an infected one fails, and **nothing
+but a successful re-read clears it**: an operator with a database connection cannot mark a blob
+good, because a blob marked good by a human is exactly what the control exists to prevent.
+`docs/operations/disaster-recovery.md` §2 is the procedure.
+
+Phase 18 also counts every signed URL this module issues. `MetricName.STORAGE_PRESIGN` is
+incremented in `TenantScopedStorage` rather than here — that wrapper is the one place every presign
+in the product passes through, which is the same property that makes it the isolation boundary, so
+counting there cannot be forgotten by a caller and there is no second signing path to miss.

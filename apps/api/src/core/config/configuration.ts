@@ -152,6 +152,22 @@ export const configSchema = z
      */
     STORAGE_PUBLIC_URL: z.string().url().optional(),
 
+    /**
+     * The rolling integrity verifier — Phase 18, `17-security-architecture.md` §8.
+     *
+     * How many blobs one nightly pass reads back and re-hashes, and how large a blob it will
+     * attempt. The second bound is not a preference: `StoragePort.read` answers with a whole
+     * `Buffer`, so an unbounded pass would hold a 2 GB scan in a background lane's memory. A blob
+     * above it is stamped as looked-at and left `UNVERIFIED`, which is honest and — critically —
+     * stops it being returned by every subsequent pass for ever.
+     *
+     * The two together decide how long a full cycle takes. At the defaults, a tenant with 200,000
+     * blobs is completely re-verified about every four months; a deployment that wants faster
+     * raises the batch, and pays for it in reads against its object store.
+     */
+    STORAGE_INTEGRITY_BATCH_SIZE: z.coerce.number().int().min(1).max(10_000).default(200),
+    STORAGE_INTEGRITY_MAX_BYTES: z.coerce.number().int().min(1_024).default(134_217_728),
+
     SEARCH_DRIVER: z.enum(['POSTGRES', 'OPENSEARCH']).default('POSTGRES'),
     /**
      * The coalescing window (`12-search-architecture.md` §6): changes to one document inside
@@ -208,6 +224,26 @@ export const configSchema = z
     MFA_RECOVERY_CODE_COUNT: z.coerce.number().int().min(4).max(24).default(10),
     /** Consecutive failed challenges before the enrolment refuses until an administrator resets it. */
     MFA_MAX_FAILED_ATTEMPTS: z.coerce.number().int().min(3).max(50).default(10),
+    /**
+     * The key a TOTP secret is sealed with at rest — Phase 18, and Phase 14's owed row.
+     *
+     * A TOTP secret is a symmetric key: unlike a password it cannot be hashed, because verifying a
+     * code means computing one. Phase 14 sealed it under a key **derived from
+     * `JWT_ACCESS_SECRET`**, which was careful — domain-separated, so one string was not doing two
+     * cryptographic jobs — and left the two on one rotation clock. Rotating the token secret is
+     * routine and costs at most one access token's lifetime; it also, silently, made every
+     * enrolled authenticator unreadable.
+     *
+     * Its own key breaks that coupling, and the stored value names the key version that sealed it
+     * so a rotation is survivable: both keys unseal, new seals use this one, and a stale row is
+     * re-sealed the next time its owner proves a code
+     * ([ADR-0020](../../../../../docs/architecture/adr/0020-key-management-and-rotation.md)).
+     *
+     * Optional in the schema and **required in production**, exactly like the checkpoint and
+     * witness secrets: a development machine keeps Phase 14's derivation and behaves byte for byte
+     * as it did, and a production deployment states the key it is willing to be held to.
+     */
+    MFA_TOTP_SEALING_KEY: z.string().min(32).optional(),
     OCR_DRIVER: z.enum(['NONE', 'TESSERACT', 'HOSTED']).default('NONE'),
     /** Where the `TESSERACT` driver finds its binary. A path, so an installer can pin one. */
     OCR_TESSERACT_PATH: z.string().default('tesseract'),
@@ -221,6 +257,47 @@ export const configSchema = z
      * proxy or a test double, rather than at a hostname compiled into the adapter.
      */
     MAIL_RESEND_API_KEY: z.string().min(1).optional(),
+    /**
+     * The relay an on-premise installation sends through — Phase 18, and Phase 12's owed row.
+     *
+     * `SMTP` has been in this enum since Phase 0.5 and refused at boot since Phase 12, whose
+     * reason was testability rather than preference: *"an untested hand-rolled SMTP client is a
+     * larger risk than an unbuilt one"*. Phase 18 answers the "untested" half — the message
+     * building is pure and unit-tested against the specifications' own examples, and the session
+     * is driven against transcripts of real servers over a loopback socket — and builds it,
+     * because on-premise deployment is this phase's subject and 18 §3 has asked for this row
+     * since Phase 0.
+     */
+    MAIL_SMTP_HOST: z.string().min(1).optional(),
+    MAIL_SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(587),
+    /**
+     * How the channel is secured.
+     *
+     * `STARTTLS` on 587 is the modern default and is what this defaults to; `TLS` is implicit TLS
+     * on 465; `NONE` is a relay on the same host or the same private network and is the only value
+     * that refuses credentials, because both authentication mechanisms base64 a password and
+     * base64 is an encoding rather than a protection.
+     */
+    MAIL_SMTP_SECURITY: z.enum(['NONE', 'STARTTLS', 'TLS']).default('STARTTLS'),
+    MAIL_SMTP_USERNAME: z.string().min(1).optional(),
+    MAIL_SMTP_PASSWORD: z.string().min(1).optional(),
+    /**
+     * Whether the relay's certificate must validate.
+     *
+     * A variable rather than a default, because an on-premise relay with an internal certificate
+     * authority nobody installed is a real configuration — and because turning validation off must
+     * be an act an operator performs and an auditor can find, rather than something the adapter
+     * decided.
+     */
+    MAIL_SMTP_REJECT_UNAUTHORIZED: booleanFromEnv.default(true),
+    /**
+     * The name this client announces in `EHLO`.
+     *
+     * Its own variable because some relays refuse a name that does not resolve, and a container's
+     * hostname is a random hex string. Defaulted to the deployment's own web host, which is the
+     * one name an operator has already had to get right.
+     */
+    MAIL_SMTP_CLIENT_NAME: z.string().min(1).optional(),
     MAIL_RESEND_ENDPOINT: z.string().url().default('https://api.resend.com/emails'),
     /** How long one send may take before it is abandoned and retried as a transient failure. */
     MAIL_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
@@ -331,6 +408,23 @@ export const configSchema = z
     AUDIT_EXPORT_BATCH_SIZE: z.coerce.number().int().min(100).max(50_000).default(2_000),
 
     /**
+     * Which rendering rule an evidence bundle's `events.csv` is written under — Phase 18.
+     *
+     * Phase 15 found that Phase 9's evidence CSV neutralises no spreadsheet formula and that its
+     * own comment claimed otherwise, and deliberately did not fix it: an evidence bundle's bytes
+     * are what a signed manifest's digest attests, so rewriting the writer silently changes what a
+     * re-export of the same range produces.
+     *
+     * The default is the fix. `RFC4180` is Phase 9's exact behaviour, kept reachable so an
+     * investigation holding a bundle produced before this change can reproduce its bytes and check
+     * them against the digest in the manifest it already has. Whichever is used is **recorded on
+     * the manifest**, which is what makes the difference legible rather than a surprise.
+     */
+    AUDIT_EXPORT_CSV_PROFILE: z
+      .enum(['RFC4180', 'RFC4180_FORMULA_NEUTRALISED'])
+      .default('RFC4180_FORMULA_NEUTRALISED'),
+
+    /**
      * Rows read per page while a report export streams to storage — Phase 15.
      *
      * Its own knob rather than sharing `AUDIT_EXPORT_BATCH_SIZE`, because the two read different
@@ -416,6 +510,61 @@ export const configSchema = z
      * deprecations to be announced in it.
      */
     OPENAPI_DOCUMENT_ENABLED: booleanFromEnv.default(true),
+    /**
+     * Where this deployment's telemetry goes — Phase 18, and Phase 0.5's debt row 9.
+     *
+     * The port and its label rule have existed since Phase 0.5 with nothing bound to them,
+     * deliberately: *"which backend a deployment scrapes is an operational decision, and binding
+     * one now would make it an architectural one"*. That reasoning is why this is a driver rather
+     * than a client library, and why `PROMETHEUS` exposes a **pull** endpoint instead of pushing:
+     * the text format is read directly by Prometheus, VictoriaMetrics, Grafana Agent, the
+     * OpenTelemetry Collector and every hosted agent worth naming, so it declines to choose for a
+     * customer in the way an OTLP push would.
+     *
+     * `NONE` is a no-op rather than a refusal — the one driver in this file that is — and the
+     * adapter says why: a deployment with no storage cannot store a document, and a deployment
+     * with no metrics works and is simply unobserved. Telemetry that failed the work it watches
+     * would be the observability layer becoming the outage.
+     */
+    METRICS_DRIVER: z.enum(['NONE', 'PROMETHEUS']).default('NONE'),
+    /**
+     * The bearer token `/api/metrics` requires.
+     *
+     * A metrics body is queue depths, error rates, refusal counts by permission and the route
+     * table with volumes — no tenant's data and a great deal of reconnaissance. Required whenever
+     * the driver is real, in **every** environment, because a scrape endpoint that is
+     * unauthenticated on a developer's machine is one that ships unauthenticated the first time
+     * somebody copies the compose file.
+     */
+    METRICS_SCRAPE_TOKEN: z.string().min(32).optional(),
+    /**
+     * The registry's series bound.
+     *
+     * `METRIC_CATALOGUE` already refuses any label it does not declare, so this is the backstop
+     * for the case a declaration cannot see — a label whose set is bounded in principle and large
+     * in practice, such as a route table that grows. Past it, new series are refused, existing
+     * ones keep updating, and `edms_metrics_series_dropped_total` says it happened.
+     */
+    METRICS_MAX_SERIES: z.coerce.number().int().min(100).max(1_000_000).default(5_000),
+    /**
+     * How often lane depth and the outbox backlog are sampled.
+     *
+     * Its own interval because those two are the only *levels* in the catalogue — everything else
+     * is recorded where it happens and costs nothing — and sampling them is a Redis round trip per
+     * lane plus a bounded query per tenant database. The sampler does not start at all under
+     * `METRICS_DRIVER=NONE`, so this number is only ever paid by a deployment that scrapes.
+     */
+    METRICS_SAMPLE_INTERVAL_MS: z.coerce.number().int().min(1_000).max(600_000).default(15_000),
+    /**
+     * Named by 20 §3 since Phase 0, read by nothing, and now refused rather than ignored.
+     *
+     * Both of these describe *exporters this build does not contain*. Sentry needs its SDK and
+     * OTLP needs an encoder, and neither can reach the lockfile in the environment these phases
+     * are authored in (see the Phase 18 report). A variable that is accepted and ignored is worse
+     * than one that is refused: an operator who sets it believes errors are reaching Sentry, and
+     * discovers otherwise during the incident it was set for. The `OCR_DRIVER=HOSTED` and
+     * `SEARCH_DRIVER=OPENSEARCH` precedent, applied to configuration rather than to a driver.
+     */
     SENTRY_DSN: z.string().url().optional(),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   })
@@ -515,6 +664,68 @@ export const configSchema = z
       });
     }
 
+    // --- SMTP, in every environment ------------------------------------------------------
+    //
+    // Outside the production block for the same reason storage is: these describe what the
+    // *driver* needs in order to work at all. A relay with no host cannot deliver in staging
+    // either, and the failure it produces there is an approval nobody was told about.
+    if (config.MAIL_DRIVER === 'SMTP') {
+      if (config.MAIL_SMTP_HOST === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MAIL_SMTP_HOST'],
+          message: 'MAIL_DRIVER=SMTP requires a relay host.',
+        });
+      }
+      // One half of a credential pair is never a working configuration, and it is the shape a
+      // partly filled `.env` takes — the same check the storage key pair gets.
+      const username = config.MAIL_SMTP_USERNAME !== undefined;
+      const password = config.MAIL_SMTP_PASSWORD !== undefined;
+      if (username !== password) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [username ? 'MAIL_SMTP_PASSWORD' : 'MAIL_SMTP_USERNAME'],
+          message: 'Give both halves of the SMTP credential, or neither.',
+        });
+      }
+      if (username && config.MAIL_SMTP_SECURITY === 'NONE') {
+        // Refused here as well as in the session, because a deployment should learn at boot that
+        // its two settings disagree rather than at the first send.
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MAIL_SMTP_SECURITY'],
+          message:
+            'SMTP credentials require STARTTLS or TLS; base64 is an encoding, not a defence.',
+        });
+      }
+    }
+
+    // --- Observability, in every environment ---------------------------------------------
+    //
+    // Outside the production block for the reason storage and tenancy are: a development
+    // environment that silently ignores half its observability configuration proves nothing about
+    // the deployment it stands in for, and an unauthenticated scrape endpoint on a laptop is one
+    // that ships the first time somebody copies the compose file.
+    if (config.METRICS_DRIVER !== 'NONE' && config.METRICS_SCRAPE_TOKEN === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['METRICS_SCRAPE_TOKEN'],
+        message: 'A metrics exporter needs a scrape token; the body is operator-only.',
+      });
+    }
+    for (const [key, value] of [
+      ['SENTRY_DSN', config.SENTRY_DSN],
+      ['OTEL_EXPORTER_OTLP_ENDPOINT', config.OTEL_EXPORTER_OTLP_ENDPOINT],
+    ] as const) {
+      if (value !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} has no exporter in this build; unset it. Errors are on the structured log stream and metrics are served at /api/metrics under METRICS_DRIVER=PROMETHEUS.`,
+        });
+      }
+    }
+
     if (config.NODE_ENV !== 'production') {
       return;
     }
@@ -533,17 +744,6 @@ export const configSchema = z
           message: `${key} must name a real provider in production.`,
         });
       }
-    }
-    if (config.MAIL_DRIVER === 'SMTP') {
-      // The enum has named SMTP since Phase 0.5 and Phase 12 built the hosted adapter instead
-      // (`docs/reports/phase-12-notifications.md` §3). Refused at boot rather than at the first
-      // send, because a deployment that discovers its mail driver has no adapter when an
-      // approval assignment fails to reach an approver has discovered it far too late.
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['MAIL_DRIVER'],
-        message: 'MAIL_DRIVER=SMTP has no adapter in this build. Use RESEND.',
-      });
     }
     if (config.MAIL_DRIVER === 'RESEND' && config.MAIL_RESEND_API_KEY === undefined) {
       ctx.addIssue({
@@ -568,6 +768,23 @@ export const configSchema = z
         message: 'The OpenAPI explorer is not served in production.',
       });
     }
+    if (config.MAIL_DRIVER === 'SMTP' && config.MAIL_SMTP_SECURITY === 'NONE') {
+      // Permitted outside production for a relay on the same host, which is a legitimate
+      // single-server arrangement. In production the message travels a network somebody else
+      // operates, and a notification names a document and a person.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_SMTP_SECURITY'],
+        message: 'Production mail is sent over STARTTLS or TLS.',
+      });
+    }
+    if (config.MAIL_DRIVER === 'SMTP' && !config.MAIL_SMTP_REJECT_UNAUTHORIZED) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_SMTP_REJECT_UNAUTHORIZED'],
+        message: 'A production relay presents a certificate this deployment can validate.',
+      });
+    }
     if (config.OUTBOUND_HTTP_ALLOW_INSECURE) {
       // A signed webhook payload over plaintext is the payload and its signature on the wire.
       ctx.addIssue({
@@ -584,6 +801,17 @@ export const configSchema = z
         code: z.ZodIssueCode.custom,
         path: ['SIGNATURE_WITNESS_SECRET'],
         message: 'Electronic signatures must be witnessed in production.',
+      });
+    }
+    if (config.MFA_TOTP_SEALING_KEY === undefined) {
+      // Without it the product still seals, under Phase 14's key derived from the token secret —
+      // which works, and puts a routine rotation of the signing secret one step away from making
+      // every enrolled authenticator in the deployment unreadable. A production deployment states
+      // its own key so that the two clocks are separate, which is what ADR-0020 asks for.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MFA_TOTP_SEALING_KEY'],
+        message: 'Authenticator secrets need their own sealing key in production.',
       });
     }
     if (config.AUDIT_CHECKPOINT_SECRET === undefined) {
@@ -673,6 +901,9 @@ export interface AppConfig {
     readonly publicUrl: string | null;
     /** The chunk a streamed write sends at a time — the only memory a large artefact costs. */
     readonly streamPartBytes: number;
+    /** The rolling integrity verifier's page, and the largest blob it will read back — Phase 18. */
+    readonly integrityBatchSize: number;
+    readonly integrityMaxBytes: number;
   };
   readonly providers: {
     readonly search: RawConfig['SEARCH_DRIVER'];
@@ -688,6 +919,16 @@ export interface AppConfig {
   /** Outbound mail, and where a notification's deep links point (`18-notification-architecture.md`). */
   readonly mail: {
     readonly resendApiKey: string | null;
+    /** The relay, for `MAIL_DRIVER=SMTP` — Phase 18. Null host means the driver is not SMTP. */
+    readonly smtp: {
+      readonly host: string | null;
+      readonly port: number;
+      readonly security: RawConfig['MAIL_SMTP_SECURITY'];
+      readonly username: string | null;
+      readonly password: string | null;
+      readonly clientName: string;
+      readonly rejectUnauthorized: boolean;
+    };
     readonly resendEndpoint: string;
     readonly timeoutMs: number;
     readonly fromAddress: string | null;
@@ -712,6 +953,8 @@ export interface AppConfig {
     readonly totpSkewSteps: number;
     readonly recoveryCodeCount: number;
     readonly maxFailedAttempts: number;
+    /** Null in a deployment that keeps Phase 14's derived key; required in production. */
+    readonly sealingKey: string | null;
   };
   readonly office: {
     readonly libreofficePath: string;
@@ -726,6 +969,8 @@ export interface AppConfig {
     readonly verifyBatchSize: number;
     readonly verifyMaxEvents: number;
     readonly exportBatchSize: number;
+    /** Which CSV rendering rule an evidence bundle is written under — Phase 18. */
+    readonly evidenceCsvProfile: RawConfig['AUDIT_EXPORT_CSV_PROFILE'];
   };
   /** The signature witness — Phase 16, ADR-0017. Null in a deployment without a key. */
   readonly signature: {
@@ -760,9 +1005,13 @@ export interface AppConfig {
     readonly allowInsecure: boolean;
     readonly maxResponseBytes: number;
   };
+  /** Phase 18, and Phase 0.5's debt row 9: the port finally has an adapter behind a driver. */
   readonly observability: {
-    readonly sentryDsn: string | null;
-    readonly otlpEndpoint: string | null;
+    readonly metricsDriver: RawConfig['METRICS_DRIVER'];
+    /** Null under `NONE`; required by boot validation whenever the driver is real. */
+    readonly metricsScrapeToken: string | null;
+    readonly metricsMaxSeries: number;
+    readonly metricsSampleIntervalMs: number;
   };
 }
 
@@ -861,6 +1110,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       localRoot: raw.STORAGE_LOCAL_ROOT,
       publicUrl: raw.STORAGE_PUBLIC_URL ?? null,
       streamPartBytes: raw.STORAGE_STREAM_PART_BYTES,
+      integrityBatchSize: raw.STORAGE_INTEGRITY_BATCH_SIZE,
+      integrityMaxBytes: raw.STORAGE_INTEGRITY_MAX_BYTES,
     },
     audit: {
       readBufferSize: raw.AUDIT_READ_BUFFER_SIZE,
@@ -870,6 +1121,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       verifyBatchSize: raw.AUDIT_VERIFY_BATCH_SIZE,
       verifyMaxEvents: raw.AUDIT_VERIFY_MAX_EVENTS,
       exportBatchSize: raw.AUDIT_EXPORT_BATCH_SIZE,
+      evidenceCsvProfile: raw.AUDIT_EXPORT_CSV_PROFILE,
     },
     signature: {
       witnessSecret: raw.SIGNATURE_WITNESS_SECRET ?? null,
@@ -892,6 +1144,17 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     mail: {
       resendApiKey: raw.MAIL_RESEND_API_KEY ?? null,
+      smtp: {
+        host: raw.MAIL_SMTP_HOST ?? null,
+        port: raw.MAIL_SMTP_PORT,
+        security: raw.MAIL_SMTP_SECURITY,
+        username: raw.MAIL_SMTP_USERNAME ?? null,
+        password: raw.MAIL_SMTP_PASSWORD ?? null,
+        // The web host, without its scheme: an EHLO name is a domain, and some relays refuse one
+        // that does not resolve — which a container's random hostname never does.
+        clientName: raw.MAIL_SMTP_CLIENT_NAME ?? new URL(raw.WEB_BASE_URL).hostname,
+        rejectUnauthorized: raw.MAIL_SMTP_REJECT_UNAUTHORIZED,
+      },
       resendEndpoint: raw.MAIL_RESEND_ENDPOINT,
       timeoutMs: raw.MAIL_TIMEOUT_MS,
       fromAddress: raw.MAIL_FROM_ADDRESS ?? null,
@@ -915,6 +1178,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       totpSkewSteps: raw.MFA_TOTP_SKEW_STEPS,
       recoveryCodeCount: raw.MFA_RECOVERY_CODE_COUNT,
       maxFailedAttempts: raw.MFA_MAX_FAILED_ATTEMPTS,
+      sealingKey: raw.MFA_TOTP_SEALING_KEY ?? null,
     },
     office: {
       libreofficePath: raw.OFFICE_LIBREOFFICE_PATH,
@@ -941,8 +1205,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       maxRequests: raw.RATE_LIMIT_MAX_REQUESTS,
     },
     observability: {
-      sentryDsn: raw.SENTRY_DSN ?? null,
-      otlpEndpoint: raw.OTEL_EXPORTER_OTLP_ENDPOINT ?? null,
+      metricsDriver: raw.METRICS_DRIVER,
+      metricsScrapeToken: raw.METRICS_SCRAPE_TOKEN ?? null,
+      metricsMaxSeries: raw.METRICS_MAX_SERIES,
+      metricsSampleIntervalMs: raw.METRICS_SAMPLE_INTERVAL_MS,
     },
   };
 }

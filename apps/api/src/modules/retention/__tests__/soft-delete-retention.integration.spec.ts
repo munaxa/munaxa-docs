@@ -300,6 +300,7 @@ beforeAll(async () => {
     clock,
     unitOfWork,
     storage: library.storagePort,
+    storageService: library.storage,
     disposition: realDisposition(clock, library.storage),
     settings: {
       [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
@@ -965,6 +966,99 @@ describe('the upload-session sweep', () => {
     });
     expect(session.state).toBe('EXPIRED');
     expect(await library.localStorage.head(decoded.grant.key)).toBeNull();
+  });
+});
+
+// --- The rolling integrity verifier -----------------------------------------------------------
+
+/**
+ * Phase 18. `17-security-architecture.md` §8 has promised a rolling verifier since Phase 0 and
+ * `13-audit-architecture.md` §2 has carried `INTEGRITY_MISMATCH` with nothing writing it.
+ *
+ * Only a real store can be asked these questions, because the whole point is what happens when the
+ * bytes on disk stop being the bytes that were uploaded — which is not a state any in-memory
+ * double can enter without being told to.
+ */
+describe('the integrity sweep', () => {
+  /** A document's stored blob, through the revision that references it. */
+  async function blobOf(documentId: string) {
+    const revision = await owner.documentRevision.findFirstOrThrow({ where: { documentId } });
+    return owner.fileObject.findUniqueOrThrow({ where: { id: revision.fileObjectId } });
+  }
+
+  it('verifies a blob whose bytes are still what was recorded', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+
+    const pass = await asSystem(() => retention.retention.verifyStoredIntegrity());
+
+    expect(pass.checked).toBeGreaterThanOrEqual(1);
+    expect(pass.verified).toBeGreaterThanOrEqual(1);
+    expect(pass.mismatched).toBe(0);
+    const file = await blobOf(document.id);
+    expect(file.integrityStatus).toBe('VERIFIED');
+    expect(file.integrityCheckedAt).not.toBeNull();
+  });
+
+  it('writes no audit row for a blob that verified', async () => {
+    // One chained, retention-governed row per blob per pass to say that nothing happened would be
+    // millions of them — 13 §2's argument against auditing favourites, at a far larger scale.
+    const before = await owner.auditEvent.count({
+      where: { tenantId: TENANT, action: 'INTEGRITY_MISMATCH' },
+    });
+
+    await asSystem(() => retention.retention.verifyStoredIntegrity());
+
+    expect(
+      await owner.auditEvent.count({
+        where: { tenantId: TENANT, action: 'INTEGRITY_MISMATCH' },
+      }),
+    ).toBe(before);
+  });
+
+  it('quarantines a blob whose bytes changed under it, and says so in the trail', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    const stored = await blobOf(document.id);
+
+    // The corruption. Written underneath the application, which is exactly the incident this
+    // sweep exists to detect: a storage fault, a restore of the wrong object, or somebody with
+    // access to the bucket and not to the database.
+    const path = scopedPath(stored.storageKey);
+    await library.localStorage.beginWrite(path);
+    await writeFile(library.localStorage.partialPathFor(path), aPdf(unique('substituted')));
+    await library.localStorage.finishWrite(path);
+
+    const pass = await asSystem(() => retention.retention.verifyStoredIntegrity());
+
+    expect(pass.mismatched).toBeGreaterThanOrEqual(1);
+    expect((await blobOf(document.id)).integrityStatus).toBe('MISMATCH');
+
+    // The evidence: an audit row whose outcome is a failure, carrying both digests.
+    const row = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: TENANT, action: 'INTEGRITY_MISMATCH', subjectId: stored.id },
+      orderBy: { sequence: 'desc' },
+    });
+    expect(row.outcome).toBe('FAILED');
+    const payload = row.payload as { after?: { expectedSha256?: string; actualSha256?: string } };
+    expect(payload.after?.expectedSha256).toBe(stored.checksumSha256);
+    expect(payload.after?.actualSha256).not.toBe(stored.checksumSha256);
+  });
+
+  it('makes the quarantined blob unreachable, exactly as an infected one is', async () => {
+    // The half of 17 §8's sentence that is not the detection: "mismatch quarantines". A document
+    // whose bytes we cannot vouch for must not be served, and the gate is the same one the
+    // antivirus verdict passes through.
+    const mismatched = await owner.fileObject.findFirstOrThrow({
+      where: { tenantId: TENANT, integrityStatus: 'MISMATCH' },
+      select: { id: true },
+    });
+
+    // Through the unit of work, because `isReachable` reads a row and every repository in this
+    // product joins the ambient transaction rather than opening one.
+    const reachable = await asSystem(() =>
+      unitOfWork.run(() => library.storage.isReachable(asId(mismatched.id))),
+    );
+
+    expect(reachable).toBe(false);
   });
 });
 

@@ -187,6 +187,70 @@ jobs:
       - name: Integration tests
         run: pnpm test:integration
 
+  images:
+    name: Container images · three targets from one commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    # The gate Phase 18 added, and it exists because of what the alternative was. A Dockerfile that
+    # nothing builds is a placeholder that looks like a deliverable: it stays plausible until a
+    # release engineer runs it for the first time, under pressure, and discovers which `COPY` names
+    # a path that does not exist. 20 §4's "every gate is blocking" applies to the images or it
+    # applies to nothing.
+    #
+    # It builds and does not push. Publishing to a registry is a deployment decision — which
+    # registry, under which credentials, with which retention — and this repository has none of
+    # those answers. What it can assert is that the images build from this commit.
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The registry credential, as a build *secret* rather than a build argument: an argument is
+      # recorded in the image's history and readable by anybody who can `docker history` it.
+      - name: Write the registry credential for the build secret
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The build stage is shared by all three targets and is the expensive one, so the cache is
+      # what keeps this job from doubling the pipeline's wall-clock.
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          push: false
+          load: false
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: worker
+          push: false
+          load: false
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+
+      - name: Build the web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          push: false
+          load: false
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+
   boundaries:
     name: Product isolation
     runs-on: ubuntu-latest

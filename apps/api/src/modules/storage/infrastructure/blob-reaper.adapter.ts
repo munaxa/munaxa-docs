@@ -9,7 +9,12 @@ import { requireContext } from '../../../core/tenancy/tenant-context';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { STORAGE_PORT, type StoragePort } from '../../../ports/storage.port';
-import type { BlobReaper, ReclaimableBlob } from '../../retention/application/ports';
+import type {
+  BlobReaper,
+  IntegritySweep,
+  ReclaimableBlob,
+} from '../../retention/application/ports';
+import { STORAGE_SERVICE, type StorageService } from '../application/ports';
 
 /**
  * The only code in the product that removes bytes from storage.
@@ -33,6 +38,7 @@ export class StorageBlobReaper implements BlobReaper {
     @Inject(STORAGE_PORT) private readonly storage: StoragePort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(STORAGE_SERVICE) private readonly storageService: StorageService,
     private readonly stamps: RecordStamps,
   ) {}
 
@@ -96,6 +102,18 @@ export class StorageBlobReaper implements BlobReaper {
    * verified, never scanned and never referenced, and a staging area that only ever grows is the
    * leak the session row was invented to prevent.
    */
+  /**
+   * One pass of the rolling integrity verifier — Phase 18.
+   *
+   * A pass-through to `StorageService.verifyIntegrity`, and it is here for the reason this whole
+   * adapter exists: `retention.run` has one subscriber, so the schedule has to be answered through
+   * Retention's port, and the *work* has to stay in the module that owns blobs. Retention learns
+   * four numbers and nothing about checksums.
+   */
+  verifyStoredIntegrity(): Promise<IntegritySweep> {
+    return this.storageService.verifyIntegrity();
+  }
+
   async expireUploadSessions(now: Date): Promise<number> {
     return this.unitOfWork.run(async () => {
       const tx = requireTransaction();

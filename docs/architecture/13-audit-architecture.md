@@ -61,7 +61,7 @@ scan, which is most of them.
 | ~~`REPORT_EXPORTED`~~ | Phase 15 — written |
 | ~~The Integration group~~ | Phase 17 — written, all six |
 | `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability — **still owing after Phase 17**, which built none of them either: an integration platform archives nothing, reinstates nothing and links nothing |
-| `INTEGRITY_MISMATCH` | Phase 18 — the integrity sweep that would detect one |
+| ~~`INTEGRITY_MISMATCH`~~ | **Written from Phase 18** — the rolling integrity verifier (17 §8). Storage's action, because each module owns the actions it writes; its outcome is `FAILED`, because the sweep succeeded and the blob did not |
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
 
@@ -340,6 +340,14 @@ than past the last carried event, so the stream terminates instead of re-reading
 document views for ever. The gaps are the rows the tenant asked not to receive. An **unfiltered**
 sink, which is the default, keeps the guarantee in full, and that is the configuration a consumer
 relying on completeness must use.
+
+**Phase 18 re-read the partitioning trigger and did not fire it.** Phase 10 set two conditions and
+named both so they could not be reset silently — a tenant past twenty million audit rows, or the
+phase that gives audit's *own* retention period a disposition. Neither has occurred: there is no
+deployment of this product, so no tenant has any number of rows, and Phase 18 built no disposition
+for the trail. The trigger stands unchanged, which is the honest outcome — a phase that arrived, met
+neither condition, and restated the existing trigger rather than inventing a new one to look
+decisive.
 
 Retention: audit is kept for the tenant's compliance period (default 7 years), partitioned monthly,
 and moved to cold storage after 12 months. **Partitioning is still not built** — Phase 9 added the

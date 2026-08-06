@@ -116,6 +116,13 @@ events nobody sent, and the gap-free sequence that makes the stream worth trusti
 a guarantee this end can make. Concurrency 2 across tenants with a per-tenant cap of 1 is what says
 "two customers' sinks proceed together, one customer's sink is strictly serial with itself".
 
+**Phase 18 added no lane and no cap, and measured none of the three claims above.** The mechanism
+is a counter in Redis and is exercised by the integration suite; what is *not* exercised is the
+fairness property under load, which needs two tenants each queueing thousands of jobs against a
+running broker — a load scenario, and one this phase's harness does not have a target for. The
+claim in this section therefore stands where Phase 16 and Phase 17 left it: enforced by a mechanism
+with tests, unmeasured at scale, and named here rather than in a footnote.
+
 **What makes `documents.bulk` unusual is what it contends on.** A bulk operation is N transactions,
 each writing an audit row onto a chain that serialises per tenant under an advisory lock — so the
 expensive resource is not CPU and not a renderer pool, it is *one tenant's own chain*, and a second
@@ -163,10 +170,38 @@ a connection pooler in front of PostgreSQL before it needs anything else on this
 ## 8. Verification
 
 Load testing is part of the definition of done for the phases that touch these paths — not a
-pre-release afterthought. Scenarios, thresholds and the harness live in `edms/infra/loadtest/`:
+pre-release afterthought. Scenarios, thresholds and the harness live in `infra/loadtest/`:
 folder listing at 1M documents, search under concurrency, 100 parallel uploads, 500 approvals per
 minute, and a full-tenant index rebuild. Every phase records its measured numbers against the table
 in §1, and a regression against the previous phase blocks the release.
+
+### That paragraph was false for seventeen phases, and this section should say so
+
+The directory did not exist, no harness was written, and **no phase has ever recorded a number** —
+the same shape as §5's fairness sentence, which was false until Phase 16 and now says so.
+
+**Phase 18 built the harness and did not produce the numbers**, and the second half is the decision
+rather than the omission. A load test needs a target and this product has no deployment: numbers
+taken against one PostgreSQL container on a build machine with no object store would not measure
+anything a customer runs, and writing them into §1's table would be worse than an empty column,
+because the next phase would be held to a baseline that means nothing.
+
+So `infra/loadtest/` holds the scenarios as data with §1's own thresholds beside each, and a
+dependency-free runner that exits non-zero when one is missed — which is the half of "a regression
+blocks the release" a script can enforce. The other half needs a stored baseline, and the first run
+against a staging deployment *is* that baseline rather than a comparison. It is a step in
+[`docs/operations/deployment.md`](../operations/deployment.md)'s release checklist rather than in
+CI, because a shared runner's timings would fail these thresholds for reasons that have nothing to
+do with the release.
+
+**Three of §8's five named scenarios are deliberately not implemented**, and `scenarios.mjs` says
+which and why rather than letting the count pass unremarked: 100 parallel uploads measures the
+object store rather than the API (bytes never pass through it — §2), and both 500 approvals per
+minute and a full-tenant index rebuild need a seeded corpus, which is a fixture generator rather
+than a request loop and is the larger half of that work. Two scenarios were added instead —
+document detail and the dashboard — because the dashboard is the most-loaded route in the product
+and Phase 13's "bounded queries, independent of rows" is a claim a load test can falsify and a unit
+test cannot.
 
 ## Phase 15 — what a report costs, and what bounds it
 

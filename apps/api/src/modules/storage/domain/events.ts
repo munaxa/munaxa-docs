@@ -81,3 +81,30 @@ export const STORAGE_EVENT_TYPES: readonly string[] = Object.freeze([
 ]);
 
 export type StorageEvent = DomainEventDraft;
+
+/**
+ * The rolling verifier found a blob's bytes no longer hash to what was recorded — Phase 18.
+ *
+ * An event as well as an audit row, because the two have different readers. The audit row is the
+ * evidence, immutable and hash-chained; the event is what reaches an operator — a webhook, a SIEM
+ * sink, and 17 §9's "checksum mismatch: immediate" alert. Publishing one without the other would
+ * mean either an incident nobody is told about or a notification with nothing behind it.
+ *
+ * The payload carries both digests, because "what should it have been and what is it now" is the
+ * first question an investigation asks and neither is recoverable afterwards from the row alone.
+ */
+export const FILE_INTEGRITY_MISMATCH = 'storage.integrity-mismatch' as const;
+
+export interface FileIntegrityMismatchPayload {
+  readonly fileObjectId: string;
+  readonly expectedSha256: string;
+  /** Null when the object could not be read at all, which is the other half of the finding. */
+  readonly actualSha256: string | null;
+  readonly storageKey: string;
+  readonly storageDriver: string;
+}
+
+export const fileIntegrityMismatchEvent = defineEvent<
+  typeof FILE_INTEGRITY_MISMATCH,
+  FileIntegrityMismatchPayload
+>(FILE_INTEGRITY_MISMATCH, 1, STORAGE_AGGREGATE);

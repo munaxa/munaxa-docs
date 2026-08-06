@@ -57,6 +57,20 @@ export interface RequestContext {
    * question the trail can answer, rather than "somebody's service account did".
    */
   readonly apiClientId?: AnyId;
+  /**
+   * The caller's W3C trace, when this context was built from a request — Phase 18.
+   *
+   * Beside the correlation id rather than instead of it, because the two are owned by different
+   * people: the correlation id is this product's, joins a request to the audit and outbox rows it
+   * caused, and is a UUID an operator can paste into the audit search. The trace id is the
+   * *caller's*, joins this deployment to whatever sits either side of it, and means nothing to
+   * this product's own tooling.
+   *
+   * Optional, so nothing that constructs a context outside a request — a scheduled job, a lane
+   * consumer, provisioning — has to invent one.
+   */
+  readonly traceId?: string;
+  readonly spanId?: string;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

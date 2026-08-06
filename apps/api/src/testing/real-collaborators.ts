@@ -119,7 +119,7 @@ import { PrismaWorkflowEngineRepository } from '../modules/workflow/infrastructu
 import { PrismaWorkflowVersionReader } from '../modules/workflow/infrastructure/prisma-workflow-version.reader';
 import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/workflow-calendar.adapter';
 import type { QueuePort } from '../ports/queue.port';
-import { RecordingQueue } from './fake-ports';
+import { RecordingMetrics, RecordingQueue } from './fake-ports';
 import { DefaultReportingService } from '../modules/reporting/application/reporting.service';
 import { ReportDefinitionService } from '../modules/reporting/application/report-definition.service';
 import { ReportExportService } from '../modules/reporting/application/report-export.service';
@@ -368,7 +368,11 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     signingSecret: options.signingSecret,
     now: () => options.clock.now(),
   });
-  const scopedStorage = new TenantScopedStorage(localStorage, options.registry);
+  const scopedStorage = new TenantScopedStorage(
+    localStorage,
+    options.registry,
+    new RecordingMetrics(),
+  );
   const storage = new DefaultStorageService(
     new PrismaFileObjectRepository(stamps),
     new PrismaUploadSessionRepository(stamps),
@@ -1165,7 +1169,7 @@ export function realAuditStack(options: AuditStackOptions): AuditStack {
   const repository = new PrismaAuditRepository();
   const acl = realAclResolver(options);
   const logger = silentLogger();
-  const denials = new AccessDenialRecorder(audit, logger);
+  const denials = new AccessDenialRecorder(audit, logger, new RecordingMetrics());
 
   const checkpoints = new StorageCheckpointStore(options.storagePort, options.config, logger);
   const verification = new AuditVerificationService(
@@ -1176,6 +1180,7 @@ export function realAuditStack(options: AuditStackOptions): AuditStack {
     options.clock,
     options.config,
     logger,
+    new RecordingMetrics(),
   );
 
   const enqueuedJobs: AuditStack['enqueuedJobs'] = [];
@@ -1273,13 +1278,27 @@ export function realRetention(
   options: RetentionOptions & {
     readonly disposition: DocumentDisposition;
     readonly storage: StoragePort;
+    /**
+     * The storage *service*, for Phase 18's integrity sweep.
+     *
+     * Optional so that the fifteen suites which never fire that schedule are unchanged; the cast
+     * below is what a suite gets if it calls the sweep without supplying one, which fails loudly
+     * at the call rather than quietly reporting a pass that never ran.
+     */
+    readonly storageService?: DefaultStorageService;
   },
 ): RetentionStack {
   const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const schedules = new PrismaRetentionScheduleRepository(stamps);
   const holdRepository = new PrismaLegalHoldRepository(stamps);
   const tombstones = new PrismaTombstoneRepository();
-  const reaper = new StorageBlobReaper(options.storage, options.unitOfWork, silentLogger(), stamps);
+  const reaper = new StorageBlobReaper(
+    options.storage,
+    options.unitOfWork,
+    silentLogger(),
+    options.storageService ?? (null as unknown as DefaultStorageService),
+    stamps,
+  );
 
   return {
     scheduler: new RetentionSchedulerService(
@@ -1621,6 +1640,7 @@ export function realReporting(options: {
         new AccessDenialRecorder(
           realAuditWriter(options.clock, options.unitOfWork),
           silentLogger(),
+          new RecordingMetrics(),
         ),
         writer,
       ),

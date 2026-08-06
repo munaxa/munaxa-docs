@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { StorageDriver, TenantStatus } from '@edms/domain';
 
+import { RecordingMetrics } from '../../testing/fake-ports';
 import { runWithContext, type RequestContext } from '../../core/tenancy/tenant-context';
 import type { TenantPlacement } from '../../core/tenancy/tenant-placement';
 import type { TenantRegistry } from '../../core/tenancy/tenant-registry.port';
@@ -136,7 +137,7 @@ function upload(key: string) {
 describe('scoping storage to the ambient tenant', () => {
   it('puts the tenant prefix on every key the adapter is given', async () => {
     const adapter = spyAdapter();
-    const storage = new TenantScopedStorage(adapter, registry);
+    const storage = new TenantScopedStorage(adapter, registry, new RecordingMetrics());
 
     await runWithContext(contextFor(ACME), async () => {
       await storage.createUploadTarget(upload('revisions/2026/report.pdf'));
@@ -153,7 +154,7 @@ describe('scoping storage to the ambient tenant', () => {
     // checkpoint store asks for `audit/checkpoints/`; what reaches the adapter must be the
     // tenant's own.
     const adapter = spyAdapter('acme/audit/checkpoints/000.json');
-    const storage = new TenantScopedStorage(adapter, registry);
+    const storage = new TenantScopedStorage(adapter, registry, new RecordingMetrics());
 
     const keys = await runWithContext(contextFor(ACME), () => storage.list('audit/checkpoints/'));
 
@@ -164,7 +165,7 @@ describe('scoping storage to the ambient tenant', () => {
   it('gives two tenants different keys for the same logical object', async () => {
     // The whole point. Two customers naming the same path is the ordinary case, not the exotic one.
     const adapter = spyAdapter();
-    const storage = new TenantScopedStorage(adapter, registry);
+    const storage = new TenantScopedStorage(adapter, registry, new RecordingMetrics());
 
     await runWithContext(contextFor(ACME), () => storage.head('policies/qa.pdf'));
     await runWithContext(contextFor(RIVAL), () => storage.head('policies/qa.pdf'));
@@ -175,7 +176,7 @@ describe('scoping storage to the ambient tenant', () => {
   it('strips the prefix on the way back out', async () => {
     // A document row stores `revisions/…`, not `acme/revisions/…`: the prefix is where the bytes live,
     // not part of what the document is, so a tenant moving container does not rewrite its rows.
-    const storage = new TenantScopedStorage(spyAdapter(), registry);
+    const storage = new TenantScopedStorage(spyAdapter(), registry, new RecordingMetrics());
 
     const target = await runWithContext(contextFor(ACME), () =>
       storage.createUploadTarget(upload('revisions/report.pdf')),
@@ -189,7 +190,7 @@ describe('scoping storage to the ambient tenant', () => {
     // runs, it is a path out of the tenant's directory — so the check lives where every driver
     // inherits it, not in the one adapter where it happens to be exploitable.
     const adapter = spyAdapter();
-    const storage = new TenantScopedStorage(adapter, registry);
+    const storage = new TenantScopedStorage(adapter, registry, new RecordingMetrics());
 
     await runWithContext(contextFor(ACME), async () => {
       await expect(storage.head('../rival/policies/qa.pdf')).rejects.toMatchObject({
@@ -206,7 +207,7 @@ describe('scoping storage to the ambient tenant', () => {
   it('refuses a key that already carries a tenant prefix', async () => {
     // Including its *own*: `acme/acme/x` is a second spelling of one object, and a caller evidently
     // holding a scoped key is better told than quietly served a duplicate location.
-    const storage = new TenantScopedStorage(spyAdapter(), registry);
+    const storage = new TenantScopedStorage(spyAdapter(), registry, new RecordingMetrics());
 
     await runWithContext(contextFor(ACME), async () => {
       await expect(storage.head('acme/policies/qa.pdf')).rejects.toMatchObject({
@@ -216,7 +217,7 @@ describe('scoping storage to the ambient tenant', () => {
   });
 
   it('refuses an empty key', async () => {
-    const storage = new TenantScopedStorage(spyAdapter(), registry);
+    const storage = new TenantScopedStorage(spyAdapter(), registry, new RecordingMetrics());
     await runWithContext(contextFor(ACME), async () => {
       await expect(storage.head('')).rejects.toMatchObject({ code: 'FORBIDDEN' });
       await expect(storage.head('/')).rejects.toMatchObject({ code: 'FORBIDDEN' });
@@ -226,7 +227,7 @@ describe('scoping storage to the ambient tenant', () => {
   it('scopes both ends of a copy', async () => {
     // So a copy cannot be the way bytes leave a tenant.
     const adapter = spyAdapter();
-    const storage = new TenantScopedStorage(adapter, registry);
+    const storage = new TenantScopedStorage(adapter, registry, new RecordingMetrics());
 
     await runWithContext(contextFor(ACME), () => storage.copy('a/x.pdf', 'b/x.pdf'));
 
@@ -236,7 +237,11 @@ describe('scoping storage to the ambient tenant', () => {
   it('refuses an answer about an object outside the tenant', async () => {
     // An adapter that answered about somebody else's object is a bug in the adapter, and passing the
     // key to a caller who cannot tell would turn it into a leak.
-    const storage = new TenantScopedStorage(spyAdapter('rival/policies/qa.pdf'), registry);
+    const storage = new TenantScopedStorage(
+      spyAdapter('rival/policies/qa.pdf'),
+      registry,
+      new RecordingMetrics(),
+    );
 
     await runWithContext(contextFor(ACME), async () => {
       await expect(storage.createUploadTarget(upload('policies/qa.pdf'))).rejects.toMatchObject({
@@ -246,14 +251,14 @@ describe('scoping storage to the ambient tenant', () => {
   });
 
   it('refuses to act with no tenant context at all', async () => {
-    const storage = new TenantScopedStorage(spyAdapter(), registry);
+    const storage = new TenantScopedStorage(spyAdapter(), registry, new RecordingMetrics());
     await expect(storage.head('policies/qa.pdf')).rejects.toMatchObject({
       code: 'UNAUTHENTICATED',
     });
   });
 
   it('refuses a tenant this deployment no longer serves', async () => {
-    const storage = new TenantScopedStorage(spyAdapter(), registry);
+    const storage = new TenantScopedStorage(spyAdapter(), registry, new RecordingMetrics());
     await runWithContext(contextFor('019489f0-0000-7000-8000-0000000000ff'), async () => {
       await expect(storage.head('policies/qa.pdf')).rejects.toMatchObject({ code: 'NOT_FOUND' });
     });
@@ -262,6 +267,8 @@ describe('scoping storage to the ambient tenant', () => {
   it('reports the driver underneath, so nothing above has to know it was wrapped', () => {
     // A use case asks the port which driver it is talking to — for an upload-size limit, for a
     // multipart threshold. The wrapper is not a driver, so it answers with the one it wraps.
-    expect(new TenantScopedStorage(spyAdapter(), registry).driver).toBe(StorageDriver.S3);
+    expect(new TenantScopedStorage(spyAdapter(), registry, new RecordingMetrics()).driver).toBe(
+      StorageDriver.S3,
+    );
   });
 });

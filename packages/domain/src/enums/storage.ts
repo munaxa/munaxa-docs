@@ -23,6 +23,37 @@ export const ScanStatus = {
 
 export type ScanStatusKey = (typeof ScanStatus)[keyof typeof ScanStatus];
 
+/**
+ * What the rolling verifier last found about a stored blob — Phase 18.
+ *
+ * 17 §8 has promised "a rolling verifier plus verification on every preview fetch; mismatch
+ * quarantines and raises an incident" since Phase 0, and `INTEGRITY_MISMATCH` has sat in 13 §2's
+ * catalogue with nothing writing it. This is the vocabulary that makes both real.
+ *
+ * **Separate from `ScanStatus`, because the two have different remedies.** `INFECTED` means the
+ * bytes are what was uploaded and the upload was hostile — the answer is to destroy them.
+ * `MISMATCH` means the bytes are *not* what was uploaded — a storage fault or a tampering
+ * incident, and the answer is a restore. Collapsing them would make "was our object store
+ * corrupted" a question the product cannot answer.
+ *
+ * A blob is unreachable unless this is `UNVERIFIED` or `VERIFIED`: an unchecked blob is the state
+ * every blob written before the sweep existed is in, so refusing it would make the whole library
+ * unreadable on the day the column arrived.
+ */
+export const IntegrityStatus = {
+  UNVERIFIED: 'UNVERIFIED',
+  VERIFIED: 'VERIFIED',
+  MISMATCH: 'MISMATCH',
+  UNREADABLE: 'UNREADABLE',
+} as const;
+
+export type IntegrityStatusKey = (typeof IntegrityStatus)[keyof typeof IntegrityStatus];
+
+/** Whether a blob in this state may be served. */
+export function isServableIntegrity(status: IntegrityStatusKey): boolean {
+  return status === IntegrityStatus.UNVERIFIED || status === IntegrityStatus.VERIFIED;
+}
+
 export const UploadSessionState = {
   OPEN: 'OPEN',
   COMPLETED: 'COMPLETED',

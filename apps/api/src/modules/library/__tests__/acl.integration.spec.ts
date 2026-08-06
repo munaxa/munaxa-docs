@@ -29,6 +29,7 @@ import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { AccessDenialRecorder } from '../../../core/authorization/access-denial.recorder';
+import { RecordingMetrics } from '../../../testing/fake-ports';
 import { seedRoleGrant } from '../../../testing/acl-seed';
 import {
   type DocumentLibraryStack,
@@ -366,7 +367,11 @@ describe('breaking inheritance', () => {
 
 describe('a refusal is a 404, and it is evidence', () => {
   it('answers "not found" for a node in another tenant, and records the denial', async () => {
-    const recorder = new AccessDenialRecorder(realAuditWriter(clock, unitOfWork), logger);
+    const recorder = new AccessDenialRecorder(
+      realAuditWriter(clock, unitOfWork),
+      logger,
+      new RecordingMetrics(),
+    );
     const before = (await trailActions()).filter((action) => action === 'ACCESS_DENIED').length;
 
     // A document identifier that names nothing this tenant can reach. The resolver cannot assemble

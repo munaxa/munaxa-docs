@@ -156,8 +156,23 @@ schedules: the delivery pass, the three digest collections, and the coalescing-w
 ## Still to build
 
 Push (18 §3 marks it "Future — no code is written in anticipation") and SMS, both of which the port,
-the preference model and the message table already accommodate. **SMTP**: `MAIL_DRIVER` names it and
-no adapter exists, so the value is refused at boot rather than failing at the first send — the
-on-premise deployments 18 §3 wants it for are Phase 18's. Watchers and subscriptions, which 18 §4's
-`DocumentPublished` row needs and no phase has built. Delivery receipts beyond acceptance: the port
-carries `providerMessageId` and nothing consumes a webhook that would report what became of it.
+the preference model and the message table already accommodate. Watchers and subscriptions, which
+18 §4's `DocumentPublished` row needs and no phase has built. Delivery receipts beyond acceptance:
+the port carries `providerMessageId` and nothing consumes a webhook that would report what became
+of it.
+
+**SMTP was built in Phase 18** and is no longer on this list. Phase 12's refusal was about evidence
+rather than about SMTP — *"an untested hand-rolled SMTP client is a larger risk than an unbuilt
+one"* — so Phase 18 answered it by producing the evidence instead of overruling it. The work splits
+so that almost none of it needs a mail server: `mime.ts` is a string transformation (encoded words
+so an Arabic subject survives, folding, the boundary, dot-stuffing) unit-tested against the
+specifications' own examples, and `smtp-session.ts` is a command sequence and a reply-code
+comparison driven against transcripts of real servers over a loopback socket, including a genuine
+STARTTLS handshake. Transport security is `node:tls`; nothing cryptographic is written here.
+
+The adapter lives beside `ResendMailAdapter` and nothing in this module changed for it — which is
+the point of `NotificationPort`. What the module *inherits* is the classification: over SMTP it is
+RFC 5321's own, so a 5xx is permanent and a 4xx and any transport failure are not. That distinction
+is what `DeliveryService`'s suppression counter acts on, and greylisting is the reason it is not
+academic — a correctly configured relay refuses a first attempt from an unknown sender with a 4xx,
+and treating that as permanent would suppress every new recipient in the deployment.

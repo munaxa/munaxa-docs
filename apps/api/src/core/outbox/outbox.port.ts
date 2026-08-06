@@ -31,6 +31,16 @@ export interface DispatchResult {
  */
 export interface OutboxDispatcher {
   dispatchBatch(batchSize: number): Promise<DispatchResult>;
+  /**
+   * The undelivered backlog, across every tenant this process holds a placement for — Phase 18.
+   *
+   * A `COUNT(*)` per tenant, so it is **not** on the dispatch loop: it is sampled by
+   * `MetricsSampler` on its own interval and only when an exporter is configured. 20 §5's Metrics
+   * row asks for queue depth, and the outbox is the queue in front of every queue — a dispatcher
+   * that has stopped shows here as a rising number long before any lane looks unusual, because a
+   * stalled dispatcher makes every lane look *idle*.
+   */
+  pending(): Promise<number>;
 }
 
 /** Which queue an event type is dispatched to. Owned by the module that publishes the event. */

@@ -11,6 +11,7 @@ import {
   verifyChain,
 } from '../../../core/audit/hash-chain';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
+import { METRICS, MetricName, type Metrics } from '../../../core/observability/metrics';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -70,6 +71,7 @@ export class AuditVerificationService {
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async verify(): Promise<ChainVerification> {
@@ -82,6 +84,15 @@ export class AuditVerificationService {
     if (!walk.result.intact) {
       // Not a checkpoint: a checkpoint over a broken range would attest the break as though it
       // were history, and the next pass would resume from inside it and find nothing wrong.
+      // The counter, on both paths, with `intact` as its only label. 20 §5 pages on an audit chain
+      // break at the highest severity, and a metric that were only emitted on success would make
+      // the alerting condition "the number stopped moving" — indistinguishable from a deployment
+      // where the verification job is not running at all, which is the failure it must detect.
+      this.metrics.increment(
+        MetricName.AUDIT_CHAIN_VERIFIED,
+        { intact: 'false' },
+        walk.result.verified,
+      );
       this.logger.error('The audit chain failed verification', {
         tenantId,
         brokenAtEventId: walk.result.brokenAt,
@@ -119,6 +130,11 @@ export class AuditVerificationService {
         eventsVerified: walk.result.verified,
         checkpointed,
       }),
+    );
+    this.metrics.increment(
+      MetricName.AUDIT_CHAIN_VERIFIED,
+      { intact: 'true' },
+      walk.result.verified,
     );
     this.logger.info('The audit chain verified', {
       tenantId,

@@ -37,7 +37,7 @@ returns recipients.
 | Channel | Status | Notes |
 | --- | --- | --- |
 | In-app | Phase 12 — built | The authoritative inbox: every notification lands here regardless of other channels, with read state and a deep link |
-| Email | Phase 12 — built, hosted provider only | Behind `NotificationPort`. The hosted adapter exists; **SMTP does not**, and `MAIL_DRIVER=SMTP` is refused at boot rather than failing at the first send. Bounces are recorded and suppress the address |
+| Email | Phase 12 — hosted provider; **SMTP added in Phase 18** | Behind `NotificationPort`, two adapters. `RESEND` for the hosted service; `SMTP` for the on-premise deployment this row has wanted since Phase 0, hand-written over `node:net`/`node:tls` with the message building pure and unit-tested and the session driven against transcripts of real servers. Credentials are refused on an unencrypted channel, and production refuses `MAIL_SMTP_SECURITY=NONE` outright. Bounces are recorded and suppress the address; over SMTP the classification is RFC 5321's own — 5xx permanent, 4xx and any transport failure not |
 | Digest | Phase 12 — built | Hourly, daily or weekly rollup per user, replacing individual **emails** for types the user has digested. In-app is never digested: §3's first row calls it authoritative |
 | Push (web/mobile) | Future | The port and the message model already accommodate it; no code is written in anticipation |
 | Webhook | Phase 17 — built, and **not on this path** | Per-tenant outbound webhooks, signed, retried and audited. `NotificationChannel.WEBHOOK` is a value nothing uses; see below |

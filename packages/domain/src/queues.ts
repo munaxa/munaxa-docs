@@ -308,6 +308,26 @@ export const SCHEDULE: readonly ScheduledJob[] = Object.freeze([
     description: 'Records delegations whose period has ended; never what makes them inert.',
   },
   {
+    /**
+     * The rolling integrity verifier — Phase 18, `17-security-architecture.md` §8.
+     *
+     * On `retention.run` rather than a lane of its own, and that is the decision worth recording:
+     * a new lane would need a concurrency, a retry policy, a dead-letter queue and a consumer, for
+     * work whose shape is identical to the sweep already on this lane — off-peak, serialised per
+     * tenant, bounded per pass, and safe to miss because the next one picks up where the ordering
+     * left it. Sharing the lane also means the two cannot run at once in one tenant, which is what
+     * keeps a night's reads against the object store bounded by one pass rather than two.
+     *
+     * Three in the morning: after the audit chain's own verification at 01:30, so an operator
+     * reading the night's alerts sees the trail's verdict before the storage layer's.
+     */
+    name: 'storage.verify-integrity',
+    queue: QueueName.RETENTION_RUN,
+    cron: '0 3 * * *',
+    lockKey: 'schedule:storage.verify-integrity',
+    description: 'Re-reads stored blobs and re-hashes them; a mismatch quarantines and alerts.',
+  },
+  {
     name: 'storage.sweep-upload-sessions',
     queue: QueueName.RETENTION_RUN,
     cron: '*/15 * * * *',

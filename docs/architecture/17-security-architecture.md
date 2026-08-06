@@ -164,26 +164,58 @@ administrator saving a webhook is told at that moment rather than in a delivery 
 ## 8. Integrity
 
 - Every blob's SHA-256 recorded at creation; a rolling verifier plus verification on every preview
-  fetch; mismatch quarantines and raises an incident.
+  fetch; mismatch quarantines and raises an incident. **The rolling verifier was built in Phase
+  18** — see below.
 - Audit hash chain with daily verification and external checkpoints.
 - Published revisions are immutable by construction; there is no code path that updates one.
 - Optional WORM/object-lock for tenants with regulatory retention.
+
+### The rolling verifier, built in Phase 18
+
+The first bullet above has promised this since Phase 0, and `13-audit-architecture.md` §2 has
+carried `INTEGRITY_MISMATCH` with the note *"Phase 18 — the integrity sweep that would detect one"*.
+Three phase reports named it as owed. It exists now: `storage.verify-integrity` runs nightly on the
+`retention.run` lane, reads a bounded page of blobs back from the store, re-hashes each, and records
+the finding on the row.
+
+**A mismatch quarantines**, and that is the half of the sentence that is not the detection: the blob
+becomes unreachable through the same gate an infected one fails, an audit row is written whose
+**outcome is a failure** and which carries both digests, and an event is published that reaches
+webhooks and any SIEM sink. Nothing but a successful re-read clears the quarantine — an operator
+with a database connection cannot mark a blob good, because a blob marked good by a human is exactly
+what the control exists to prevent.
+
+`IntegrityStatus` is its own vocabulary rather than a value inside `ScanStatus`, because the two
+have different remedies: `INFECTED` means the bytes are what was uploaded and the upload was
+hostile, and `MISMATCH` means the bytes are *not* what was uploaded — a storage fault or a tampering
+incident, recovered by a restore. Collapsing them would make "was our object store corrupted" a
+question this product cannot answer.
+
+**What it does not yet do is the second clause: "verification on every preview fetch".** A preview
+fetch re-hashing its source would put a full read and a SHA-256 in front of every page view, which
+is the cost 19 §1's preview target has no room for. The sweep is the rolling half; a per-fetch check
+needs either a streaming digest on the storage port or a cached verification whose staleness is
+itself a question, and the Phase 18 report names it rather than half-building it.
 
 ## 9. Monitoring and response
 
 | Signal | Alert |
 | --- | --- |
-| Repeated `ACCESS_DENIED` by one actor | Possible enumeration |
+| Repeated `ACCESS_DENIED` by one actor | Possible enumeration. **Phase 18**: `authorization.denied` is a counter, labelled by permission and reason — *never* by actor, because a series per user is the cardinality explosion the metric catalogue forbids. Which actor is a question the trail answers with a row |
 | Bulk download or export beyond a baseline | Possible exfiltration |
-| Audit chain break | Immediate, highest severity |
+| Audit chain break | Immediate, highest severity. **Phase 18**: `audit.chain.verified` counts on *both* outcomes, so the alerting condition is a rising `intact="false"` rather than "the number stopped moving" — which would be indistinguishable from a deployment where the verification job is not running |
 | `SCAN_INFECTED` | Immediate, with the uploader and the quarantined blob |
-| Checksum mismatch | Immediate |
+| Checksum mismatch | Immediate. **Phase 18**: raised by the rolling verifier in §8 — an `INTEGRITY_MISMATCH` audit row, an outbound event, and an error-level log line naming the tenant |
 | Login anomaly (new country, impossible travel) | Notify user and administrator |
 | RLS policy or grant change | Immediate |
 
 Incidents follow a written runbook: contain (revoke sessions, quarantine content), assess with the
 audit trail, notify per the tenant's contractual window, remediate, and record the outcome as a
-dated report in `edms/docs/reports/`.
+dated report in `docs/reports/`. **The runbook exists from Phase 18**:
+[`docs/operations/disaster-recovery.md`](../operations/disaster-recovery.md), whose §3 is the
+ransomware path in the order that keeps the evidence. The preparation a penetration test needs —
+the surface, the scope boundary, the test-account story and what a tester may do to a tenant's
+data — is [`docs/operations/penetration-testing.md`](../operations/penetration-testing.md).
 
 ## 10. Prohibited, permanently
 

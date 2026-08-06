@@ -1,5 +1,6 @@
 import type {
   FileObjectId,
+  IntegrityStatusKey,
   ScanStatusKey,
   UploadSessionId,
   UploadSessionStateKey,
@@ -24,6 +25,9 @@ export interface FileObjectRecord {
   readonly storageDriver: string;
   readonly scanStatus: ScanStatusKey;
   readonly scanThreat: string | null;
+  /** What the rolling verifier last found — Phase 18, `17-security-architecture.md` §8. */
+  readonly integrityStatus: IntegrityStatusKey;
+  readonly integrityCheckedAt: Date | null;
   readonly refCount: number;
   readonly derived: boolean;
   readonly createdAt: Date;
@@ -63,6 +67,21 @@ export interface FileObjectRepository {
   adjustRefCount(id: FileObjectId, by: number): Promise<number>;
   /** Only retention calls this, and only at a reference count of zero. */
   listUnreferenced(limit: number): Promise<readonly FileObjectRecord[]>;
+  /**
+   * The integrity sweep's page: least recently verified first, never-verified before everything
+   * else — Phase 18.
+   *
+   * A *page* rather than a cursor the caller keeps, because the ordering column is the one the
+   * pass writes: a blob checked in this pass sorts to the end, so the next call naturally returns
+   * the next set and the sweep needs no state of its own. That is what makes it resumable after a
+   * crash and what makes "every blob is re-read within N days" a property of the schedule rather
+   * than of a stored position somebody has to reconcile.
+   */
+  listForIntegrityCheck(limit: number): Promise<readonly FileObjectRecord[]>;
+  recordIntegrity(
+    id: FileObjectId,
+    finding: { status: IntegrityStatusKey; at: Date },
+  ): Promise<void>;
 }
 
 export interface UploadSessionRecord {
@@ -105,6 +124,13 @@ export interface UploadSessionRepository {
   expireOlderThan(cutoff: Date): Promise<number>;
 }
 
+export interface IntegritySweepResult {
+  readonly checked: number;
+  readonly verified: number;
+  readonly mismatched: number;
+  readonly unreadable: number;
+}
+
 export const STORAGE_SERVICE = Symbol('StorageService');
 
 /**
@@ -142,8 +168,21 @@ export interface StorageService {
     options?: { inline?: boolean },
   ): Promise<{ url: string; expiresAt: Date }>;
 
-  /** The gate: content is unreachable until its scan verdict is CLEAN. */
+  /**
+   * The gate: content is unreachable until its scan verdict is CLEAN — and, since Phase 18, only
+   * while the rolling verifier has not found its bytes changed.
+   */
   isReachable(fileObjectId: FileObjectId): Promise<boolean>;
+
+  /**
+   * One pass of the rolling verifier — `storage.verify-integrity`, Phase 18.
+   *
+   * Reads a bounded page of blobs back from the store, re-hashes each, and records what it found.
+   * A mismatch quarantines the blob, writes `INTEGRITY_MISMATCH` and publishes an event; 17 §9
+   * pages on it, because a stored document whose bytes have changed is the failure this product
+   * exists to make impossible.
+   */
+  verifyIntegrity(): Promise<IntegritySweepResult>;
 
   get(fileObjectId: FileObjectId): Promise<FileObjectRecord | null>;
 

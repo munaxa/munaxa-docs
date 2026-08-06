@@ -27,6 +27,7 @@ import {
 import {
   BLOB_REAPER,
   type BlobReaper,
+  type IntegritySweep,
   DOCUMENT_DISPOSITION,
   type DocumentDisposition,
   LEGAL_HOLD_REPOSITORY,
@@ -226,6 +227,17 @@ export class DefaultRetentionService implements RetentionService {
   /** `storage.sweep-upload-sessions`, the second schedule this lane carries. */
   expireUploadSessions(): Promise<number> {
     return this.blobs.expireUploadSessions(this.writer.clock.now());
+  }
+
+  /**
+   * `storage.verify-integrity`, the third — Phase 18.
+   *
+   * A pass-through, deliberately. Everything about what a checksum means, what quarantine does and
+   * which finding is an incident belongs to Storage; what belongs here is only that this lane's
+   * third schedule fired, which is the same division `expireUploadSessions` above has.
+   */
+  verifyStoredIntegrity(): Promise<IntegritySweep> {
+    return this.blobs.verifyStoredIntegrity();
   }
 
   // --- Internals ----------------------------------------------------------------------------
