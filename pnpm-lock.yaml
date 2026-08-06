@@ -44,6 +44,27 @@ importers:
       '@edms/utils':
         specifier: workspace:*
         version: link:../../packages/utils
+      '@munaxa/cache':
+        specifier: ^2.1.0
+        version: 2.1.0
+      '@munaxa/crypto':
+        specifier: ^2.1.0
+        version: 2.1.0
+      '@munaxa/interfaces':
+        specifier: ^2.1.0
+        version: 2.1.0
+      '@munaxa/logging':
+        specifier: ^2.1.0
+        version: 2.1.0
+      '@munaxa/rbac':
+        specifier: ^2.1.0
+        version: 2.1.0
+      '@munaxa/session':
+        specifier: ^2.1.0
+        version: 2.1.0
+      '@munaxa/types':
+        specifier: ^2.1.0
+        version: 2.1.0
       '@nestjs/common':
         specifier: ^11.0.6
         version: 11.1.28(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -83,9 +104,6 @@ importers:
       pdfjs-dist:
         specifier: ^4.10.38
         version: 4.10.38
-      pino:
-        specifier: ^9.6.0
-        version: 9.14.0
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -102,6 +120,9 @@ importers:
       '@munaxa/config-typescript':
         specifier: ^1.0.0
         version: 1.0.0
+      '@munaxa/conformance':
+        specifier: ^2.1.0
+        version: 2.1.0
       '@nestjs/testing':
         specifier: ^11.0.6
         version: 11.1.28(@nestjs/common@11.1.28(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)(@nestjs/platform-express@11.1.28)
@@ -821,6 +842,10 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@munaxa/cache@2.1.0':
+    resolution: {integrity: sha512-VTRrp+3LoMSB0tjDWfNdO+C7zCfCpuvILer7NWX6n/Tdp+0Y6BRxEvWTEDFNpv8Dm4I4bPgkJkHTNWFJ2FOXVA==, tarball: https://npm.pkg.github.com/download/@munaxa/cache/2.1.0/7c1edd97a37d5d0c980d1bcfc1098050d5c714c0}
+    engines: {node: '>=22.12.0'}
+
   '@munaxa/config-eslint@1.0.0':
     resolution: {integrity: sha512-eU9qbBDyZ86Gs/KP/x4g2PhPNcmXgqvqc+CVaXdFIsT7hon47Tsxf6c5m9FpWnJhS5mevROmyl4/xvFEVecAuQ==, tarball: https://npm.pkg.github.com/download/@munaxa/config-eslint/1.0.0/64b31b29a227727e77055f24b9c1a1960a31050f}
     peerDependencies:
@@ -828,6 +853,14 @@ packages:
 
   '@munaxa/config-typescript@1.0.0':
     resolution: {integrity: sha512-C6oMv9k87Ss6tvwiPAdaysQCOgdt5U5V8eEtdCspg/lcKh4dxMua5Xn09RM9HaI1m59ONiYlTERW4UDzgjHKrw==, tarball: https://npm.pkg.github.com/download/@munaxa/config-typescript/1.0.0/a5329d53fe1c29534452c0a4b8e318d2105a3f7e}
+
+  '@munaxa/conformance@2.1.0':
+    resolution: {integrity: sha512-eFDt7/BjA4n7DoCiPrUCjpvDTYJbXb4K14WxM6JiRyE/7+yOkyp5KNiT4nCrbPqZsDulhpZPy+ze62OekN7p6w==, tarball: https://npm.pkg.github.com/download/@munaxa/conformance/2.1.0/450f85570bfddc6b586fb6b16e3ecae96a7a9152}
+    engines: {node: '>=22.12.0'}
+
+  '@munaxa/crypto@2.1.0':
+    resolution: {integrity: sha512-R/emLqg8x4fOdzE/20j0M0hC2f3rOflyGR1vvwCr1BZBn0iE6759xixw8F1RuDGElhTJxYwwXjKLc3D8KbcNiw==, tarball: https://npm.pkg.github.com/download/@munaxa/crypto/2.1.0/c57e81683297c5895307a0289176e7c0ab9bb3c2}
+    engines: {node: '>=22.12.0'}
 
   '@munaxa/icons@1.0.0':
     resolution: {integrity: sha512-1kYPSJ4mSdjVfi0K/4P2nSAU8sl2Utlzip9adsoF1IlBwr9feZTQEnfKw13zcv6DdZCA8WV4CD9pvPEgnLjWnQ==, tarball: https://npm.pkg.github.com/download/@munaxa/icons/1.0.0/7e9f27636717a78df60c69fd7017b17497ea0937}
@@ -840,11 +873,27 @@ packages:
       react-dom:
         optional: true
 
+  '@munaxa/interfaces@2.1.0':
+    resolution: {integrity: sha512-OPyK3w/XjzZF3WQhsP87LqETJuEWq1J+U9qzhDGsQZfB7npNkMoOFe2LeHlgExG7gmRtWWEjSyXlGW1YyIwVlw==, tarball: https://npm.pkg.github.com/download/@munaxa/interfaces/2.1.0/dd99e949f72f294b1189393b88efd86480106080}
+    engines: {node: '>=22.12.0'}
+
+  '@munaxa/logging@2.1.0':
+    resolution: {integrity: sha512-ZJm06hB5uAqtzT+bBO5u9wQW4ivtUxl5rVwA8mi1OAHOSk1nhpDTNo8ZkYEKYfpBqoEluqEw68Hvm1O760BR+A==, tarball: https://npm.pkg.github.com/download/@munaxa/logging/2.1.0/1803ba44ccda01ec07eaa3f51e5ddded47f181ad}
+    engines: {node: '>=22.12.0'}
+
   '@munaxa/platform@1.0.0':
     resolution: {integrity: sha512-3HTWb+mYz6uUm0xtfZFKtfLAmx5igiIcIHFRZmiwcRrvs1cltUNsgLJ4/MvOFg57sQXJ8QwIQ+iGYZFAeCLAIw==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.0.0/178a7b6a9ce53fb08bf157acb7c963f8154e074d}
     peerDependencies:
       react: ^19.0.0
       react-dom: ^19.0.0
+
+  '@munaxa/rbac@2.1.0':
+    resolution: {integrity: sha512-0Oj9ygKL6W1vxvCw1lTCnO8Wq9eWXLLBn/80DSaw6PVVJhtDYcA8Be5v0HNPyeC2PY1l+jNavR/5stsWYJwEEA==, tarball: https://npm.pkg.github.com/download/@munaxa/rbac/2.1.0/ea613a7a65fd359c8ec8b51a5cf056a6ee171f3c}
+    engines: {node: '>=22.12.0'}
+
+  '@munaxa/session@2.1.0':
+    resolution: {integrity: sha512-mEWGk6orW55s30a9GLn34lgQX+VaG+KURHD3pThGmHVkQRjx4hR1wVDxJZikI3qdAwlh2kq3qZqVrMm6zCKbSA==, tarball: https://npm.pkg.github.com/download/@munaxa/session/2.1.0/1f939df20bad15b54f017485c7a9e4c61a67b1a2}
+    engines: {node: '>=22.12.0'}
 
   '@munaxa/theme@1.0.0':
     resolution: {integrity: sha512-b7+eM7083kcP+viaHEJmg9EyTIFYZm7r6/OiGrNArcMnIwFvpuNpNNh2gV+FnFavBNHn9mre6dNnvjZ09chgSg==, tarball: https://npm.pkg.github.com/download/@munaxa/theme/1.0.0/3d75489a080cc6149218f875e4a2c308e7e1466f}
@@ -867,6 +916,10 @@ packages:
         optional: true
       react-dom:
         optional: true
+
+  '@munaxa/types@2.1.0':
+    resolution: {integrity: sha512-vbmj6uHmyuC3u5O/M137htAnGAv1dB9FiaSSZnx5GmhVeN8PePM4+HgdJaNUFiXN4GyUeLDmS4RWsEMRBZsM4Q==, tarball: https://npm.pkg.github.com/download/@munaxa/types/2.1.0/89294b585a6d83dded2958626794ea5c04f7755c}
+    engines: {node: '>=22.12.0'}
 
   '@munaxa/ui@1.0.0':
     resolution: {integrity: sha512-CJZvBe/RfzGAqySxSnh9L8+OnwtT6FOtjLZfkjSTtQQFy9X8c6poNp/HHzfjhazqFZitfRhHaggzMOlNb0PSGQ==, tarball: https://npm.pkg.github.com/download/@munaxa/ui/1.0.0/cd8a2e1a0c55dfa0a58a04406e6942ac7a232555}
@@ -1108,9 +1161,6 @@ packages:
 
   '@pdf-lib/upng@1.0.1':
     resolution: {integrity: sha512-dQK2FUMQtowVP00mtIksrlZhdFXQZPC+taih1q4CvPZ5vqdxR/LKBaFg0oAfzd1GlHZXXSPdQfzQnt+ViGvEIQ==}
-
-  '@pinojs/redact@0.4.0':
-    resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
 
   '@prisma/client@6.19.3':
     resolution: {integrity: sha512-mKq3jQFhjvko5LTJFHGilsuQs+W+T3Gm451NzuTDGQxwCzwXHYnIu2zGkRoW+Exq3Rob7yp2MfzSrdIiZVhrBg==}
@@ -2116,10 +2166,6 @@ packages:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
     engines: {node: '>=12'}
 
-  atomic-sleep@1.0.0:
-    resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
-    engines: {node: '>=8.0.0'}
-
   balanced-match@1.0.2:
     resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
 
@@ -2881,10 +2927,6 @@ packages:
   ohash@2.0.11:
     resolution: {integrity: sha512-RdR9FQrFwNBNXAr4GixM8YaRZRJ5PUWbKYbE5eOsrwAjJW0q2REGcf79oYPsLyskQCZG1PLN+S/K1V00joZAoQ==}
 
-  on-exit-leak-free@2.1.2:
-    resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
-    engines: {node: '>=14.0.0'}
-
   on-finished@2.4.1:
     resolution: {integrity: sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==}
     engines: {node: '>= 0.8'}
@@ -2950,16 +2992,6 @@ packages:
     resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
     engines: {node: '>=12'}
 
-  pino-abstract-transport@2.0.0:
-    resolution: {integrity: sha512-F63x5tizV6WCh4R6RHyi2Ml+M70DNRXt/+HANowMflpgGFMAym/VKm6G7ZOQRjqN7XbGxK1Lg9t6ZrtzOaivMw==}
-
-  pino-std-serializers@7.1.0:
-    resolution: {integrity: sha512-BndPH67/JxGExRgiX1dX0w1FvZck5Wa4aal9198SrRhZjH3GxKQUKIBnYJTdj2HDN3UQAS06HlfcSbQj2OHmaw==}
-
-  pino@9.14.0:
-    resolution: {integrity: sha512-8OEwKp5juEvb/MjpIc4hjqfgCNysrS94RIOMXYvpYCdm/jglrKEiAYmiumbmGhCvs+IcInsphYDFwqrjr7398w==}
-    hasBin: true
-
   pkg-types@2.3.1:
     resolution: {integrity: sha512-y+ichcgc2LrADuhLNAx8DFjVfgz91pRxfZdI3UDhxHvcVEZsenLO+7XaU5vOp0u/7V/wZ+plyuQxtrDlZJ+yeg==}
 
@@ -2990,9 +3022,6 @@ packages:
       typescript:
         optional: true
 
-  process-warning@5.1.0:
-    resolution: {integrity: sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw==}
-
   proxy-addr@2.0.7:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
     engines: {node: '>= 0.10'}
@@ -3007,9 +3036,6 @@ packages:
   qs@6.15.3:
     resolution: {integrity: sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A==}
     engines: {node: '>=0.6'}
-
-  quick-format-unescaped@4.0.4:
-    resolution: {integrity: sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg==}
 
   range-parser@1.3.0:
     resolution: {integrity: sha512-hek2mFQpPuI4E1BBKrSto+BU3e3x4xuarsbiwr3+lf7p44juvFMV0XFWQAP3xUyqXA4RrXLIoaSUGbSt056ZMw==}
@@ -3069,10 +3095,6 @@ packages:
     resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
     engines: {node: '>= 14.18.0'}
 
-  real-require@0.2.0:
-    resolution: {integrity: sha512-57frrGM/OCTLqLOAh0mhVA9VBMHd+9U7Zb2THMGdBUoZVOtGbJzjxsYGDJ3A9AYYCP4hn6y1TVbaOfzWtm5GFg==}
-    engines: {node: '>= 12.13.0'}
-
   redis-errors@1.2.0:
     resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
     engines: {node: '>=4'}
@@ -3102,10 +3124,6 @@ packages:
 
   safe-buffer@5.2.1:
     resolution: {integrity: sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==}
-
-  safe-stable-stringify@2.5.0:
-    resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
-    engines: {node: '>=10'}
 
   safer-buffer@2.1.2:
     resolution: {integrity: sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg==}
@@ -3160,16 +3178,9 @@ packages:
   siginfo@2.0.0:
     resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
 
-  sonic-boom@4.2.1:
-    resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
-
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
-
-  split2@4.2.0:
-    resolution: {integrity: sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==}
-    engines: {node: '>= 10.x'}
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
@@ -3231,9 +3242,6 @@ packages:
   tapable@2.3.3:
     resolution: {integrity: sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A==}
     engines: {node: '>=6'}
-
-  thread-stream@3.2.0:
-    resolution: {integrity: sha512-zLBvqpwr4Esa0kRjcrzGU6zL25lePWaCLMx0RQFrmteozIfeNdaMLpG5U7PeHzvlFkAWaRKA9/KVW4F60iB+qw==}
 
   tinybench@2.9.0:
     resolution: {integrity: sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg==}
@@ -3816,6 +3824,11 @@ snapshots:
   '@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4':
     optional: true
 
+  '@munaxa/cache@2.1.0':
+    dependencies:
+      '@munaxa/interfaces': 2.1.0
+      '@munaxa/types': 2.1.0
+
   '@munaxa/config-eslint@1.0.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)':
     dependencies:
       '@eslint/js': 9.39.5
@@ -3829,6 +3842,15 @@ snapshots:
 
   '@munaxa/config-typescript@1.0.0': {}
 
+  '@munaxa/conformance@2.1.0':
+    dependencies:
+      '@munaxa/interfaces': 2.1.0
+      '@munaxa/types': 2.1.0
+
+  '@munaxa/crypto@2.1.0':
+    dependencies:
+      '@munaxa/types': 2.1.0
+
   '@munaxa/icons@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@munaxa/platform': 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -3838,6 +3860,15 @@ snapshots:
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
+
+  '@munaxa/interfaces@2.1.0':
+    dependencies:
+      '@munaxa/types': 2.1.0
+
+  '@munaxa/logging@2.1.0':
+    dependencies:
+      '@munaxa/interfaces': 2.1.0
+      '@munaxa/types': 2.1.0
 
   '@munaxa/platform@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -3866,6 +3897,17 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
+  '@munaxa/rbac@2.1.0':
+    dependencies:
+      '@munaxa/interfaces': 2.1.0
+      '@munaxa/types': 2.1.0
+
+  '@munaxa/session@2.1.0':
+    dependencies:
+      '@munaxa/crypto': 2.1.0
+      '@munaxa/interfaces': 2.1.0
+      '@munaxa/types': 2.1.0
+
   '@munaxa/theme@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@munaxa/platform': 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -3885,6 +3927,8 @@ snapshots:
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
+
+  '@munaxa/types@2.1.0': {}
 
   '@munaxa/ui@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -4057,8 +4101,6 @@ snapshots:
   '@pdf-lib/upng@1.0.1':
     dependencies:
       pako: 1.0.11
-
-  '@pinojs/redact@0.4.0': {}
 
   '@prisma/client@6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)':
     optionalDependencies:
@@ -4998,8 +5040,6 @@ snapshots:
 
   assertion-error@2.0.1: {}
 
-  atomic-sleep@1.0.0: {}
-
   balanced-match@1.0.2: {}
 
   balanced-match@4.0.4: {}
@@ -5757,8 +5797,6 @@ snapshots:
 
   ohash@2.0.11: {}
 
-  on-exit-leak-free@2.1.2: {}
-
   on-finished@2.4.1:
     dependencies:
       ee-first: 1.1.1
@@ -5819,26 +5857,6 @@ snapshots:
 
   picomatch@4.0.5: {}
 
-  pino-abstract-transport@2.0.0:
-    dependencies:
-      split2: 4.2.0
-
-  pino-std-serializers@7.1.0: {}
-
-  pino@9.14.0:
-    dependencies:
-      '@pinojs/redact': 0.4.0
-      atomic-sleep: 1.0.0
-      on-exit-leak-free: 2.1.2
-      pino-abstract-transport: 2.0.0
-      pino-std-serializers: 7.1.0
-      process-warning: 5.1.0
-      quick-format-unescaped: 4.0.4
-      real-require: 0.2.0
-      safe-stable-stringify: 2.5.0
-      sonic-boom: 4.2.1
-      thread-stream: 3.2.0
-
   pkg-types@2.3.1:
     dependencies:
       confbox: 0.2.4
@@ -5870,8 +5888,6 @@ snapshots:
     transitivePeerDependencies:
       - magicast
 
-  process-warning@5.1.0: {}
-
   proxy-addr@2.0.7:
     dependencies:
       forwarded: 0.2.0
@@ -5885,8 +5901,6 @@ snapshots:
     dependencies:
       es-define-property: 1.0.1
       side-channel: 1.1.1
-
-  quick-format-unescaped@4.0.4: {}
 
   range-parser@1.3.0: {}
 
@@ -5943,8 +5957,6 @@ snapshots:
       util-deprecate: 1.0.2
 
   readdirp@4.1.2: {}
-
-  real-require@0.2.0: {}
 
   redis-errors@1.2.0: {}
 
@@ -6003,8 +6015,6 @@ snapshots:
       tslib: 2.8.1
 
   safe-buffer@5.2.1: {}
-
-  safe-stable-stringify@2.5.0: {}
 
   safer-buffer@2.1.2: {}
 
@@ -6107,13 +6117,7 @@ snapshots:
 
   siginfo@2.0.0: {}
 
-  sonic-boom@4.2.1:
-    dependencies:
-      atomic-sleep: 1.0.0
-
   source-map-js@1.2.1: {}
-
-  split2@4.2.0: {}
 
   stackback@0.0.2: {}
 
@@ -6157,10 +6161,6 @@ snapshots:
   tailwindcss@4.3.3: {}
 
   tapable@2.3.3: {}
-
-  thread-stream@3.2.0:
-    dependencies:
-      real-require: 0.2.0
 
   tinybench@2.9.0: {}
 

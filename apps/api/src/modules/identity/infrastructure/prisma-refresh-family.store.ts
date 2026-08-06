@@ -6,7 +6,7 @@ import type {
   RefreshFamilyStorePort,
   SessionLimit,
 } from '@munaxa/interfaces';
-import { asId, unsafeId } from '@munaxa/types';
+import { unsafeId } from '@munaxa/types';
 import type { AuthMethod, TenantId, TokenFamilyId, UserId } from '@munaxa/types';
 
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
@@ -164,7 +164,7 @@ function toRow(family: RefreshFamily): Prisma.SessionFamilyUncheckedCreateInput 
 function toFamily(row: SessionFamilyRow): RefreshFamily {
   return {
     id: unsafeId<TokenFamilyId>(row.id),
-    tenantId: asId<TenantId>(row.tenantId),
+    tenantId: unsafeId<TenantId>(row.tenantId),
     userId: unsafeId<UserId>(row.userId),
     createdAt: row.createdAt.getTime(),
     lastSeenAt: row.lastSeenAt.getTime(),
