@@ -19,7 +19,7 @@ import {
   type StoragePort,
 } from '../ports';
 import { runWithContext, type RequestContext } from '../core/tenancy/tenant-context';
-import { RedisCacheAdapter } from '../infrastructure/cache/redis-cache.adapter';
+import { PlatformRedisCacheAdapter } from '../infrastructure/cache/platform-redis-cache.adapter';
 import { JwtTokenService } from '../modules/identity/infrastructure/jwt.token-service';
 import { aTenantId } from '../testing/factories';
 
@@ -60,7 +60,7 @@ describe('application composition', () => {
         placements: vi.fn(() => Promise.resolve([])),
         disconnectAll: vi.fn(),
       })
-      .overrideProvider(RedisCacheAdapter)
+      .overrideProvider(PlatformRedisCacheAdapter)
       .useValue({ get: vi.fn(), set: vi.fn(), delete: vi.fn() })
       .compile();
     return moduleRef;

@@ -4,17 +4,21 @@
  * Used for resolved permission decisions, configuration lookups and rate-limit counters. The
  * cache is an optimisation only: a cold cache must produce the same answer, never a
  * different one (`docs/architecture/08-permission-model.md` §8).
+ *
+ * The interface is the platform's, not this product's. Munaxa Docs used to declare its own
+ * near-identical `CachePort`, which meant two abstractions over the same Redis and — more to the
+ * point — the local one lacked `setIfAbsent` and `compareAndSet`. Those are not conveniences:
+ * every at-most-once guarantee in the platform reduces to them, so a product on the narrower
+ * interface cannot wire MFA replay protection, one-time codes or notification deduplication at
+ * all. Re-exported rather than re-declared so the DI token keeps its name and the compiler
+ * enforces the platform's contract.
+ *
+ * Note the units: the platform takes `{ ttl }` in **milliseconds**, where the retired local port
+ * took seconds positionally.
  */
-export const CACHE_PORT = Symbol('CachePort');
+export type { CachePort } from '@munaxa/interfaces';
 
-export interface CachePort {
-  get<TValue>(key: string): Promise<TValue | null>;
-  set<TValue>(key: string, value: TValue, ttlSeconds: number): Promise<void>;
-  delete(key: string): Promise<void>;
-  /** Invalidation is by event — an ACL, role, delegation or membership change. */
-  deleteByPrefix(prefix: string): Promise<number>;
-  increment(key: string, ttlSeconds: number): Promise<number>;
-}
+export const CACHE_PORT = Symbol('CachePort');
 
 export const LOCK_PORT = Symbol('LockPort');
 

@@ -1,5 +1,6 @@
 import type { MetricLabels, Metrics } from '../core/observability/metrics';
-import type { CachePort, LockPort, Lease } from '../ports/cache.port';
+import { MemoryCache } from '@munaxa/cache';
+import type { LockPort, Lease } from '../ports/cache.port';
 import type { ClockPort } from '../ports/clock.port';
 import type { EnqueuedJob, JobOptions, QueueDepth, QueuePort } from '../ports/queue.port';
 
@@ -49,53 +50,19 @@ export class FakeClock implements ClockPort {
   }
 }
 
-export class FakeCache implements CachePort {
-  private readonly entries = new Map<string, { value: unknown; expiresAt: number }>();
-
-  constructor(private readonly clock: ClockPort = new FakeClock()) {}
-
-  get<TValue>(key: string): Promise<TValue | null> {
-    const entry = this.entries.get(key);
-    if (!entry || entry.expiresAt <= this.clock.timestamp()) {
-      this.entries.delete(key);
-      return Promise.resolve(null);
-    }
-    return Promise.resolve(entry.value as TValue);
-  }
-
-  set<TValue>(key: string, value: TValue, ttlSeconds: number): Promise<void> {
-    this.entries.set(key, { value, expiresAt: this.clock.timestamp() + ttlSeconds * 1_000 });
-    return Promise.resolve();
-  }
-
-  delete(key: string): Promise<void> {
-    this.entries.delete(key);
-    return Promise.resolve();
-  }
-
-  deleteByPrefix(prefix: string): Promise<number> {
-    let removed = 0;
-    for (const key of [...this.entries.keys()]) {
-      if (key.startsWith(prefix)) {
-        this.entries.delete(key);
-        removed += 1;
-      }
-    }
-    return Promise.resolve(removed);
-  }
-
-  increment(key: string, ttlSeconds: number): Promise<number> {
-    const current = this.entries.get(key);
-    const next = typeof current?.value === 'number' ? current.value + 1 : 1;
-    this.entries.set(key, {
-      value: next,
-      expiresAt: current?.expiresAt ?? this.clock.timestamp() + ttlSeconds * 1_000,
-    });
-    return Promise.resolve(next);
-  }
-
-  get size(): number {
-    return this.entries.size;
+/**
+ * The cache double is the platform's own `MemoryCache`.
+ *
+ * Hand-writing a second in-memory cache was how the old double drifted from the real adapter: it
+ * had no `setIfAbsent`, so nothing under test could exercise the single-winner semantics the
+ * platform depends on. `MemoryCache` is the reference implementation and passes the same
+ * conformance suite the Redis adapter does, so a test that passes against it is testing the
+ * contract rather than a convenient approximation.
+ */
+export class FakeCache extends MemoryCache {
+  constructor(clock: ClockPort = new FakeClock()) {
+    // The platform clock is epoch millis; ClockPort.now() is a Date.
+    super({ clock: { now: () => clock.now().getTime() } });
   }
 }
 

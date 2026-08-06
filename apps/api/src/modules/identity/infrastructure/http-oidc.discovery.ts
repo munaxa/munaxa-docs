@@ -93,7 +93,7 @@ export class HttpOidcDiscovery implements OidcDiscovery {
     const keys = rawKeys.slice(0, MAX_KEYS);
 
     const resolved = { document, keys };
-    await this.cache.set(key, resolved, METADATA_TTL_SECONDS);
+    await this.cache.set(key, resolved, { ttl: METADATA_TTL_SECONDS * 1_000 });
     return resolved;
   }
 

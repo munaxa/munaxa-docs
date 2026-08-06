@@ -61,7 +61,7 @@ export class CachedSettingsReader implements SettingsReader {
       this.logger.warn('Stored setting is not in the catalogue', { key, tenantId });
     }
 
-    await this.cache.set(cacheKey, values, CACHE_TTL_SECONDS);
+    await this.cache.set(cacheKey, values, { ttl: CACHE_TTL_SECONDS * 1_000 });
     return values;
   }
 

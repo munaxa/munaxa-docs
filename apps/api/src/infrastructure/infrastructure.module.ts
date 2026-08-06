@@ -16,7 +16,7 @@ import { OCR_PORT, type OcrPort } from '../ports/ocr.port';
 import { INDEX_PORT, SEARCH_PORT, type IndexPort } from '../ports/search.port';
 import { STORAGE_PORT, type StoragePort } from '../ports/storage.port';
 import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-registry.port';
-import { RedisCacheAdapter } from './cache/redis-cache.adapter';
+import { PlatformRedisCacheAdapter } from './cache/platform-redis-cache.adapter';
 import { BullMqQueueAdapter } from './queue/bullmq.adapter';
 import { SystemClockAdapter } from './clock/system-clock.adapter';
 import { NoOpMetricsAdapter } from './observability/no-op-metrics.adapter';
@@ -299,7 +299,7 @@ function requireBucket(config: AppConfig): string {
   controllers: [LocalTransferController],
   providers: [
     SystemClockAdapter,
-    RedisCacheAdapter,
+    PlatformRedisCacheAdapter,
     BullMqQueueAdapter,
     NoOpMetricsAdapter,
     {
@@ -316,7 +316,7 @@ function requireBucket(config: AppConfig): string {
       inject: [METRICS_REGISTRY, NoOpMetricsAdapter],
     },
     { provide: CLOCK_PORT, useExisting: SystemClockAdapter },
-    { provide: CACHE_PORT, useExisting: RedisCacheAdapter },
+    { provide: CACHE_PORT, useExisting: PlatformRedisCacheAdapter },
     // Both halves of the queue are one adapter, and one instance: the producers and the workers
     // share a connection pool and a shutdown, and two instances would mean two of each.
     { provide: QUEUE_PORT, useExisting: BullMqQueueAdapter },

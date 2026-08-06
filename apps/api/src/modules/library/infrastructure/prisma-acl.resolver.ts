@@ -505,14 +505,15 @@ export class PrismaAclResolver implements AclResolver {
     if (this.config.acl.cacheTtlSeconds === 0) {
       return null;
     }
-    return this.cache.get<TValue>(key);
+    // The platform reports a miss as `undefined`; this resolver's callers branch on `null`.
+    return (await this.cache.get<TValue>(key)) ?? null;
   }
 
   private async writeCache<TValue>(key: string, value: TValue): Promise<void> {
     if (this.config.acl.cacheTtlSeconds === 0) {
       return;
     }
-    await this.cache.set(key, value, this.config.acl.cacheTtlSeconds);
+    await this.cache.set(key, value, { ttl: this.config.acl.cacheTtlSeconds * 1_000 });
   }
 }
 

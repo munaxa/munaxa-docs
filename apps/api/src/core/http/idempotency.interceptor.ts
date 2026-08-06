@@ -44,7 +44,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
           ? of(stored)
           : next
               .handle()
-              .pipe(tap((response) => void this.cache.set(cacheKey, response, REPLAY_TTL_SECONDS))),
+              .pipe(
+                tap(
+                  (response) =>
+                    void this.cache.set(cacheKey, response, { ttl: REPLAY_TTL_SECONDS * 1_000 }),
+                ),
+              ),
       ),
     );
   }

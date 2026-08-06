@@ -187,7 +187,9 @@ export class DefaultFederationService implements FederationService {
     // Keyed by the state's digest and holding the nonce's, so a leaked cache yields neither in a
     // usable form. Bounded by a TTL, because an authorization somebody abandoned must not sit
     // there for ever waiting to be completed.
-    await this.cache.set(cacheKey(digestOf(state)), pending, AUTHORIZATION_TTL_SECONDS);
+    await this.cache.set(cacheKey(digestOf(state)), pending, {
+      ttl: AUTHORIZATION_TTL_SECONDS * 1_000,
+    });
 
     const url = new URL(metadata.document.authorizationEndpoint);
     url.searchParams.set('response_type', 'code');

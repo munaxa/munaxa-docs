@@ -347,7 +347,9 @@ export class DefaultPermissionService implements PermissionService {
    */
   private async afterChange(scope: ScopeRef, changed: readonly AclEntryRecord[]): Promise<void> {
     const { tenantId } = requireContext();
-    await this.cache.deleteByPrefix(`acl:${tenantId}:`);
+    // `clear` matches `${namespace}:*`, so the trailing separator the old prefix carried is
+    // supplied by the platform rather than by this call site.
+    await this.cache.clear?.(`acl:${tenantId}`);
     await this.outbox.publish([
       aclChangedEvent(scope.id, {
         scopeType: scope.type,
