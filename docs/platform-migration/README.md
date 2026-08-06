@@ -82,17 +82,14 @@ This is a small number, and it should be read as such. It is one of ten areas.
 
 ## 4. Platform packages consumed
 
-Declared in `apps/api/package.json` at `^2.0.0`:
+Declared in `apps/api/package.json` at `^2.0.0`: `@munaxa/crypto` and `@munaxa/interfaces`, plus
+`@munaxa/conformance` as a devDependency.
 
-`@munaxa/audit`, `@munaxa/auth`, `@munaxa/cache`, `@munaxa/config`, `@munaxa/crypto`,
-`@munaxa/interfaces`, `@munaxa/logging`, `@munaxa/notifications`, `@munaxa/rbac`,
-`@munaxa/security`, `@munaxa/session`, `@munaxa/types`, and `@munaxa/conformance` as a
-devDependency.
-
-**Only `@munaxa/crypto`, `@munaxa/interfaces` and `@munaxa/conformance` are actually imported
-today.** The rest are declared ahead of the areas that will use them. If the remaining migration
-is deferred, the unused entries should be removed rather than left as a promise the code does not
-keep.
+Those three are exactly what the merged code imports. The other ten platform packages were
+declared at first, ahead of the areas that would use them, and have been removed — a dependency a
+product does not import is a promise its code does not keep, and while the migration is paused it
+would also be an unpublished package blocking `pnpm install` for no benefit. They come back with
+the areas that need them.
 
 ---
 
@@ -149,7 +146,7 @@ because the work was not done.
 
 | Adapter | Port | Verified by |
 | --- | --- | --- |
-| `PlatformRedisCacheAdapter` | `CachePort` (`@munaxa/interfaces`) | `runCacheConformance` against a real Redis — 13/13 |
+| `PlatformRedisCacheAdapter` | `CachePort` (`@munaxa/interfaces`) | `runCacheConformance` against a real Redis — 13/13, via `pnpm test:integration` |
 | `PlatformPasswordHasher` | Docs' `PasswordHasher` | `platform-password.hasher.spec.ts` — 13 tests |
 | `LegacyScryptVerifier` | `PasswordHasher` (`@munaxa/crypto`) | Same spec, legacy-format cases |
 
@@ -210,16 +207,24 @@ Baseline taken before any change, on the same machine, same commit:
 | --- | --- | --- |
 | `pnpm install` | pass | pass |
 | `pnpm typecheck` | 13/13 tasks | 13/13 tasks |
-| `pnpm test` | 842 passed, 1 skipped | **859 passed, 1 skipped** |
+| `pnpm test` | 842 passed, 1 skipped | **846 passed, 1 skipped** |
 | `pnpm lint` | 0 errors, 3 warnings | 0 errors, 5 warnings |
 | `pnpm build` | 9/9 tasks | 9/9 tasks |
 
-Per package after migration: api 631 (+1 skipped), domain 164, contracts 26, web 21, utils 11,
-i18n 4, worker 2 — 859 total.
+Per package after migration: api 618 (+1 skipped), domain 164, contracts 26, web 21, utils 11,
+i18n 4, worker 2 — 846 total. The 13 cache conformance tests are not in this number; they need
+Redis and therefore live in the integration suite (below).
 
-**+17 tests, 0 regressions.** All 842 baseline tests still pass. The increase is 13 cache
-conformance tests plus a password-hasher spec that grew from 8 assertions to 13 while replacing
-the 8 retired with the deleted implementation.
+**+4 tests in the default suite, 0 regressions.** All 842 baseline tests still pass; the increase
+is a password-hasher spec that grew from 8 assertions to 13 while replacing the 8 retired with the
+deleted implementation. The 13 cache conformance tests are additional, in the integration suite.
+
+The conformance suite was initially named `*.conformance.spec.ts`, which the default vitest
+config picks up — so `pnpm test` began requiring a live Redis. That is precisely what this repo's
+integration config exists to avoid ("a test that cannot run without a database has no business
+failing a lint-and-typecheck pipeline"), so it was renamed to `*.integration.spec.ts`. It fails
+rather than skips when Redis is absent: a conformance suite that quietly tests nothing is
+indistinguishable from one that passed.
 
 The 2 additional lint warnings are in `apps/web` and pre-date this work; they surfaced because
 `turbo` cached the earlier run. Zero errors throughout.
@@ -280,7 +285,7 @@ cache half is now demonstrably true. The session half is not, because that area 
 | Local duplication removed | 20 | 3 | 226 lines of ~30,000 overlapping |
 | Adapters implemented | 15 | 3 | 1 of ~9 |
 | Conformance proven | 10 | 7 | The one adapter that exists passes fully, against real infrastructure |
-| Behaviour preserved | 10 | 10 | 859 tests, zero regressions, timing defence measured |
+| Behaviour preserved | 10 | 10 | 846 + 13 tests, zero regressions, timing defence measured |
 | Deployable today | 5 | 0 | Dependencies are unpublished |
 
 Scoring the work that was done as though it were the work that was asked for would make this

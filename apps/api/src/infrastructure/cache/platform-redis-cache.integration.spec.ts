@@ -13,8 +13,14 @@ import { PlatformRedisCacheAdapter } from './platform-redis-cache.adapter';
  * under test are properties of Redis, so a mock cannot fail the way the real server can and is
  * not used.
  *
- * Skipped rather than failed when there is no Redis to talk to, so a laptop without the compose
- * stack still gets a useful `pnpm test`. CI runs the stack, so CI runs these.
+ * Lives in the integration suite, not the default one. This repo's rule is that a test which
+ * cannot run without infrastructure has no business failing a lint-and-typecheck pipeline, so
+ * `pnpm test` excludes `*.integration.spec.ts` and `pnpm test:integration` runs it against the
+ * compose stack.
+ *
+ * It fails rather than skips when Redis is absent. A conformance suite that quietly tests nothing
+ * is worse than one that fails, because it is indistinguishable from one that passed — and the
+ * whole point of it is to be the thing that catches an adapter that only looks atomic.
  */
 const url = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 
