@@ -44,30 +44,33 @@ importers:
       '@edms/utils':
         specifier: workspace:*
         version: link:../../packages/utils
+      '@munaxa/audit':
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/auth':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/cache':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/crypto':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/interfaces':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/logging':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/rbac':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/session':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@munaxa/types':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@nestjs/common':
         specifier: ^11.0.6
         version: 11.1.28(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -124,8 +127,8 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0
       '@munaxa/conformance':
-        specifier: ^2.1.0
-        version: 2.1.0
+        specifier: ^2.2.0
+        version: 2.2.0
       '@nestjs/testing':
         specifier: ^11.0.6
         version: 11.1.28(@nestjs/common@11.1.28(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.28)(@nestjs/platform-express@11.1.28)
@@ -845,12 +848,16 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@munaxa/auth@2.1.0':
-    resolution: {integrity: sha512-Pmut3w7TvwOEarVFm+gx+bNBRG9On23ou22JmqIUY0hp4nCLH04H9UWEVwdKQjUDf52MYWgsO4Amq8wmo923Xw==, tarball: https://npm.pkg.github.com/download/@munaxa/auth/2.1.0/a1f1ddfddcace23f64e47f81eb9a119f00178154}
+  '@munaxa/audit@2.2.0':
+    resolution: {integrity: sha512-pPn2SciCnNjtVyWb/RH/aGQh13h3OrH0o88617ILvshjGfoVQlcPY37yS30oU91KeEVE4HDdwIscLsKZADA8LQ==, tarball: https://npm.pkg.github.com/download/@munaxa/audit/2.2.0/130a0929bf92c2078a8a9b23276a26b040783573}
     engines: {node: '>=22.12.0'}
 
-  '@munaxa/cache@2.1.0':
-    resolution: {integrity: sha512-VTRrp+3LoMSB0tjDWfNdO+C7zCfCpuvILer7NWX6n/Tdp+0Y6BRxEvWTEDFNpv8Dm4I4bPgkJkHTNWFJ2FOXVA==, tarball: https://npm.pkg.github.com/download/@munaxa/cache/2.1.0/7c1edd97a37d5d0c980d1bcfc1098050d5c714c0}
+  '@munaxa/auth@2.2.0':
+    resolution: {integrity: sha512-b4YPeoA0SeOOB8IXkRvYFpDasGQzJ50fei9Nquua8N/WAxEyQLycFSEqSuxc4cqZ6iT2955B4+AJNp4/59gvKw==, tarball: https://npm.pkg.github.com/download/@munaxa/auth/2.2.0/d542d25b44999fecc4c9af48911023edd07b1e9a}
+    engines: {node: '>=22.12.0'}
+
+  '@munaxa/cache@2.2.0':
+    resolution: {integrity: sha512-R7lU4ah8QZGGgqBP4521VGk6CxR9LY2dYXsdJaR7RPbQi/2TYOx318j1e/MlggkrEKRfUHehRBq1b3sk27w+fw==, tarball: https://npm.pkg.github.com/download/@munaxa/cache/2.2.0/0e9024696b2fc581064caab6910e8f8aa3af4146}
     engines: {node: '>=22.12.0'}
 
   '@munaxa/config-eslint@1.0.0':
@@ -861,12 +868,12 @@ packages:
   '@munaxa/config-typescript@1.0.0':
     resolution: {integrity: sha512-C6oMv9k87Ss6tvwiPAdaysQCOgdt5U5V8eEtdCspg/lcKh4dxMua5Xn09RM9HaI1m59ONiYlTERW4UDzgjHKrw==, tarball: https://npm.pkg.github.com/download/@munaxa/config-typescript/1.0.0/a5329d53fe1c29534452c0a4b8e318d2105a3f7e}
 
-  '@munaxa/conformance@2.1.0':
-    resolution: {integrity: sha512-eFDt7/BjA4n7DoCiPrUCjpvDTYJbXb4K14WxM6JiRyE/7+yOkyp5KNiT4nCrbPqZsDulhpZPy+ze62OekN7p6w==, tarball: https://npm.pkg.github.com/download/@munaxa/conformance/2.1.0/450f85570bfddc6b586fb6b16e3ecae96a7a9152}
+  '@munaxa/conformance@2.2.0':
+    resolution: {integrity: sha512-DK/o7BcMmG9G1/yC0Oy5NPLhsGrHR5mV9meEwsCW9mTyE0YVaa6sslM+VNosEFC4b81ctjiffdnEnk5qeSNRJQ==, tarball: https://npm.pkg.github.com/download/@munaxa/conformance/2.2.0/37ef527730bfa149b1381bda9e9b8bee5f732836}
     engines: {node: '>=22.12.0'}
 
-  '@munaxa/crypto@2.1.0':
-    resolution: {integrity: sha512-R/emLqg8x4fOdzE/20j0M0hC2f3rOflyGR1vvwCr1BZBn0iE6759xixw8F1RuDGElhTJxYwwXjKLc3D8KbcNiw==, tarball: https://npm.pkg.github.com/download/@munaxa/crypto/2.1.0/c57e81683297c5895307a0289176e7c0ab9bb3c2}
+  '@munaxa/crypto@2.2.0':
+    resolution: {integrity: sha512-/mfJaEIAH4ZXdgbdtc7qIJUO4Us4ReNiR/2PkGnJS+3zSx4lKvSLDfhfWPF1AuvJKDcEvbZ7YOlKIwESXYkkCw==, tarball: https://npm.pkg.github.com/download/@munaxa/crypto/2.2.0/899c0f9200d51a366e98f7708a8859be9f4f3398}
     engines: {node: '>=22.12.0'}
 
   '@munaxa/icons@1.0.0':
@@ -880,12 +887,12 @@ packages:
       react-dom:
         optional: true
 
-  '@munaxa/interfaces@2.1.0':
-    resolution: {integrity: sha512-OPyK3w/XjzZF3WQhsP87LqETJuEWq1J+U9qzhDGsQZfB7npNkMoOFe2LeHlgExG7gmRtWWEjSyXlGW1YyIwVlw==, tarball: https://npm.pkg.github.com/download/@munaxa/interfaces/2.1.0/dd99e949f72f294b1189393b88efd86480106080}
+  '@munaxa/interfaces@2.2.0':
+    resolution: {integrity: sha512-eMi0EubQsLCV7HOqjLJeQb34vVeri4Xdoadqvde17xcsxMu06UonXDgzeS7dALf2gpyEt4h6m61KGd7ONYuCfQ==, tarball: https://npm.pkg.github.com/download/@munaxa/interfaces/2.2.0/3b29b8a2b54fe3604942ad9e8d88acd68369089a}
     engines: {node: '>=22.12.0'}
 
-  '@munaxa/logging@2.1.0':
-    resolution: {integrity: sha512-ZJm06hB5uAqtzT+bBO5u9wQW4ivtUxl5rVwA8mi1OAHOSk1nhpDTNo8ZkYEKYfpBqoEluqEw68Hvm1O760BR+A==, tarball: https://npm.pkg.github.com/download/@munaxa/logging/2.1.0/1803ba44ccda01ec07eaa3f51e5ddded47f181ad}
+  '@munaxa/logging@2.2.0':
+    resolution: {integrity: sha512-JL1DFoNhNbp1gNxe5BH9KZ1gQ/G8n1D/xyAK2KftwUFlw2ZRLuDOmSfHYOchDWUxnc6trrDeG0gLY/sYlje/iQ==, tarball: https://npm.pkg.github.com/download/@munaxa/logging/2.2.0/18b9b1319f174971a6c7b45eae79d47660906b09}
     engines: {node: '>=22.12.0'}
 
   '@munaxa/platform@1.0.0':
@@ -894,12 +901,12 @@ packages:
       react: ^19.0.0
       react-dom: ^19.0.0
 
-  '@munaxa/rbac@2.1.0':
-    resolution: {integrity: sha512-0Oj9ygKL6W1vxvCw1lTCnO8Wq9eWXLLBn/80DSaw6PVVJhtDYcA8Be5v0HNPyeC2PY1l+jNavR/5stsWYJwEEA==, tarball: https://npm.pkg.github.com/download/@munaxa/rbac/2.1.0/ea613a7a65fd359c8ec8b51a5cf056a6ee171f3c}
+  '@munaxa/rbac@2.2.0':
+    resolution: {integrity: sha512-jDC16a6aFFDo5UOngbZWZf5lkrncZrITyundNOtfK1Ro/B41YwNtGQC9XYKYyWFOVTcb8iZtOAinkT/aCZTxKA==, tarball: https://npm.pkg.github.com/download/@munaxa/rbac/2.2.0/105ad3e6af772cf74b30b7713a78b6dd93fce6a7}
     engines: {node: '>=22.12.0'}
 
-  '@munaxa/session@2.1.0':
-    resolution: {integrity: sha512-mEWGk6orW55s30a9GLn34lgQX+VaG+KURHD3pThGmHVkQRjx4hR1wVDxJZikI3qdAwlh2kq3qZqVrMm6zCKbSA==, tarball: https://npm.pkg.github.com/download/@munaxa/session/2.1.0/1f939df20bad15b54f017485c7a9e4c61a67b1a2}
+  '@munaxa/session@2.2.0':
+    resolution: {integrity: sha512-FlLNHRBRnXtX1/hc46IztmdnWdzVHIdrv8a8+9tTlWhhF+eXxzAK1JcUoxbPe8ZbG4kAPUEwi53hg7JdrzHLJw==, tarball: https://npm.pkg.github.com/download/@munaxa/session/2.2.0/332c1c9cfac80d41fb84af1967c5f2c68643e6bf}
     engines: {node: '>=22.12.0'}
 
   '@munaxa/theme@1.0.0':
@@ -924,8 +931,8 @@ packages:
       react-dom:
         optional: true
 
-  '@munaxa/types@2.1.0':
-    resolution: {integrity: sha512-vbmj6uHmyuC3u5O/M137htAnGAv1dB9FiaSSZnx5GmhVeN8PePM4+HgdJaNUFiXN4GyUeLDmS4RWsEMRBZsM4Q==, tarball: https://npm.pkg.github.com/download/@munaxa/types/2.1.0/89294b585a6d83dded2958626794ea5c04f7755c}
+  '@munaxa/types@2.2.0':
+    resolution: {integrity: sha512-gW6rH8cf6BG6FwZSxhR32g04AzmSNVd7KJsQPyZ+Prlu6jvcY7pUBLs2Zzd3fuG8l086OXaHD5DtKOykXVPvwg==, tarball: https://npm.pkg.github.com/download/@munaxa/types/2.2.0/b753055e9c2a2d30a6638e5a34fe2592f6d4c125}
     engines: {node: '>=22.12.0'}
 
   '@munaxa/ui@1.0.0':
@@ -3831,16 +3838,22 @@ snapshots:
   '@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4':
     optional: true
 
-  '@munaxa/auth@2.1.0':
+  '@munaxa/audit@2.2.0':
     dependencies:
-      '@munaxa/crypto': 2.1.0
-      '@munaxa/interfaces': 2.1.0
-      '@munaxa/types': 2.1.0
+      '@munaxa/interfaces': 2.2.0
+      '@munaxa/logging': 2.2.0
+      '@munaxa/types': 2.2.0
 
-  '@munaxa/cache@2.1.0':
+  '@munaxa/auth@2.2.0':
     dependencies:
-      '@munaxa/interfaces': 2.1.0
-      '@munaxa/types': 2.1.0
+      '@munaxa/crypto': 2.2.0
+      '@munaxa/interfaces': 2.2.0
+      '@munaxa/types': 2.2.0
+
+  '@munaxa/cache@2.2.0':
+    dependencies:
+      '@munaxa/interfaces': 2.2.0
+      '@munaxa/types': 2.2.0
 
   '@munaxa/config-eslint@1.0.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)':
     dependencies:
@@ -3855,14 +3868,14 @@ snapshots:
 
   '@munaxa/config-typescript@1.0.0': {}
 
-  '@munaxa/conformance@2.1.0':
+  '@munaxa/conformance@2.2.0':
     dependencies:
-      '@munaxa/interfaces': 2.1.0
-      '@munaxa/types': 2.1.0
+      '@munaxa/interfaces': 2.2.0
+      '@munaxa/types': 2.2.0
 
-  '@munaxa/crypto@2.1.0':
+  '@munaxa/crypto@2.2.0':
     dependencies:
-      '@munaxa/types': 2.1.0
+      '@munaxa/types': 2.2.0
 
   '@munaxa/icons@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -3874,14 +3887,14 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/interfaces@2.1.0':
+  '@munaxa/interfaces@2.2.0':
     dependencies:
-      '@munaxa/types': 2.1.0
+      '@munaxa/types': 2.2.0
 
-  '@munaxa/logging@2.1.0':
+  '@munaxa/logging@2.2.0':
     dependencies:
-      '@munaxa/interfaces': 2.1.0
-      '@munaxa/types': 2.1.0
+      '@munaxa/interfaces': 2.2.0
+      '@munaxa/types': 2.2.0
 
   '@munaxa/platform@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -3910,16 +3923,16 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/rbac@2.1.0':
+  '@munaxa/rbac@2.2.0':
     dependencies:
-      '@munaxa/interfaces': 2.1.0
-      '@munaxa/types': 2.1.0
+      '@munaxa/interfaces': 2.2.0
+      '@munaxa/types': 2.2.0
 
-  '@munaxa/session@2.1.0':
+  '@munaxa/session@2.2.0':
     dependencies:
-      '@munaxa/crypto': 2.1.0
-      '@munaxa/interfaces': 2.1.0
-      '@munaxa/types': 2.1.0
+      '@munaxa/crypto': 2.2.0
+      '@munaxa/interfaces': 2.2.0
+      '@munaxa/types': 2.2.0
 
   '@munaxa/theme@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -3941,7 +3954,7 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/types@2.1.0': {}
+  '@munaxa/types@2.2.0': {}
 
   '@munaxa/ui@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
