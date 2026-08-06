@@ -3,6 +3,7 @@ import type {
   AnyId,
   AuditOutcomeKey,
   AuditSubjectTypeKey,
+  DocsAuditAction,
   TenantId,
   UserId,
 } from '@edms/domain';
@@ -27,7 +28,7 @@ export interface AuditEventRecord {
   readonly actorId: UserId | null;
   readonly onBehalfOfId: UserId | null;
   readonly channel: ActorChannelKey;
-  readonly action: string;
+  readonly action: DocsAuditAction;
   readonly subjectType: AuditSubjectTypeKey;
   readonly subjectId: AnyId;
   readonly outcome: AuditOutcomeKey;

@@ -13,6 +13,7 @@ import {
   StageSkipReason,
   TaskDecision,
   type PermissionKey,
+  type DocsAuditAction,
   Permission,
   type TaskDecisionKey,
   type UserId,
@@ -1394,7 +1395,7 @@ function permissionFor(decision: TaskDecisionKey): PermissionKey {
     : Permission.DOCUMENT_REJECT;
 }
 
-function auditActionFor(decision: TaskDecisionKey): string {
+function auditActionFor(decision: TaskDecisionKey): DocsAuditAction {
   switch (decision) {
     case TaskDecision.APPROVED:
       return WorkflowAudit.APPROVED;

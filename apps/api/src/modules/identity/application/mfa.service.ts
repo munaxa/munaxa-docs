@@ -1,6 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type AnyId, AuditOutcome, AuditSubjectType, type UserId, asId } from '@edms/domain';
+import {
+  type AnyId,
+  AuditOutcome,
+  AuditSubjectType,
+  type DocsAuditAction,
+  type UserId,
+  asId,
+} from '@edms/domain';
 
 import { AUDIT_WRITER, type AuditWriter } from '../../../core/audit/audit-writer.port';
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
@@ -316,7 +323,7 @@ export class DefaultMfaService implements MfaService {
   }
 
   private async write(
-    action: string,
+    action: DocsAuditAction,
     userId: UserId,
     outcome: (typeof AuditOutcome)[keyof typeof AuditOutcome],
     payload: Readonly<Record<string, unknown>>,

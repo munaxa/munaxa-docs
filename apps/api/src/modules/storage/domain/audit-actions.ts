@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Storage writes.
  *
@@ -31,6 +35,6 @@ export const StorageAudit = {
    * auditor filtering the trail for failures must find this one.
    */
   INTEGRITY_MISMATCH: 'INTEGRITY_MISMATCH',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type StorageAuditAction = (typeof StorageAudit)[keyof typeof StorageAudit];

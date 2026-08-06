@@ -5,6 +5,7 @@ import {
   type AnyId,
   type AuditOutcomeKey,
   type AuditSubjectTypeKey,
+  type DocsAuditAction,
   type TenantId,
   type UserId,
   asId,
@@ -261,7 +262,11 @@ function toRecord(row: AuditRow): AuditEventRecord {
     actorId: row.actorId ? asId<UserId>(row.actorId) : null,
     onBehalfOfId: row.onBehalfOfId ? asId<UserId>(row.onBehalfOfId) : null,
     channel: row.channel as ActorChannelKey,
-    action: row.action,
+    // Reads are permissive where writes are strict, and deliberately so: the append path refuses
+    // an action outside the vocabulary, but this table is append-only and outlives its code. A row
+    // written under an action later retired must stay readable, or the trail stops being evidence
+    // the moment the vocabulary changes.
+    action: row.action as DocsAuditAction,
     subjectType: row.subjectType as AuditSubjectTypeKey,
     subjectId: asId<AnyId>(row.subjectId),
     outcome: row.outcome as AuditOutcomeKey,

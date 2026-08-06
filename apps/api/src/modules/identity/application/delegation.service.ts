@@ -9,6 +9,7 @@ import {
   DelegationPeriodProblem,
   DelegationRefusal,
   type DelegationRefusalKey,
+  type DocsAuditAction,
   DelegationStatus,
   LIVE_DELEGATION_STATUSES,
   Permission,
@@ -861,7 +862,7 @@ export class DefaultDelegationService implements DelegationService {
 
   /** `AdministeredWriter` writes one event per transaction; this is what a no-op pass records. */
   private noop(id: DelegationId): {
-    action: string;
+    action: DocsAuditAction;
     subjectType: typeof AuditSubjectType.DELEGATION;
     subjectId: AnyId;
     operation: typeof AdministrativeOperation.UPDATED;

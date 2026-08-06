@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * Search's audit vocabulary.
  *
@@ -16,6 +20,6 @@
 export const SearchAudit = {
   SEARCH_PERFORMED: 'SEARCH_PERFORMED',
   SEARCH_REBUILD_REQUESTED: 'SEARCH_REBUILD_REQUESTED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type SearchAuditAction = (typeof SearchAudit)[keyof typeof SearchAudit];

@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Organisation writes.
  *
@@ -15,6 +19,6 @@
 export const OrganizationAudit = {
   /** A company, entity, branch or department was created, edited, moved, deleted or restored. */
   ORG_CHANGED: 'ORG_CHANGED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type OrganizationAuditAction = (typeof OrganizationAudit)[keyof typeof OrganizationAudit];

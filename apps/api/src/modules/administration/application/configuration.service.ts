@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   type AnyId,
   AuditSubjectType,
+  type DocsAuditAction,
   type DispositionKey,
   type MetadataDataTypeKey,
   type RetentionTriggerKey,
@@ -1109,7 +1110,7 @@ export class ConfigurationService {
   }
 
   private entry(
-    action: string,
+    action: DocsAuditAction,
     id: string,
     operation: AdministrativeOperationKey,
     before: Readonly<Record<string, unknown>> | undefined,

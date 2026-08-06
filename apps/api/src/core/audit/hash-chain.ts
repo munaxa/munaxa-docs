@@ -49,7 +49,14 @@ export const CHAIN_HASH_V2 = 2;
  */
 export const CHAIN_HASH_V3 = 3;
 
-/** What a new append is written with. Reading dispatches on the row's own stamp, never this. */
+/**
+ * What a new append is written with. Reading dispatches on the row's own stamp, never this.
+ *
+ * The append path no longer reads it: `@munaxa/audit` seals new records under
+ * `DOCS_CANONICAL_V3`, which reproduces `chainHash(…, CHAIN_HASH_V3)` byte for byte
+ * (`platform-canonical.spec.ts`). It survives because the *verifier* still needs a version to
+ * fall back to for a row stamped with something this build does not recognise.
+ */
 export const CURRENT_CHAIN_HASH_VERSION = CHAIN_HASH_V3;
 
 export type ChainHashVersion = typeof CHAIN_HASH_V1 | typeof CHAIN_HASH_V2 | typeof CHAIN_HASH_V3;
@@ -147,6 +154,14 @@ export function canonicalize(value: unknown): string {
  * The v1 material is byte-for-byte what Phase 1 produced, because every row written since then
  * has to keep verifying. The v2 material *appends* rather than interleaving, for the same
  * reason a wire format appends: a third version can extend it without moving anything.
+ *
+ * **Nothing appends through this any more.** `@munaxa/audit` seals every new record, under the
+ * same three formats expressed as `CanonicalFormat`s in `platform-canonical.ts`. What is left
+ * here is the *verification* path — `verifyChain` below, and the daily pass that calls it — which
+ * has not been migrated. Keeping one function rather than two implementations of the same digest
+ * was the point of expressing the formats over this one: `platform-canonical.spec.ts` asserts the
+ * two agree by comparing against this function directly, so a drift is a failing test rather than
+ * a trail that silently stops verifying.
  */
 export function chainHash(
   previousHash: string,

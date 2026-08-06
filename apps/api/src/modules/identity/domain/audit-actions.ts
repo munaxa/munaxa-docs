@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Identity writes.
  *
@@ -38,7 +42,7 @@ export const SecurityAudit = {
    * the factor", and collapsing them would hide the only signal that says a password has leaked.
    */
   MFA_FAILED: 'MFA_FAILED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type SecurityAuditAction = (typeof SecurityAudit)[keyof typeof SecurityAudit];
 
@@ -64,7 +68,7 @@ export const IdentityAdminAudit = {
   ROLE_ASSIGNED: 'ROLE_ASSIGNED',
   /** A role's permission set changed, which changes what everyone holding it may do. */
   ROLE_PERMISSION_CHANGED: 'ROLE_PERMISSION_CHANGED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type IdentityAdminAuditAction = (typeof IdentityAdminAudit)[keyof typeof IdentityAdminAudit];
 
@@ -116,7 +120,7 @@ export const DelegationAudit = {
    * quarter" without the answer depending on whether anybody happened to look.
    */
   DELEGATION_EXPIRED: 'DELEGATION_EXPIRED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type DelegationAuditAction = (typeof DelegationAudit)[keyof typeof DelegationAudit];
 
@@ -176,6 +180,6 @@ export const IntegrationAudit = {
    * because Entra said so, and what did the mapping give them" is one query.
    */
   USER_PROVISIONED_FROM_PROVIDER: 'USER_PROVISIONED_FROM_PROVIDER',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type IntegrationAuditAction = (typeof IntegrationAudit)[keyof typeof IntegrationAudit];

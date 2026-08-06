@@ -25,6 +25,7 @@ export * from './working-calendar';
 export * from './events/domain-event';
 export * from './enums/administration';
 export * from './enums/audit';
+export * from './enums/audit-actions';
 export * from './enums/delegation';
 export * from './enums/document';
 export * from './enums/notification';

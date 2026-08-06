@@ -1,3 +1,7 @@
+// The catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of every module's catalogue, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit action authorisation writes.
  *
@@ -22,6 +26,6 @@ export const AuthorizationAudit = {
    * the existence question the `404` was written to withhold.
    */
   ACCESS_DENIED: 'ACCESS_DENIED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type AuthorizationAuditAction = (typeof AuthorizationAudit)[keyof typeof AuthorizationAudit];

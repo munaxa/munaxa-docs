@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   type AnyId,
   AuditSubjectType,
+  type DocsAuditAction,
   type DocumentId,
   DocumentLockReleaseReason,
   DocumentStatus,
@@ -617,7 +618,7 @@ export class RevisionControlService {
       reason: (typeof DocumentLockReleaseReason)[keyof typeof DocumentLockReleaseReason];
       releaseNote: string | null;
       preserveDraft: boolean;
-      action: string;
+      action: DocsAuditAction;
     },
   ): Promise<DocumentRow> {
     return this.writer.write<DocumentRow>(async () => {

@@ -18,6 +18,7 @@ import { AuditActivityReader } from './infrastructure/audit-activity.reader';
 import { AuditLaneConsumer } from './infrastructure/audit-lane.consumer';
 import { BufferedReadAuditWriter } from './infrastructure/buffered-read-audit.writer';
 import { ChainedAuditWriter } from './infrastructure/chained-audit.writer';
+import { PlatformAuditRepository } from './infrastructure/platform-audit.repository';
 import { PrismaAuditExportRepository } from './infrastructure/prisma-audit-export.repository';
 import { PrismaAuditRepository } from './infrastructure/prisma-audit.repository';
 import { StorageCheckpointStore } from './infrastructure/storage-checkpoint.store';
@@ -64,6 +65,9 @@ import { AuditReportSource } from './infrastructure/report-source.adapter';
     // query beside it, and behind `audit:view` as well as `report:view`.
     { provide: REPORT_AUDIT_SOURCE, useClass: AuditReportSource },
     { provide: AUDIT_REPOSITORY, useClass: PrismaAuditRepository },
+    // The same table behind the Platform's `AuditRepositoryPort`: the advisory lock and the
+    // gap-free `tail + 1` allocation stay here, and `@munaxa/audit` seals what they order.
+    PlatformAuditRepository,
     { provide: AUDIT_EXPORT_REPOSITORY, useClass: PrismaAuditExportRepository },
     { provide: AUDIT_WRITER, useClass: ChainedAuditWriter },
     { provide: AUDIT_CHECKPOINT_STORE, useClass: StorageCheckpointStore },

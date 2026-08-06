@@ -12,6 +12,7 @@ import {
   type AnyId,
   AuditOutcome,
   AuditSubjectType,
+  type DocsAuditAction,
   Permission,
   type TenantId,
   type UserId,
@@ -38,7 +39,7 @@ import {
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { toChainLink } from '../application/audit-verification.service';
-import { AuditExportState } from '../application/ports';
+import { AuditExportState, type AuditEventRecord } from '../application/ports';
 import { verifyManifestSignature } from '../domain/evidence-bundle';
 
 /**
@@ -99,7 +100,7 @@ const actor: AuditActor = {
   userAgent: null,
 };
 
-function entry(action: string, subjectId: AnyId = asId<AnyId>(uuidv7())) {
+function entry(action: DocsAuditAction, subjectId: AnyId = asId<AnyId>(uuidv7())) {
   return {
     action,
     subjectType: AuditSubjectType.CONFIGURATION,
@@ -109,7 +110,7 @@ function entry(action: string, subjectId: AnyId = asId<AnyId>(uuidv7())) {
   };
 }
 
-async function record(action: string, subjectId?: AnyId): Promise<void> {
+async function record(action: DocsAuditAction, subjectId?: AnyId): Promise<void> {
   await runWithContext(contextFor(), () =>
     stack.writer.writeStandalone(actor, entry(action, subjectId)),
   );
@@ -194,9 +195,9 @@ afterAll(async () => {
 
 describe('the chain, verified against what the database actually holds', () => {
   it('verifies a chain the real writer appended, and checkpoints outside the database', async () => {
-    await record('FIRST');
-    await record('SECOND');
-    await record('THIRD');
+    await record('DOCUMENT_VIEWED');
+    await record('DOCUMENT_PRINTED');
+    await record('DOCUMENT_SIGNED');
 
     const result = await runWithContext(contextFor(), () => stack.verification.verify());
 
@@ -219,7 +220,7 @@ describe('the chain, verified against what the database actually holds', () => {
   });
 
   it('resumes from the checkpoint rather than re-walking the trail', async () => {
-    await record('FOURTH');
+    await record('DOCUMENT_MOVED');
 
     const result = await runWithContext(contextFor(), () => stack.verification.verify());
 
@@ -265,8 +266,12 @@ describe('the chain, verified against what the database actually holds', () => {
     // read back from it. The digests, the links and the verifier are all the real ones: what is
     // simulated is only the tampering the table refuses to permit.
     const slice = await trail();
-    const altered = slice.events.map((event, index) =>
-      index === 1 ? { ...event, action: 'TAMPERED' } : event,
+    // A real action rather than an invented marker, because `AuditEventRecord.action` is now the
+    // vocabulary union. That makes this a *stronger* simulation, not a weaker one: the tamper is
+    // a value the writer could genuinely have produced, so the digest is the only thing catching
+    // it — the type system cannot.
+    const altered: AuditEventRecord[] = slice.events.map((event, index) =>
+      index === 1 ? { ...event, action: 'DOCUMENT_MOVED' } : event,
     );
 
     const result = verifyChain(altered.map(toChainLink), {
@@ -313,7 +318,7 @@ describe('the chain, verified against what the database actually holds', () => {
   });
 
   it('holds under concurrent writes to one tenant', async () => {
-    await Promise.all(Array.from({ length: 12 }, (_, index) => record(`CONCURRENT_${index}`)));
+    await Promise.all(Array.from({ length: 12 }, () => record('DOCUMENT_VIEWED')));
 
     const result = await runWithContext(contextFor(), () => stack.verification.verify());
     expect(result.intact).toBe(true);

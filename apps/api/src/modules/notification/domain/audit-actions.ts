@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The one audit action Notification writes — `13-audit-architecture.md` §2's Security group.
  *
@@ -49,6 +53,6 @@ export const NotificationAudit = {
    * is the catalogue's, and the catalogue is a document rather than a file.
    */
   TEMPLATE_CHANGED: 'SETTING_CHANGED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type NotificationAuditAction = (typeof NotificationAudit)[keyof typeof NotificationAudit];

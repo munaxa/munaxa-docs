@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Workflow writes.
  *
@@ -74,6 +78,6 @@ export const WorkflowAudit = {
    * is a trail query on one subject.
    */
   DELEGATION_USED: 'DELEGATION_USED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type WorkflowAuditAction = (typeof WorkflowAudit)[keyof typeof WorkflowAudit];

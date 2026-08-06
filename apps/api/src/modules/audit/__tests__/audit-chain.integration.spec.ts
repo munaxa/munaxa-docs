@@ -3,7 +3,14 @@ import 'reflect-metadata';
 import { PrismaClient } from '@prisma/client';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { type AnyId, type TenantId, AuditOutcome, AuditSubjectType, asId } from '@edms/domain';
+import {
+  type AnyId,
+  type DocsAuditAction,
+  type TenantId,
+  AuditOutcome,
+  AuditSubjectType,
+  asId,
+} from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import type { AuditActor } from '../../../core/audit/audit-writer.port';
@@ -16,6 +23,7 @@ import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { FakeClock } from '../../../testing/fake-ports';
 import { ChainedAuditWriter } from '../infrastructure/chained-audit.writer';
+import { PlatformAuditRepository } from '../infrastructure/platform-audit.repository';
 import { PrismaAuditRepository } from '../infrastructure/prisma-audit.repository';
 import { sharedDatabase } from '../../../testing/tenant-database';
 
@@ -46,7 +54,11 @@ const logger = {
 const clock = new FakeClock(new Date('2026-01-01T00:00:00Z'));
 const prisma = sharedDatabase(config, logger, APP_URL);
 const repository = new PrismaAuditRepository();
-const writer = new ChainedAuditWriter(repository, clock, new PrismaUnitOfWork(prisma));
+const writer = new ChainedAuditWriter(
+  new PlatformAuditRepository(repository),
+  clock,
+  new PrismaUnitOfWork(prisma),
+);
 
 function contextFor(tenantId: TenantId): RequestContext {
   return {
@@ -72,7 +84,7 @@ function actorFor(tenantId: TenantId): AuditActor {
   };
 }
 
-function entry(action: string) {
+function entry(action: DocsAuditAction) {
   return {
     action,
     subjectType: AuditSubjectType.CONFIGURATION,
@@ -83,7 +95,7 @@ function entry(action: string) {
 }
 
 /** Writes through the real writer, inside a real tenant context. */
-async function record(tenantId: TenantId, action: string): Promise<void> {
+async function record(tenantId: TenantId, action: DocsAuditAction): Promise<void> {
   await runWithContext(contextFor(tenantId), () =>
     writer.writeStandalone(actorFor(tenantId), entry(action)),
   );
@@ -105,9 +117,9 @@ beforeAll(async () => {
 
 describe('the audit chain against PostgreSQL', () => {
   it('starts at genesis and links each event to the last', async () => {
-    await record(ACME, 'FIRST');
-    await record(ACME, 'SECOND');
-    await record(ACME, 'THIRD');
+    await record(ACME, 'DOCUMENT_VIEWED');
+    await record(ACME, 'DOCUMENT_PRINTED');
+    await record(ACME, 'DOCUMENT_SIGNED');
 
     const events = await runWithContext(contextFor(ACME), () =>
       new PrismaUnitOfWork(prisma).run(() =>
@@ -124,7 +136,7 @@ describe('the audit chain against PostgreSQL', () => {
   });
 
   it('keeps each tenant on its own chain, both starting at sequence 1', async () => {
-    await record(OTHER, 'ELSEWHERE');
+    await record(OTHER, 'DOCUMENT_VIEWED');
 
     const events = await runWithContext(contextFor(OTHER), () =>
       new PrismaUnitOfWork(prisma).run(() =>
@@ -142,9 +154,7 @@ describe('the audit chain against PostgreSQL', () => {
   it('allocates a gap-free sequence under concurrent writers', async () => {
     // Twelve writers racing on one tenant. Without the advisory lock they read the same tail,
     // compute the same sequence, and the unique constraint turns the race into failures.
-    await Promise.all(
-      Array.from({ length: 12 }, (_, index) => record(ACME, `CONCURRENT_${index}`)),
-    );
+    await Promise.all(Array.from({ length: 12 }, () => record(ACME, 'DOCUMENT_VIEWED')));
 
     const events = await runWithContext(contextFor(ACME), () =>
       new PrismaUnitOfWork(prisma).run(() =>
@@ -191,7 +201,9 @@ describe('the audit chain against PostgreSQL', () => {
     // nothing to be atomic with, and quietly opening one would let a rolled-back change leave a
     // permanent record of something that never happened.
     await expect(
-      runWithContext(contextFor(ACME), () => writer.write(actorFor(ACME), entry('ORPHAN'))),
+      runWithContext(contextFor(ACME), () =>
+        writer.write(actorFor(ACME), entry('DOCUMENT_VIEWED')),
+      ),
     ).rejects.toThrowError(/must run inside the transaction/);
   });
 });

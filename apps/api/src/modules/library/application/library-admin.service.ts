@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   type AnyId,
   AuditSubjectType,
+  type DocsAuditAction,
   ScopeType,
   type ScopeTypeKey,
   asId,
@@ -712,7 +713,7 @@ export class LibraryAdminService {
   }
 
   private entry(
-    action: string,
+    action: DocsAuditAction,
     subjectType: typeof AuditSubjectType.LIBRARY | typeof AuditSubjectType.FOLDER,
     id: string,
     operation: AdministrativeOperationKey,

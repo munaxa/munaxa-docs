@@ -4,6 +4,7 @@ import {
   type AnyId,
   type AuditOutcomeKey,
   type AuditSubjectTypeKey,
+  type DocsAuditAction,
   AuditOutcome,
   TenantStatus,
 } from '@edms/domain';
@@ -47,7 +48,8 @@ export type AdministrativeOperationKey =
   (typeof AdministrativeOperation)[keyof typeof AdministrativeOperation];
 
 export interface AdministrativeChange {
-  readonly action: string;
+  /** One of the trail's actions — see `DocsAuditAction`; the trail is append-only. */
+  readonly action: DocsAuditAction;
   readonly subjectType: AuditSubjectTypeKey;
   readonly subjectId: AnyId;
   readonly operation: AdministrativeOperationKey;

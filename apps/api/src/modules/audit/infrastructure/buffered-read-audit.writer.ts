@@ -5,8 +5,7 @@ import {
   type OnApplicationShutdown,
 } from '@nestjs/common';
 
-import { type AnyId, type TenantId, asId } from '@edms/domain';
-import { uuidv7 } from '@edms/utils';
+import { type TenantId, asId } from '@edms/domain';
 
 import {
   AUDIT_WRITER,
@@ -14,18 +13,19 @@ import {
   type AuditEntry,
   type AuditWriter,
 } from '../../../core/audit/audit-writer.port';
-import { CURRENT_CHAIN_HASH_VERSION, chainHash } from '../../../core/audit/hash-chain';
 import type { ReadAuditBuffer, ReadAuditFlushResult } from '../../../core/audit/read-audit.port';
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
-import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
+import {
+  UNIT_OF_WORK,
+  type UnitOfWork,
+  currentTransaction,
+} from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
-import {
-  AUDIT_REPOSITORY,
-  type AuditEventRecord,
-  type AuditRepository,
-} from '../application/ports';
+import { AUDIT_REPOSITORY, type AuditRepository } from '../application/ports';
+import { BatchedPlatformAuditRepository } from './platform-audit.repository';
+import { createDocsAuditService, toPlatformEvent } from './platform-audit.service';
 
 /**
  * Read auditing, buffered — `13-audit-architecture.md` §5, finally true of the code.
@@ -55,7 +55,12 @@ import {
  * concurrent audit write since Phase 1.
  */
 interface BufferedEvent {
-  readonly eventId: string;
+  /**
+   * When somebody looked, not when the flush ran.
+   *
+   * Carried through to the seal, where it becomes both the record's `occurredAt` and the instant
+   * its UUID v7 is minted from, so the trail's ordering is the reading's ordering.
+   */
   readonly occurredAt: Date;
   readonly actor: AuditActor;
   readonly entry: AuditEntry;
@@ -125,12 +130,7 @@ export class BufferedReadAuditWriter
       return;
     }
 
-    buffer.push({
-      eventId: uuidv7(occurredAt.getTime()),
-      occurredAt,
-      actor,
-      entry,
-    });
+    buffer.push({ occurredAt, actor, entry });
     this.buffers.set(actor.tenantId, buffer);
 
     if (buffer.length >= this.config.audit.readBufferSize) {
@@ -181,9 +181,13 @@ export class BufferedReadAuditWriter
   /**
    * One tenant's batch: one transaction, one advisory lock, one chained run of appends.
    *
-   * The tail is read under the lock exactly as a single write does, so a buffered flush and a
+   * The head is read under the lock exactly as a single write does, so a buffered flush and a
    * synchronous write racing on the same tenant serialise against each other rather than forking
-   * the chain.
+   * the chain. The chaining itself is `@munaxa/audit`'s: `BatchedPlatformAuditRepository` holds
+   * the head the Platform's sealer advances, and issues the whole batch as one `INSERT` at the
+   * end — which is the round trip §5 asks the buffer to save.
+   *
+   * A service per event, because each carries its own instant; see `createDocsAuditService`.
    */
   private async flushTenant(tenantId: TenantId, batch: readonly BufferedEvent[]): Promise<void> {
     const first = batch[0];
@@ -192,44 +196,16 @@ export class BufferedReadAuditWriter
     }
     await runWithContext(contextFor(tenantId, first.actor.correlationId), () =>
       this.unitOfWork.run(async () => {
-        const tail = await this.repository.lockAndReadTail();
-        let previousHash = tail.hash;
-        let sequence = tail.sequence;
-        const records: AuditEventRecord[] = [];
+        const chain = new BatchedPlatformAuditRepository(this.repository);
+        await chain.begin();
 
         for (const buffered of batch) {
-          sequence += 1n;
-          const material = {
-            eventId: buffered.eventId,
-            tenantId,
-            sequence,
-            occurredAt: buffered.occurredAt,
-            actorId: buffered.actor.userId,
-            onBehalfOfId: buffered.entry.onBehalfOfId ?? null,
-            channel: buffered.actor.channel,
-            action: buffered.entry.action,
-            subjectType: buffered.entry.subjectType,
-            subjectId: buffered.entry.subjectId,
-            outcome: buffered.entry.outcome,
-            payload: buffered.entry.payload,
-            reason: buffered.entry.reason ?? null,
-            correlationId: buffered.actor.correlationId,
-            ipAddress: buffered.actor.ipAddress,
-            userAgent: buffered.actor.userAgent,
-            apiClientId: buffered.actor.apiClientId ?? null,
-          };
-          const hash = chainHash(previousHash, material, CURRENT_CHAIN_HASH_VERSION);
-          records.push({
-            ...material,
-            id: asId<AnyId>(buffered.eventId),
-            actorId: buffered.actor.userId,
-            hash,
-            previousHash,
-            chainHashVersion: CURRENT_CHAIN_HASH_VERSION,
+          const audit = createDocsAuditService(chain, buffered.occurredAt);
+          await audit.write(toPlatformEvent(buffered.actor, buffered.entry, buffered.occurredAt), {
+            transaction: currentTransaction(),
           });
-          previousHash = hash;
         }
-        await this.repository.appendMany(records);
+        await chain.commit();
       }),
     );
   }

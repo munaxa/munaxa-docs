@@ -1,17 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type AnyId, asId } from '@edms/domain';
-import { uuidv7 } from '@edms/utils';
-
 import type { AuditActor, AuditEntry, AuditWriter } from '../../../core/audit/audit-writer.port';
-import { CURRENT_CHAIN_HASH_VERSION, chainHash } from '../../../core/audit/hash-chain';
 import {
   UNIT_OF_WORK,
   type UnitOfWork,
   currentTransaction,
 } from '../../../core/prisma/unit-of-work';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
-import { AUDIT_REPOSITORY, type AuditRepository } from '../application/ports';
+import { PlatformAuditRepository } from './platform-audit.repository';
+import { createDocsAuditService, toPlatformEvent } from './platform-audit.service';
 
 /**
  * The only way to append to the audit trail.
@@ -24,21 +21,26 @@ import { AUDIT_REPOSITORY, type AuditRepository } from '../application/ports';
  * the alternative — quietly opening its own — is how a rolled-back change leaves a permanent
  * record of something that never happened.
  *
- * **The chain has no forks and no holes.** The tail is read under a per-tenant advisory lock
+ * **The chain has no forks and no holes.** The head is read under a per-tenant advisory lock
  * taken in the same transaction, so two concurrent writers cannot compute the same
  * `previousHash`; and the sequence is allocated as `tail + 1` rather than from a PostgreSQL
  * sequence, which would gap on rollback and make a deletion indistinguishable from an
  * ordinary abort (`docs/architecture/13-audit-architecture.md` §4).
  *
- * Phase 9 widened what the digest covers and stamped the version on every row. New appends are
- * written under the current version; rows written before it keep verifying against the field set
- * they were written under, because the table refuses the `UPDATE` that would rehash them — which
- * is the property that makes the trail evidence in the first place (`core/audit/hash-chain.ts`).
+ * ## What changed, and what did not
+ *
+ * The sealing is `@munaxa/audit`'s now: the canonical material, the digest over it, the chain
+ * linkage, the sequence advance and the format stamp. What stayed is everything the Platform never
+ * asked for — the advisory lock and the gap-free `tail + 1` allocation live in
+ * `PlatformAuditRepository`, and the identifier strategy and the historical canonical format live
+ * in `createDocsAuditService`. No digest changed: the v3 format reproduces `chainHash()` byte for
+ * byte, which `platform-canonical.spec.ts` asserts against `chainHash` itself rather than a
+ * fixture, because the table refuses the `UPDATE` that would rehash a row.
  */
 @Injectable()
 export class ChainedAuditWriter implements AuditWriter {
   constructor(
-    @Inject(AUDIT_REPOSITORY) private readonly repository: AuditRepository,
+    private readonly repository: PlatformAuditRepository,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
   ) {}
@@ -66,54 +68,14 @@ export class ChainedAuditWriter implements AuditWriter {
   }
 
   private async append(actor: AuditActor, entry: AuditEntry): Promise<void> {
-    const tail = await this.repository.lockAndReadTail();
     const occurredAt = this.clock.now();
-    const eventId = uuidv7(occurredAt.getTime());
-    const sequence = tail.sequence + 1n;
+    const audit = createDocsAuditService(this.repository, occurredAt);
 
-    const material = {
-      eventId,
-      tenantId: actor.tenantId,
-      sequence,
-      occurredAt,
-      actorId: actor.userId,
-      onBehalfOfId: entry.onBehalfOfId ?? null,
-      channel: actor.channel,
-      action: entry.action,
-      subjectType: entry.subjectType,
-      subjectId: entry.subjectId,
-      outcome: entry.outcome,
-      payload: entry.payload,
-      reason: entry.reason ?? null,
-      correlationId: actor.correlationId,
-      ipAddress: actor.ipAddress,
-      userAgent: actor.userAgent,
-      // Phase 17, and covered by `CHAIN_HASH_V3`: which credential took the action, attested
-      // rather than merely recorded.
-      apiClientId: actor.apiClientId ?? null,
-    };
-
-    await this.repository.append({
-      id: asId<AnyId>(eventId),
-      tenantId: actor.tenantId,
-      sequence,
-      occurredAt,
-      actorId: actor.userId,
-      onBehalfOfId: entry.onBehalfOfId ?? null,
-      channel: actor.channel,
-      action: entry.action,
-      subjectType: entry.subjectType,
-      subjectId: entry.subjectId,
-      outcome: entry.outcome,
-      payload: entry.payload,
-      reason: entry.reason ?? null,
-      correlationId: actor.correlationId,
-      ipAddress: actor.ipAddress,
-      userAgent: actor.userAgent,
-      apiClientId: actor.apiClientId ?? null,
-      hash: chainHash(tail.hash, material, CURRENT_CHAIN_HASH_VERSION),
-      previousHash: tail.hash,
-      chainHashVersion: CURRENT_CHAIN_HASH_VERSION,
+    // The handle is named rather than left implicit so `AuditService` knows the append joined a
+    // transaction it does not own, and does not retry a chain conflict inside one that has
+    // already aborted. The adapter checks it is the same transaction it is about to write in.
+    await audit.write(toPlatformEvent(actor, entry, occurredAt), {
+      transaction: currentTransaction(),
     });
   }
 }

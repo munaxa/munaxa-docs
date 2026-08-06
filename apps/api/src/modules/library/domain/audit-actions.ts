@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Library writes.
  *
@@ -36,6 +40,6 @@ export const LibraryAudit = {
   ACL_REVOKED: 'ACL_REVOKED',
   /** `folder.inherit_acl` went false. Only ever written in that direction — see the service. */
   INHERITANCE_BROKEN: 'INHERITANCE_BROKEN',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type LibraryAuditAction = (typeof LibraryAudit)[keyof typeof LibraryAudit];

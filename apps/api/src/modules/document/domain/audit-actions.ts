@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Document writes.
  *
@@ -48,7 +52,7 @@ export const DocumentAudit = {
    * filing it under `DOCUMENT` would put it on the timeline of no document at all.
    */
   DOCUMENT_TEMPLATE_CHANGED: 'DOCUMENT_TEMPLATE_CHANGED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type DocumentAuditAction = (typeof DocumentAudit)[keyof typeof DocumentAudit];
 
@@ -82,7 +86,7 @@ export const RevisionControlAudit = {
   SUPERSEDED: 'SUPERSEDED',
   /** A new revision was created carrying an older revision's content. */
   RESTORED_FROM: 'RESTORED_FROM',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type RevisionControlAuditAction =
   (typeof RevisionControlAudit)[keyof typeof RevisionControlAudit];

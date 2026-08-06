@@ -45,6 +45,7 @@ import { BufferedReadAuditWriter } from '../modules/audit/infrastructure/buffere
 import { PrismaAuditExportRepository } from '../modules/audit/infrastructure/prisma-audit-export.repository';
 import { StorageCheckpointStore } from '../modules/audit/infrastructure/storage-checkpoint.store';
 import { ChainedAuditWriter } from '../modules/audit/infrastructure/chained-audit.writer';
+import { PlatformAuditRepository } from '../modules/audit/infrastructure/platform-audit.repository';
 import { PrismaAuditRepository } from '../modules/audit/infrastructure/prisma-audit.repository';
 import { DefaultOrganizationService } from '../modules/organization/application/organization.service';
 import { PrismaScopeRepository } from '../modules/organization/infrastructure/prisma-scope.repository';
@@ -222,7 +223,11 @@ import { FakeCache } from './fake-ports';
  * transaction.
  */
 export function realAuditWriter(clock: ClockPort, unitOfWork: UnitOfWork): ChainedAuditWriter {
-  return new ChainedAuditWriter(new PrismaAuditRepository(), clock, unitOfWork);
+  return new ChainedAuditWriter(
+    new PlatformAuditRepository(new PrismaAuditRepository()),
+    clock,
+    unitOfWork,
+  );
 }
 
 /**

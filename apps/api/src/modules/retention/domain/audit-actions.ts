@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Retention writes — `13-audit-architecture.md` §2's Retention group, plus the
  * Document group's `PURGED`, which §2's ownership table attributes to this phase.
@@ -38,6 +42,6 @@ export const RetentionAudit = {
    * why the tombstone exists as well, for the events written *before* this one.
    */
   PURGED: 'PURGED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type RetentionAuditAction = (typeof RetentionAudit)[keyof typeof RetentionAudit];

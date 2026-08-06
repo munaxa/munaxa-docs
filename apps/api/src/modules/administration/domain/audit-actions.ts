@@ -1,3 +1,7 @@
+// Each catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of all thirteen modules' catalogues, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit actions Administration writes.
  *
@@ -40,7 +44,7 @@ export const AdministrationAudit = {
   NUMBER_ASSIGNED: 'NUMBER_ASSIGNED',
   /** A reservation that will never become a number. The value is retained, never re-issued. */
   NUMBER_VOIDED: 'NUMBER_VOIDED',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type AdministrationAuditAction =
   (typeof AdministrationAudit)[keyof typeof AdministrationAudit];

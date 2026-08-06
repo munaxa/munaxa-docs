@@ -3,6 +3,7 @@ import type {
   AnyId,
   AuditOutcomeKey,
   AuditSubjectTypeKey,
+  DocsAuditAction,
   TenantId,
   UserId,
 } from '@edms/domain';
@@ -19,7 +20,14 @@ import type {
 export const AUDIT_WRITER = Symbol('AuditWriter');
 
 export interface AuditEntry {
-  readonly action: string;
+  /**
+   * One of the trail's actions, and not merely a string.
+   *
+   * The trail is append-only: a misspelled action cannot be corrected afterwards, and every
+   * report that filters on it would silently miss those rows forever. `DocsAuditAction` is the
+   * union of all thirteen module catalogues, so the typo is a compile error instead.
+   */
+  readonly action: DocsAuditAction;
   readonly subjectType: AuditSubjectTypeKey;
   readonly subjectId: AnyId;
   readonly outcome: AuditOutcomeKey;

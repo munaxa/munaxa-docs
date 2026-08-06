@@ -1,3 +1,7 @@
+// The catalogue below `satisfies Record<string, DocsAuditAction>`: the audit writer is typed to
+// the union of every module's catalogue, and that assertion is what keeps them in step.
+import type { DocsAuditAction } from '@edms/domain';
+
 /**
  * The audit action a bulk operation writes — one, and the argument for it.
  *
@@ -26,6 +30,6 @@ export const BulkAudit = {
    * and the tally — never the identifier list, which is `bulk_operation_item` (13 §3).
    */
   BULK_OPERATION: 'BULK_OPERATION',
-} as const;
+} as const satisfies Record<string, DocsAuditAction>;
 
 export type BulkAuditAction = (typeof BulkAudit)[keyof typeof BulkAudit];
