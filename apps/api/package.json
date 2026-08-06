@@ -25,6 +25,7 @@
     "@munaxa/crypto": "^2.0.0",
     "@munaxa/interfaces": "^2.0.0",
     "@munaxa/logging": "^2.0.0",
+    "@munaxa/rbac": "^2.0.0",
     "@nestjs/common": "^11.0.6",
     "@nestjs/core": "^11.0.6",
     "@nestjs/platform-express": "^11.0.6",

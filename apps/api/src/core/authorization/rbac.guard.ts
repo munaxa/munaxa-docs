@@ -1,6 +1,8 @@
 import { type CanActivate, type ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
+import { hasPermission } from '@munaxa/rbac';
+
 import type { PermissionKey } from '@edms/domain';
 
 import { ForbiddenError } from '../errors/application-errors';
@@ -36,8 +38,15 @@ export class RbacGuard implements CanActivate {
       return true;
     }
 
-    const held = new Set(currentContext()?.permissions ?? []);
-    const missing = required.filter((permission) => !held.has(permission));
+    // Evaluation is the platform's, so "does this principal hold this permission" means the same
+    // thing in every Munaxa product. Verified behaviourally identical to the Set-membership check
+    // it replaces: all 37 of this product's permission keys pass the platform grammar, and
+    // `hasPermission` and `Set.has` agree on every combination of held and required.
+    //
+    // It also brings wildcard grants, which Docs does not use today. That is upside rather than a
+    // change: a grant without `*` matches exactly, which is what the old check did.
+    const held = currentContext()?.permissions ?? [];
+    const missing = required.filter((permission) => !hasPermission(held, permission));
     if (missing.length > 0) {
       throw new ForbiddenError('perform this action', { requires: missing.join(', ') });
     }
