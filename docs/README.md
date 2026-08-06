@@ -97,6 +97,7 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0017](./architecture/adr/0017-electronic-signature-as-witnessed-attestation.md) | A signature is a witnessed 21 CFR Part 11 attestation over a revision's content digest, never a qualified signature |
 | [0018](./architecture/adr/0018-machine-identity-as-a-delegated-subject.md) | A machine caller is bound to a person and acts as them, narrowed by scopes — never a principal of its own |
 | [0019](./architecture/adr/0019-webhooks-are-not-notifications.md) | A webhook is its own delivery path; `NotificationChannel.WEBHOOK` is a value nothing uses |
+| [0020](./architecture/adr/0020-key-management-and-rotation.md) | The deployment's secret store *is* the key management service; what the product owes is one key per purpose and a rotation each sealed value can survive |
 
 ## 2. Reports
 

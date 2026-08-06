@@ -1,0 +1,35 @@
+# What never belongs in a build context.
+#
+# `node_modules` first and by a wide margin: copying a host's tree in would defeat the layer that
+# resolves the lockfile, and on a machine that ran `pnpm install` with the temporary overrides the
+# Phase 18 report describes it would copy in symlinks pointing outside the container entirely.
+node_modules
+**/node_modules
+
+# Build output. The image builds its own; a stale `dist` copied in is the classic "I fixed that"
+# deployment.
+dist
+**/dist
+.next
+**/.next
+.turbo
+**/.turbo
+
+# Secrets and local state. `.env.example` is deliberately not excluded — it is documentation.
+.env
+.env.*
+!.env.example
+.storage
+dump.rdb
+
+# History and tooling, which change on every commit and would invalidate every cached layer.
+.git
+.github
+.vscode
+
+# Documentation and specifications. They are the reason this repository is legible and they are not
+# part of any image; excluding them keeps a rebuild from re-running on a typo in a report.
+docs
+prompts
+*.md
+!README.md

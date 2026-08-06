@@ -8,6 +8,8 @@ import {
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { DiscoveryService, MetadataScanner, Reflector } from '@nestjs/core';
 
+import { isPermissionKey } from '@edms/domain';
+
 import { LOGGER, type Logger } from '../observability/logger';
 import { PUBLIC_ROUTE } from '../auth/public.decorator';
 import { REQUIRED_PERMISSIONS } from './permission.decorator';
@@ -42,9 +44,58 @@ export class RoutePermissionRegistry implements OnApplicationBootstrap {
         `These mutating routes declare no permission and no reason for being public:\n  - ${ungated.join('\n  - ')}`,
       );
     }
+    /**
+     * And every permission a route names must exist — Phase 18.
+     *
+     * The check above cannot catch a route that declares a *misspelt* permission: a string is a
+     * string, `RbacGuard` compares it against grants that will never contain it, and the route
+     * refuses everybody for ever. That reads to a customer as "the feature is broken" rather than
+     * as a defect, and it is discovered by whoever files the ticket rather than by whoever
+     * deployed. `@edms/domain`'s catalogue is the whole set, so this is a set difference.
+     */
+    const unknown = this.findUnknownPermissions();
+    if (unknown.length > 0) {
+      throw new Error(
+        `These routes declare permissions that are not in the catalogue:\n  - ${unknown.join('\n  - ')}`,
+      );
+    }
     this.logger.info('Route permission check passed', {
       controllers: this.discovery.getControllers().length,
     });
+  }
+
+  /** `Controller.method → permission` for each declared permission the catalogue does not have. */
+  private findUnknownPermissions(): string[] {
+    const offenders: string[] = [];
+
+    for (const wrapper of this.discovery.getControllers()) {
+      const instance = wrapper.instance as Record<string, unknown> | null;
+      if (!instance) {
+        continue;
+      }
+      const prototype = Object.getPrototypeOf(instance) as Type<unknown>;
+      const controllerClass = (wrapper.metatype ?? prototype) as Type<unknown>;
+
+      for (const methodName of this.scanner.getAllMethodNames(prototype)) {
+        const handler = instance[methodName];
+        if (typeof handler !== 'function') {
+          continue;
+        }
+        const declared = this.reflector.getAllAndOverride<unknown>(REQUIRED_PERMISSIONS, [
+          handler,
+          controllerClass,
+        ]);
+        if (!Array.isArray(declared)) {
+          continue;
+        }
+        for (const permission of declared as unknown[]) {
+          if (typeof permission !== 'string' || !isPermissionKey(permission)) {
+            offenders.push(`${wrapper.name}.${methodName} → ${String(permission)}`);
+          }
+        }
+      }
+    }
+    return offenders;
   }
 
   private findUngatedMutatingRoutes(): string[] {
