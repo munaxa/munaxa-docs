@@ -102,6 +102,25 @@ export const configSchema = z
     JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().min(3_600).default(2_592_000),
 
     /**
+     * The bound a refresh lineage cannot rotate its way past.
+     *
+     * `JWT_REFRESH_TTL_SECONDS` expires an individual token, and a family that keeps rotating
+     * replaces each one before it lapses — so before this existed, a stolen token the thief kept
+     * warm was a permanent credential. This deadline never moves, whatever the family does.
+     *
+     * Defaults to 30 days, matching the refresh window, so an existing deployment gets the bound
+     * without choosing a number. The platform clamps it at 30 days regardless.
+     */
+    SESSION_ABSOLUTE_TTL_SECONDS: z.coerce.number().int().min(3_600).max(2_592_000).default(2_592_000),
+
+    /**
+     * How many live sessions one user may hold. Oldest is evicted rather than the newest refused:
+     * denying locks a user out of the device in their hand, with no security gain, since both
+     * outcomes cap the number of live sessions.
+     */
+    SESSION_MAX_CONCURRENT: z.coerce.number().int().min(1).max(100).default(10),
+
+    /**
      * Where an OIDC provider sends the browser back to — Phase 17.
      *
      * **Configured rather than taken from the request**, and that is the check whose absence is
@@ -880,6 +899,10 @@ export interface AppConfig {
     readonly accessSecret: string;
     readonly accessTtlSeconds: number;
     readonly refreshTtlSeconds: number;
+    /** The deadline a refresh lineage cannot rotate past. Never moves once the family is opened. */
+    readonly sessionAbsoluteTtlSeconds: number;
+    /** Live sessions per user. The oldest is evicted when a sign-in would exceed it. */
+    readonly maxConcurrentSessions: number;
     /** Where an OIDC provider returns the browser. Configured, never taken from a request. */
     readonly federationRedirectUri: string;
   };
@@ -1087,6 +1110,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       accessSecret: raw.JWT_ACCESS_SECRET,
       accessTtlSeconds: raw.JWT_ACCESS_TTL_SECONDS,
       refreshTtlSeconds: raw.JWT_REFRESH_TTL_SECONDS,
+      sessionAbsoluteTtlSeconds: raw.SESSION_ABSOLUTE_TTL_SECONDS,
+      maxConcurrentSessions: raw.SESSION_MAX_CONCURRENT,
       federationRedirectUri:
         raw.FEDERATION_REDIRECT_URI ??
         `${raw.WEB_BASE_URL.replace(/\/+$/, '')}/auth/federation/callback`,
