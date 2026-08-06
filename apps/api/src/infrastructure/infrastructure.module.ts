@@ -4,6 +4,8 @@ import { API_PREFIX } from '@edms/contracts';
 
 import { APP_CONFIG, type AppConfig } from '../core/config';
 import { LOGGER, type Logger } from '../core/observability/logger';
+import { METRICS, type Metrics } from '../core/observability/metrics';
+import { METRICS_REGISTRY, type MetricsRegistry } from '../core/observability/metrics-registry';
 import { ANTIVIRUS_PORT } from '../ports/antivirus.port';
 import { CACHE_PORT } from '../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
@@ -17,6 +19,8 @@ import { TENANT_REGISTRY, type TenantRegistry } from '../core/tenancy/tenant-reg
 import { RedisCacheAdapter } from './cache/redis-cache.adapter';
 import { BullMqQueueAdapter } from './queue/bullmq.adapter';
 import { SystemClockAdapter } from './clock/system-clock.adapter';
+import { NoOpMetricsAdapter } from './observability/no-op-metrics.adapter';
+import { PrometheusMetricsAdapter } from './observability/prometheus-metrics.adapter';
 import { AllowListedHttpAdapter } from './providers/allow-listed-http.adapter';
 import { ResendMailAdapter } from './providers/resend-mail.adapter';
 import { TesseractOcrAdapter } from './providers/tesseract-ocr.adapter';
@@ -217,6 +221,23 @@ function mailAdapterFor(config: AppConfig): NotificationPort {
   });
 }
 
+/**
+ * The metrics exporter, chosen by configuration — Phase 18 binds the port Phase 0.5 declared.
+ *
+ * The registry is built **once** and provided under two tokens, which is the point of the split:
+ * `METRICS` is what everything in the product records through, and `METRICS_REGISTRY` is what the
+ * one controller renders from. Two instances would mean a scrape body describing a registry
+ * nothing wrote to — the failure mode that looks exactly like "there is no traffic".
+ *
+ * `NONE` returns a no-op rather than an adapter that refuses, which is the one place in this file
+ * that departs from the Phase 0.5 posture. `no-op-metrics.adapter.ts` argues why.
+ */
+function metricsRegistryFor(config: AppConfig, log: Logger): MetricsRegistry | null {
+  return config.observability.metricsDriver === 'PROMETHEUS'
+    ? new PrometheusMetricsAdapter({ maxSeries: config.observability.metricsMaxSeries }, log)
+    : null;
+}
+
 function searchAdapterFor(config: AppConfig): PostgresSearchAdapter {
   switch (config.providers.search) {
     case 'OPENSEARCH':
@@ -254,6 +275,20 @@ function requireBucket(config: AppConfig): string {
     SystemClockAdapter,
     RedisCacheAdapter,
     BullMqQueueAdapter,
+    NoOpMetricsAdapter,
+    {
+      provide: METRICS_REGISTRY,
+      useFactory: metricsRegistryFor,
+      inject: [APP_CONFIG, LOGGER],
+    },
+    {
+      // One instance, two tokens. The recorder is the registry when there is one, and the no-op
+      // when there is not — so no call site in the product ever branches on whether metrics are on.
+      provide: METRICS,
+      useFactory: (registry: MetricsRegistry | null, noOp: NoOpMetricsAdapter): Metrics =>
+        registry ?? noOp,
+      inject: [METRICS_REGISTRY, NoOpMetricsAdapter],
+    },
     { provide: CLOCK_PORT, useExisting: SystemClockAdapter },
     { provide: CACHE_PORT, useExisting: RedisCacheAdapter },
     // Both halves of the queue are one adapter, and one instance: the producers and the workers
@@ -264,9 +299,14 @@ function requireBucket(config: AppConfig): string {
       // The vendor adapter, chosen by configuration, then wrapped so every key it is given carries the
       // tenant's prefix and every key it answers with is checked against it.
       provide: STORAGE_PORT,
-      useFactory: (config: AppConfig, registry: TenantRegistry, clock: ClockPort): StoragePort =>
-        new TenantScopedStorage(storageAdapterFor(config, clock), registry),
-      inject: [APP_CONFIG, TENANT_REGISTRY, CLOCK_PORT],
+      useFactory: (
+        config: AppConfig,
+        registry: TenantRegistry,
+        clock: ClockPort,
+        metrics: Metrics,
+      ): StoragePort =>
+        new TenantScopedStorage(storageAdapterFor(config, clock), registry, metrics),
+      inject: [APP_CONFIG, TENANT_REGISTRY, CLOCK_PORT, METRICS],
     },
     {
       provide: LOCAL_STORAGE_ADAPTER,
@@ -306,6 +346,8 @@ function requireBucket(config: AppConfig): string {
     },
   ],
   exports: [
+    METRICS,
+    METRICS_REGISTRY,
     CLOCK_PORT,
     CACHE_PORT,
     QUEUE_PORT,

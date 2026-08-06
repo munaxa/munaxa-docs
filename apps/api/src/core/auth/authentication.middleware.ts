@@ -4,7 +4,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { ActorChannel, parseApiKey } from '@edms/domain';
 import { negotiateLocale } from '@edms/i18n';
 
-import { correlationIdOf } from '../http/correlation-id.middleware';
+import { correlationIdOf, traceContextOf } from '../http/correlation-id.middleware';
 import { LOGGER, type Logger } from '../observability/logger';
 import { type RequestContext, runWithContext } from '../tenancy/tenant-context';
 import { API_KEY_AUTHENTICATOR, type ApiKeyAuthenticator } from './api-key.authenticator';
@@ -89,6 +89,7 @@ export class AuthenticationMiddleware implements NestMiddleware {
         correlationId: correlationIdOf(request),
         locale: negotiateLocale(request.headers['accept-language']),
         channel: ActorChannel.WEB,
+        ...traceOf(request),
       };
     } catch (error) {
       // A rejected token is a warning, never an error: it is the expected outcome of an
@@ -137,6 +138,7 @@ export class AuthenticationMiddleware implements NestMiddleware {
         locale: negotiateLocale(request.headers['accept-language']),
         channel: ActorChannel.API,
         apiClientId: principal.apiClientId,
+        ...traceOf(request),
       };
     } catch (error) {
       // A key that could not be resolved because the tenant's database was unreachable is a
@@ -151,6 +153,18 @@ export class AuthenticationMiddleware implements NestMiddleware {
       return null;
     }
   }
+}
+
+/**
+ * The request's trace, spread onto the context — Phase 18.
+ *
+ * A helper rather than two lines in each branch, so the two credential paths cannot drift into
+ * carrying different observability. It reads what `CorrelationIdMiddleware` established rather
+ * than parsing the header again, which is what keeps one span per request rather than two.
+ */
+function traceOf(request: Request): { traceId: string; spanId: string } {
+  const trace = traceContextOf(request);
+  return { traceId: trace.traceId, spanId: trace.spanId };
 }
 
 /**

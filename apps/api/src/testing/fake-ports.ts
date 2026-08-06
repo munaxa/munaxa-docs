@@ -1,3 +1,4 @@
+import type { MetricLabels, Metrics } from '../core/observability/metrics';
 import type { CachePort, LockPort, Lease } from '../ports/cache.port';
 import type { ClockPort } from '../ports/clock.port';
 import type { EnqueuedJob, JobOptions, QueueDepth, QueuePort } from '../ports/queue.port';
@@ -185,5 +186,33 @@ export class RecordingQueue implements QueuePort {
       this.scheduled.splice(index, 1);
     }
     return Promise.resolve();
+  }
+}
+
+/**
+ * Records what was measured, so a test can assert the *signal* without a registry.
+ *
+ * It deliberately does **not** validate against `METRIC_CATALOGUE`: the catalogue is the exporter's
+ * rule and `prometheus-metrics.adapter.spec.ts` is where it is asserted. A double that enforced it
+ * too would mean a call site's cardinality mistake failed in two places and was fixed in one.
+ */
+export class RecordingMetrics implements Metrics {
+  readonly recorded: { name: string; kind: string; value: number; labels: MetricLabels }[] = [];
+
+  increment(name: string, labels: MetricLabels = {}, by = 1): void {
+    this.recorded.push({ name, kind: 'COUNTER', value: by, labels });
+  }
+
+  gauge(name: string, value: number, labels: MetricLabels = {}): void {
+    this.recorded.push({ name, kind: 'GAUGE', value, labels });
+  }
+
+  observe(name: string, valueMs: number, labels: MetricLabels = {}): void {
+    this.recorded.push({ name, kind: 'HISTOGRAM', value: valueMs, labels });
+  }
+
+  /** Every value recorded under one name, in order. */
+  valuesFor(name: string): number[] {
+    return this.recorded.filter((entry) => entry.name === name).map((entry) => entry.value);
   }
 }

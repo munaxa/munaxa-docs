@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { StorageDriverKey } from '@edms/domain';
 
 import { ForbiddenError } from '../../core/errors/application-errors';
+import { METRICS, MetricName, type Metrics } from '../../core/observability/metrics';
 import { requireContext } from '../../core/tenancy/tenant-context';
 import { TENANT_REGISTRY, type TenantRegistry } from '../../core/tenancy/tenant-registry.port';
 import { NotFoundError } from '../../core/errors/application-errors';
@@ -34,6 +35,14 @@ import type {
  * **A shared container with per-tenant prefixes and a container per tenant are the same code path
  * here.** The placement supplies both, the check is against both, and moving a tenant from one shape
  * to the other changes configuration rather than code.
+ *
+ * ## Phase 18 counts presigning here, and nowhere else
+ *
+ * `MetricName.STORAGE_PRESIGN` has been in the catalogue since Phase 0.5. This wrapper is the one
+ * place every signed URL in the product passes through — the same property that makes it the
+ * isolation boundary — so counting here cannot be forgotten by a caller, and there is no second
+ * signing path for it to miss. The labels are the operation and the driver, both bounded sets in
+ * code; the tenant is not a label, exactly as the rest of the catalogue.
  */
 @Injectable()
 export class TenantScopedStorage implements StoragePort {
@@ -42,6 +51,7 @@ export class TenantScopedStorage implements StoragePort {
   constructor(
     private readonly inner: StoragePort,
     @Inject(TENANT_REGISTRY) private readonly registry: TenantRegistry,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {
     this.driver = inner.driver;
   }
@@ -49,6 +59,10 @@ export class TenantScopedStorage implements StoragePort {
   async createUploadTarget(input: UploadTargetInput): Promise<UploadTarget> {
     const key = await this.scope(input.key);
     const target = await this.inner.createUploadTarget({ ...input, key });
+    this.metrics.increment(MetricName.STORAGE_PRESIGN, {
+      operation: 'UPLOAD',
+      driver: this.driver,
+    });
     return { ...target, key: await this.unscope(target.key) };
   }
 
@@ -58,7 +72,12 @@ export class TenantScopedStorage implements StoragePort {
   }
 
   async createDownloadUrl(key: StorageKey, options: DownloadOptions): Promise<SignedUrl> {
-    return this.inner.createDownloadUrl(await this.scope(key), options);
+    const url = await this.inner.createDownloadUrl(await this.scope(key), options);
+    this.metrics.increment(MetricName.STORAGE_PRESIGN, {
+      operation: 'DOWNLOAD',
+      driver: this.driver,
+    });
+    return url;
   }
 
   async head(key: StorageKey): Promise<BlobMetadata | null> {

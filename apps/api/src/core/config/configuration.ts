@@ -416,6 +416,61 @@ export const configSchema = z
      * deprecations to be announced in it.
      */
     OPENAPI_DOCUMENT_ENABLED: booleanFromEnv.default(true),
+    /**
+     * Where this deployment's telemetry goes — Phase 18, and Phase 0.5's debt row 9.
+     *
+     * The port and its label rule have existed since Phase 0.5 with nothing bound to them,
+     * deliberately: *"which backend a deployment scrapes is an operational decision, and binding
+     * one now would make it an architectural one"*. That reasoning is why this is a driver rather
+     * than a client library, and why `PROMETHEUS` exposes a **pull** endpoint instead of pushing:
+     * the text format is read directly by Prometheus, VictoriaMetrics, Grafana Agent, the
+     * OpenTelemetry Collector and every hosted agent worth naming, so it declines to choose for a
+     * customer in the way an OTLP push would.
+     *
+     * `NONE` is a no-op rather than a refusal — the one driver in this file that is — and the
+     * adapter says why: a deployment with no storage cannot store a document, and a deployment
+     * with no metrics works and is simply unobserved. Telemetry that failed the work it watches
+     * would be the observability layer becoming the outage.
+     */
+    METRICS_DRIVER: z.enum(['NONE', 'PROMETHEUS']).default('NONE'),
+    /**
+     * The bearer token `/api/metrics` requires.
+     *
+     * A metrics body is queue depths, error rates, refusal counts by permission and the route
+     * table with volumes — no tenant's data and a great deal of reconnaissance. Required whenever
+     * the driver is real, in **every** environment, because a scrape endpoint that is
+     * unauthenticated on a developer's machine is one that ships unauthenticated the first time
+     * somebody copies the compose file.
+     */
+    METRICS_SCRAPE_TOKEN: z.string().min(32).optional(),
+    /**
+     * The registry's series bound.
+     *
+     * `METRIC_CATALOGUE` already refuses any label it does not declare, so this is the backstop
+     * for the case a declaration cannot see — a label whose set is bounded in principle and large
+     * in practice, such as a route table that grows. Past it, new series are refused, existing
+     * ones keep updating, and `edms_metrics_series_dropped_total` says it happened.
+     */
+    METRICS_MAX_SERIES: z.coerce.number().int().min(100).max(1_000_000).default(5_000),
+    /**
+     * How often lane depth and the outbox backlog are sampled.
+     *
+     * Its own interval because those two are the only *levels* in the catalogue — everything else
+     * is recorded where it happens and costs nothing — and sampling them is a Redis round trip per
+     * lane plus a bounded query per tenant database. The sampler does not start at all under
+     * `METRICS_DRIVER=NONE`, so this number is only ever paid by a deployment that scrapes.
+     */
+    METRICS_SAMPLE_INTERVAL_MS: z.coerce.number().int().min(1_000).max(600_000).default(15_000),
+    /**
+     * Named by 20 §3 since Phase 0, read by nothing, and now refused rather than ignored.
+     *
+     * Both of these describe *exporters this build does not contain*. Sentry needs its SDK and
+     * OTLP needs an encoder, and neither can reach the lockfile in the environment these phases
+     * are authored in (see the Phase 18 report). A variable that is accepted and ignored is worse
+     * than one that is refused: an operator who sets it believes errors are reaching Sentry, and
+     * discovers otherwise during the incident it was set for. The `OCR_DRIVER=HOSTED` and
+     * `SEARCH_DRIVER=OPENSEARCH` precedent, applied to configuration rather than to a driver.
+     */
     SENTRY_DSN: z.string().url().optional(),
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   })
@@ -513,6 +568,32 @@ export const configSchema = z
         path: ['STORAGE_DRIVER'],
         message: 'The cloud profile requires object storage, not a local filesystem.',
       });
+    }
+
+    // --- Observability, in every environment ---------------------------------------------
+    //
+    // Outside the production block for the reason storage and tenancy are: a development
+    // environment that silently ignores half its observability configuration proves nothing about
+    // the deployment it stands in for, and an unauthenticated scrape endpoint on a laptop is one
+    // that ships the first time somebody copies the compose file.
+    if (config.METRICS_DRIVER !== 'NONE' && config.METRICS_SCRAPE_TOKEN === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['METRICS_SCRAPE_TOKEN'],
+        message: 'A metrics exporter needs a scrape token; the body is operator-only.',
+      });
+    }
+    for (const [key, value] of [
+      ['SENTRY_DSN', config.SENTRY_DSN],
+      ['OTEL_EXPORTER_OTLP_ENDPOINT', config.OTEL_EXPORTER_OTLP_ENDPOINT],
+    ] as const) {
+      if (value !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} has no exporter in this build; unset it. Errors are on the structured log stream and metrics are served at /api/metrics under METRICS_DRIVER=PROMETHEUS.`,
+        });
+      }
     }
 
     if (config.NODE_ENV !== 'production') {
@@ -760,9 +841,13 @@ export interface AppConfig {
     readonly allowInsecure: boolean;
     readonly maxResponseBytes: number;
   };
+  /** Phase 18, and Phase 0.5's debt row 9: the port finally has an adapter behind a driver. */
   readonly observability: {
-    readonly sentryDsn: string | null;
-    readonly otlpEndpoint: string | null;
+    readonly metricsDriver: RawConfig['METRICS_DRIVER'];
+    /** Null under `NONE`; required by boot validation whenever the driver is real. */
+    readonly metricsScrapeToken: string | null;
+    readonly metricsMaxSeries: number;
+    readonly metricsSampleIntervalMs: number;
   };
 }
 
@@ -941,8 +1026,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       maxRequests: raw.RATE_LIMIT_MAX_REQUESTS,
     },
     observability: {
-      sentryDsn: raw.SENTRY_DSN ?? null,
-      otlpEndpoint: raw.OTEL_EXPORTER_OTLP_ENDPOINT ?? null,
+      metricsDriver: raw.METRICS_DRIVER,
+      metricsScrapeToken: raw.METRICS_SCRAPE_TOKEN ?? null,
+      metricsMaxSeries: raw.METRICS_MAX_SERIES,
+      metricsSampleIntervalMs: raw.METRICS_SAMPLE_INTERVAL_MS,
     },
   };
 }

@@ -13,6 +13,7 @@ import type { TenantRegistry } from '../../../core/tenancy/tenant-registry.port'
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import type { StoragePort } from '../../../ports/storage.port';
 import { TenantScopedStorage } from '../../tenancy/tenant-scoped-storage';
+import { RecordingMetrics } from '../../../testing/fake-ports';
 import { LocalStorageAdapter } from '../local.adapter';
 import { S3StorageAdapter } from '../s3.adapter';
 import { decodeTransferToken } from '../local-transfer-token';
@@ -172,7 +173,8 @@ const DRIVERS: readonly ['LOCAL' | 'S3', () => StoragePort][] = [
 ];
 
 describe.each(DRIVERS)('the %s driver, through the tenant scoping', (driver, adapterOf) => {
-  const scoped = (): StoragePort => new TenantScopedStorage(adapterOf(), REGISTRY);
+  const scoped = (): StoragePort =>
+    new TenantScopedStorage(adapterOf(), REGISTRY, new RecordingMetrics());
 
   it('stores and reads back what it was given, and reports the digest the bytes actually have', async () => {
     const key = `${KEY}-${driver}-roundtrip`;
@@ -347,7 +349,8 @@ describe.each(DRIVERS)('the %s driver, through the tenant scoping', (driver, ada
 });
 
 describe('the S3 driver specifically', () => {
-  const scoped = (): StoragePort => new TenantScopedStorage(s3Adapter, REGISTRY);
+  const scoped = (): StoragePort =>
+    new TenantScopedStorage(s3Adapter, REGISTRY, new RecordingMetrics());
 
   it('serves the bytes to a browser holding the signed URL, with the disposition it asked for', async () => {
     const key = `${KEY}-signed-get`;
@@ -432,7 +435,8 @@ describe('the S3 driver specifically', () => {
 });
 
 describe('the LOCAL driver specifically', () => {
-  const scoped = (): StoragePort => new TenantScopedStorage(localAdapter, REGISTRY);
+  const scoped = (): StoragePort =>
+    new TenantScopedStorage(localAdapter, REGISTRY, new RecordingMetrics());
 
   it('never leaves a half-written file where a complete one should be', async () => {
     // Content-addressed storage makes a truncated blob worse than a missing one: its bytes do not

@@ -7,6 +7,7 @@ import {
 
 import { APP_CONFIG, type AppConfig } from '../config';
 import { LOGGER, type Logger } from '../observability/logger';
+import { METRICS, MetricName, type Metrics } from '../observability/metrics';
 import { OUTBOX_DISPATCHER, type OutboxDispatcher } from './outbox.port';
 
 /**
@@ -39,6 +40,7 @@ export class OutboxDispatchScheduler implements OnApplicationBootstrap, OnApplic
     @Inject(OUTBOX_DISPATCHER) private readonly dispatcher: OutboxDispatcher,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -67,6 +69,17 @@ export class OutboxDispatchScheduler implements OnApplicationBootstrap, OnApplic
         enqueued: result.enqueued,
         failed: result.failed,
       });
+    }
+    if (result.failed > 0) {
+      // The counter, here rather than in the dispatcher, because this is the layer that knows a
+      // pass *finished*. `reason` is the coarse cause rather than the message — a queue that is
+      // down produces one series, and the specific error is already on the row's `last_error` and
+      // in the log line above it.
+      this.metrics.increment(
+        MetricName.OUTBOX_DISPATCH_FAILURES,
+        { reason: 'ENQUEUE_REJECTED' },
+        result.failed,
+      );
     }
     if (result.claimed >= this.config.queue.outboxBatchSize) {
       this.schedule(0);

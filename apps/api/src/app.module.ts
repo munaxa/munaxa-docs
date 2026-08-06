@@ -17,7 +17,11 @@ import {
   SerializationInterceptor,
 } from './core/http';
 import { MessagingModule } from './core/messaging';
-import { LoggerModule, ObservabilityModule } from './core/observability';
+import {
+  LoggerModule,
+  ObservabilityModule,
+  RequestObservabilityInterceptor,
+} from './core/observability';
 import { OutboxModule } from './core/outbox';
 import { BulkModule } from './core/bulk';
 import { PersistenceModule } from './core/persistence';
@@ -125,6 +129,10 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     { provide: APP_GUARD, useClass: TenantIsolationGuard },
     { provide: APP_GUARD, useClass: RbacGuard },
     { provide: APP_GUARD, useClass: AclGuard },
+    // First of the interceptors, so the duration it measures covers everything the others do —
+    // an observability layer that measured only what it wrapped last would report the fast half
+    // of every request. Phase 18.
+    { provide: APP_INTERCEPTOR, useClass: RequestObservabilityInterceptor },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
     { provide: APP_INTERCEPTOR, useClass: SerializationInterceptor },
   ],
