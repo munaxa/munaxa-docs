@@ -44,6 +44,9 @@ importers:
       '@edms/utils':
         specifier: workspace:*
         version: link:../../packages/utils
+      '@munaxa/auth':
+        specifier: ^2.1.0
+        version: 2.1.0
       '@munaxa/cache':
         specifier: ^2.1.0
         version: 2.1.0
@@ -841,6 +844,10 @@ packages:
     resolution: {integrity: sha512-CmCXPQrkbwExx3j946/PtHWHbYJiCRBRDl4BlkRQcJB/YOwQxJRTpoo7aTsortjgoJ1x7opzTSxn7C+ASSLVjQ==}
     cpu: [x64]
     os: [win32]
+
+  '@munaxa/auth@2.1.0':
+    resolution: {integrity: sha512-Pmut3w7TvwOEarVFm+gx+bNBRG9On23ou22JmqIUY0hp4nCLH04H9UWEVwdKQjUDf52MYWgsO4Amq8wmo923Xw==, tarball: https://npm.pkg.github.com/download/@munaxa/auth/2.1.0/a1f1ddfddcace23f64e47f81eb9a119f00178154}
+    engines: {node: '>=22.12.0'}
 
   '@munaxa/cache@2.1.0':
     resolution: {integrity: sha512-VTRrp+3LoMSB0tjDWfNdO+C7zCfCpuvILer7NWX6n/Tdp+0Y6BRxEvWTEDFNpv8Dm4I4bPgkJkHTNWFJ2FOXVA==, tarball: https://npm.pkg.github.com/download/@munaxa/cache/2.1.0/7c1edd97a37d5d0c980d1bcfc1098050d5c714c0}
@@ -3823,6 +3830,12 @@ snapshots:
 
   '@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4':
     optional: true
+
+  '@munaxa/auth@2.1.0':
+    dependencies:
+      '@munaxa/crypto': 2.1.0
+      '@munaxa/interfaces': 2.1.0
+      '@munaxa/types': 2.1.0
 
   '@munaxa/cache@2.1.0':
     dependencies:

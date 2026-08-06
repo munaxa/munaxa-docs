@@ -21,6 +21,7 @@
     "@edms/domain": "workspace:*",
     "@edms/i18n": "workspace:*",
     "@edms/utils": "workspace:*",
+    "@munaxa/auth": "^2.1.0",
     "@munaxa/cache": "^2.1.0",
     "@munaxa/crypto": "^2.1.0",
     "@munaxa/interfaces": "^2.1.0",

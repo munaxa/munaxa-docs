@@ -31,7 +31,7 @@ import {
  * **API clients and the identity provider are Identity's.** They look like integration and they
  * are *authentication* — "who is this and what may they do anywhere", which is Identity's own
  * question. An API client resolves to a person and needs `CredentialRepository`; a federated
- * sign-in mints a session and needs `SessionRepository` and the token issuer. Putting them here
+ * sign-in mints a session and needs the platform session manager and the token issuer. Putting them here
  * would mean this module reaching into Identity's tables, which is the sideways call
  * `modules/README.md` exists to prevent, or Identity exporting its credential repository to a
  * module that has no business with it.

@@ -31,11 +31,20 @@ import { CACHE_PORT, type CachePort } from '../../../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { IntegrationAudit, SecurityAudit } from '../domain/audit-actions';
 import { unsafeId } from '@munaxa/types';
-import type { TenantId as PlatformTenantId, UserId as PlatformUserId } from '@munaxa/types';
+import type {
+  SessionId as PlatformSessionId,
+  TenantId as PlatformTenantId,
+  TokenFamilyId as PlatformFamilyId,
+  UserId as PlatformUserId,
+} from '@munaxa/types';
 import {
   SESSION_MANAGER,
   type PlatformSessionManager,
 } from '../infrastructure/session-manager.provider';
+import {
+  REFRESH_TOKEN_SERVICE,
+  type PlatformRefreshTokenService,
+} from '../infrastructure/refresh-token-service.provider';
 import {
   claimAsStrings,
   constantTimeEquals,
@@ -48,8 +57,6 @@ import {
   ACCESS_TOKEN_ISSUER,
   type AccessTokenIssuer,
   type AuthenticationResult,
-  REFRESH_TOKEN_FACTORY,
-  type RefreshTokenFactory,
 } from './authentication.ports';
 import {
   IDENTITY_PROVIDER_REPOSITORY,
@@ -65,8 +72,6 @@ import {
   type CredentialRepository,
   FEDERATED_USER_REPOSITORY,
   type FederatedUserRepository,
-  SESSION_REPOSITORY,
-  type SessionRepository,
 } from './ports';
 
 /** One rejection message for every way a callback can fail. The log records which it was. */
@@ -119,10 +124,9 @@ export class DefaultFederationService implements FederationService {
     @Inject(OIDC_DISCOVERY) private readonly discovery: OidcDiscovery,
     @Inject(FEDERATED_USER_REPOSITORY) private readonly users: FederatedUserRepository,
     @Inject(CREDENTIAL_REPOSITORY) private readonly credentials: CredentialRepository,
-    @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
     @Inject(SESSION_MANAGER) private readonly sessionManager: PlatformSessionManager,
     @Inject(ACCESS_TOKEN_ISSUER) private readonly accessTokens: AccessTokenIssuer,
-    @Inject(REFRESH_TOKEN_FACTORY) private readonly refreshTokens: RefreshTokenFactory,
+    @Inject(REFRESH_TOKEN_SERVICE) private readonly refreshTokens: PlatformRefreshTokenService,
     @Inject(TENANT_REGISTRY) private readonly registry: TenantRegistry,
     @Inject(CACHE_PORT) private readonly cache: CachePort,
     @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
@@ -379,12 +383,12 @@ export class DefaultFederationService implements FederationService {
           payload: { userId, method: 'FEDERATED', providerId: provider.id },
         });
 
-        const refresh = this.refreshTokens.create(now);
-        await this.sessions.issueToken({
-          id: asId<AnyId>(uuidv7(now.getTime())),
-          familyId,
-          tokenHash: refresh.hash,
-          expiresAt: refresh.expiresAt,
+        const refresh = await this.refreshTokens.issue({
+          tenantId: unsafeId<PlatformTenantId>(tenantId),
+          userId: unsafeId<PlatformUserId>(userId),
+          tokenVersion: credential.permissionVersion,
+          familyId: unsafeId<PlatformFamilyId>(familyId),
+          sessionId: unsafeId<PlatformSessionId>(familyId),
         });
         const access = this.accessTokens.issue({
           userId: credential.id,
@@ -399,7 +403,7 @@ export class DefaultFederationService implements FederationService {
           accessToken: access.token,
           accessTokenExpiresAt: access.expiresAt,
           refreshToken: refresh.token,
-          refreshTokenExpiresAt: refresh.expiresAt,
+          refreshTokenExpiresAt: new Date(refresh.record.expiresAt),
           user: {
             id: credential.id,
             email: credential.email,

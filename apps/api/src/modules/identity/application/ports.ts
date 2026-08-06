@@ -23,7 +23,6 @@ import type { Page, PageRequest } from '@edms/utils';
 export const USER_REPOSITORY = Symbol('UserRepository');
 export const ROLE_REPOSITORY = Symbol('RoleRepository');
 export const DELEGATION_REPOSITORY = Symbol('DelegationRepository');
-export const SESSION_REPOSITORY = Symbol('SessionRepository');
 
 export interface UserRecord {
   readonly id: UserId;
@@ -196,28 +195,6 @@ export interface RefreshTokenRecord {
   readonly expiresAt: Date;
   readonly usedAt: Date | null;
   readonly familyRevokedAt: Date | null;
-}
-
-/**
- * The refresh-token lineage. Family lifecycle belongs to `SessionManager` — see
- * `infrastructure/session-manager.provider.ts`; declaring it here too would be the parallel
- * session implementation this migration exists to remove.
- */
-export interface SessionRepository {
-  /** Records an issued refresh token. Only the hash is stored — never the token itself. */
-  issueToken(token: {
-    readonly id: AnyId;
-    readonly familyId: AnyId;
-    readonly tokenHash: string;
-    readonly expiresAt: Date;
-  }): Promise<void>;
-  /** Refresh tokens are stored hashed; reuse of a rotated token kills the whole family. */
-  findByTokenHash(tokenHash: string): Promise<RefreshTokenRecord | null>;
-  /**
-   * Marks a token exchanged. Returns false when it was already marked, which is the signal
-   * that this is a replay — the caller revokes the family rather than issuing a new pair.
-   */
-  markUsed(tokenId: AnyId, at: Date): Promise<boolean>;
 }
 
 /**

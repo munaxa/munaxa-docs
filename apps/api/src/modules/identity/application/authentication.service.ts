@@ -30,8 +30,6 @@ import {
   type AuthenticationService,
   PASSWORD_HASHER,
   type PasswordHasher,
-  REFRESH_TOKEN_FACTORY,
-  type RefreshTokenFactory,
   type SessionContext,
   type SignInCommand,
   TENANT_DIRECTORY,
@@ -41,10 +39,12 @@ import { MFA_SERVICE, type MfaService } from './mfa.ports';
 import {
   CREDENTIAL_REPOSITORY,
   type CredentialRepository,
-  SESSION_REPOSITORY,
-  type SessionRepository,
   type UserCredentialRecord,
 } from './ports';
+import {
+  REFRESH_TOKEN_SERVICE,
+  type PlatformRefreshTokenService,
+} from '../infrastructure/refresh-token-service.provider';
 import {
   SESSION_MANAGER,
   type PlatformSessionManager,
@@ -53,8 +53,11 @@ import { unsafeId } from '@munaxa/types';
 import type {
   SessionId as PlatformSessionId,
   TenantId as PlatformTenantId,
+  TokenFamilyId as PlatformFamilyId,
   UserId as PlatformUserId,
 } from '@munaxa/types';
+import type { IssuedRefreshToken } from '@munaxa/auth';
+import { isPlatformError } from '@munaxa/types';
 
 /**
  * `@edms/domain` and `@munaxa/types` both brand their ids, structurally identically and nominally
@@ -65,6 +68,11 @@ import type {
 const platformTenant = (id: TenantId): PlatformTenantId => unsafeId<PlatformTenantId>(id);
 const platformUser = (id: UserId): PlatformUserId => unsafeId<PlatformUserId>(id);
 const platformSession = (id: AnyId): PlatformSessionId => unsafeId<PlatformSessionId>(id);
+
+/** Narrow a thrown value to one of the platform's closed error codes. */
+function isPlatformCode(error: unknown, code: string): boolean {
+  return isPlatformError(error) && error.code === code;
+}
 
 /** Every rejection the caller is told about in the same words. The log records which it was. */
 const REJECTED = 'Those credentials were not accepted.';
@@ -96,12 +104,11 @@ const SESSION_OVER = 'That session is no longer valid.';
 export class DefaultAuthenticationService implements AuthenticationService {
   constructor(
     @Inject(CREDENTIAL_REPOSITORY) private readonly credentials: CredentialRepository,
-    @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
     @Inject(SESSION_MANAGER) private readonly sessionManager: PlatformSessionManager,
     @Inject(TENANT_DIRECTORY) private readonly tenants: TenantDirectory,
     @Inject(PASSWORD_HASHER) private readonly passwords: PasswordHasher,
     @Inject(ACCESS_TOKEN_ISSUER) private readonly accessTokens: AccessTokenIssuer,
-    @Inject(REFRESH_TOKEN_FACTORY) private readonly refreshTokens: RefreshTokenFactory,
+    @Inject(REFRESH_TOKEN_SERVICE) private readonly refreshTokens: PlatformRefreshTokenService,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
@@ -189,9 +196,17 @@ export class DefaultAuthenticationService implements AuthenticationService {
         payload: { userId: credential.id },
       });
 
+      const issued = await this.refreshTokens.issue({
+        tenantId: platformTenant(tenantId),
+        userId: platformUser(credential.id),
+        tokenVersion: credential.permissionVersion,
+        familyId: unsafeId<PlatformFamilyId>(familyId),
+        sessionId: platformSession(familyId),
+      });
+
       return {
         kind: 'issued',
-        result: await this.mintPair(credential, familyId, tenantId, now),
+        result: this.resultFor(credential, familyId, tenantId, issued),
       } as const;
     });
 
@@ -234,46 +249,62 @@ export class DefaultAuthenticationService implements AuthenticationService {
     // The transaction below decides the outcome but never throws on the revocation paths.
     // Throwing inside it would roll the revocation back — the exception that reports a stolen
     // token would also erase the record of it, leaving the family live for the next replay.
+    //
+    // That is why the platform's `rotate` is caught rather than allowed to propagate: it revokes
+    // the family and *then* throws, and the throw would undo the revocation it just performed.
     const outcome = await this.withinTenant(context, SESSION_OVER, async (tenantId) => {
-      const now = this.clock.now();
-      const presented = await this.sessions.findByTokenHash(this.refreshTokens.hash(refreshToken));
-
-      if (!presented || presented.familyRevokedAt || presented.expiresAt <= now) {
+      const presented = await this.refreshTokens.inspect(platformTenant(tenantId), refreshToken);
+      if (!presented) {
         return { kind: 'reject' } as const;
       }
 
-      // Replay, or a concurrent exchange that lost the race — indistinguishable, and treated
-      // the same. `markUsed` deciding rather than the read above is what makes the race safe.
-      if (presented.usedAt || !(await this.sessions.markUsed(presented.id, now))) {
-        return {
-          kind: 'revoke',
-          familyId: presented.familyId,
-          reason: 'REFRESH_TOKEN_REUSED',
-        } as const;
-      }
-
-      // The deadlines the token itself cannot express. `expiresAt` above bounds this *token*;
-      // this bounds the *lineage* — a family kept alive by diligent rotation still dies at its
+      // The deadlines the token itself cannot express. `expiresAt` bounds this *token*; the
+      // session bounds the *lineage* — a family kept alive by diligent rotation still dies at its
       // absolute deadline, which is the case an idle timeout alone cannot catch.
       const validation = await this.sessionManager.validate(
         platformTenant(tenantId),
-        platformSession(presented.familyId),
+        platformSession(asId<AnyId>(presented.familyId)),
       );
       if (!validation.valid) {
         return {
           kind: 'revoke',
-          familyId: presented.familyId,
+          familyId: asId<AnyId>(presented.familyId),
           reason: `SESSION_${validation.reason.toUpperCase().replace(/-/g, '_')}`,
         } as const;
       }
 
-      const credential = await this.credentials.findById(presented.userId);
+      let rotated;
+      try {
+        rotated = await this.refreshTokens.rotate(platformTenant(tenantId), refreshToken);
+      } catch (error) {
+        // Replay, or a concurrent exchange that lost the compare-and-swap — indistinguishable,
+        // and treated the same. The platform has already revoked the family by this point.
+        if (isPlatformCode(error, 'AUTH_TOKEN_REUSED')) {
+          return {
+            kind: 'revoke',
+            familyId: asId<AnyId>(presented.familyId),
+            reason: 'REFRESH_TOKEN_REUSED',
+          } as const;
+        }
+        // Expired or already revoked: no lineage to end, nothing to report beyond the refusal.
+        if (
+          isPlatformCode(error, 'AUTH_TOKEN_EXPIRED') ||
+          isPlatformCode(error, 'AUTH_TOKEN_INVALID')
+        ) {
+          return { kind: 'reject' } as const;
+        }
+        throw error;
+      }
+
+      const credential = await this.credentials.findById(
+        asId<UserId>(rotated.issued.record.userId),
+      );
       if (!credential || !canSignIn(credential.status)) {
         // Disabled between refreshes: end the session rather than extend it. The token stays
         // consumed, which is why this transaction is allowed to commit.
         return {
           kind: 'revoke',
-          familyId: presented.familyId,
+          familyId: asId<AnyId>(presented.familyId),
           reason: 'USER_NOT_ELIGIBLE',
         } as const;
       }
@@ -282,7 +313,7 @@ export class DefaultAuthenticationService implements AuthenticationService {
       // The absolute deadline is untouched — `touch` clamps to it rather than extending past it.
       await this.sessionManager.touch(
         platformTenant(tenantId),
-        platformSession(presented.familyId),
+        platformSession(asId<AnyId>(presented.familyId)),
         {
           ...(context.ipAddress === null ? {} : { ipAddress: context.ipAddress }),
           ...(context.userAgent === null ? {} : { userAgent: context.userAgent }),
@@ -291,7 +322,12 @@ export class DefaultAuthenticationService implements AuthenticationService {
 
       return {
         kind: 'issued',
-        result: await this.mintPair(credential, presented.familyId, tenantId, now),
+        result: this.resultFor(
+          credential,
+          asId<AnyId>(presented.familyId),
+          tenantId,
+          rotated.issued,
+        ),
       } as const;
     });
 
@@ -327,19 +363,26 @@ export class DefaultAuthenticationService implements AuthenticationService {
 
   async signOut(refreshToken: string, context: SessionContext): Promise<void> {
     await this.withinTenant(context, SESSION_OVER, async (tenantId) => {
-      const presented = await this.sessions.findByTokenHash(this.refreshTokens.hash(refreshToken));
+      const presented = await this.refreshTokens.inspect(platformTenant(tenantId), refreshToken);
       // Unknown or already revoked is success: sign-out is idempotent, and reporting "no such
       // session" would tell an attacker which stolen tokens are still live.
-      if (presented && !presented.familyRevokedAt) {
+      if (presented && presented.revokedAt === undefined) {
         await this.sessionManager.revoke(
           platformTenant(tenantId),
-          platformSession(presented.familyId),
+          platformSession(asId<AnyId>(presented.familyId)),
           'logout',
         );
-        await this.audit.write(this.actor(tenantId, context, presented.userId), {
+        // The lineage as well as the session: a token left live after sign-out is a credential the
+        // user believes they have surrendered.
+        await this.refreshTokens.revokeFamily(
+          platformTenant(tenantId),
+          presented.familyId,
+          'logout',
+        );
+        await this.audit.write(this.actor(tenantId, context, asId<UserId>(presented.userId)), {
           action: SecurityAudit.SESSION_REVOKED,
           subjectType: AuditSubjectType.SESSION,
-          subjectId: presented.familyId,
+          subjectId: asId<AnyId>(presented.familyId),
           outcome: AuditOutcome.SUCCESS,
           payload: { reason: 'SIGNED_OUT' },
         });
@@ -427,21 +470,18 @@ export class DefaultAuthenticationService implements AuthenticationService {
     return 'BAD_PASSWORD';
   }
 
-  /** Issues the access/refresh pair for a session family that already exists. */
-  private async mintPair(
+  /**
+   * Build the response around a refresh token the platform has already minted.
+   *
+   * The access token stays this product's: it carries Docs' roles, permissions and permission
+   * version, which the platform's token service knows nothing about. Only the refresh half moved.
+   */
+  private resultFor(
     credential: UserCredentialRecord,
     familyId: AnyId,
     tenantId: TenantId,
-    now: Date,
-  ): Promise<AuthenticationResult> {
-    const refresh = this.refreshTokens.create(now);
-    await this.sessions.issueToken({
-      id: asId<AnyId>(uuidv7(now.getTime())),
-      familyId,
-      tokenHash: refresh.hash,
-      expiresAt: refresh.expiresAt,
-    });
-
+    issued: IssuedRefreshToken,
+  ): AuthenticationResult {
     const access = this.accessTokens.issue({
       userId: credential.id,
       tenantId,
@@ -454,8 +494,8 @@ export class DefaultAuthenticationService implements AuthenticationService {
     return {
       accessToken: access.token,
       accessTokenExpiresAt: access.expiresAt,
-      refreshToken: refresh.token,
-      refreshTokenExpiresAt: refresh.expiresAt,
+      refreshToken: issued.token,
+      refreshTokenExpiresAt: new Date(issued.record.expiresAt),
       user: this.toAuthenticatedUser(credential),
     };
   }

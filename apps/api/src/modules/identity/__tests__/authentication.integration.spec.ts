@@ -14,7 +14,6 @@ import { DefaultAuthenticationService } from '../application/authentication.serv
 import { JwtTokenService } from '../infrastructure/jwt.token-service';
 import { PrismaCredentialRepository } from '../infrastructure/prisma-credential.repository';
 import { RegistryTenantDirectory } from '../infrastructure/registry-tenant.directory';
-import { RandomRefreshTokenFactory } from '../infrastructure/random-refresh-token.factory';
 import { PlatformPasswordHasher } from '../infrastructure/platform-password.hasher';
 import type { MfaService } from '../application/mfa.ports';
 import type { AuditWriter } from '../../../core/audit/audit-writer.port';
@@ -22,9 +21,10 @@ import { FakeClock } from '../../../testing/fake-ports';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { SessionManager } from '@munaxa/session';
 import type { ClockPort } from '../../../ports/clock.port';
-import { PrismaSessionRepository } from '../infrastructure/prisma-session.repository';
 
 import { PrismaRefreshFamilyStore } from '../infrastructure/prisma-refresh-family.store';
+import { PrismaRefreshTokenStore } from '../infrastructure/prisma-refresh-token.store';
+import { createRefreshTokenService } from '../infrastructure/refresh-token-service.provider';
 import { createSessionManager } from '../infrastructure/session-manager.provider';
 
 // Both roles are needed and they are not interchangeable: seeding is DDL-adjacent and runs as
@@ -115,12 +115,11 @@ const sessionManager = platformSessions(config, clock);
 
 const service = new DefaultAuthenticationService(
   new PrismaCredentialRepository(),
-  new PrismaSessionRepository(),
   sessionManager,
   new RegistryTenantDirectory(everyTenantRegistry(APP_URL, { [ACME_SLUG]: ACME })),
   hasher,
   new JwtTokenService(config, clock),
-  new RandomRefreshTokenFactory(config),
+  createRefreshTokenService(config, clock, new PrismaRefreshTokenStore()),
   clock,
   unitOfWork,
   auditWriter,

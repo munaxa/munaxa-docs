@@ -19,7 +19,6 @@ import type {
   AccessTokenIssuer,
   AccessTokenRequest,
   PasswordHasher,
-  RefreshTokenFactory,
   SessionContext,
   TenantDirectory,
 } from './authentication.ports';
@@ -30,18 +29,15 @@ import {
   SessionManager,
   sessionStoreOverFamilies,
 } from '@munaxa/session';
+import { MemoryRefreshTokenStore, RefreshTokenService } from '@munaxa/auth';
 import { unsafeId } from '@munaxa/types';
 import type {
   SessionId as PlatformSessionId,
   TenantId as PlatformTenantId,
+  TokenFamilyId as PlatformFamilyId,
   UserId as PlatformUserId,
 } from '@munaxa/types';
-import type {
-  CredentialRepository,
-  RefreshTokenRecord,
-  SessionRepository,
-  UserCredentialRecord,
-} from './ports';
+import type { CredentialRepository, UserCredentialRecord } from './ports';
 
 /**
  * The properties these tests hold onto are the ones an attacker probes:
@@ -81,7 +77,8 @@ function aCredential(overrides: Partial<UserCredentialRecord> = {}): UserCredent
 
 describe('DefaultAuthenticationService', () => {
   let credentials: CredentialRepository;
-  let sessions: SessionRepository;
+  let refreshTokens: RefreshTokenService;
+  let tokenStore: MemoryRefreshTokenStore;
   // The platform's own manager over its own memory store, rather than a mock. A mock would assert
   // that this service calls the right methods; this asserts that the resulting session is the one
   // the platform would have produced — deadlines, limit enforcement and all.
@@ -90,7 +87,6 @@ describe('DefaultAuthenticationService', () => {
   let tenants: TenantDirectory;
   let passwords: PasswordHasher;
   let issuer: AccessTokenIssuer;
-  let refreshTokens: RefreshTokenFactory;
   let clock: FakeClock;
   let service: DefaultAuthenticationService;
   let revoked: { familyId: AnyId; reason: string }[];
@@ -111,12 +107,6 @@ describe('DefaultAuthenticationService', () => {
       recordSignIn: vi.fn().mockResolvedValue(undefined),
     };
 
-    sessions = {
-      issueToken: vi.fn().mockResolvedValue(undefined),
-      findByTokenHash: vi.fn().mockResolvedValue(null),
-      markUsed: vi.fn().mockResolvedValue(true),
-    };
-
     tenants = { findIdBySlug: vi.fn().mockResolvedValue(TENANT) };
 
     passwords = {
@@ -131,15 +121,6 @@ describe('DefaultAuthenticationService', () => {
         issuedFor.push(request);
         return { token: 'access-token', expiresAt: new Date('2026-01-01T00:15:00Z') };
       }),
-    };
-
-    refreshTokens = {
-      create: vi.fn().mockReturnValue({
-        token: 'refresh-plain',
-        hash: 'refresh-hash',
-        expiresAt: new Date('2026-02-01T00:00:00Z'),
-      }),
-      hash: vi.fn((token: string) => `hashed:${token}`),
     };
 
     // Audit entries are recorded through the same rollback-aware boundary as revocations, so a
@@ -198,6 +179,11 @@ describe('DefaultAuthenticationService', () => {
       isRequired: () => Promise.resolve(false),
       remove: () => Promise.resolve(),
     } as unknown as MfaService;
+    tokenStore = new MemoryRefreshTokenStore();
+    refreshTokens = new RefreshTokenService({
+      store: tokenStore,
+      clock: { now: () => clock.now().getTime() },
+    });
     familyStore = new MemoryRefreshFamilyStore();
     sessionManager = new SessionManager({
       store: sessionStoreOverFamilies(familyStore),
@@ -213,7 +199,6 @@ describe('DefaultAuthenticationService', () => {
     });
     service = new DefaultAuthenticationService(
       credentials,
-      sessions,
       sessionManager,
       tenants,
       passwords,
@@ -232,7 +217,15 @@ describe('DefaultAuthenticationService', () => {
       const result = await service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' });
 
       expect(result.accessToken).toBe('access-token');
-      expect(result.refreshToken).toBe('refresh-plain');
+      // The plaintext is CSPRNG output and appears exactly once, here — so the assertion is that
+      // it resolves to a stored token in the family just opened, not that it equals a fixture.
+      const stored = await refreshTokens.inspect(
+        unsafeId<PlatformTenantId>(TENANT),
+        result.refreshToken,
+      );
+      expect(stored?.familyId).toBe(FAMILY);
+      // Docs' permissionVersion, carried through as the platform's tokenVersion.
+      expect(stored?.tokenVersion).toBe(1);
       expect(familyStore.size).toBe(1);
       // The tenant in the token comes from the directory, never from the caller.
       expect(issuedFor[0]?.tenantId).toBe(TENANT);
@@ -305,70 +298,91 @@ describe('DefaultAuthenticationService', () => {
     });
   }
 
-  describe('refresh', () => {
-    function present(overrides: Partial<RefreshTokenRecord> = {}): void {
-      vi.mocked(sessions.findByTokenHash).mockResolvedValue({
-        id: asId<AnyId>('01900000-0000-7000-8000-0000000000t1'.replace('t', 'a')),
-        familyId: FAMILY,
-        userId: USER,
-        expiresAt: new Date('2026-02-01T00:00:00Z'),
-        usedAt: null,
-        familyRevokedAt: null,
-        ...overrides,
-      });
-    }
+  /**
+   * Issue a real refresh token into the memory store, in the family `openFamily` opened.
+   *
+   * Real rather than mocked: rotation, replay detection and the compare-and-swap that decides
+   * between them are the platform's now, and a mocked store would assert only that this service
+   * calls it. Presenting an actual token exercises the mechanism.
+   */
+  async function issueToken(): Promise<string> {
+    const issued = await refreshTokens.issue({
+      tenantId: unsafeId<PlatformTenantId>(TENANT),
+      userId: unsafeId<PlatformUserId>(USER),
+      tokenVersion: 0,
+      familyId: unsafeId<PlatformFamilyId>(FAMILY),
+      sessionId: unsafeId<PlatformSessionId>(FAMILY),
+    });
+    return issued.token;
+  }
 
+  describe('refresh', () => {
     it('rotates the token, keeping the same family', async () => {
       await openFamily();
-      present();
+      const token = await issueToken();
 
-      const result = await service.refresh('refresh-plain', context);
+      const result = await service.refresh(token, context);
 
-      expect(result.refreshToken).toBe('refresh-plain');
-      expect(sessions.markUsed).toHaveBeenCalledOnce();
+      // A new token, not the one presented — the whole point of rotation.
+      expect(result.refreshToken).not.toBe(token);
       expect(familyStore.size).toBe(1);
       expect(revoked).toEqual([]);
+
+      // …and the replacement belongs to the same lineage.
+      const rotated = await refreshTokens.inspect(
+        unsafeId<PlatformTenantId>(TENANT),
+        result.refreshToken,
+      );
+      expect(rotated?.familyId).toBe(FAMILY);
     });
 
     it('revokes the whole family when a token is presented twice', async () => {
       await openFamily();
-      present({ usedAt: new Date('2026-01-01T00:00:00Z') });
+      const token = await issueToken();
+      await service.refresh(token, context);
 
-      await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
+      // The same token again. It was consumed by the rotation above.
+      await expect(service.refresh(token, context)).rejects.toThrowError();
 
       expect(revoked).toEqual([{ familyId: FAMILY, reason: 'token-reuse' }]);
     });
 
     it('treats losing the claim race as reuse', async () => {
+      // Two exchanges of one token, issued together. Exactly one may win the compare-and-swap,
+      // and the loser is indistinguishable from a thief — which is the correct reading.
       await openFamily();
-      present();
-      // Another request marked it used first: this call must not issue a second live pair.
-      vi.mocked(sessions.markUsed).mockResolvedValue(false);
+      const token = await issueToken();
 
-      await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
+      const results = await Promise.allSettled([
+        service.refresh(token, context),
+        service.refresh(token, context),
+      ]);
 
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
       expect(revoked).toEqual([{ familyId: FAMILY, reason: 'token-reuse' }]);
     });
 
     it('refuses a token whose family is already revoked', async () => {
-      present({ familyRevokedAt: new Date('2026-01-01T00:00:00Z') });
+      // No family opened, so the session the token names does not exist.
+      const token = await issueToken();
 
-      await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
-      expect(sessions.markUsed).not.toHaveBeenCalled();
+      await expect(service.refresh(token, context)).rejects.toThrowError();
     });
 
-    it('refuses an expired token', async () => {
-      present({ expiresAt: new Date('2025-12-31T00:00:00Z') });
+    it('refuses a token this tenant did not issue', async () => {
+      await openFamily();
 
-      await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
+      await expect(service.refresh('not-a-token-we-minted', context)).rejects.toThrowError();
+      expect(revoked).toEqual([]);
     });
 
     it('ends the session when the user was disabled since the last refresh', async () => {
       await openFamily();
-      present();
+      const token = await issueToken();
       vi.mocked(credentials.findById).mockResolvedValue(aCredential({ status: 'DISABLED' }));
 
-      await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
+      await expect(service.refresh(token, context)).rejects.toThrowError();
 
       expect(revoked).toEqual([{ familyId: FAMILY, reason: 'account-disabled' }]);
     });
@@ -404,31 +418,20 @@ describe('DefaultAuthenticationService', () => {
     });
 
     it('records the revocation when a refresh token is replayed', async () => {
-      vi.mocked(sessions.findByTokenHash).mockResolvedValue({
-        id: asId<AnyId>('01900000-0000-7000-8000-0000000000a1'),
-        familyId: FAMILY,
-        userId: USER,
-        expiresAt: new Date('2026-02-01T00:00:00Z'),
-        usedAt: new Date('2026-01-01T00:00:00Z'),
-        familyRevokedAt: null,
-      });
+      await openFamily();
+      const token = await issueToken();
+      await service.refresh(token, context);
+      audited.length = 0;
 
-      await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
+      await expect(service.refresh(token, context)).rejects.toThrowError();
 
       expect(audited).toEqual([{ action: 'SESSION_REVOKED', outcome: 'DENIED' }]);
     });
 
     it('records a sign-out', async () => {
-      vi.mocked(sessions.findByTokenHash).mockResolvedValue({
-        id: asId<AnyId>('01900000-0000-7000-8000-0000000000a1'),
-        familyId: FAMILY,
-        userId: USER,
-        expiresAt: new Date('2026-02-01T00:00:00Z'),
-        usedAt: null,
-        familyRevokedAt: null,
-      });
+      const token = await issueToken();
 
-      await service.signOut('refresh-plain', context);
+      await service.signOut(token, context);
 
       expect(audited).toEqual([{ action: 'SESSION_REVOKED', outcome: 'SUCCESS' }]);
     });
@@ -437,23 +440,15 @@ describe('DefaultAuthenticationService', () => {
   describe('signOut', () => {
     it('revokes the family behind the presented token', async () => {
       await openFamily();
-      vi.mocked(sessions.findByTokenHash).mockResolvedValue({
-        id: asId<AnyId>('01900000-0000-7000-8000-0000000000a1'),
-        familyId: FAMILY,
-        userId: USER,
-        expiresAt: new Date('2026-02-01T00:00:00Z'),
-        usedAt: null,
-        familyRevokedAt: null,
-      });
+      const token = await issueToken();
 
-      await service.signOut('refresh-plain', context);
+      await service.signOut(token, context);
 
       expect(revoked).toEqual([{ familyId: FAMILY, reason: 'logout' }]);
     });
 
     it('succeeds for an unknown token rather than reporting that it is unknown', async () => {
-      vi.mocked(sessions.findByTokenHash).mockResolvedValue(null);
-
+      // Nothing was ever issued, so the store genuinely does not know this token.
       await expect(service.signOut('whatever', context)).resolves.toBeUndefined();
       expect(revoked).toEqual([]);
     });
