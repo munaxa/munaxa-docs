@@ -152,6 +152,22 @@ export const configSchema = z
      */
     STORAGE_PUBLIC_URL: z.string().url().optional(),
 
+    /**
+     * The rolling integrity verifier — Phase 18, `17-security-architecture.md` §8.
+     *
+     * How many blobs one nightly pass reads back and re-hashes, and how large a blob it will
+     * attempt. The second bound is not a preference: `StoragePort.read` answers with a whole
+     * `Buffer`, so an unbounded pass would hold a 2 GB scan in a background lane's memory. A blob
+     * above it is stamped as looked-at and left `UNVERIFIED`, which is honest and — critically —
+     * stops it being returned by every subsequent pass for ever.
+     *
+     * The two together decide how long a full cycle takes. At the defaults, a tenant with 200,000
+     * blobs is completely re-verified about every four months; a deployment that wants faster
+     * raises the batch, and pays for it in reads against its object store.
+     */
+    STORAGE_INTEGRITY_BATCH_SIZE: z.coerce.number().int().min(1).max(10_000).default(200),
+    STORAGE_INTEGRITY_MAX_BYTES: z.coerce.number().int().min(1_024).default(134_217_728),
+
     SEARCH_DRIVER: z.enum(['POSTGRES', 'OPENSEARCH']).default('POSTGRES'),
     /**
      * The coalescing window (`12-search-architecture.md` §6): changes to one document inside
@@ -885,6 +901,9 @@ export interface AppConfig {
     readonly publicUrl: string | null;
     /** The chunk a streamed write sends at a time — the only memory a large artefact costs. */
     readonly streamPartBytes: number;
+    /** The rolling integrity verifier's page, and the largest blob it will read back — Phase 18. */
+    readonly integrityBatchSize: number;
+    readonly integrityMaxBytes: number;
   };
   readonly providers: {
     readonly search: RawConfig['SEARCH_DRIVER'];
@@ -1091,6 +1110,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       localRoot: raw.STORAGE_LOCAL_ROOT,
       publicUrl: raw.STORAGE_PUBLIC_URL ?? null,
       streamPartBytes: raw.STORAGE_STREAM_PART_BYTES,
+      integrityBatchSize: raw.STORAGE_INTEGRITY_BATCH_SIZE,
+      integrityMaxBytes: raw.STORAGE_INTEGRITY_MAX_BYTES,
     },
     audit: {
       readBufferSize: raw.AUDIT_READ_BUFFER_SIZE,

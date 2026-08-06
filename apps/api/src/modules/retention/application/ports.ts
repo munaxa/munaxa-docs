@@ -261,6 +261,29 @@ export interface BlobReaper {
   reclaim(fileObjectId: string): Promise<boolean>;
   /** Expires abandoned upload sessions — `storage.sweep-upload-sessions`' whole job. */
   expireUploadSessions(before: Date): Promise<number>;
+  /**
+   * One pass of the rolling integrity verifier — `storage.verify-integrity`, Phase 18.
+   *
+   * Here rather than in a consumer of its own, and the reason is the lane. `retention.run` has one
+   * subscriber; a second `Worker` on the same queue would take jobs from it at random, so the
+   * third schedule on this lane has to be answered by the class that already answers the other
+   * two. This port is how it reaches Storage without Retention importing Storage's service —
+   * the same seam `listReclaimable` and `expireUploadSessions` already use, and the same shape
+   * Phase 13's dashboard ports have.
+   *
+   * The work itself is entirely Storage's: what a checksum is, what quarantine means, and which
+   * finding is an incident are that module's questions. Retention only knows that a schedule
+   * fired.
+   */
+  verifyStoredIntegrity(): Promise<IntegritySweep>;
+}
+
+/** What one pass of the integrity verifier found. */
+export interface IntegritySweep {
+  readonly checked: number;
+  readonly verified: number;
+  readonly mismatched: number;
+  readonly unreadable: number;
 }
 
 export interface ReclaimableBlob {
@@ -296,6 +319,8 @@ export interface RetentionService {
   reclaimBlobs(limit: number): Promise<number>;
   /** Expires abandoned upload sessions. The second schedule on this lane. */
   expireUploadSessions(): Promise<number>;
+  /** `storage.verify-integrity`, the lane's third schedule — Phase 18. */
+  verifyStoredIntegrity(): Promise<IntegritySweep>;
 }
 
 /**

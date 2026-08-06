@@ -1632,6 +1632,33 @@ model WorkflowVersion {
 //   removed, and the application says so with a count rather than failing at the constraint.
 // ---------------------------------------------------------------------------------------
 
+/// What the integrity sweep last found about a stored blob — Phase 18.
+///
+/// `17-security-architecture.md` §8 has promised "a rolling verifier plus verification on every
+/// preview fetch; mismatch quarantines and raises an incident" since Phase 0, and
+/// `13-audit-architecture.md` §2 has carried `INTEGRITY_MISMATCH` with nothing writing it. This is
+/// the column that makes the quarantine half of that sentence real: a blob whose bytes no longer
+/// hash to the checksum recorded at creation is **unreachable**, exactly as an infected one is,
+/// and for the same reason — the product must never serve content it cannot vouch for.
+///
+/// Separate from `ScanStatus` rather than a value inside it, because the two answer different
+/// questions with different remedies. `INFECTED` means the bytes are what was uploaded and the
+/// upload was hostile; `MISMATCH` means the bytes are **not** what was uploaded, which is a
+/// storage or a tampering incident and is recovered from a backup rather than by deleting.
+/// Collapsing them would make "was our object store corrupted" unanswerable.
+enum IntegrityStatus {
+  /// Never checked. The state of every blob written before this sweep existed.
+  UNVERIFIED
+  /// Read back and re-hashed to the recorded checksum.
+  VERIFIED
+  /// Read back and hashed to something else. Quarantined; a compliance incident.
+  MISMATCH
+  /// The object could not be read at all — gone, or the store refused. Also quarantined.
+  UNREADABLE
+
+  @@map("integrity_status")
+}
+
 /// A blob is unreachable until it is CLEAN. Enforced in the use case *and* by a check
 /// constraint, in every environment holding real data (`17-security-architecture.md` §5).
 enum ScanStatus {
@@ -1783,6 +1810,10 @@ model FileObject {
   scanThreat     String?    @map("scan_threat")
   scanner        String?
   scannedAt      DateTime?  @map("scanned_at") @db.Timestamptz(6)
+  /// The rolling verifier's last finding — Phase 18, `17-security-architecture.md` §8.
+  integrityStatus   IntegrityStatus @default(UNVERIFIED) @map("integrity_status")
+  /// When it last ran for this blob. Null until it has, which is also the sweep's cursor.
+  integrityCheckedAt DateTime?      @map("integrity_checked_at") @db.Timestamptz(6)
   /// References from revisions and preview artefacts. Maintained transactionally with the write
   /// that creates or removes a reference, and reconciled by a sweeper that reports drift rather
   /// than silently fixing it.
@@ -1810,6 +1841,10 @@ model FileObject {
   /// The retention sweeper's only query: unreferenced blobs, oldest first.
   @@index([tenantId, refCount], map: "ix_file_object_refcount")
   @@index([tenantId, scanStatus], map: "ix_file_object_scan")
+  /// The integrity sweep's only query: least-recently-verified first, nulls first — Phase 18.
+  /// `NULLS FIRST` is PostgreSQL's default for `ASC`, which is what makes a blob that has never
+  /// been checked the one the next pass picks up, without a second predicate.
+  @@index([tenantId, integrityCheckedAt], map: "ix_file_object_integrity")
   @@map("file_object")
 }
 

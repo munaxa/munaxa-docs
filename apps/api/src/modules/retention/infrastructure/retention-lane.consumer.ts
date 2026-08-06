@@ -18,6 +18,8 @@ import { RETENTION_SERVICE, type RetentionService } from '../application/ports';
 /** The two schedule entries this consumer answers for. Declared in Phase 0.5, fired here. */
 const SWEEP_SCHEDULE = 'retention.sweep';
 const UPLOAD_SCHEDULE = 'storage.sweep-upload-sessions';
+/** Phase 18's rolling integrity verifier, the third schedule on this lane. */
+const INTEGRITY_SCHEDULE = 'storage.verify-integrity';
 
 /** How many due schedules one tenant's nightly pass settles. Bounded by the lane's budget. */
 const SWEEP_BATCH = 500;
@@ -72,7 +74,7 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
       await this.handle(job);
     });
 
-    for (const name of [SWEEP_SCHEDULE, UPLOAD_SCHEDULE]) {
+    for (const name of [SWEEP_SCHEDULE, UPLOAD_SCHEDULE, INTEGRITY_SCHEDULE]) {
       const scheduled = SCHEDULE.find((entry) => entry.name === name);
       if (scheduled === undefined) {
         // The catalogue is the single source of the cron expression; an entry removed from it must
@@ -98,10 +100,14 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
         return this.fanOut(job, 'retention.sweep-tenant');
       case `${UPLOAD_SCHEDULE}-fanout`:
         return this.fanOut(job, 'retention.expire-uploads-tenant');
+      case `${INTEGRITY_SCHEDULE}-fanout`:
+        return this.fanOut(job, 'storage.verify-integrity-tenant');
       case 'retention.sweep-tenant':
         return this.sweepTenant(job, payload);
       case 'retention.expire-uploads-tenant':
         return this.expireUploads(job, payload);
+      case 'storage.verify-integrity-tenant':
+        return this.verifyIntegrity(job, payload);
       default:
         // Unretryable: the payload will not grow a recognisable shape on a fifth attempt. Logged
         // and dropped, as every consumer since Phase 7 treats a malformed job.
@@ -148,6 +154,33 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
       if (expired > 0) {
         this.logger.info('Expired abandoned upload sessions', { tenantId, expired });
       }
+    });
+  }
+
+  /**
+   * One tenant's pass of the rolling integrity verifier — Phase 18.
+   *
+   * Always logged, including the quiet case, because "the sweep ran and found nothing" and "the
+   * sweep did not run" are the two states an operator most needs to tell apart — and a verifier
+   * that only speaks when something is wrong is indistinguishable from one that has stopped.
+   */
+  private async verifyIntegrity(job: JobEnvelope, payload: Record<string, unknown>): Promise<void> {
+    const tenantId = asString(payload['tenantId']);
+    if (tenantId === null) {
+      this.logger.warn('Dropped an integrity sweep job with no tenant', { jobId: job.jobId });
+      return;
+    }
+    await runWithContext(systemContext(tenantId, job.jobId), async () => {
+      const pass = await this.retention.verifyStoredIntegrity();
+      const context = { tenantId, ...pass };
+      if (pass.mismatched > 0 || pass.unreadable > 0) {
+        // At error, not warn: 17 §9 lists a checksum mismatch as an immediate alert, and the
+        // `INTEGRITY_MISMATCH` rows and the outbox events the sweep already wrote are the
+        // evidence behind this line rather than a substitute for it.
+        this.logger.error('The integrity sweep found stored bytes it cannot vouch for', context);
+        return;
+      }
+      this.logger.info('The integrity sweep verified stored blobs', context);
     });
   }
 }

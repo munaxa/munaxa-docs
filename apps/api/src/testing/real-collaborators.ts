@@ -1278,13 +1278,27 @@ export function realRetention(
   options: RetentionOptions & {
     readonly disposition: DocumentDisposition;
     readonly storage: StoragePort;
+    /**
+     * The storage *service*, for Phase 18's integrity sweep.
+     *
+     * Optional so that the fifteen suites which never fire that schedule are unchanged; the cast
+     * below is what a suite gets if it calls the sweep without supplying one, which fails loudly
+     * at the call rather than quietly reporting a pass that never ran.
+     */
+    readonly storageService?: DefaultStorageService;
   },
 ): RetentionStack {
   const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const schedules = new PrismaRetentionScheduleRepository(stamps);
   const holdRepository = new PrismaLegalHoldRepository(stamps);
   const tombstones = new PrismaTombstoneRepository();
-  const reaper = new StorageBlobReaper(options.storage, options.unitOfWork, silentLogger(), stamps);
+  const reaper = new StorageBlobReaper(
+    options.storage,
+    options.unitOfWork,
+    silentLogger(),
+    options.storageService ?? (null as unknown as DefaultStorageService),
+    stamps,
+  );
 
   return {
     scheduler: new RetentionSchedulerService(

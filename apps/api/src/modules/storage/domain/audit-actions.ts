@@ -18,6 +18,19 @@ export const StorageAudit = {
   FILE_DOWNLOAD_ISSUED: 'FILE_DOWNLOAD_ISSUED',
   /** A scan verdict was recorded, clean or otherwise. */
   FILE_SCANNED: 'FILE_SCANNED',
+  /**
+   * The rolling verifier read a blob back and it did not hash to what was recorded — Phase 18.
+   *
+   * This action has been in `13-audit-architecture.md` §2's Security group since Phase 0 with the
+   * note "Phase 18 — the integrity sweep that would detect one", and nothing had ever written it.
+   * It is Storage's rather than Security's for the reason every other action in this file is:
+   * each module owns the actions it writes, and the lint rule forbidding a cross-module reach into
+   * `domain/` turns that from a convention into a constraint.
+   *
+   * `AuditOutcome.FAILED`, not `SUCCESS`. The sweep succeeded; the *integrity* did not, and an
+   * auditor filtering the trail for failures must find this one.
+   */
+  INTEGRITY_MISMATCH: 'INTEGRITY_MISMATCH',
 } as const;
 
 export type StorageAuditAction = (typeof StorageAudit)[keyof typeof StorageAudit];

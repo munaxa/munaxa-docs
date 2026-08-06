@@ -7,6 +7,10 @@ import {
   AuditSubjectType,
   type DomainEventDraft,
   type FileObjectId,
+  AuditOutcome,
+  IntegrityStatus,
+  type IntegrityStatusKey,
+  isServableIntegrity,
   ScanStatus,
   type ScanStatusKey,
   UploadSessionState,
@@ -37,6 +41,7 @@ import {
   stagingKeyFor,
 } from '../domain/content-key';
 import {
+  fileIntegrityMismatchEvent,
   fileObjectCreatedEvent,
   fileQuarantinedEvent,
   fileScanCompletedEvent,
@@ -52,6 +57,7 @@ import {
   FILE_OBJECT_REPOSITORY,
   type FileObjectRecord,
   type FileObjectRepository,
+  type IntegritySweepResult,
   type IssuedUploadTarget,
   type StorageService,
   UPLOAD_SESSION_REPOSITORY,
@@ -398,7 +404,78 @@ export class DefaultStorageService implements StorageService {
 
   async isReachable(fileObjectId: FileObjectId): Promise<boolean> {
     const file = await this.files.findById(fileObjectId);
-    return file !== null && file.scanStatus === ScanStatus.CLEAN;
+    return (
+      file !== null &&
+      file.scanStatus === ScanStatus.CLEAN &&
+      // Phase 18. A blob whose bytes no longer hash to what was recorded is quarantined for the
+      // same reason an infected one is: the product must not serve content it cannot vouch for.
+      // `UNVERIFIED` passes, because that is the state of every blob written before the sweep
+      // existed and refusing it would have made the whole library unreadable on the day the
+      // column arrived.
+      isServableIntegrity(file.integrityStatus)
+    );
+  }
+
+  /**
+   * One pass of the rolling verifier — `storage.verify-integrity`, Phase 18.
+   *
+   * 17 §8 has promised "a rolling verifier plus verification on every preview fetch; mismatch
+   * quarantines and raises an incident" since Phase 0, and 13 §2 has carried `INTEGRITY_MISMATCH`
+   * with the note "Phase 18 — the integrity sweep that would detect one". This is that sweep.
+   *
+   * ## The three decisions in it
+   *
+   * **A pass carries no cursor.** The page is ordered by the column the pass writes, nulls first,
+   * so a blob checked now sorts to the end and the next call naturally takes the next set. A
+   * crashed pass loses nothing and resumes nowhere in particular, which is the point: there is no
+   * stored position for a restore or a failover to disagree with.
+   *
+   * **A verified blob writes no audit row.** One row per blob per pass would put millions of
+   * chained, retention-governed events into the trail to say that nothing happened — the same
+   * argument 13 §2 makes for not auditing favourites, at a far larger scale. What is recorded is
+   * the *finding*, on the row, where the next pass reads it. Only a mismatch is an event.
+   *
+   * **The read is bounded, and a blob too large to read is marked checked anyway.**
+   * `StoragePort.read` returns a whole `Buffer` — there is no streaming read on the port — so a
+   * 2 GB scan would be 2 GB of process memory, which is exactly what 19 §5 forbids of a background
+   * lane. Blobs above the bound are skipped, and their `integrity_checked_at` is stamped even
+   * though their status stays `UNVERIFIED`: without that stamp the ordering would return the same
+   * unreadable-to-us blobs on every pass for ever, and the sweep would never reach anything else.
+   * The report names the streaming read as what closes it.
+   */
+  async verifyIntegrity(): Promise<IntegritySweepResult> {
+    const page = await this.writer.read(() =>
+      this.files.listForIntegrityCheck(this.config.storage.integrityBatchSize),
+    );
+    const result = { checked: 0, verified: 0, mismatched: 0, unreadable: 0 };
+
+    for (const file of page) {
+      // Outside any transaction: this is a network read of somebody else's object store, and
+      // holding a database transaction open across it would put an object store's latency in
+      // front of every other write in the tenant.
+      const actual = await this.rehash(file);
+      const status = integrityFrom(file.checksumSha256, actual);
+      result.checked += 1;
+
+      if (status === IntegrityStatus.VERIFIED || status === IntegrityStatus.UNVERIFIED) {
+        if (status === IntegrityStatus.VERIFIED) {
+          result.verified += 1;
+        }
+        await this.writer.read(() =>
+          this.files.recordIntegrity(file.id, { status, at: this.clock.now() }),
+        );
+        continue;
+      }
+
+      if (status === IntegrityStatus.MISMATCH) {
+        result.mismatched += 1;
+      } else {
+        result.unreadable += 1;
+      }
+      await this.quarantine(file, status, actual);
+    }
+
+    return result;
   }
 
   get(fileObjectId: FileObjectId): Promise<FileObjectRecord | null> {
@@ -608,6 +685,73 @@ export class DefaultStorageService implements StorageService {
     }
   }
 
+  /**
+   * Reads a blob back and re-hashes it.
+   *
+   * Answers `null` for "could not read", which covers a missing object, a store that refused and a
+   * blob past the size bound alike — the caller distinguishes the last of those by the size it
+   * already has on the row, because the three need different findings and only one of them is an
+   * incident.
+   */
+  private async rehash(file: FileObjectRecord): Promise<string | null> {
+    if (file.sizeBytes > this.config.storage.integrityMaxBytes) {
+      return null;
+    }
+    try {
+      const bytes = await this.storage.read(file.storageKey);
+      return bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
+    } catch {
+      // A store that is briefly unreachable must not quarantine a tenant's library, so this is
+      // indistinguishable here from a missing object — and the *finding* below is what tells them
+      // apart, because an object that reads as absent twice is an incident and one pass is not.
+      return null;
+    }
+  }
+
+  /**
+   * Records the finding, quarantines the blob and raises the incident.
+   *
+   * One transaction: the row, the audit event and the outbox row commit together, so there is no
+   * state in which a blob is quarantined and nothing says why — which is the state an operator
+   * would find during the incident and be unable to explain.
+   */
+  private async quarantine(
+    file: FileObjectRecord,
+    status: IntegrityStatusKey,
+    actual: string | null,
+  ): Promise<void> {
+    await this.writer.write(async () => {
+      await this.files.recordIntegrity(file.id, { status, at: this.clock.now() });
+      await this.outbox.publish([
+        fileIntegrityMismatchEvent(asId<AnyId>(String(file.id)), {
+          fileObjectId: String(file.id),
+          expectedSha256: file.checksumSha256,
+          actualSha256: actual,
+          storageKey: file.storageKey,
+          storageDriver: file.storageDriver,
+        }),
+      ]);
+      return {
+        result: undefined,
+        change: {
+          action: StorageAudit.INTEGRITY_MISMATCH,
+          subjectType: AuditSubjectType.FILE,
+          subjectId: asId<AnyId>(String(file.id)),
+          operation: AdministrativeOperation.UPDATED,
+          // The outcome is the finding, not the pass: the sweep worked and the blob is wrong, and
+          // an auditor filtering the trail for failures must find this row.
+          outcome: AuditOutcome.FAILED,
+          after: {
+            integrityStatus: status,
+            expectedSha256: file.checksumSha256,
+            actualSha256: actual,
+            storageDriver: file.storageDriver,
+          },
+        },
+      };
+    });
+  }
+
   private async discard(key: string, id: UploadSessionId): Promise<void> {
     await this.storage.delete(key);
     await this.sessions.settle(id, UploadSessionState.ABORTED, null);
@@ -651,6 +795,19 @@ export class DefaultStorageService implements StorageService {
       after,
     };
   }
+}
+
+/**
+ * What one blob's re-read says about it.
+ *
+ * `UNVERIFIED` is the "we did not manage to look" answer — a blob past the size bound. It is not a
+ * finding and never quarantines; it is recorded so the ordering advances past it.
+ */
+function integrityFrom(expected: string, actual: string | null): IntegrityStatusKey {
+  if (actual === null) {
+    return IntegrityStatus.UNREADABLE;
+  }
+  return actual === expected ? IntegrityStatus.VERIFIED : IntegrityStatus.MISMATCH;
 }
 
 /** Above this an upload is offered as a resumable transfer. Mirrors the S3 adapter's threshold. */

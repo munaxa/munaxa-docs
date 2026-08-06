@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-import type { FileObjectId, ScanStatusKey } from '@edms/domain';
+import type { FileObjectId, IntegrityStatusKey, ScanStatusKey } from '@edms/domain';
 
 import { RecordStamps } from '../../../core/persistence';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
@@ -108,6 +108,37 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
     return rows.map(toRecord);
   }
 
+  /**
+   * The integrity sweep's page — Phase 18.
+   *
+   * `deletedAt: null` and `refCount > 0`: a blob nothing points at is the reaper's, and re-reading
+   * bytes on their way to deletion would spend the sweep's budget on content no document depends
+   * on. Ordered by the column this pass writes, so the sweep carries no cursor of its own —
+   * `nulls first` on an ascending order is PostgreSQL's default, which puts every never-checked
+   * blob ahead of every checked one without a second predicate.
+   */
+  async listForIntegrityCheck(limit: number): Promise<readonly FileObjectRecord[]> {
+    const rows = await requireTransaction().fileObject.findMany({
+      where: { tenantId: this.tenantId(), deletedAt: null, refCount: { gt: 0 } },
+      orderBy: { integrityCheckedAt: { sort: Prisma.SortOrder.asc, nulls: 'first' } },
+      take: limit,
+    });
+    return rows.map(toRecord);
+  }
+
+  async recordIntegrity(
+    id: FileObjectId,
+    finding: { status: IntegrityStatusKey; at: Date },
+  ): Promise<void> {
+    // `updatedBy` is deliberately not stamped: the sweep is not somebody editing the blob, and
+    // recording a machine as the last person to touch a compliance record would be a lie the
+    // administration screens then display.
+    await requireTransaction().fileObject.updateMany({
+      where: { id: String(id), tenantId: this.tenantId() },
+      data: { integrityStatus: finding.status, integrityCheckedAt: finding.at },
+    });
+  }
+
   private tenantId(): string {
     return requireContext().tenantId;
   }
@@ -122,6 +153,8 @@ interface FileObjectRow {
   storageDriver: string;
   scanStatus: string;
   scanThreat: string | null;
+  integrityStatus: string;
+  integrityCheckedAt: Date | null;
   refCount: number;
   derived: boolean;
   createdAt: Date;
@@ -141,6 +174,8 @@ function toRecord(row: FileObjectRow): FileObjectRecord {
     storageDriver: row.storageDriver,
     scanStatus: row.scanStatus as ScanStatusKey,
     scanThreat: row.scanThreat,
+    integrityStatus: row.integrityStatus as IntegrityStatusKey,
+    integrityCheckedAt: row.integrityCheckedAt,
     refCount: row.refCount,
     derived: row.derived,
     createdAt: row.createdAt,
