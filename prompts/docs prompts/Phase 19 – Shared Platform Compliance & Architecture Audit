@@ -1,0 +1,237 @@
+You have completed the previous 18 implementation phases.
+
+Your task is NOT to build new features.
+
+Your task is to perform a comprehensive architecture audit to verify that the entire codebase fully complies with the Shared Platform Architecture we designed previously.
+
+This is an enterprise architecture review.
+
+Objectives
+
+Verify that every implementation follows the shared platform principles and identify every deviation.
+
+Do not assume compliance.
+
+Inspect the entire repository.
+
+Verify the following
+1. Shared Platform
+
+Verify that all products use the shared platform correctly.
+
+Examples:
+
+authentication
+authorization
+tenant resolution
+shared UI
+shared components
+shared services
+shared utilities
+shared infrastructure
+shared logging
+shared notifications
+shared storage
+shared audit
+shared settings
+
+There must not be duplicated implementations.
+
+2. Domain Boundaries
+
+Verify that every bounded context is isolated.
+
+Examples:
+
+Student
+Finance
+HR
+Attendance
+Inventory
+Procurement
+Documents
+Notifications
+
+Modules must communicate only through approved interfaces.
+
+No direct coupling.
+
+3. Deployment-Agnostic Architecture
+
+Verify the system can run:
+
+single server
+Docker
+Kubernetes
+Cloudflare
+AWS
+Azure
+GCP
+On-premises
+
+Business logic must not depend on deployment type.
+
+4. Multi-Tenant Architecture
+
+Verify:
+
+strict tenant isolation
+tenant-aware services
+tenant-aware queries
+tenant-aware storage
+tenant-aware cache
+tenant-aware queues
+tenant-aware permissions
+
+No cross-tenant leakage.
+
+5. Company Isolation
+
+Verify each company has:
+
+isolated data
+isolated storage
+isolated configuration
+isolated branding
+isolated integrations
+isolated numbering sequences
+isolated document templates
+
+Ensure the implementation matches the designed isolation model.
+
+6. Shared Database Strategy
+
+Verify that the database strategy matches the approved architecture.
+
+Check:
+
+tenant separation
+migrations
+indexes
+constraints
+foreign keys
+scalability
+future sharding readiness
+7. Shared UI Platform
+
+Verify that all applications use the shared design system.
+
+There should be no duplicated:
+
+buttons
+tables
+dialogs
+forms
+typography
+icons
+layouts
+8. API Architecture
+
+Verify:
+
+consistent REST design
+versioning
+DTO usage
+validation
+authorization
+error handling
+pagination
+filtering
+9. Package Architecture
+
+Inspect every package.
+
+Verify responsibilities are clear.
+
+Remove circular dependencies.
+
+Identify packages that should be split or merged.
+
+10. Infrastructure
+
+Verify:
+
+caching
+queues
+storage abstraction
+email abstraction
+SMS abstraction
+secrets
+configuration
+
+Infrastructure must be replaceable.
+
+11. Security
+
+Verify:
+
+RBAC
+permissions
+audit logging
+encryption
+secret handling
+input validation
+rate limiting
+CSRF/XSS protections
+secure headers
+12. Performance
+
+Identify:
+
+N+1 queries
+duplicated queries
+missing indexes
+expensive joins
+unnecessary rendering
+large bundle sizes
+13. Technical Debt
+
+Identify:
+
+duplicated code
+dead code
+TODOs
+temporary fixes
+legacy code
+deprecated APIs
+14. Architecture Violations
+
+Create a complete list of:
+
+boundary violations
+dependency violations
+duplicated implementations
+anti-patterns
+missing abstractions
+
+Explain why each violates the architecture.
+
+15. Future Readiness
+
+Verify readiness for future Munaxa products, including:
+
+Munaxa Work
+Munaxa Docs
+Munaxa CRM
+Munaxa ERP
+Munaxa AI
+future platform modules
+
+Ensure the shared platform can support them without requiring architectural rewrites.
+
+Deliverables
+
+Produce a detailed report containing:
+
+Executive Summary
+Overall Architecture Score (0–100)
+Shared Platform Compliance Score
+Module-by-Module Compliance
+Violations by Severity (Critical, High, Medium, Low)
+Risk Assessment
+Recommended Fixes
+Prioritized Remediation Plan
+Estimated effort for each remediation
+Final recommendation on whether the codebase is ready for production or requires additional work.
+
+Do not make any code changes during this phase. Focus solely on auditing and producing a comprehensive compliance report.
