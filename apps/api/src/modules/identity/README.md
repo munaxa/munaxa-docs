@@ -262,9 +262,29 @@ two steps and the first grants nothing; a consumed time step cannot be consumed 
 failures stop the factor; recovery codes are single-use and are the only way past a lost
 authenticator; and enrolling or removing ends every session.
 
-The secret is sealed at rest with AES-256-GCM under a key derived from the signing secret, which is
-defence against a database disclosure and **not** against a compromised application — see
-`infrastructure/prisma-mfa.repository.ts` for what that does and does not buy.
+The secret is sealed at rest with AES-256-GCM, which is defence against a database disclosure and
+**not** against a compromised application — see `infrastructure/prisma-mfa.repository.ts` for what
+that does and does not buy.
+
+**Phase 18 gave the seal its own key and a rotation.** Phase 14 derived one from
+`JWT_ACCESS_SECRET`, carefully — a domain-separated SHA-256, so one string was not doing two
+cryptographic jobs — and that still left the two on **one rotation clock**: rotating the token
+secret is routine with a fifteen-minute blast radius, and it also, silently, made every enrolled
+authenticator unreadable. `MFA_TOTP_SEALING_KEY` is its own secret, required in production, and
+every sealed value now names the key version that sealed it.
+
+The rotation completes **lazily, one person at a time**: a stale row is re-sealed the next time its
+owner successfully proves a code, inside the transaction that records the success. That is the only
+moment the plaintext and a proof of it exist together — a deploy-time pass would need every tenant's
+authenticator secrets unsealed in one process, which is the exposure sealing exists to prevent. The
+consequences are stated rather than hidden: a rotation never completes for an account nobody signs
+into, so the old key is discarded when an operator is willing to force re-enrolment for whoever is
+left; and removing a key that rows are still sealed under produces an error naming the variable
+rather than a failed sign-in that looks like a wrong code.
+[ADR-0020](../../../../../docs/architecture/adr/0020-key-management-and-rotation.md) argues why the
+deployment's secret store *is* the key management service Phase 14's report asked for, and why a
+port with four adapters would have added an abstraction in front of a boundary the platform already
+owns.
 
 The challenge is on `/auth/login` rather than at an endpoint of its own, because a two-call flow
 would have to carry a token between the calls proving the password was right — a credential with a
