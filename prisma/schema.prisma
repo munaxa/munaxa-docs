@@ -615,22 +615,41 @@ model UserRole {
 /// stolen — either the thief or the legitimate holder is replaying it, and there is no way to
 /// tell which — so the whole family is revoked and both parties must sign in again
 /// (`docs/architecture/17-security-architecture.md` §2).
+/// The lifecycle columns below are what let `@munaxa/session` treat this table as its
+/// `RefreshFamily` — this product has no sessions table and does not need one, because the lineage
+/// *is* the session. `sessionStoreOverFamilies` maps the two without inventing or defaulting a
+/// field, so every session guarantee the platform states applies here
+/// (`docs/security-platform/migration/session-architectures.md`).
 model SessionFamily {
-  id            String    @id @db.Uuid
-  tenantId      String    @map("tenant_id") @db.Uuid
-  userId        String    @map("user_id") @db.Uuid
-  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                String    @id @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Moves forward on every rotation. Eviction picks the oldest of these when a user is at the limit.
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  /// A lineage that stops rotating dies here.
+  idleExpiresAt     DateTime  @map("idle_expires_at") @db.Timestamptz(6)
+  /// Never moves. A stolen lineage the thief keeps warm still dies here, which is the whole reason
+  /// two deadlines exist: an idle timeout alone cannot catch an attacker who keeps rotating.
+  absoluteExpiresAt DateTime  @map("absolute_expires_at") @db.Timestamptz(6)
+  /// How the user authenticated. Read by step-up checks, not by the refresh path.
+  authMethods       String[]  @default(["password"]) @map("auth_methods")
+  mfaSatisfied      Boolean   @default(false) @map("mfa_satisfied")
+  /// Copied from the credential at creation; a bump elsewhere invalidates the whole lineage.
+  tokenVersion      Int       @default(0) @map("token_version")
   /// Set when the family is revoked: by sign-out, by password change, or by token reuse.
-  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(6)
-  revokedReason String?   @map("revoked_reason")
-  ipAddress     String?   @map("ip_address")
-  userAgent     String?   @map("user_agent")
+  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedReason     String?   @map("revoked_reason")
+  ipAddress         String?   @map("ip_address")
+  userAgent         String?   @map("user_agent")
 
   tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   tokens RefreshToken[]
 
   @@index([tenantId, userId], map: "ix_session_family_user")
+  @@index([tenantId, userId, lastSeenAt], map: "ix_session_family_live")
+  @@index([absoluteExpiresAt], map: "ix_session_family_absolute_expiry")
   @@map("session_family")
 }
 
