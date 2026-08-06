@@ -58,7 +58,8 @@ munaxa-docs/
 │   └── worker/     # background jobs
 ├── packages/       # domain, contracts, utils, i18n — this product's own
 ├── prisma/         # this product's schema and migrations, shared with no one
-└── infra/          # compose stack, database roles, RLS
+├── infra/          # compose stack, database roles, RLS, and the load harness
+└── Dockerfile      # three targets from one commit — api, web, worker (Phase 18)
 ```
 
 > A mobile client is named in the Phase 0 design and is not built. Phase 17 was the phase that
@@ -69,7 +70,7 @@ munaxa-docs/
 ## Status
 
 The architecture is designed, the phase specifications are written (see `docs/` and `prompts/`),
-and the product is built through **Phase 17**:
+and the product is built through **Phase 18**:
 
 - **Phase 0.5** — the technical skeleton: three applications, four packages, fifteen domain modules
   with enforced layer boundaries, ports for every external capability, the message pipeline, the API
@@ -331,3 +332,34 @@ the original gate is
   "post this to wherever the customer says", so `OUTBOUND_HTTP_PORT` is the only outbound path, with
   an operator-owned allow-list that is **empty by default**, every resolved address checked, the
   connection pinned to the address that was checked, and no redirects at all.
+
+- **Phase 18** — production readiness, and the phase whose sixteen brief items were mostly seams
+  that already existed. `METRICS` and its label rule had been declared since Phase 0.5 with
+  `grep -rn "provide: METRICS"` finding **nothing**, and the debt report said why — *"which backend
+  a deployment scrapes is an operational decision, and binding one now would make it an
+  architectural one"*. It binds behind a driver, the way `STORAGE_DRIVER` already does, and exports
+  by **pull**, which is what keeps Phase 17's outbound boundary the only one; the label rule stopped
+  being a comment and became a catalogue the exporter enforces, so the tenant id that would take a
+  metrics backend down is unrepresentable rather than discouraged. Tracing got the different answer
+  the same question deserves: **one span per request and none below it**, because a span per
+  repository call is a span per row on the most-loaded route in the product. Three named-owner rows
+  are discharged. Phase 15's evidence-CSV finding is fixed *without* the silent change it warned
+  against — the rendering rule is now a **profile the manifest states**, so old bundles reproduce
+  byte-for-byte and a differing digest has an explanation in the file rather than in somebody's
+  memory. Phase 14's "key management service" row turned out not to be a request for an integration:
+  [ADR-0020](./docs/architecture/adr/0020-key-management-and-rotation.md) argues that the
+  deployment's secret store already *is* one, and what was owed is one key per purpose and a
+  rotation each sealed value can survive — so `MFA_TOTP_SEALING_KEY` is its own secret and a stale
+  row re-seals the next time its owner proves a code, which is the only moment the plaintext and a
+  proof of it exist together. And Phase 12's SMTP refusal was answered rather than overruled: its
+  objection was that an untested hand-rolled client is the larger risk, so the message building is
+  pure and unit-tested and the session runs against transcripts of real servers over a loopback
+  socket including a genuine STARTTLS upgrade. **The integrity sweep 17 §8 promised in Phase 0
+  exists**: a nightly pass re-reads stored blobs, and a mismatch quarantines the blob through the
+  same gate an infected one fails, writes the `INTEGRITY_MISMATCH` row 13 §2 has carried since the
+  beginning with nothing writing it, and raises the incident. The images are real and CI builds all
+  three, because a Dockerfile nothing builds is a placeholder that stays plausible until a release
+  engineer runs it under pressure. Two claims were made honest rather than met: 19 §8's load harness
+  exists and records **no numbers**, because a load test needs a target and this product has no
+  deployment; and 20 §5's Sentry and span-tree rows described exporters no build has ever contained,
+  so both variables are now refused at boot rather than accepted and ignored.

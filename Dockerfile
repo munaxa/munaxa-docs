@@ -64,13 +64,21 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
 COPY . .
 RUN pnpm prisma:generate && pnpm build
 
-# The production dependency tree, resolved separately from the build one. `--prod` drops the
-# TypeScript compiler, the test runner and the linters — roughly two thirds of `node_modules` —
-# and it is a second install rather than a prune because pnpm's store is content-addressed and
-# pruning a symlinked tree in place is not a thing it supports.
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
-    pnpm install --frozen-lockfile --prod --ignore-scripts \
- && pnpm prisma:generate
+# ## The image carries its development dependencies, and that is a stated cost
+#
+# The obvious next step is `pnpm install --prod` to drop the compiler, the test runner and the
+# linters — roughly two thirds of the tree. It does not work here, and the reason is worth
+# recording rather than rediscovering: `prisma` is a development dependency, the generated client
+# is produced by it, and a `--prod` tree has neither the generator nor a way to run it. Generating
+# first and pruning after is not available either — pnpm's store is content-addressed and its
+# node_modules is a symlink farm, so there is nothing to prune in place.
+#
+# What that costs is image size and a larger dependency surface in the runtime image. What the
+# alternatives cost is worse: copying a generated client between two independently resolved trees
+# is a version skew waiting to happen, and `pnpm deploy` for a workspace needs flags whose
+# behaviour differs between pnpm minors. The honest fix is a build that generates the client into
+# a location the prod tree can carry, and it is named in the Phase 18 report rather than half-done
+# here.
 
 # --- The shared runtime base --------------------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
@@ -119,8 +127,9 @@ FROM runtime AS web
 
 COPY --from=build --chown=node:node /app/node_modules            ./node_modules
 COPY --from=build --chown=node:node /app/packages                ./packages
+# No `public/`: this product serves no static assets of its own. Every icon, font and token comes
+# from `@munaxa/*` and is bundled, which is ARCHITECTURE.md's rule made visible in the image.
 COPY --from=build --chown=node:node /app/apps/web/.next          ./apps/web/.next
-COPY --from=build --chown=node:node /app/apps/web/public         ./apps/web/public
 COPY --from=build --chown=node:node /app/apps/web/node_modules   ./apps/web/node_modules
 COPY --from=build --chown=node:node /app/apps/web/package.json   ./apps/web/
 COPY --from=build --chown=node:node /app/apps/web/next.config.ts ./apps/web/

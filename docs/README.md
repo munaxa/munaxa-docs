@@ -12,8 +12,15 @@ Where they disagree, the rulebook governs.
 docs/
 ├── README.md            THIS INDEX
 ├── architecture/        the binding Phase 0 blueprint (00–21) + adr/
+├── operations/          the runbooks (Phase 18) — living documents, unlike reports
 └── reports/             point-in-time findings — evidence, not guidance
 ```
+
+**`architecture/` says what a thing *is*; `operations/` says what somebody *does*.** The split
+arrived in Phase 18, and it matters in both directions: an architecture document that accumulated
+commands becomes a runbook nobody trusts, and a runbook that argues about topology is one nobody
+finishes reading at three in the morning. `operations/` is also the one directory here that is
+**edited** rather than superseded — a procedure that is out of date is worse than no procedure.
 
 The code the architecture describes exists through Phase 15 — the platform foundation, the whole of
 Administration, the per-tenant infrastructure the remaining phases are built on, the document library
@@ -102,6 +109,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 ## 2. Reports
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
+
+### Phase 18 — production readiness
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 18 — Production Readiness](./reports/phase-18-production-readiness.md) | Sixteen brief items that are mostly seams which already existed, and finding out which was the phase's first work. Why binding `METRICS` is a question about *shape* rather than about whether, why the exporter pulls, and why the label rule became a catalogue the exporter enforces; why tracing gets a different answer from metrics; what a production image contains, answered with the commands that show the registry is reachable and the private scope's credential is not; how Phase 15's evidence-CSV objection was answered rather than ignored; why Phase 14's "key management service" row was about rotation rather than about an integration; how Phase 12's SMTP refusal was answered by producing the evidence it asked for; the integrity sweep three reports called this phase's; why a security suite that restates a tested property is ceremony; why the load harness exists and its numbers do not; what the phase costs, and what it deliberately does not do |
 
 ### Phase 17 — API and integration
 
