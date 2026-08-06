@@ -64,6 +64,8 @@ import { PrismaDelegationRepository } from './infrastructure/prisma-delegation.r
 import { PrismaIdentityAdminRepository } from './infrastructure/prisma-identity-admin.repository';
 import { PrismaProvisioningRepository } from './infrastructure/prisma-provisioning.repository';
 import { PrismaSessionRepository } from './infrastructure/prisma-session.repository';
+import { PrismaRefreshFamilyStore } from './infrastructure/prisma-refresh-family.store';
+import { sessionManagerProvider } from './infrastructure/session-manager.provider';
 import { RegistryTenantDirectory } from './infrastructure/registry-tenant.directory';
 import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
 import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
@@ -137,6 +139,8 @@ import {
     { provide: MFA_SERVICE, useClass: DefaultMfaService },
     { provide: CREDENTIAL_REPOSITORY, useClass: PrismaCredentialRepository },
     { provide: SESSION_REPOSITORY, useClass: PrismaSessionRepository },
+    PrismaRefreshFamilyStore,
+    sessionManagerProvider,
     { provide: TENANT_DIRECTORY, useClass: RegistryTenantDirectory },
     { provide: USER_DIRECTORY, useClass: PrismaUserDirectory },
     { provide: PROVISIONING_REPOSITORY, useClass: PrismaProvisioningRepository },

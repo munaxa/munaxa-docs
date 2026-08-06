@@ -111,13 +111,27 @@ export const configSchema = z
      * Defaults to 30 days, matching the refresh window, so an existing deployment gets the bound
      * without choosing a number. The platform clamps it at 30 days regardless.
      */
-    SESSION_ABSOLUTE_TTL_SECONDS: z.coerce.number().int().min(3_600).max(2_592_000).default(2_592_000),
+    SESSION_ABSOLUTE_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(3_600)
+      .max(2_592_000)
+      .default(2_592_000),
 
     /**
      * How many live sessions one user may hold. Oldest is evicted rather than the newest refused:
      * denying locks a user out of the device in their hand, with no security gain, since both
      * outcomes cap the number of live sessions.
      */
+    /**
+     * How long a lineage may go unused before it dies.
+     *
+     * The platform caps this at 8 hours and clamps anything larger, so the default states the cap
+     * rather than pretending a bigger number would be honoured. This is the one behavioural change
+     * of the session migration: before it, a refresh token unused for 29 days still worked.
+     */
+    SESSION_IDLE_TTL_SECONDS: z.coerce.number().int().min(300).max(28_800).default(28_800),
+
     SESSION_MAX_CONCURRENT: z.coerce.number().int().min(1).max(100).default(10),
 
     /**
@@ -899,6 +913,8 @@ export interface AppConfig {
     readonly accessSecret: string;
     readonly accessTtlSeconds: number;
     readonly refreshTtlSeconds: number;
+    /** How long a lineage may go unused before it dies. Capped at the platform's 8-hour ceiling. */
+    readonly sessionIdleTtlSeconds: number;
     /** The deadline a refresh lineage cannot rotate past. Never moves once the family is opened. */
     readonly sessionAbsoluteTtlSeconds: number;
     /** Live sessions per user. The oldest is evicted when a sign-in would exceed it. */
@@ -1110,6 +1126,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       accessSecret: raw.JWT_ACCESS_SECRET,
       accessTtlSeconds: raw.JWT_ACCESS_TTL_SECONDS,
       refreshTtlSeconds: raw.JWT_REFRESH_TTL_SECONDS,
+      sessionIdleTtlSeconds: raw.SESSION_IDLE_TTL_SECONDS,
       sessionAbsoluteTtlSeconds: raw.SESSION_ABSOLUTE_TTL_SECONDS,
       maxConcurrentSessions: raw.SESSION_MAX_CONCURRENT,
       federationRedirectUri:

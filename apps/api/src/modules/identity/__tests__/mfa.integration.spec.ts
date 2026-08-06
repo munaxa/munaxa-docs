@@ -16,7 +16,11 @@ import { realAuditWriter } from '../../../testing/real-collaborators';
 import { DefaultMfaService } from '../application/mfa.service';
 import { totpCode } from '../domain/totp';
 import { PrismaMfaRepository } from '../infrastructure/prisma-mfa.repository';
-import { PrismaSessionRepository } from '../infrastructure/prisma-session.repository';
+import { SessionManager } from '@munaxa/session';
+import type { ClockPort } from '../../../ports/clock.port';
+
+import { PrismaRefreshFamilyStore } from '../infrastructure/prisma-refresh-family.store';
+import { createSessionManager } from '../infrastructure/session-manager.provider';
 
 /**
  * The second factor against a real PostgreSQL.
@@ -51,7 +55,13 @@ const config = {
   env: 'test',
   app: { name: 'Munaxa Docs', version: '0.1.0', port: 3001 },
   database: { url: APP_URL, poolSize: 10 },
-  auth: { accessSecret: 'an-integration-suite-secret-of-at-least-32' },
+  auth: {
+    accessSecret: 'an-integration-suite-secret-of-at-least-32',
+    refreshTtlSeconds: 2_592_000,
+    sessionIdleTtlSeconds: 28_800,
+    sessionAbsoluteTtlSeconds: 2_592_000,
+    maxConcurrentSessions: 10,
+  },
   mfa: {
     totpStepSeconds: 30,
     totpDigits: 6,
@@ -62,6 +72,10 @@ const config = {
 } as unknown as AppConfig;
 
 let owner: PrismaClient;
+function platformSessions(cfg: AppConfig, c: ClockPort): SessionManager {
+  return createSessionManager(cfg, c, new PrismaRefreshFamilyStore());
+}
+
 let unitOfWork: PrismaUnitOfWork;
 let mfa: DefaultMfaService;
 
@@ -108,7 +122,7 @@ beforeAll(async () => {
   unitOfWork = new PrismaUnitOfWork(sharedDatabase(config, logger, APP_URL));
   mfa = new DefaultMfaService(
     new PrismaMfaRepository(config, new RecordStamps(clock)),
-    new PrismaSessionRepository(clock),
+    platformSessions(config, clock),
     realAuditWriter(clock, unitOfWork),
     unitOfWork,
     clock,
@@ -244,7 +258,7 @@ describe('rotating the authenticator sealing key', () => {
     const rotated = { ...config, mfa: { ...config.mfa, sealingKey } } as unknown as AppConfig;
     return new DefaultMfaService(
       new PrismaMfaRepository(rotated, new RecordStamps(clock)),
-      new PrismaSessionRepository(clock),
+      platformSessions(config, clock),
       realAuditWriter(clock, unitOfWork),
       unitOfWork,
       clock,

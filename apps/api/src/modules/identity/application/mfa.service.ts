@@ -10,7 +10,6 @@ import {
   ValidationError,
 } from '../../../core/errors/application-errors';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
-import { requireContext } from '../../../core/tenancy/tenant-context';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { SecurityAudit } from '../domain/audit-actions';
 import {
@@ -29,7 +28,15 @@ import {
   type MfaService,
   type MfaStatus,
 } from './mfa.ports';
-import { SESSION_REPOSITORY, type SessionRepository } from './ports';
+import { unsafeId } from '@munaxa/types';
+import type { TenantId as PlatformTenantId, UserId as PlatformUserId } from '@munaxa/types';
+import type { SessionRevocationReason } from '@munaxa/interfaces';
+
+import {
+  SESSION_MANAGER,
+  type PlatformSessionManager,
+} from '../infrastructure/session-manager.provider';
+import { requireContext } from '../../../core/tenancy/tenant-context';
 
 /**
  * The second factor: enrolling one, proving it, and answering a challenge with it.
@@ -76,9 +83,24 @@ import { SESSION_REPOSITORY, type SessionRepository } from './ports';
  */
 @Injectable()
 export class DefaultMfaService implements MfaService {
+  /**
+   * End every session a user holds, through the platform.
+   *
+   * The tenant comes from the ambient request context rather than from a parameter, matching the
+   * repositories this replaced: a tenant a caller supplies is a tenant a caller can get wrong, and
+   * row-level security would then report it as a constraint error rather than as the bug it is.
+   */
+  private async revokeEverySession(userId: UserId, reason: SessionRevocationReason): Promise<void> {
+    await this.sessionManager.revokeAllForUser(
+      unsafeId<PlatformTenantId>(requireContext().tenantId),
+      unsafeId<PlatformUserId>(userId),
+      reason,
+    );
+  }
+
   constructor(
     @Inject(MFA_REPOSITORY) private readonly enrolments: MfaRepository,
-    @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
+    @Inject(SESSION_MANAGER) private readonly sessionManager: PlatformSessionManager,
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
@@ -169,7 +191,7 @@ export class DefaultMfaService implements MfaService {
       // Every session ends, including the one being used to enrol. The set of factors that opened a
       // session is part of what it means, and a session opened before the factor existed outlives
       // the decision to have one.
-      await this.sessions.revokeAllForUser(userId, 'MFA_ENROLLED');
+      await this.revokeEverySession(userId, 'mfa-changed');
 
       await this.write(SecurityAudit.MFA_ENROLLED, userId, AuditOutcome.SUCCESS, {
         method: 'TOTP',
@@ -248,7 +270,7 @@ export class DefaultMfaService implements MfaService {
         throw new NotFoundError('Authenticator enrolment');
       }
       await this.enrolments.remove(userId);
-      await this.sessions.revokeAllForUser(userId, 'MFA_REMOVED');
+      await this.revokeEverySession(userId, 'mfa-changed');
       await this.write(SecurityAudit.MFA_ENROLLED, userId, AuditOutcome.SUCCESS, {
         method: 'TOTP',
         removed: true,

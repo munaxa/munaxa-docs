@@ -45,6 +45,26 @@ import {
   type SessionRepository,
   type UserCredentialRecord,
 } from './ports';
+import {
+  SESSION_MANAGER,
+  type PlatformSessionManager,
+} from '../infrastructure/session-manager.provider';
+import { unsafeId } from '@munaxa/types';
+import type {
+  SessionId as PlatformSessionId,
+  TenantId as PlatformTenantId,
+  UserId as PlatformUserId,
+} from '@munaxa/types';
+
+/**
+ * `@edms/domain` and `@munaxa/types` both brand their ids, structurally identically and nominally
+ * distinct, so a value crosses between them by re-branding rather than by conversion. Named
+ * functions rather than inline casts so the boundary is greppable — and so the day the two
+ * vocabularies are reconciled (P4.2 §4) there is one place to change.
+ */
+const platformTenant = (id: TenantId): PlatformTenantId => unsafeId<PlatformTenantId>(id);
+const platformUser = (id: UserId): PlatformUserId => unsafeId<PlatformUserId>(id);
+const platformSession = (id: AnyId): PlatformSessionId => unsafeId<PlatformSessionId>(id);
 
 /** Every rejection the caller is told about in the same words. The log records which it was. */
 const REJECTED = 'Those credentials were not accepted.';
@@ -77,6 +97,7 @@ export class DefaultAuthenticationService implements AuthenticationService {
   constructor(
     @Inject(CREDENTIAL_REPOSITORY) private readonly credentials: CredentialRepository,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
+    @Inject(SESSION_MANAGER) private readonly sessionManager: PlatformSessionManager,
     @Inject(TENANT_DIRECTORY) private readonly tenants: TenantDirectory,
     @Inject(PASSWORD_HASHER) private readonly passwords: PasswordHasher,
     @Inject(ACCESS_TOKEN_ISSUER) private readonly accessTokens: AccessTokenIssuer,
@@ -110,6 +131,9 @@ export class DefaultAuthenticationService implements AuthenticationService {
       // nothing they could not learn by holding the account. Collapsing the two would mean a client
       // could not distinguish "prompt for a code" from "that code was wrong" — and would prompt
       // with an unexplained failure.
+      // Recorded on the session so a later step-up check can ask "was a second factor used to
+      // open this?" without re-deriving it from enrolment, which can change underneath a session.
+      let mfaSatisfied = false;
       if (await this.mfa.isRequired(credential.id)) {
         if (command.mfaCode === undefined || command.mfaCode === '') {
           return { kind: 'mfa-required' } as const;
@@ -120,6 +144,7 @@ export class DefaultAuthenticationService implements AuthenticationService {
           // failed to sign in *and* failed a factor, and an investigation asks both questions.
           return { kind: 'rejected', reason: 'BAD_MFA_CODE' } as const;
         }
+        mfaSatisfied = true;
       }
 
       const now = this.clock.now();
@@ -137,13 +162,22 @@ export class DefaultAuthenticationService implements AuthenticationService {
 
       await this.credentials.recordSignIn(credential.id, now);
 
-      const familyId = asId<AnyId>(uuidv7(now.getTime()));
-      await this.sessions.createFamily({
-        id: familyId,
-        userId: credential.id,
-        ipAddress: command.ipAddress,
-        userAgent: command.userAgent,
+      // The platform opens the session. It mints the id, writes both deadlines, records how the
+      // user authenticated, and enforces the concurrency limit inside this transaction — none of
+      // which the local `createFamily` did, which is why a lineage used to live forever.
+      const session = await this.sessionManager.create({
+        tenantId: platformTenant(tenantId),
+        userId: platformUser(credential.id),
+        authMethods: mfaSatisfied ? ['password', 'totp'] : ['password'],
+        mfaSatisfied,
+        // Docs' `permissionVersion` is what the platform calls `tokenVersion`: bumped when a
+        // credential's authority changes, and carried in the access token so every session
+        // issued before the bump stops being honoured.
+        tokenVersion: credential.permissionVersion,
+        ...(command.ipAddress === null ? {} : { ipAddress: command.ipAddress }),
+        ...(command.userAgent === null ? {} : { userAgent: command.userAgent }),
       });
+      const familyId = asId<AnyId>(session.id);
 
       // Inside the transaction, so the session and the record that it was opened commit
       // together. A session that exists without a trail is the thing audit is for.
@@ -218,6 +252,21 @@ export class DefaultAuthenticationService implements AuthenticationService {
         } as const;
       }
 
+      // The deadlines the token itself cannot express. `expiresAt` above bounds this *token*;
+      // this bounds the *lineage* — a family kept alive by diligent rotation still dies at its
+      // absolute deadline, which is the case an idle timeout alone cannot catch.
+      const validation = await this.sessionManager.validate(
+        platformTenant(tenantId),
+        platformSession(presented.familyId),
+      );
+      if (!validation.valid) {
+        return {
+          kind: 'revoke',
+          familyId: presented.familyId,
+          reason: `SESSION_${validation.reason.toUpperCase().replace(/-/g, '_')}`,
+        } as const;
+      }
+
       const credential = await this.credentials.findById(presented.userId);
       if (!credential || !canSignIn(credential.status)) {
         // Disabled between refreshes: end the session rather than extend it. The token stays
@@ -228,6 +277,17 @@ export class DefaultAuthenticationService implements AuthenticationService {
           reason: 'USER_NOT_ELIGIBLE',
         } as const;
       }
+
+      // Rotation is the signal that the lineage is alive, so it is what moves the idle window.
+      // The absolute deadline is untouched — `touch` clamps to it rather than extending past it.
+      await this.sessionManager.touch(
+        platformTenant(tenantId),
+        platformSession(presented.familyId),
+        {
+          ...(context.ipAddress === null ? {} : { ipAddress: context.ipAddress }),
+          ...(context.userAgent === null ? {} : { userAgent: context.userAgent }),
+        },
+      );
 
       return {
         kind: 'issued',
@@ -242,7 +302,11 @@ export class DefaultAuthenticationService implements AuthenticationService {
     if (outcome.kind === 'revoke') {
       // A second, committing transaction. Only now is it safe to fail the request.
       await this.withinTenant(context, SESSION_OVER, async (tenantId) => {
-        await this.sessions.revokeFamily(outcome.familyId, outcome.reason);
+        await this.sessionManager.revoke(
+          platformTenant(tenantId),
+          platformSession(outcome.familyId),
+          outcome.reason === 'REFRESH_TOKEN_REUSED' ? 'token-reuse' : 'account-disabled',
+        );
         await this.audit.write(this.actor(tenantId, context, null), {
           action: SecurityAudit.SESSION_REVOKED,
           subjectType: AuditSubjectType.SESSION,
@@ -267,7 +331,11 @@ export class DefaultAuthenticationService implements AuthenticationService {
       // Unknown or already revoked is success: sign-out is idempotent, and reporting "no such
       // session" would tell an attacker which stolen tokens are still live.
       if (presented && !presented.familyRevokedAt) {
-        await this.sessions.revokeFamily(presented.familyId, 'SIGNED_OUT');
+        await this.sessionManager.revoke(
+          platformTenant(tenantId),
+          platformSession(presented.familyId),
+          'logout',
+        );
         await this.audit.write(this.actor(tenantId, context, presented.userId), {
           action: SecurityAudit.SESSION_REVOKED,
           subjectType: AuditSubjectType.SESSION,

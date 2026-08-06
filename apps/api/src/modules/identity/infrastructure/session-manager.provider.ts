@@ -12,6 +12,15 @@ import { PrismaRefreshFamilyStore } from './prisma-refresh-family.store';
 export const SESSION_MANAGER = Symbol('SessionManager');
 
 /**
+ * The platform's manager, re-exported under a product name.
+ *
+ * Application code injects this type rather than importing `SessionManager` from the platform
+ * directly, so the application layer names a capability rather than a package — the same reason
+ * every other port here is declared in `application/` and implemented in `infrastructure/`.
+ */
+export type PlatformSessionManager = SessionManager;
+
+/**
  * The platform's `SessionManager`, over this product's refresh families.
  *
  * There is no sessions table and none is being added: `sessionStoreOverFamilies` presents
@@ -37,14 +46,28 @@ export function createSessionManager(
   clock: ClockPort,
   store: PrismaRefreshFamilyStore,
 ): SessionManager {
+  // A missing or non-numeric setting must not become `new Date(NaN)` in a deadline column. It
+  // would be written as an invalid timestamp, rejected by Postgres, and reported as a Prisma
+  // validation error a long way from the configuration that caused it.
+  for (const [name, value] of [
+    ['sessionIdleTtlSeconds', config.auth.sessionIdleTtlSeconds],
+    ['sessionAbsoluteTtlSeconds', config.auth.sessionAbsoluteTtlSeconds],
+    ['maxConcurrentSessions', config.auth.maxConcurrentSessions],
+  ] as const) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(`Session policy needs a positive ${name}; got ${String(value)}.`);
+    }
+  }
+
   const manager = new SessionManager({
     store: sessionStoreOverFamilies(store),
     clock: { now: () => clock.now().getTime() },
     generateId: (now) => unsafeId<SessionId>(uuidv7(now)),
     policy: {
-      // A family that stops rotating dies when its refresh token would have. Preserving the
-      // existing window means no active user is signed out by this migration.
-      idleTimeout: config.auth.refreshTtlSeconds * 1_000,
+      // The platform clamps this at 8 hours, so asking for the old 30-day refresh window would
+      // have silently produced 8 hours anyway. Stating it explicitly makes the one behavioural
+      // change of this migration a decision rather than a surprise found in the database.
+      idleTimeout: config.auth.sessionIdleTtlSeconds * 1_000,
       // The bound this product did not have. Previously a lineage kept alive by rotation lived
       // forever; now it dies here regardless of how diligently it is refreshed.
       absoluteTimeout: config.auth.sessionAbsoluteTtlSeconds * 1_000,

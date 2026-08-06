@@ -198,14 +198,12 @@ export interface RefreshTokenRecord {
   readonly familyRevokedAt: Date | null;
 }
 
+/**
+ * The refresh-token lineage. Family lifecycle belongs to `SessionManager` — see
+ * `infrastructure/session-manager.provider.ts`; declaring it here too would be the parallel
+ * session implementation this migration exists to remove.
+ */
 export interface SessionRepository {
-  /** Opens a session family. One sign-in, one family, however many rotations follow. */
-  createFamily(family: {
-    readonly id: AnyId;
-    readonly userId: UserId;
-    readonly ipAddress: string | null;
-    readonly userAgent: string | null;
-  }): Promise<void>;
   /** Records an issued refresh token. Only the hash is stored — never the token itself. */
   issueToken(token: {
     readonly id: AnyId;
@@ -220,8 +218,6 @@ export interface SessionRepository {
    * that this is a replay — the caller revokes the family rather than issuing a new pair.
    */
   markUsed(tokenId: AnyId, at: Date): Promise<boolean>;
-  revokeFamily(familyId: AnyId, reason: string): Promise<void>;
-  revokeAllForUser(userId: UserId, reason: string): Promise<void>;
 }
 
 /**

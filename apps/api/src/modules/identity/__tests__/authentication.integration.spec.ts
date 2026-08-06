@@ -13,7 +13,6 @@ import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { DefaultAuthenticationService } from '../application/authentication.service';
 import { JwtTokenService } from '../infrastructure/jwt.token-service';
 import { PrismaCredentialRepository } from '../infrastructure/prisma-credential.repository';
-import { PrismaSessionRepository } from '../infrastructure/prisma-session.repository';
 import { RegistryTenantDirectory } from '../infrastructure/registry-tenant.directory';
 import { RandomRefreshTokenFactory } from '../infrastructure/random-refresh-token.factory';
 import { PlatformPasswordHasher } from '../infrastructure/platform-password.hasher';
@@ -21,6 +20,12 @@ import type { MfaService } from '../application/mfa.ports';
 import type { AuditWriter } from '../../../core/audit/audit-writer.port';
 import { FakeClock } from '../../../testing/fake-ports';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
+import { SessionManager } from '@munaxa/session';
+import type { ClockPort } from '../../../ports/clock.port';
+import { PrismaSessionRepository } from '../infrastructure/prisma-session.repository';
+
+import { PrismaRefreshFamilyStore } from '../infrastructure/prisma-refresh-family.store';
+import { createSessionManager } from '../infrastructure/session-manager.provider';
 
 // Both roles are needed and they are not interchangeable: seeding is DDL-adjacent and runs as
 // the owner, while the code under test must run as the application role so that row-level
@@ -50,6 +55,9 @@ const config = {
     accessSecret: 'a'.repeat(32),
     accessTtlSeconds: 900,
     refreshTtlSeconds: 2_592_000,
+    sessionIdleTtlSeconds: 28_800,
+    sessionAbsoluteTtlSeconds: 2_592_000,
+    maxConcurrentSessions: 10,
   },
   database: { url: APP_URL, poolSize: 5 },
 } as unknown as AppConfig;
@@ -85,6 +93,15 @@ const auditWriter: AuditWriter = {
  * password path, and an enrolment-free stub is the honest shape for it: every assertion below is
  * about an account with one factor, which is what almost every account has.
  */
+/**
+ * The real platform manager over the real Prisma family store — the same wiring the application
+ * builds. A memory store here would prove the service calls the manager; this proves the row it
+ * writes is one Postgres accepts, deadlines and all.
+ */
+function platformSessions(cfg: AppConfig, c: ClockPort): SessionManager {
+  return createSessionManager(cfg, c, new PrismaRefreshFamilyStore());
+}
+
 const noMfa = {
   statusFor: () => Promise.resolve({ enrolled: false, pending: false, recoveryCodesRemaining: 0 }),
   begin: () => Promise.reject(new Error('not used')),
@@ -94,9 +111,12 @@ const noMfa = {
   remove: () => Promise.resolve(),
 } as unknown as MfaService;
 
+const sessionManager = platformSessions(config, clock);
+
 const service = new DefaultAuthenticationService(
   new PrismaCredentialRepository(),
-  new PrismaSessionRepository(clock),
+  new PrismaSessionRepository(),
+  sessionManager,
   new RegistryTenantDirectory(everyTenantRegistry(APP_URL, { [ACME_SLUG]: ACME })),
   hasher,
   new JwtTokenService(config, clock),

@@ -1,14 +1,18 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { type AnyId, type UserId, asId } from '@edms/domain';
 
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
-import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import type { RefreshTokenRecord, SessionRepository } from '../application/ports';
 
 /**
- * Session families and refresh tokens.
+ * Refresh tokens within a family.
+ *
+ * The *family* is no longer this class's business: opening one, expiring one and revoking one are
+ * `SessionManager`'s, over `PrismaRefreshFamilyStore`. What remains here is the token lineage —
+ * issuing a token, finding one by hash, and claiming one for rotation — because that is the part
+ * the platform's session model does not own.
  *
  * `tenantId` is written from the ambient request context rather than passed in, for the same
  * reason the reads do not take one: a value a caller supplies is a value a caller can get
@@ -17,25 +21,6 @@ import type { RefreshTokenRecord, SessionRepository } from '../application/ports
  */
 @Injectable()
 export class PrismaSessionRepository implements SessionRepository {
-  constructor(@Inject(CLOCK_PORT) private readonly clock: ClockPort) {}
-
-  async createFamily(family: {
-    readonly id: AnyId;
-    readonly userId: UserId;
-    readonly ipAddress: string | null;
-    readonly userAgent: string | null;
-  }): Promise<void> {
-    await requireTransaction().sessionFamily.create({
-      data: {
-        id: family.id,
-        tenantId: requireContext().tenantId,
-        userId: family.userId,
-        ipAddress: family.ipAddress,
-        userAgent: family.userAgent,
-      },
-    });
-  }
-
   async issueToken(token: {
     readonly id: AnyId;
     readonly familyId: AnyId;
@@ -85,19 +70,5 @@ export class PrismaSessionRepository implements SessionRepository {
       data: { usedAt: at },
     });
     return count === 1;
-  }
-
-  async revokeFamily(familyId: AnyId, reason: string): Promise<void> {
-    await requireTransaction().sessionFamily.updateMany({
-      where: { id: familyId, revokedAt: null },
-      data: { revokedAt: this.clock.now(), revokedReason: reason },
-    });
-  }
-
-  async revokeAllForUser(userId: UserId, reason: string): Promise<void> {
-    await requireTransaction().sessionFamily.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: this.clock.now(), revokedReason: reason },
-    });
   }
 }

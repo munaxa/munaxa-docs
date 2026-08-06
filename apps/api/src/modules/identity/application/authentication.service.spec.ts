@@ -25,6 +25,17 @@ import type {
 } from './authentication.ports';
 import type { MfaService } from './mfa.ports';
 import { DefaultAuthenticationService } from './authentication.service';
+import {
+  MemoryRefreshFamilyStore,
+  SessionManager,
+  sessionStoreOverFamilies,
+} from '@munaxa/session';
+import { unsafeId } from '@munaxa/types';
+import type {
+  SessionId as PlatformSessionId,
+  TenantId as PlatformTenantId,
+  UserId as PlatformUserId,
+} from '@munaxa/types';
 import type {
   CredentialRepository,
   RefreshTokenRecord,
@@ -71,6 +82,11 @@ function aCredential(overrides: Partial<UserCredentialRecord> = {}): UserCredent
 describe('DefaultAuthenticationService', () => {
   let credentials: CredentialRepository;
   let sessions: SessionRepository;
+  // The platform's own manager over its own memory store, rather than a mock. A mock would assert
+  // that this service calls the right methods; this asserts that the resulting session is the one
+  // the platform would have produced — deadlines, limit enforcement and all.
+  let sessionManager: SessionManager;
+  let familyStore: MemoryRefreshFamilyStore;
   let tenants: TenantDirectory;
   let passwords: PasswordHasher;
   let issuer: AccessTokenIssuer;
@@ -96,15 +112,9 @@ describe('DefaultAuthenticationService', () => {
     };
 
     sessions = {
-      createFamily: vi.fn().mockResolvedValue(undefined),
       issueToken: vi.fn().mockResolvedValue(undefined),
       findByTokenHash: vi.fn().mockResolvedValue(null),
       markUsed: vi.fn().mockResolvedValue(true),
-      revokeFamily: vi.fn((familyId: AnyId, reason: string) => {
-        revoked.push({ familyId, reason });
-        return Promise.resolve();
-      }),
-      revokeAllForUser: vi.fn().mockResolvedValue(undefined),
     };
 
     tenants = { findIdBySlug: vi.fn().mockResolvedValue(TENANT) };
@@ -188,9 +198,23 @@ describe('DefaultAuthenticationService', () => {
       isRequired: () => Promise.resolve(false),
       remove: () => Promise.resolve(),
     } as unknown as MfaService;
+    familyStore = new MemoryRefreshFamilyStore();
+    sessionManager = new SessionManager({
+      store: sessionStoreOverFamilies(familyStore),
+      clock: { now: () => clock.now().getTime() },
+      generateId: () => unsafeId<PlatformSessionId>(FAMILY),
+      // Revocations are observed through the platform's own event surface rather than by spying on
+      // a repository method, because the repository no longer decides them.
+      onEvent: (event) => {
+        if (event.name === 'session.revoked' && event.reason) {
+          revoked.push({ familyId: asId<AnyId>(event.session.id), reason: event.reason });
+        }
+      },
+    });
     service = new DefaultAuthenticationService(
       credentials,
       sessions,
+      sessionManager,
       tenants,
       passwords,
       issuer,
@@ -209,7 +233,7 @@ describe('DefaultAuthenticationService', () => {
 
       expect(result.accessToken).toBe('access-token');
       expect(result.refreshToken).toBe('refresh-plain');
-      expect(sessions.createFamily).toHaveBeenCalledOnce();
+      expect(familyStore.size).toBe(1);
       // The tenant in the token comes from the directory, never from the caller.
       expect(issuedFor[0]?.tenantId).toBe(TENANT);
     });
@@ -251,7 +275,7 @@ describe('DefaultAuthenticationService', () => {
       await expect(
         service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' }),
       ).rejects.toThrowError();
-      expect(sessions.createFamily).not.toHaveBeenCalled();
+      expect(familyStore.size).toBe(0);
     });
 
     it('upgrades a password hash derived with weaker parameters', async () => {
@@ -262,6 +286,24 @@ describe('DefaultAuthenticationService', () => {
       expect(credentials.updatePasswordHash).toHaveBeenCalledWith(USER, 'new-hash', clock.now());
     });
   });
+
+  /**
+   * Open the family the presented token belongs to.
+   *
+   * Refresh now consults the session, not just the token: the lineage carries the deadlines that
+   * bound it, so a token whose family does not exist is a token with nothing to extend. These
+   * tests exercise rotation, so the family has to be there — which is what sign-in does in
+   * production.
+   */
+  async function openFamily(): Promise<void> {
+    await sessionManager.create({
+      tenantId: unsafeId<PlatformTenantId>(TENANT),
+      userId: unsafeId<PlatformUserId>(USER),
+      authMethods: ['password'],
+      mfaSatisfied: false,
+      tokenVersion: 0,
+    });
+  }
 
   describe('refresh', () => {
     function present(overrides: Partial<RefreshTokenRecord> = {}): void {
@@ -277,32 +319,35 @@ describe('DefaultAuthenticationService', () => {
     }
 
     it('rotates the token, keeping the same family', async () => {
+      await openFamily();
       present();
 
       const result = await service.refresh('refresh-plain', context);
 
       expect(result.refreshToken).toBe('refresh-plain');
       expect(sessions.markUsed).toHaveBeenCalledOnce();
-      expect(sessions.createFamily).not.toHaveBeenCalled();
+      expect(familyStore.size).toBe(1);
       expect(revoked).toEqual([]);
     });
 
     it('revokes the whole family when a token is presented twice', async () => {
+      await openFamily();
       present({ usedAt: new Date('2026-01-01T00:00:00Z') });
 
       await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
 
-      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'REFRESH_TOKEN_REUSED' }]);
+      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'token-reuse' }]);
     });
 
     it('treats losing the claim race as reuse', async () => {
+      await openFamily();
       present();
       // Another request marked it used first: this call must not issue a second live pair.
       vi.mocked(sessions.markUsed).mockResolvedValue(false);
 
       await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
 
-      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'REFRESH_TOKEN_REUSED' }]);
+      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'token-reuse' }]);
     });
 
     it('refuses a token whose family is already revoked', async () => {
@@ -319,12 +364,13 @@ describe('DefaultAuthenticationService', () => {
     });
 
     it('ends the session when the user was disabled since the last refresh', async () => {
+      await openFamily();
       present();
       vi.mocked(credentials.findById).mockResolvedValue(aCredential({ status: 'DISABLED' }));
 
       await expect(service.refresh('refresh-plain', context)).rejects.toThrowError();
 
-      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'USER_NOT_ELIGIBLE' }]);
+      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'account-disabled' }]);
     });
   });
 
@@ -390,6 +436,7 @@ describe('DefaultAuthenticationService', () => {
 
   describe('signOut', () => {
     it('revokes the family behind the presented token', async () => {
+      await openFamily();
       vi.mocked(sessions.findByTokenHash).mockResolvedValue({
         id: asId<AnyId>('01900000-0000-7000-8000-0000000000a1'),
         familyId: FAMILY,
@@ -401,7 +448,7 @@ describe('DefaultAuthenticationService', () => {
 
       await service.signOut('refresh-plain', context);
 
-      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'SIGNED_OUT' }]);
+      expect(revoked).toEqual([{ familyId: FAMILY, reason: 'logout' }]);
     });
 
     it('succeeds for an unknown token rather than reporting that it is unknown', async () => {

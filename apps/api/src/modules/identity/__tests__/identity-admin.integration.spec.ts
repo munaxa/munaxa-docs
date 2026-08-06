@@ -21,6 +21,24 @@ import { PlatformPasswordHasher } from '../infrastructure/platform-password.hash
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 /**
+ * A live family, with the deadlines the schema now requires.
+ *
+ * Written out rather than defaulted so a fixture cannot accidentally describe a lineage that never
+ * expires — which is exactly the state this migration removed.
+ */
+function liveFamily(id: string, tenantId: string, userId: string) {
+  const now = Date.now();
+  return {
+    id,
+    tenantId,
+    userId,
+    lastSeenAt: new Date(now),
+    idleExpiresAt: new Date(now + 30 * 24 * 60 * 60 * 1_000),
+    absoluteExpiresAt: new Date(now + 30 * 24 * 60 * 60 * 1_000),
+  };
+}
+
+/**
  * Administering people and access, against a real PostgreSQL.
  *
  * What only a database can answer here is mostly about *side effects that must be atomic with the
@@ -450,10 +468,7 @@ describe('setting a password', () => {
     const user = await aUser('Passworded');
     // Two live families, as a person with a laptop and a phone would have.
     await owner.sessionFamily.createMany({
-      data: [
-        { id: uuidv7(), tenantId, userId: user.id },
-        { id: uuidv7(), tenantId, userId: user.id },
-      ],
+      data: [liveFamily(uuidv7(), tenantId, user.id), liveFamily(uuidv7(), tenantId, user.id)],
     });
 
     await asAdmin(() => users.setPassword(user.id, STRONG_PASSWORD, user.version));
@@ -514,7 +529,7 @@ describe('status and deletion', () => {
     const user = await aUser('Disabled');
     await asAdmin(() => users.setPassword(user.id, STRONG_PASSWORD, user.version));
     const withPassword = await asAdmin(() => users.get(user.id));
-    await owner.sessionFamily.create({ data: { id: uuidv7(), tenantId, userId: user.id } });
+    await owner.sessionFamily.create({ data: liveFamily(uuidv7(), tenantId, user.id) });
 
     await asAdmin(() => users.setStatus(user.id, 'DISABLED', withPassword.version));
 
@@ -561,7 +576,7 @@ describe('status and deletion', () => {
 
   it('ends every session when an account is deleted', async () => {
     const user = await aUser('Departing');
-    await owner.sessionFamily.create({ data: { id: uuidv7(), tenantId, userId: user.id } });
+    await owner.sessionFamily.create({ data: liveFamily(uuidv7(), tenantId, user.id) });
 
     await asAdmin(() => users.delete(user.id, user.version));
 

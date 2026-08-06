@@ -30,6 +30,12 @@ import { TENANT_REGISTRY, type TenantRegistry } from '../../../core/tenancy/tena
 import { CACHE_PORT, type CachePort } from '../../../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { IntegrationAudit, SecurityAudit } from '../domain/audit-actions';
+import { unsafeId } from '@munaxa/types';
+import type { TenantId as PlatformTenantId, UserId as PlatformUserId } from '@munaxa/types';
+import {
+  SESSION_MANAGER,
+  type PlatformSessionManager,
+} from '../infrastructure/session-manager.provider';
 import {
   claimAsStrings,
   constantTimeEquals,
@@ -114,6 +120,7 @@ export class DefaultFederationService implements FederationService {
     @Inject(FEDERATED_USER_REPOSITORY) private readonly users: FederatedUserRepository,
     @Inject(CREDENTIAL_REPOSITORY) private readonly credentials: CredentialRepository,
     @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
+    @Inject(SESSION_MANAGER) private readonly sessionManager: PlatformSessionManager,
     @Inject(ACCESS_TOKEN_ISSUER) private readonly accessTokens: AccessTokenIssuer,
     @Inject(REFRESH_TOKEN_FACTORY) private readonly refreshTokens: RefreshTokenFactory,
     @Inject(TENANT_REGISTRY) private readonly registry: TenantRegistry,
@@ -346,13 +353,21 @@ export class DefaultFederationService implements FederationService {
           throw new UnauthenticatedError(REJECTED);
         }
 
-        const familyId = asId<AnyId>(uuidv7(now.getTime()));
-        await this.sessions.createFamily({
-          id: familyId,
-          userId,
-          ipAddress: input.ipAddress,
-          userAgent: input.userAgent,
+        // The same platform call the password path makes. A federated sign-in is still a session,
+        // and it gets the same deadlines and the same concurrency limit — a second door into the
+        // product that skipped them would make the limit meaningless.
+        const session = await this.sessionManager.create({
+          tenantId: unsafeId<PlatformTenantId>(tenantId),
+          userId: unsafeId<PlatformUserId>(userId),
+          authMethods: ['oidc'],
+          // The provider asserted the identity; whether it applied a second factor is not
+          // something this product can see, so it does not claim one was.
+          mfaSatisfied: false,
+          tokenVersion: credential.permissionVersion,
+          ...(input.ipAddress === null ? {} : { ipAddress: input.ipAddress }),
+          ...(input.userAgent === null ? {} : { userAgent: input.userAgent }),
         });
+        const familyId = asId<AnyId>(session.id);
         await this.credentials.recordSignIn(userId, now);
         await this.audit.write(this.actor(tenantId, input, userId), {
           action: SecurityAudit.LOGIN_SUCCEEDED,
