@@ -208,6 +208,26 @@ export const configSchema = z
     MFA_RECOVERY_CODE_COUNT: z.coerce.number().int().min(4).max(24).default(10),
     /** Consecutive failed challenges before the enrolment refuses until an administrator resets it. */
     MFA_MAX_FAILED_ATTEMPTS: z.coerce.number().int().min(3).max(50).default(10),
+    /**
+     * The key a TOTP secret is sealed with at rest — Phase 18, and Phase 14's owed row.
+     *
+     * A TOTP secret is a symmetric key: unlike a password it cannot be hashed, because verifying a
+     * code means computing one. Phase 14 sealed it under a key **derived from
+     * `JWT_ACCESS_SECRET`**, which was careful — domain-separated, so one string was not doing two
+     * cryptographic jobs — and left the two on one rotation clock. Rotating the token secret is
+     * routine and costs at most one access token's lifetime; it also, silently, made every
+     * enrolled authenticator unreadable.
+     *
+     * Its own key breaks that coupling, and the stored value names the key version that sealed it
+     * so a rotation is survivable: both keys unseal, new seals use this one, and a stale row is
+     * re-sealed the next time its owner proves a code
+     * ([ADR-0020](../../../../../docs/architecture/adr/0020-key-management-and-rotation.md)).
+     *
+     * Optional in the schema and **required in production**, exactly like the checkpoint and
+     * witness secrets: a development machine keeps Phase 14's derivation and behaves byte for byte
+     * as it did, and a production deployment states the key it is willing to be held to.
+     */
+    MFA_TOTP_SEALING_KEY: z.string().min(32).optional(),
     OCR_DRIVER: z.enum(['NONE', 'TESSERACT', 'HOSTED']).default('NONE'),
     /** Where the `TESSERACT` driver finds its binary. A path, so an installer can pin one. */
     OCR_TESSERACT_PATH: z.string().default('tesseract'),
@@ -221,6 +241,47 @@ export const configSchema = z
      * proxy or a test double, rather than at a hostname compiled into the adapter.
      */
     MAIL_RESEND_API_KEY: z.string().min(1).optional(),
+    /**
+     * The relay an on-premise installation sends through — Phase 18, and Phase 12's owed row.
+     *
+     * `SMTP` has been in this enum since Phase 0.5 and refused at boot since Phase 12, whose
+     * reason was testability rather than preference: *"an untested hand-rolled SMTP client is a
+     * larger risk than an unbuilt one"*. Phase 18 answers the "untested" half — the message
+     * building is pure and unit-tested against the specifications' own examples, and the session
+     * is driven against transcripts of real servers over a loopback socket — and builds it,
+     * because on-premise deployment is this phase's subject and 18 §3 has asked for this row
+     * since Phase 0.
+     */
+    MAIL_SMTP_HOST: z.string().min(1).optional(),
+    MAIL_SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(587),
+    /**
+     * How the channel is secured.
+     *
+     * `STARTTLS` on 587 is the modern default and is what this defaults to; `TLS` is implicit TLS
+     * on 465; `NONE` is a relay on the same host or the same private network and is the only value
+     * that refuses credentials, because both authentication mechanisms base64 a password and
+     * base64 is an encoding rather than a protection.
+     */
+    MAIL_SMTP_SECURITY: z.enum(['NONE', 'STARTTLS', 'TLS']).default('STARTTLS'),
+    MAIL_SMTP_USERNAME: z.string().min(1).optional(),
+    MAIL_SMTP_PASSWORD: z.string().min(1).optional(),
+    /**
+     * Whether the relay's certificate must validate.
+     *
+     * A variable rather than a default, because an on-premise relay with an internal certificate
+     * authority nobody installed is a real configuration — and because turning validation off must
+     * be an act an operator performs and an auditor can find, rather than something the adapter
+     * decided.
+     */
+    MAIL_SMTP_REJECT_UNAUTHORIZED: booleanFromEnv.default(true),
+    /**
+     * The name this client announces in `EHLO`.
+     *
+     * Its own variable because some relays refuse a name that does not resolve, and a container's
+     * hostname is a random hex string. Defaulted to the deployment's own web host, which is the
+     * one name an operator has already had to get right.
+     */
+    MAIL_SMTP_CLIENT_NAME: z.string().min(1).optional(),
     MAIL_RESEND_ENDPOINT: z.string().url().default('https://api.resend.com/emails'),
     /** How long one send may take before it is abandoned and retried as a transient failure. */
     MAIL_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
@@ -329,6 +390,23 @@ export const configSchema = z
 
     /** Events read per batch while an evidence bundle streams to storage. */
     AUDIT_EXPORT_BATCH_SIZE: z.coerce.number().int().min(100).max(50_000).default(2_000),
+
+    /**
+     * Which rendering rule an evidence bundle's `events.csv` is written under — Phase 18.
+     *
+     * Phase 15 found that Phase 9's evidence CSV neutralises no spreadsheet formula and that its
+     * own comment claimed otherwise, and deliberately did not fix it: an evidence bundle's bytes
+     * are what a signed manifest's digest attests, so rewriting the writer silently changes what a
+     * re-export of the same range produces.
+     *
+     * The default is the fix. `RFC4180` is Phase 9's exact behaviour, kept reachable so an
+     * investigation holding a bundle produced before this change can reproduce its bytes and check
+     * them against the digest in the manifest it already has. Whichever is used is **recorded on
+     * the manifest**, which is what makes the difference legible rather than a surprise.
+     */
+    AUDIT_EXPORT_CSV_PROFILE: z
+      .enum(['RFC4180', 'RFC4180_FORMULA_NEUTRALISED'])
+      .default('RFC4180_FORMULA_NEUTRALISED'),
 
     /**
      * Rows read per page while a report export streams to storage — Phase 15.
@@ -570,6 +648,42 @@ export const configSchema = z
       });
     }
 
+    // --- SMTP, in every environment ------------------------------------------------------
+    //
+    // Outside the production block for the same reason storage is: these describe what the
+    // *driver* needs in order to work at all. A relay with no host cannot deliver in staging
+    // either, and the failure it produces there is an approval nobody was told about.
+    if (config.MAIL_DRIVER === 'SMTP') {
+      if (config.MAIL_SMTP_HOST === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MAIL_SMTP_HOST'],
+          message: 'MAIL_DRIVER=SMTP requires a relay host.',
+        });
+      }
+      // One half of a credential pair is never a working configuration, and it is the shape a
+      // partly filled `.env` takes — the same check the storage key pair gets.
+      const username = config.MAIL_SMTP_USERNAME !== undefined;
+      const password = config.MAIL_SMTP_PASSWORD !== undefined;
+      if (username !== password) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [username ? 'MAIL_SMTP_PASSWORD' : 'MAIL_SMTP_USERNAME'],
+          message: 'Give both halves of the SMTP credential, or neither.',
+        });
+      }
+      if (username && config.MAIL_SMTP_SECURITY === 'NONE') {
+        // Refused here as well as in the session, because a deployment should learn at boot that
+        // its two settings disagree rather than at the first send.
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MAIL_SMTP_SECURITY'],
+          message:
+            'SMTP credentials require STARTTLS or TLS; base64 is an encoding, not a defence.',
+        });
+      }
+    }
+
     // --- Observability, in every environment ---------------------------------------------
     //
     // Outside the production block for the reason storage and tenancy are: a development
@@ -615,17 +729,6 @@ export const configSchema = z
         });
       }
     }
-    if (config.MAIL_DRIVER === 'SMTP') {
-      // The enum has named SMTP since Phase 0.5 and Phase 12 built the hosted adapter instead
-      // (`docs/reports/phase-12-notifications.md` §3). Refused at boot rather than at the first
-      // send, because a deployment that discovers its mail driver has no adapter when an
-      // approval assignment fails to reach an approver has discovered it far too late.
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['MAIL_DRIVER'],
-        message: 'MAIL_DRIVER=SMTP has no adapter in this build. Use RESEND.',
-      });
-    }
     if (config.MAIL_DRIVER === 'RESEND' && config.MAIL_RESEND_API_KEY === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -649,6 +752,23 @@ export const configSchema = z
         message: 'The OpenAPI explorer is not served in production.',
       });
     }
+    if (config.MAIL_DRIVER === 'SMTP' && config.MAIL_SMTP_SECURITY === 'NONE') {
+      // Permitted outside production for a relay on the same host, which is a legitimate
+      // single-server arrangement. In production the message travels a network somebody else
+      // operates, and a notification names a document and a person.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_SMTP_SECURITY'],
+        message: 'Production mail is sent over STARTTLS or TLS.',
+      });
+    }
+    if (config.MAIL_DRIVER === 'SMTP' && !config.MAIL_SMTP_REJECT_UNAUTHORIZED) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MAIL_SMTP_REJECT_UNAUTHORIZED'],
+        message: 'A production relay presents a certificate this deployment can validate.',
+      });
+    }
     if (config.OUTBOUND_HTTP_ALLOW_INSECURE) {
       // A signed webhook payload over plaintext is the payload and its signature on the wire.
       ctx.addIssue({
@@ -665,6 +785,17 @@ export const configSchema = z
         code: z.ZodIssueCode.custom,
         path: ['SIGNATURE_WITNESS_SECRET'],
         message: 'Electronic signatures must be witnessed in production.',
+      });
+    }
+    if (config.MFA_TOTP_SEALING_KEY === undefined) {
+      // Without it the product still seals, under Phase 14's key derived from the token secret —
+      // which works, and puts a routine rotation of the signing secret one step away from making
+      // every enrolled authenticator in the deployment unreadable. A production deployment states
+      // its own key so that the two clocks are separate, which is what ADR-0020 asks for.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MFA_TOTP_SEALING_KEY'],
+        message: 'Authenticator secrets need their own sealing key in production.',
       });
     }
     if (config.AUDIT_CHECKPOINT_SECRET === undefined) {
@@ -769,6 +900,16 @@ export interface AppConfig {
   /** Outbound mail, and where a notification's deep links point (`18-notification-architecture.md`). */
   readonly mail: {
     readonly resendApiKey: string | null;
+    /** The relay, for `MAIL_DRIVER=SMTP` — Phase 18. Null host means the driver is not SMTP. */
+    readonly smtp: {
+      readonly host: string | null;
+      readonly port: number;
+      readonly security: RawConfig['MAIL_SMTP_SECURITY'];
+      readonly username: string | null;
+      readonly password: string | null;
+      readonly clientName: string;
+      readonly rejectUnauthorized: boolean;
+    };
     readonly resendEndpoint: string;
     readonly timeoutMs: number;
     readonly fromAddress: string | null;
@@ -793,6 +934,8 @@ export interface AppConfig {
     readonly totpSkewSteps: number;
     readonly recoveryCodeCount: number;
     readonly maxFailedAttempts: number;
+    /** Null in a deployment that keeps Phase 14's derived key; required in production. */
+    readonly sealingKey: string | null;
   };
   readonly office: {
     readonly libreofficePath: string;
@@ -807,6 +950,8 @@ export interface AppConfig {
     readonly verifyBatchSize: number;
     readonly verifyMaxEvents: number;
     readonly exportBatchSize: number;
+    /** Which CSV rendering rule an evidence bundle is written under — Phase 18. */
+    readonly evidenceCsvProfile: RawConfig['AUDIT_EXPORT_CSV_PROFILE'];
   };
   /** The signature witness — Phase 16, ADR-0017. Null in a deployment without a key. */
   readonly signature: {
@@ -955,6 +1100,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       verifyBatchSize: raw.AUDIT_VERIFY_BATCH_SIZE,
       verifyMaxEvents: raw.AUDIT_VERIFY_MAX_EVENTS,
       exportBatchSize: raw.AUDIT_EXPORT_BATCH_SIZE,
+      evidenceCsvProfile: raw.AUDIT_EXPORT_CSV_PROFILE,
     },
     signature: {
       witnessSecret: raw.SIGNATURE_WITNESS_SECRET ?? null,
@@ -977,6 +1123,17 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     mail: {
       resendApiKey: raw.MAIL_RESEND_API_KEY ?? null,
+      smtp: {
+        host: raw.MAIL_SMTP_HOST ?? null,
+        port: raw.MAIL_SMTP_PORT,
+        security: raw.MAIL_SMTP_SECURITY,
+        username: raw.MAIL_SMTP_USERNAME ?? null,
+        password: raw.MAIL_SMTP_PASSWORD ?? null,
+        // The web host, without its scheme: an EHLO name is a domain, and some relays refuse one
+        // that does not resolve — which a container's random hostname never does.
+        clientName: raw.MAIL_SMTP_CLIENT_NAME ?? new URL(raw.WEB_BASE_URL).hostname,
+        rejectUnauthorized: raw.MAIL_SMTP_REJECT_UNAUTHORIZED,
+      },
       resendEndpoint: raw.MAIL_RESEND_ENDPOINT,
       timeoutMs: raw.MAIL_TIMEOUT_MS,
       fromAddress: raw.MAIL_FROM_ADDRESS ?? null,
@@ -1000,6 +1157,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       totpSkewSteps: raw.MFA_TOTP_SKEW_STEPS,
       recoveryCodeCount: raw.MFA_RECOVERY_CODE_COUNT,
       maxFailedAttempts: raw.MFA_MAX_FAILED_ATTEMPTS,
+      sealingKey: raw.MFA_TOTP_SEALING_KEY ?? null,
     },
     office: {
       libreofficePath: raw.OFFICE_LIBREOFFICE_PATH,

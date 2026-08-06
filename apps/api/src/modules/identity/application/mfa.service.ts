@@ -214,6 +214,14 @@ export class DefaultMfaService implements MfaService {
       // thirty seconds wide, and one already spent inside it is a replay.
       if (step !== null && (enrolment.lastStep === null || step > enrolment.lastStep)) {
         await this.enrolments.recordSuccess(enrolment.id, step);
+        if (enrolment.staleSeal) {
+          // Phase 18's key rotation, completed one person at a time. This is the only moment the
+          // plaintext secret and a successful proof of it exist together, which is what makes it
+          // the only place a re-seal can happen without holding every tenant's secrets in one
+          // process. In the same transaction as the success, so a crash between the two leaves the
+          // row readable under the old key rather than half-rotated.
+          await this.enrolments.reseal(enrolment.id, enrolment.secret);
+        }
         return true;
       }
       if (step === null && (await this.tryRecoveryCode(enrolment.id, code))) {

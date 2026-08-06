@@ -224,6 +224,107 @@ describe('enrolling', () => {
   });
 });
 
+/**
+ * Phase 18: the sealing key stopped being borrowed from the token secret, and became rotatable.
+ *
+ * Phase 14's report left this owed, asking for "a key management service". The deployment's secret
+ * store already is one; what was missing is that the two keys shared a rotation clock and that a
+ * sealed value did not say which key sealed it. Both are properties only a real database can be
+ * asked about, because the whole question is what is readable after the key changes.
+ */
+describe('rotating the authenticator sealing key', () => {
+  const BOB = asId<UserId>(uuidv7());
+  const DEDICATED = 'a-dedicated-mfa-sealing-key-of-32-chars';
+
+  const bobContext: RequestContext = { ...context, userId: BOB };
+  const asBob = <T>(work: () => Promise<T>): Promise<T> => runWithContext(bobContext, work);
+
+  /** A service whose repository holds the given key — how a rotation is expressed as a test. */
+  function serviceSealingWith(sealingKey: string | null): DefaultMfaService {
+    const rotated = { ...config, mfa: { ...config.mfa, sealingKey } } as unknown as AppConfig;
+    return new DefaultMfaService(
+      new PrismaMfaRepository(rotated, new RecordStamps(clock)),
+      new PrismaSessionRepository(clock),
+      realAuditWriter(clock, unitOfWork),
+      unitOfWork,
+      clock,
+      rotated,
+    );
+  }
+
+  const storedSecret = async (): Promise<string> =>
+    (
+      await owner.mfaEnrolment.findFirstOrThrow({
+        where: { tenantId: TENANT, userId: BOB },
+        select: { secret: true },
+      })
+    ).secret;
+
+  beforeAll(async () => {
+    await owner.user.create({
+      data: {
+        id: BOB,
+        tenantId: TENANT,
+        email: `${BOB}@mfa.test`,
+        emailNormalized: `${BOB}@mfa.test`,
+        displayName: 'Bob',
+        status: 'ACTIVE',
+        updatedAt: new Date(now),
+      },
+    });
+  });
+
+  let secret = '';
+
+  it('seals in Phase 14’s exact format when no dedicated key is configured', async () => {
+    // The property that makes this change deployable rather than a migration: a deployment that
+    // has not opted in produces byte-compatible ciphertext, so every row already in the database
+    // is still read by the code that wrote it.
+    const legacy = serviceSealingWith(null);
+    secret = (await asBob(() => legacy.begin(BOB, 'bob@mfa.test'))).secret;
+    await asBob(() => legacy.confirm(BOB, totpCode(secret, step(), 6)));
+
+    expect((await storedSecret()).split('.')).toHaveLength(3);
+  });
+
+  it('reads a secret sealed under the old key after the dedicated key arrives', async () => {
+    // A rotation that could not read what it inherited would be a mass invalidation of every
+    // enrolled authenticator in the deployment.
+    now = new Date(now.getTime() + 60_000);
+    const rotated = serviceSealingWith(DEDICATED);
+
+    expect(await asBob(() => rotated.challenge(BOB, totpCode(secret, step(), 6)))).toBe(true);
+  });
+
+  it('re-seals under the current key when its owner next proves a code', async () => {
+    // The one moment the plaintext and a successful proof of it exist together, which is why the
+    // rotation happens here rather than in a deploy-time pass that would need every tenant's
+    // secrets in one process.
+    expect((await storedSecret()).startsWith('v2.')).toBe(true);
+  });
+
+  it('still verifies after the re-seal, against the same authenticator', async () => {
+    now = new Date(now.getTime() + 60_000);
+    const rotated = serviceSealingWith(DEDICATED);
+
+    expect(await asBob(() => rotated.challenge(BOB, totpCode(secret, step(), 6)))).toBe(true);
+    // Re-sealing changes the ciphertext and never the secret, so a second pass leaves it under v2
+    // rather than flapping.
+    expect((await storedSecret()).startsWith('v2.')).toBe(true);
+  });
+
+  it('refuses to guess when the key that sealed a row is gone', async () => {
+    // The one failure this rotation can produce, and it must not look like a wrong code: an
+    // operator who removed the variable gets an error naming it.
+    now = new Date(now.getTime() + 60_000);
+    const withoutKey = serviceSealingWith(null);
+
+    await expect(
+      asBob(() => withoutKey.challenge(BOB, totpCode(secret, step(), 6))),
+    ).rejects.toThrowError(/MFA_TOTP_SEALING_KEY/);
+  });
+});
+
 /** Fixture read of the trail; the audit read side has its own suite. */
 async function trailActions(): Promise<readonly string[]> {
   const rows = await owner.auditEvent.findMany({

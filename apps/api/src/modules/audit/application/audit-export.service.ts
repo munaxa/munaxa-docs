@@ -31,6 +31,7 @@ import {
   buildManifest,
   evidenceCsvHeader,
   evidenceCsvRow,
+  type EvidenceCsvProfileKey,
   evidenceJsonlRow,
   serialiseManifest,
   signManifest,
@@ -271,6 +272,11 @@ export class AuditExportService {
     }
   }
 
+  /** Which CSV rendering rule this deployment writes bundles under — see `evidence-bundle.ts`. */
+  private csvProfile(): EvidenceCsvProfileKey {
+    return this.config.audit.evidenceCsvProfile;
+  }
+
   /**
    * Streams the rows into the bundle's artefacts and returns what was written.
    *
@@ -297,7 +303,10 @@ export class AuditExportService {
       'events.csv',
       'text/csv',
       collected.rows,
-      evidenceCsvRow,
+      // The profile is read from configuration at the moment the bundle is produced, and it is
+      // recorded on the manifest below — so a bundle always states the rule that wrote it rather
+      // than leaving a reader to infer it from a release date.
+      (row) => evidenceCsvRow(row, this.csvProfile()),
       evidenceCsvHeader(),
     );
 
@@ -316,6 +325,7 @@ export class AuditExportService {
       firstPreviousHash: collected.from,
       lastHash: collected.lastHash,
       hashVersions: collected.hashVersions,
+      csvProfile: this.csvProfile(),
       chain: collected.chain,
       checkpoints: collected.checkpoints,
       artefacts: [jsonl, csv],

@@ -1,3 +1,4 @@
+import { csvCell } from '../../../core/persistence/csv';
 import {
   ExportFormat,
   ReportColumnType,
@@ -29,12 +30,15 @@ import {
  * apostrophe, which every spreadsheet reads as "the rest of this is text" and shows as neither an
  * apostrophe nor a formula.
  *
- * Worth recording plainly, because it is a live finding rather than a hypothetical: **Phase 9's
- * `evidenceCsvRow` quotes every field uniformly and does not neutralise**, and its comment states
- * that uniform quoting is what prevents the injection. It does not. This phase did not change it —
+ * Worth recording plainly, because it was a live finding rather than a hypothetical: **Phase 9's
+ * `evidenceCsvRow` quoted every field uniformly and did not neutralise**, and its comment stated
+ * that uniform quoting is what prevents the injection. It does not. Phase 15 did not change it —
  * an evidence bundle's bytes are what a signed manifest's digest attests, and rewriting the writer
- * silently changes what a re-export of the same range produces — and the report names it as owed,
- * with the phase that owns the fix.
+ * silently changes what a re-export of the same range produces — and named it as owed, with the
+ * phase that owns the fix. **Phase 18 closed it**, by making the rule a *named profile* the
+ * manifest states rather than a silent change of behaviour: the cell rule below is now shared,
+ * new bundles are written neutralised, and a bundle produced before the change can still be
+ * reproduced byte-for-byte because its manifest says which profile wrote it.
  *
  * **2. Excel needs a BOM to read UTF-8.** Without `EF BB BF` a double-clicked CSV is decoded in the
  * system codepage, and every Arabic title in this product becomes mojibake. It costs three bytes.
@@ -48,21 +52,20 @@ import {
 const BOM = '\ufeff';
 const CRLF = '\r\n';
 
-/** The characters a spreadsheet treats as "a formula follows". */
-const FORMULA_LEADERS = new Set(['=', '+', '-', '@', '\t', '\r']);
-
 /**
  * One cell, safe to open.
+ *
+ * Moved to `core/persistence/csv.ts` by Phase 18 and re-exported here, so every call site in this
+ * module and its unit tests are unchanged. It moved because the *evidence* CSV needed the same
+ * rule, and the module boundary lint forbids `audit/domain/` reaching into this file — correctly.
+ * That file records the rest of the reasoning; the `StreamDigest` precedent is the same one.
  *
  * The apostrophe is prepended *before* quoting, so it is inside the field and travels with the
  * value — a spreadsheet consumes it as the text marker, and a program reading the CSV as data sees
  * one extra character in a cell that would otherwise have been executed. That is the trade, and it
  * is the right way round for a file whose primary reader is Excel.
  */
-export function csvCell(value: string): string {
-  const guarded = FORMULA_LEADERS.has(value.charAt(0)) ? `'${value}` : value;
-  return `"${guarded.replaceAll('"', '""')}"`;
-}
+export { csvCell };
 
 export function csvHeader(columns: readonly ReportColumn[]): string {
   // The BOM leads the file, not the first cell: it is a byte-order mark for the document.

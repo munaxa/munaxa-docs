@@ -15,6 +15,22 @@ const baseEnv = {
   TENANT_SLUG: 'acme',
 } satisfies NodeJS.ProcessEnv;
 
+/** The smallest environment that boots in production, so each refusal below varies one thing. */
+const productionEnv = {
+  ...baseEnv,
+  NODE_ENV: 'production',
+  OPENAPI_ENABLED: 'false',
+  STORAGE_DRIVER: 'S3',
+  STORAGE_BUCKET: 'edms-prod',
+  MAIL_DRIVER: 'RESEND',
+  MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
+  MAIL_FROM_ADDRESS: 'docs@munaxa.com',
+  AV_DRIVER: 'ICAP',
+  AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
+  SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
+  MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
+} satisfies NodeJS.ProcessEnv;
+
 const CATALOGUE = JSON.stringify({
   defaults: { databaseUrlTemplate: 'postgresql://app:secret@localhost:5432/edms_{slug}' },
   tenants: [{ id: '019489f0-0000-7000-8000-000000000001', slug: 'acme' }],
@@ -57,6 +73,7 @@ describe('loadConfig', () => {
       AV_DRIVER: 'ICAP',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
+      MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
       CORS_ORIGINS: 'https://docs.munaxa.com,https://admin.munaxa.com',
     });
     expect(config.isProduction).toBe(true);
@@ -64,25 +81,99 @@ describe('loadConfig', () => {
     expect(config.http.openApiEnabled).toBe(false);
   });
 
-  it('refuses a mail driver with no adapter behind it, in production', () => {
-    // `MAIL_DRIVER` has named SMTP since Phase 0.5 and Phase 12 built the hosted adapter instead.
-    // Refused at boot rather than at the first send, because a deployment that discovers its mail
-    // driver has no adapter when an approver is not told about an approval has discovered it far
-    // too late — the `OCR_DRIVER=HOSTED` precedent.
+  it('refuses an SMTP driver with no relay to send through', () => {
+    // Phase 18 built the SMTP adapter Phase 12 refused, so the boot refusal is no longer "there is
+    // no adapter" — it is "this driver has not been told where to send". Caught at boot rather
+    // than at the first send, because a deployment that discovers its mail configuration is
+    // incomplete when an approver is not told about an approval has discovered it far too late.
+    expect(() =>
+      loadConfig({ ...productionEnv, MAIL_DRIVER: 'SMTP', MAIL_RESEND_API_KEY: undefined }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('starts production on a configured SMTP relay — 18 §3’s on-premise row', () => {
+    const config = loadConfig({
+      ...productionEnv,
+      MAIL_DRIVER: 'SMTP',
+      MAIL_RESEND_API_KEY: undefined,
+      MAIL_SMTP_HOST: 'relay.internal',
+      MAIL_SMTP_USERNAME: 'docs',
+      MAIL_SMTP_PASSWORD: 'relay-secret',
+    });
+
+    expect(config.providers.mail).toBe('SMTP');
+    expect(config.mail.smtp).toMatchObject({
+      host: 'relay.internal',
+      port: 587,
+      security: 'STARTTLS',
+      rejectUnauthorized: true,
+    });
+    // Derived from the web host rather than from the container's hostname, which never resolves.
+    expect(config.mail.smtp.clientName).toBe('localhost');
+  });
+
+  it('refuses SMTP credentials on an unencrypted channel', () => {
+    // Both mechanisms base64 the password, which is an encoding rather than a protection.
     expect(() =>
       loadConfig({
         ...baseEnv,
-        NODE_ENV: 'production',
-        OPENAPI_ENABLED: 'false',
-        STORAGE_DRIVER: 'S3',
-        STORAGE_BUCKET: 'edms-prod',
         MAIL_DRIVER: 'SMTP',
         MAIL_FROM_ADDRESS: 'docs@munaxa.com',
-        AV_DRIVER: 'ICAP',
-        AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
-        SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
+        MAIL_SMTP_HOST: 'relay.internal',
+        MAIL_SMTP_SECURITY: 'NONE',
+        MAIL_SMTP_USERNAME: 'docs',
+        MAIL_SMTP_PASSWORD: 'relay-secret',
       }),
     ).toThrowError(ConfigurationError);
+  });
+
+  it('refuses half an SMTP credential, which is what a partly filled .env looks like', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        MAIL_DRIVER: 'SMTP',
+        MAIL_FROM_ADDRESS: 'docs@munaxa.com',
+        MAIL_SMTP_HOST: 'relay.internal',
+        MAIL_SMTP_USERNAME: 'docs',
+      }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('refuses an unvalidated relay certificate in production', () => {
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        MAIL_DRIVER: 'SMTP',
+        MAIL_RESEND_API_KEY: undefined,
+        MAIL_SMTP_HOST: 'relay.internal',
+        MAIL_SMTP_REJECT_UNAUTHORIZED: 'false',
+      }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('refuses an observability variable no exporter reads', () => {
+    // A value that is accepted and ignored is worse than one that is refused: an operator who sets
+    // it believes errors are reaching Sentry, and discovers otherwise during the incident.
+    expect(() => loadConfig({ ...baseEnv, SENTRY_DSN: 'https://k@sentry.example/1' })).toThrowError(
+      ConfigurationError,
+    );
+    expect(() =>
+      loadConfig({ ...baseEnv, OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example' }),
+    ).toThrowError(ConfigurationError);
+  });
+
+  it('refuses a metrics exporter with no scrape token', () => {
+    // The body is queue depths, error rates and refusal counts by permission: operator-only.
+    expect(() => loadConfig({ ...baseEnv, METRICS_DRIVER: 'PROMETHEUS' })).toThrowError(
+      ConfigurationError,
+    );
+
+    const config = loadConfig({
+      ...baseEnv,
+      METRICS_DRIVER: 'PROMETHEUS',
+      METRICS_SCRAPE_TOKEN: 't'.repeat(32),
+    });
+    expect(config.observability.metricsDriver).toBe('PROMETHEUS');
   });
 
   it('refuses a hosted mail driver with no key and no sender', () => {
@@ -97,6 +188,7 @@ describe('loadConfig', () => {
         AV_DRIVER: 'ICAP',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
         SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
+        MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
       }),
     ).toThrowError(ConfigurationError);
   });
@@ -221,6 +313,7 @@ describe('describing which tenants this deployment serves', () => {
         AV_DRIVER: 'ICAP',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
         SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
+        MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
       }),
     ).toThrowError(ConfigurationError);
   });
@@ -259,6 +352,7 @@ describe('describing which tenants this deployment serves', () => {
       AV_DRIVER: 'ICAP',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
+      MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
     });
     expect(config.storage.driver).toBe('LOCAL');
   });

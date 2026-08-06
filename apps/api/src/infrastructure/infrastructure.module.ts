@@ -23,6 +23,7 @@ import { NoOpMetricsAdapter } from './observability/no-op-metrics.adapter';
 import { PrometheusMetricsAdapter } from './observability/prometheus-metrics.adapter';
 import { AllowListedHttpAdapter } from './providers/allow-listed-http.adapter';
 import { ResendMailAdapter } from './providers/resend-mail.adapter';
+import { SmtpMailAdapter } from './providers/smtp/smtp-mail.adapter';
 import { TesseractOcrAdapter } from './providers/tesseract-ocr.adapter';
 import {
   UnconfiguredAntivirusAdapter,
@@ -191,34 +192,59 @@ function ocrAdapterFor(config: AppConfig): OcrPort {
  * The refusal names the variable — the `OCR_DRIVER=HOSTED` precedent, exactly.
  */
 /**
- * The mail provider, chosen by configuration — Phase 12 replaces the unconfigured refusal.
+ * The mail provider, chosen by configuration.
  *
- * `SMTP` is accepted by the schema — 18 §3's promise for on-premise — and never reaches this
- * function: `configuration.ts` refuses it at boot, naming the decision, because a value that
- * boots and then fails at the first send is an outage discovered when an approver is not told
- * about an approval. The `OCR_DRIVER=HOSTED` precedent, exactly.
+ * Phase 12 replaced the unconfigured refusal with the hosted driver and left `SMTP` refused at
+ * boot, on testability grounds rather than preference. **Phase 18 builds the SMTP adapter**,
+ * because on-premise deployment is that phase's subject and 18 §3 has asked for this row since
+ * Phase 0 — and it answers the testability objection rather than overruling it: the message
+ * building is pure and unit-tested, the session is driven against transcripts of real servers over
+ * a loopback socket, and transport security is `node:tls`.
  *
  * `NONE` keeps the Phase 0.5 refusal, which is the correct behaviour for an unconfigured
  * deployment and the one CI runs under: the delivery service records a refusal like any other
  * failure, and nothing is silently dropped.
  */
 function mailAdapterFor(config: AppConfig): NotificationPort {
-  if (config.providers.mail !== 'RESEND') {
-    return new UnconfiguredNotificationAdapter();
+  const { fromAddress } = config.mail;
+  switch (config.providers.mail) {
+    case 'RESEND': {
+      const { resendApiKey } = config.mail;
+      if (resendApiKey === null || fromAddress === null) {
+        // Production validation already requires both. This covers the other environments, where a
+        // half-configured driver would otherwise send from `undefined`.
+        throw new Error('MAIL_DRIVER=RESEND requires MAIL_RESEND_API_KEY and MAIL_FROM_ADDRESS.');
+      }
+      return new ResendMailAdapter({
+        apiKey: resendApiKey,
+        endpoint: config.mail.resendEndpoint,
+        fromAddress,
+        fromName: config.mail.fromName,
+        timeoutMs: config.mail.timeoutMs,
+      });
+    }
+    case 'SMTP': {
+      const { smtp } = config.mail;
+      if (smtp.host === null || fromAddress === null) {
+        throw new Error('MAIL_DRIVER=SMTP requires MAIL_SMTP_HOST and MAIL_FROM_ADDRESS.');
+      }
+      return new SmtpMailAdapter({
+        host: smtp.host,
+        port: smtp.port,
+        security: smtp.security,
+        username: smtp.username,
+        password: smtp.password,
+        clientName: smtp.clientName,
+        rejectUnauthorized: smtp.rejectUnauthorized,
+        timeoutMs: config.mail.timeoutMs,
+        fromAddress,
+        fromName: config.mail.fromName,
+      });
+    }
+    case 'NONE':
+    default:
+      return new UnconfiguredNotificationAdapter();
   }
-  const { resendApiKey, fromAddress } = config.mail;
-  if (resendApiKey === null || fromAddress === null) {
-    // Production validation already requires both. This covers the other environments, where a
-    // half-configured driver would otherwise send from `undefined`.
-    throw new Error('MAIL_DRIVER=RESEND requires MAIL_RESEND_API_KEY and MAIL_FROM_ADDRESS.');
-  }
-  return new ResendMailAdapter({
-    apiKey: resendApiKey,
-    endpoint: config.mail.resendEndpoint,
-    fromAddress,
-    fromName: config.mail.fromName,
-    timeoutMs: config.mail.timeoutMs,
-  });
 }
 
 /**

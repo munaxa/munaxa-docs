@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 import { attestedFields, isChainHashVersion } from '../../../core/audit/hash-chain';
+import { csvCell, csvCellUnguarded } from '../../../core/persistence/csv';
 
 /**
  * What an evidence bundle *is*, as a pure function of the rows it covers.
@@ -22,6 +23,38 @@ import { attestedFields, isChainHashVersion } from '../../../core/audit/hash-cha
  * columns that version's hash attests. A bundle that listed every column beside a v1 hash would be
  * asserting attestation the digest never provided, and an evidence bundle that overclaims is worse
  * than no bundle at all.
+ *
+ * ## The CSV profile, and why Phase 18 did not simply fix the writer
+ *
+ * Phase 15 found that `evidenceCsvRow` quoted every field uniformly and neutralised no formula,
+ * and that its own comment claimed the opposite. It deliberately left it alone, and its report
+ * says exactly why: *"an evidence bundle's bytes are what a signed manifest's digest attests, and
+ * rewriting the writer silently changes what a re-export of the same range produces"*. That
+ * objection is correct and it is not an argument for leaving an injection in a file a compliance
+ * officer opens.
+ *
+ * What it is an argument against is a **silent** change. So the rendering rule is now a named
+ * profile carried on the manifest:
+ *
+ * - `RFC4180` — what every bundle produced before Phase 18 was written under. Uniform quoting,
+ *   no neutralisation. Reachable by configuration, so an investigation can reproduce an old
+ *   bundle's bytes exactly and check them against the digest in the manifest it already holds.
+ * - `RFC4180_FORMULA_NEUTRALISED` — the default from Phase 18 onward, and what 15 §4's rule
+ *   requires of any file this product hands to a spreadsheet.
+ *
+ * Three things make that honest rather than a version bump. **No hash changes**: a row's digest is
+ * over the audit row's own fields (`hash-chain.ts`), never over the CSV rendering, so every
+ * signature and every chain link written before this is unaffected and `attests` says exactly what
+ * it always said. **An artefact digest is over the bytes actually written**, so a re-export under
+ * a different profile produces a different `sha256` — which is the fact that had to become
+ * legible rather than be avoided. And **the manifest states which profile produced it**, so
+ * "these bytes differ from the bundle we took last year" has an answer in the file rather than in
+ * somebody's memory of a release note. `manifestVersion` is `2` because a reader that does not
+ * know about the field must not assume the old one.
+ *
+ * The JSONL is untouched, in both profiles. A JSON string is data to every reader of it, no
+ * spreadsheet parses one as a formula, and neutralising there would corrupt the values an
+ * automated verifier compares against the trail.
  *
  * ## Why the manifest is signed rather than chained
  *
@@ -81,6 +114,36 @@ export const EVIDENCE_COLUMNS = Object.freeze([
   'chainHashVersion',
 ] as const);
 
+/**
+ * How a cell is rendered — see the profile section at the head of this file.
+ *
+ * `RFC4180` is Phase 9's original behaviour, kept so an old bundle can be reproduced exactly.
+ * `RFC4180_FORMULA_NEUTRALISED` is the default and what a spreadsheet may safely open.
+ */
+export const EvidenceCsvProfile = {
+  RFC4180: 'RFC4180',
+  RFC4180_FORMULA_NEUTRALISED: 'RFC4180_FORMULA_NEUTRALISED',
+} as const;
+
+export type EvidenceCsvProfileKey = (typeof EvidenceCsvProfile)[keyof typeof EvidenceCsvProfile];
+
+export const DEFAULT_EVIDENCE_CSV_PROFILE: EvidenceCsvProfileKey =
+  EvidenceCsvProfile.RFC4180_FORMULA_NEUTRALISED;
+
+function cellWriter(profile: EvidenceCsvProfileKey): (value: string) => string {
+  return profile === EvidenceCsvProfile.RFC4180 ? csvCellUnguarded : csvCell;
+}
+
+/**
+ * The header row — bare column names, unchanged since Phase 9 and unchanged by the profile.
+ *
+ * Deliberately **not** run through the cell writer, and it is worth saying why rather than
+ * leaving it to look like an omission. The profile exists so that a bundle produced before
+ * Phase 18 can be reproduced byte-for-byte; quoting the header would change those bytes under
+ * *both* profiles and break the one property the profile was added to preserve. It is also
+ * unnecessary: the eighteen names are fixed in this file, none contains a comma, a quote or a
+ * newline, and none begins with a formula leader — so there is nothing for either rule to do.
+ */
 export function evidenceCsvHeader(): string {
   return `${EVIDENCE_COLUMNS.join(',')}\n`;
 }
@@ -88,11 +151,19 @@ export function evidenceCsvHeader(): string {
 /**
  * One CSV line.
  *
- * Every field is quoted, including the empty ones. A conditional quoting rule is where an
- * injection into a spreadsheet formula hides, and a uniform one costs two bytes a field.
+ * Every field is quoted, including the empty ones — but quoting is **not** what stops a formula:
+ * a CSV reader strips the quotes before the spreadsheet parses the cell, so `"=1+1"` is a
+ * formula. Under the default profile a cell beginning `=`, `+`, `-`, `@`, a tab or a carriage
+ * return is prefixed with an apostrophe, which every spreadsheet reads as "the rest of this is
+ * text". The rule itself lives in `core/persistence/csv.ts`, shared with the report writer so the
+ * two cannot drift.
  */
-export function evidenceCsvRow(row: EvidenceRow): string {
-  return `${EVIDENCE_COLUMNS.map((column) => csvCell(fieldOf(row, column))).join(',')}\n`;
+export function evidenceCsvRow(
+  row: EvidenceRow,
+  profile: EvidenceCsvProfileKey = DEFAULT_EVIDENCE_CSV_PROFILE,
+): string {
+  const cell = cellWriter(profile);
+  return `${EVIDENCE_COLUMNS.map((column) => cell(String(fieldOf(row, column)))).join(',')}\n`;
 }
 
 /** One JSONL line — the same fields, in the same order, without the flattening. */
@@ -117,10 +188,6 @@ function fieldOf(row: EvidenceRow, column: (typeof EVIDENCE_COLUMNS)[number]): s
     default:
       return row[column] ?? '';
   }
-}
-
-function csvCell(value: string | number): string {
-  return `"${String(value).replaceAll('"', '""')}"`;
 }
 
 /** One object in the bundle, with the digest of the bytes actually written. */
@@ -173,6 +240,8 @@ export interface BundleManifestInput {
   };
   readonly checkpoints: readonly BundleCheckpoint[];
   readonly artefacts: readonly BundleArtefact[];
+  /** Which rendering rule produced `events.csv` — Phase 18. See the profile section above. */
+  readonly csvProfile: EvidenceCsvProfileKey;
 }
 
 export interface BundleManifest extends Omit<
@@ -186,7 +255,7 @@ export interface BundleManifest extends Omit<
   | 'hashVersions'
   | 'artefacts'
 > {
-  readonly manifestVersion: 1;
+  readonly manifestVersion: 2;
   readonly requestedAt: string;
   readonly producedAt: string;
   readonly from: string;
@@ -226,7 +295,7 @@ export function buildManifest(input: BundleManifestInput): BundleManifest {
     ...rest
   } = input;
   return {
-    manifestVersion: 1,
+    manifestVersion: 2,
     ...rest,
     artefacts: artefacts.map(({ fileObjectId: _internal, ...artefact }) => artefact),
     requestedAt: requestedAt.toISOString(),
