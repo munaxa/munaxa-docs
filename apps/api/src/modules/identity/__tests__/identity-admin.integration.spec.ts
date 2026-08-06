@@ -17,7 +17,7 @@ import { UserAdminService } from '../application/user-admin.service';
 import { PrismaIdentityAdminRepository } from '../infrastructure/prisma-identity-admin.repository';
 import { PrismaProvisioningRepository } from '../infrastructure/prisma-provisioning.repository';
 import { ProvisioningService } from '../application/provisioning.service';
-import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import { PlatformPasswordHasher } from '../infrastructure/platform-password.hasher';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 /**
@@ -47,7 +47,7 @@ const clock = { now: () => new Date(FIXED_NOW), timestamp: () => 0, elapsedMs: (
 const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const { stamps, writer, audit } = realWriteStack(clock, unitOfWork);
-const passwords = new ScryptPasswordHasher();
+const passwords = new PlatformPasswordHasher();
 const repository = new PrismaIdentityAdminRepository(stamps);
 const users = new UserAdminService(repository, passwords, writer);
 const roles = new RoleAdminService(repository, writer);

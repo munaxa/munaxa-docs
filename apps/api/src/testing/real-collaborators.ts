@@ -2,7 +2,7 @@ import type { NotificationChannelKey } from '@edms/domain';
 
 import { DefaultApiClientService } from '../modules/identity/application/api-client.service';
 import { PrismaApiClientRepository } from '../modules/identity/infrastructure/prisma-api-client.repository';
-import { ScryptPasswordHasher } from '../modules/identity/infrastructure/scrypt-password-hasher';
+import { PlatformPasswordHasher } from '../modules/identity/infrastructure/platform-password.hasher';
 import { AuditSinkService } from '../modules/integration/application/audit-sink.service';
 import { WebhookAdminService } from '../modules/integration/application/webhook-admin.service';
 import { DefaultWebhookDeliveryService } from '../modules/integration/application/webhook-delivery.service';
@@ -1829,7 +1829,7 @@ export function realWebhooks(options: {
 export interface ApiClientStack {
   readonly service: DefaultApiClientService;
   readonly repository: PrismaApiClientRepository;
-  readonly hasher: ScryptPasswordHasher;
+  readonly hasher: PlatformPasswordHasher;
 }
 
 export function realApiClients(options: {
@@ -1839,7 +1839,7 @@ export function realApiClients(options: {
   readonly settings?: Readonly<Record<string, unknown>>;
 }): ApiClientStack {
   const repository = new PrismaApiClientRepository(options.databases);
-  const hasher = new ScryptPasswordHasher();
+  const hasher = new PlatformPasswordHasher();
   const { writer } = realWriteStack(options.clock, options.unitOfWork);
   return {
     repository,

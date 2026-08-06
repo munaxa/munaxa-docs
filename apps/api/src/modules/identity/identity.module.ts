@@ -67,7 +67,7 @@ import { PrismaSessionRepository } from './infrastructure/prisma-session.reposit
 import { RegistryTenantDirectory } from './infrastructure/registry-tenant.directory';
 import { PrismaUserDirectory } from './infrastructure/prisma-user.directory';
 import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token.factory';
-import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
+import { PlatformPasswordHasher } from './infrastructure/platform-password.hasher';
 import { MfaController } from './presentation/mfa.controller';
 import { AuthController } from './presentation/auth.controller';
 import { DelegationController } from './presentation/delegation.controller';
@@ -170,7 +170,7 @@ import {
     },
     { provide: FEDERATION_SERVICE, useClass: DefaultFederationService },
 
-    { provide: PASSWORD_HASHER, useClass: ScryptPasswordHasher },
+    { provide: PASSWORD_HASHER, useClass: PlatformPasswordHasher },
     { provide: REFRESH_TOKEN_FACTORY, useClass: RandomRefreshTokenFactory },
     // The issuer and the verifier are one class: they share the secret, the algorithm and the
     // claim shape, and splitting them is how a signer and a checker drift apart.

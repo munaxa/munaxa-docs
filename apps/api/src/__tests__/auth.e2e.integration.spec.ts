@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Permission } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
-import { ScryptPasswordHasher } from '../modules/identity/infrastructure/scrypt-password-hasher';
+import { PlatformPasswordHasher } from '../modules/identity/infrastructure/platform-password.hasher';
 
 /**
  * The whole API over HTTP: real guards, real middleware, real database, real crypto.
@@ -85,7 +85,7 @@ beforeAll(async () => {
   }
 
   const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
-  const passwordHash = await new ScryptPasswordHasher().hash(PASSWORD);
+  const passwordHash = await new PlatformPasswordHasher().hash(PASSWORD);
   const roleId = uuidv7();
 
   await owner.tenant.create({ data: { id: tenantId, slug, name: 'E2E Ltd', status: 'ACTIVE' } });

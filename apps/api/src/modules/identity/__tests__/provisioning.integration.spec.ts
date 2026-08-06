@@ -14,7 +14,7 @@ import { FakeClock } from '../../../testing/fake-ports';
 import type { AuditWriter } from '../../../core/audit/audit-writer.port';
 import { ProvisioningService } from '../application/provisioning.service';
 import { PrismaProvisioningRepository } from '../infrastructure/prisma-provisioning.repository';
-import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import { PlatformPasswordHasher } from '../infrastructure/platform-password.hasher';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 const OWNER_URL = process.env['DATABASE_MIGRATION_URL'] ?? '';
@@ -59,7 +59,7 @@ const audit: AuditWriter = {
 
 const service = new ProvisioningService(
   new PrismaProvisioningRepository(),
-  new ScryptPasswordHasher(),
+  new PlatformPasswordHasher(),
   new FakeClock(new Date('2026-01-01T00:00:00Z')),
   unitOfWork,
   audit,

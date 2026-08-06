@@ -16,7 +16,7 @@ import { PrismaCredentialRepository } from '../infrastructure/prisma-credential.
 import { PrismaSessionRepository } from '../infrastructure/prisma-session.repository';
 import { RegistryTenantDirectory } from '../infrastructure/registry-tenant.directory';
 import { RandomRefreshTokenFactory } from '../infrastructure/random-refresh-token.factory';
-import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import { PlatformPasswordHasher } from '../infrastructure/platform-password.hasher';
 import type { MfaService } from '../application/mfa.ports';
 import type { AuditWriter } from '../../../core/audit/audit-writer.port';
 import { FakeClock } from '../../../testing/fake-ports';
@@ -62,7 +62,7 @@ const logger = {
 } as unknown as Logger;
 
 const clock = new FakeClock(new Date());
-const hasher = new ScryptPasswordHasher();
+const hasher = new PlatformPasswordHasher();
 
 const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
