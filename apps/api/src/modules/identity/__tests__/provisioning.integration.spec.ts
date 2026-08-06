@@ -135,7 +135,10 @@ describe('provisioning a tenant against PostgreSQL', () => {
       expect(granted.has(permission)).toBe(true);
     }
     expect(seen.user?.status).toBe('ACTIVE');
-    expect(seen.user?.passwordHash).toMatch(/^scrypt\$/);
+    // Platform PHC format, at this product's cost rather than the platform's lighter default.
+    // Pinning the parameters is the point: N=2^17 is what Munaxa Docs committed to, and adopting
+    // the platform's N=2^14 would weaken every new password without failing anything else.
+    expect(seen.user?.passwordHash).toMatch(/^\$scrypt\$v=1\$n=131072,r=8,p=1\$/);
     expect(seen.user?.roles).toHaveLength(1);
     expect(written).toContain('TENANT_PROVISIONED');
   });

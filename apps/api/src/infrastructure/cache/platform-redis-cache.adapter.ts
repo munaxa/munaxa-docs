@@ -1,4 +1,4 @@
-import { Inject, Injectable, type OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Optional, type OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import type { CachePort as PlatformCachePort, CacheSetOptions } from '@munaxa/interfaces';
 
@@ -55,7 +55,13 @@ export class PlatformRedisCacheAdapter implements PlatformCachePort, OnModuleDes
   private readonly client: Redis;
   private readonly owned: boolean;
 
-  constructor(@Inject(APP_CONFIG) config: AppConfig, client?: Redis) {
+  /**
+   * `client` is `@Optional()` because Nest would otherwise try to resolve `Redis` as a provider
+   * and fail to construct the module — it reads the second constructor parameter as a dependency
+   * regardless of the `?`. It exists only so a test can supply a key-prefixed client; in the
+   * application the adapter always builds its own from configuration.
+   */
+  constructor(@Inject(APP_CONFIG) config: AppConfig, @Optional() client?: Redis) {
     this.client = client ?? new Redis(config.redis.url, { maxRetriesPerRequest: 3 });
     this.owned = client === undefined;
   }
