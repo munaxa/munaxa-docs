@@ -13,6 +13,7 @@ docs/
 ├── README.md            THIS INDEX
 ├── architecture/        the binding Phase 0 blueprint (00–21) + adr/
 ├── operations/          the runbooks (Phase 18) — living documents, unlike reports
+├── ui/                  how the web client is verified (Phase 5.2)
 └── reports/             point-in-time findings — evidence, not guidance
 ```
 

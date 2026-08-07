@@ -21,9 +21,13 @@ promised in Phase 0; SMTP for the deployment a customer installs on their own se
 images, the runbooks and the security suite a release needs.
 
 Read the most recent report before starting:
-[Phase 5.1 — UI foundation completion](./docs/reports/phase-5.1-ui-foundation-completion.md), which
+[Phase 5.2 — accessibility, UI quality and design system completion](./docs/ui/phase-5.2-accessibility-report.md),
+which replaces this product's static accessibility claims with automated verification — axe against
+a rendered tree, colour contrast and screenshots in real Chromium — and records the three defects
+that only running the UI could find. Before it,
+[Phase 5.1 — UI foundation completion](./docs/reports/phase-5.1-ui-foundation-completion.md)
 finishes the platform design system adoption and adds the stylesheet regression guard that makes
-the Phase 19 defect impossible to repeat silently. Before it,
+the Phase 19 defect impossible to repeat silently. Before that,
 [Phase 19 — shared platform compliance and integration audit](./docs/reports/phase-19-shared-platform-compliance.md)
 audits the eighteen phases rather than adding a nineteenth — note that its `SkipLink` finding is
 corrected by Phase 5.1 §1.1. The last building phase is
