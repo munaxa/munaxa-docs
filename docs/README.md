@@ -110,6 +110,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Phase 19 — shared platform compliance and integration audit
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 19 — Shared Platform Compliance & Integration Audit](./reports/phase-19-shared-platform-compliance.md) | The audit that had to install the platform before it could say anything true, and what reading it rather than assuming it produced. The critical finding: a Tailwind `@source` pointing at a transitive dependency pnpm does not link, which removed 64% of the design system's stylesheet — 136 of 249 platform utility classes generating no CSS rule at all, every one of them a class the product never writes itself, `bg-card` and `bg-primary` and every surface and brand colour the platform's own components declare — through five green gates and a whole production-readiness phase, because a stylesheet that is silently too small is not a type error, a lint error, a test failure or a build failure. One line fixes it and the report measures the fix. The second finding needed the same install: the platform exports 180 components and this product uses 54, and among the other 126 are a `Table`, a `Timeline`, an `ApprovalFlow` and a `FileManager` that Munaxa Docs each built by hand, against a rule the development recommendations put first in their table. Why the brief's sections on authentication, audit, logging and notifications could not be followed — the registry publishes seven `@munaxa/*` packages and every one is design system or lint configuration — and why the local implementations of those are the product rather than violations of it. Why both real findings have one root that is not carelessness, why the answer to *should we start the UI* is no, and why the honest description is that the UI has never actually been seen |
+
 ### Phase 18 — production readiness
 
 | Document | Purpose |

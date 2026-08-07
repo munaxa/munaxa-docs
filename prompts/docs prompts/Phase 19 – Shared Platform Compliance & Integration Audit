@@ -1,12 +1,12 @@
 # Phase 19 – Shared Platform Compliance & Integration Audit
 
-You have completed all previous implementation phases of **Munaxa Work**.
+You have completed all previous implementation phases of **Munaxa Docs**.
 
 This phase is **NOT** about adding new features.
 
 This phase is **NOT** about redesigning the architecture.
 
-Your task is to ensure that **Munaxa Work fully complies with the Munaxa Shared Platform** and consumes every shared capability instead of duplicating it.
+Your task is to ensure that **Munaxa Docs fully complies with the Munaxa Shared Platform** and consumes every shared capability instead of duplicating it.
 
 Treat the **Munaxa Platform repository as the single source of truth**.
 
@@ -14,9 +14,9 @@ Treat the **Munaxa Platform repository as the single source of truth**.
 
 # Objective
 
-Perform a complete repository audit and, where appropriate, refactor Munaxa Work so that it conforms to the shared platform architecture.
+Perform a complete repository audit and, where appropriate, refactor Munaxa Docs so that it conforms to the shared platform architecture.
 
-The goal is to make Munaxa Work a **thin business application** that contains only HR/business-domain logic while consuming all cross-cutting capabilities from the Platform.
+The goal is to make Munaxa Docs a **thin business application** that contains only document-control business logic while consuming all cross-cutting capabilities from the Platform.
 
 ---
 
@@ -46,7 +46,7 @@ The Platform repository is authoritative for:
 * Shared Infrastructure
 * Shared Services
 
-If Munaxa Work contains its own implementation of any of these without a justified reason, treat it as a compliance violation.
+If Munaxa Docs contains its own implementation of any of these without a justified reason, treat it as a compliance violation.
 
 ---
 
@@ -206,7 +206,7 @@ No duplicated layout framework.
 
 # 7. Authentication
 
-Verify Munaxa Work uses Platform authentication completely.
+Verify Munaxa Docs uses Platform authentication completely.
 
 Examples:
 
@@ -470,7 +470,7 @@ Replace duplicates with Platform equivalents.
 
 # 19. Platform Extension Opportunities
 
-Identify reusable functionality currently living in Munaxa Work that should be promoted into the Platform because it is generic enough to benefit other Munaxa products (e.g., Work, Docs, School, CRM, ERP, AI).
+Identify reusable functionality currently living in Munaxa Docs that should be promoted into the Platform because it is generic enough to benefit other Munaxa products (e.g., Work, School, Corporate, CRM, ERP, AI).
 
 For each candidate:
 
@@ -484,11 +484,11 @@ Do not move code automatically unless explicitly requested.
 
 # 20. Architecture Compliance
 
-Verify Munaxa Work respects the Platform architecture.
+Verify Munaxa Docs respects the Platform architecture.
 
 Business modules may depend on Platform.
 
-Platform must never depend on Munaxa Work.
+Platform must never depend on Munaxa Docs.
 
 No reverse dependencies.
 
@@ -540,7 +540,7 @@ CSP
 
 # 23. Production Readiness
 
-Verify that Munaxa Work is ready to consume future Platform updates without breaking.
+Verify that Munaxa Docs is ready to consume future Platform updates without breaking.
 
 The application should upgrade Platform packages with minimal code changes.
 
@@ -576,8 +576,8 @@ Produce a comprehensive report containing:
 9. Package dependency analysis.
 10. Security and performance observations.
 11. A prioritized remediation plan with estimated effort.
-12. A final verdict on whether Munaxa Work is fully compliant with the Shared Platform and ready to serve as a production-quality consumer of the Platform.
+12. A final verdict on whether Munaxa Docs is fully compliant with the Shared Platform and ready to serve as a production-quality consumer of the Platform.
 
 **Success Criteria**
 
-Munaxa Work should contain only Work-specific business logic. All reusable cross-cutting concerns—UI, design tokens, theming, authentication, authorization, auditing, logging, notifications, configuration, shared types, utilities, and infrastructure—must be consumed from the Munaxa Platform repository, making Munaxa Work a clean, maintainable, and upgrade-friendly application built on the shared platform.
+Munaxa Docs should contain only Docs-specific business logic. All reusable cross-cutting concerns—UI, design tokens, theming, authentication, authorization, auditing, logging, notifications, configuration, shared types, utilities, and infrastructure—must be consumed from the Munaxa Platform repository, making Munaxa Docs a clean, maintainable, and upgrade-friendly application built on the shared platform.

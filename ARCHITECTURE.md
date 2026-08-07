@@ -19,14 +19,20 @@ domain models, permissions, workflows, and every Munaxa Docs-specific feature.
 
 The design system. Components, tokens, themes, icons and typography are installed:
 
-| Need                        | Package                |
-| --------------------------- | ---------------------- |
-| Components, patterns, hooks | `@munaxa/ui`           |
-| Design tokens               | `@munaxa/tokens`       |
-| Themes                      | `@munaxa/theme`        |
-| Icons                       | `@munaxa/icons`        |
-| Typography                  | `@munaxa/typography`   |
-| Shared helpers              | `@munaxa/utils`        |
+| Need                        | Package                | Published |
+| --------------------------- | ---------------------- | --------- |
+| Components, patterns, hooks | `@munaxa/ui`           | Yes       |
+| Design tokens               | `@munaxa/tokens`       | Yes       |
+| Themes                      | `@munaxa/theme`        | Yes       |
+| Icons                       | `@munaxa/icons`        | Yes       |
+| Typography                  | `@munaxa/typography`   | **Not yet** — carried by `@munaxa/theme` until it exists |
+| Shared helpers              | `@munaxa/utils`        | **Not yet** — `@edms/utils` holds this product's helpers meanwhile |
+
+The last two rows are the platform's intent, not its registry. Neither package resolves from
+GitHub Packages today, so a helper that belongs there has nowhere to go yet; keep it in
+`@edms/utils` and move it when the package lands. The [Phase 19 compliance
+report](./docs/reports/phase-19-shared-platform-compliance.md) names the three helpers that
+should go first.
 
 If something shared is missing, add it to
 [munaxa-platform](https://github.com/tam2om/munaxa-platform) — never rebuild it here. A
