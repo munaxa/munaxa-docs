@@ -21,6 +21,9 @@ promised in Phase 0; SMTP for the deployment a customer installs on their own se
 images, the runbooks and the security suite a release needs.
 
 Read the most recent report before starting:
+[Phase 19 — shared platform compliance and integration audit](./docs/reports/phase-19-shared-platform-compliance.md),
+which audits the eighteen phases rather than adding a nineteenth, and answers what the web client
+still needs before it can be called finished. The last building phase is
 [Phase 18 — production readiness](./docs/reports/phase-18-production-readiness.md).
 The original gate is the [Phase 0.5 architecture compliance report](./docs/reports/phase-0.5-architecture-compliance-report.md)
 and the [technical debt it records](./docs/reports/phase-0.5-technical-debt.md).

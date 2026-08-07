@@ -110,6 +110,12 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Phase 19 — shared platform compliance and integration audit
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 19 — Shared Platform Compliance & Integration Audit](./reports/phase-19-shared-platform-compliance.md) | A static audit — and the first thing it records is why it is static, because the platform packages will not install without a credential this environment does not have, and an audit that scores a package it never opened is worth less than one that says which line it could not reach. Why the brief's sections on authentication, audit, logging and notifications could not be followed as written — the registry publishes seven `@munaxa/*` packages and every one of them is design system or lint configuration — and why the local implementations of those are the product rather than violations of it. What the audit found instead: not compliance drift but a split, the admin surface composed through one shared harness on the platform's `Page` and the workspace surface hand-rolling nineteen bare heading elements beside it; a Tailwind `@source` path pointing where pnpm will not link, recorded as High rather than Critical because confirming it needs the install that returns 401; an icon package declared and imported zero times, in a product whose primary screen is rows of files; twenty-one web tests against six hundred and fourteen on the API, and no test anywhere asserting the rule that the UI never decides access. Why the answer to *should we start the UI* is no, what the week that finishes it contains, and what this phase deliberately did not do |
+
 ### Phase 18 — production readiness
 
 | Document | Purpose |
