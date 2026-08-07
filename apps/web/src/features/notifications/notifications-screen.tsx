@@ -4,7 +4,7 @@ import type { Route } from 'next';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Badge, Button, Card, Checkbox, EmptyState, Select, useToast } from '@munaxa/ui';
+import { Badge, Button, Card, Checkbox, EmptyState, Input, Select, useToast } from '@munaxa/ui';
 
 import type {
   InboxNotification,
@@ -382,9 +382,8 @@ function QuietHoursForm({ quietHours }: { readonly quietHours: QuietHours | null
     <div className="flex flex-wrap items-end gap-3">
       <label className="flex flex-col gap-1 text-sm">
         {translate('notifications.quietHours.from')}
-        <input
+        <Input
           type="time"
-          className="border-input h-9 rounded-md border px-2"
           value={start}
           onChange={(event) => {
             setStart(event.currentTarget.value);
@@ -393,9 +392,8 @@ function QuietHoursForm({ quietHours }: { readonly quietHours: QuietHours | null
       </label>
       <label className="flex flex-col gap-1 text-sm">
         {translate('notifications.quietHours.to')}
-        <input
+        <Input
           type="time"
-          className="border-input h-9 rounded-md border px-2"
           value={end}
           onChange={(event) => {
             setEnd(event.currentTarget.value);

@@ -5,7 +5,17 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { type FormEvent, type ReactNode, useState, useTransition } from 'react';
 
-import { Alert, Badge, Button, Card, EmptyState, Select, Spinner, useToast } from '@munaxa/ui';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  Select,
+  Spinner,
+  useToast,
+} from '@munaxa/ui';
 
 import type {
   FacetBucket,
@@ -124,13 +134,13 @@ export function SearchScreen({
       <h1 className="text-2xl font-semibold">{translate('search.title')}</h1>
 
       <form onSubmit={submit} className="flex items-center gap-2">
-        <input
+        <Input
           type="search"
           name="q"
           defaultValue={queryText}
           placeholder={translate('search.placeholder')}
           aria-label={translate('search.placeholder')}
-          className="h-10 min-w-0 flex-1 rounded border bg-transparent px-3"
+          className="min-w-0 flex-1"
         />
         <Select
           value={sort}
@@ -279,12 +289,7 @@ export function SearchScreen({
       >
         <label className="flex flex-col gap-1">
           <span className="text-sm">{translate('search.saveName')}</span>
-          <input
-            name="name"
-            required
-            maxLength={120}
-            className="h-10 rounded border bg-transparent px-3"
-          />
+          <Input name="name" required maxLength={120} />
         </label>
       </FormDialog>
     </section>
@@ -421,7 +426,7 @@ function FacetGroup({
                 onPick(bucket.value);
               }}
               aria-pressed={active === bucket.value}
-              className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-start text-sm hover:bg-[var(--color-surface-hover)] ${
+              className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-start text-sm hover:bg-accent ${
                 active === bucket.value ? 'font-semibold' : ''
               }`}
             >

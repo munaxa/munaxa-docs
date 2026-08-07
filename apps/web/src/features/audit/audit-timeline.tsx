@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import { Badge, Card } from '@munaxa/ui';
+import { Badge, Card, EmptyState, Timeline, TimelineItem } from '@munaxa/ui';
 
 import type { AuditEntry, AuditPage } from '@edms/contracts';
 import type { MessageKey } from '@edms/i18n';
@@ -47,24 +47,24 @@ export async function AuditTimeline({
   }
 
   return (
-    <Card>
-      <h2>{translate('audit.timelineTitle')}</h2>
-      <p>{translate('audit.timelineHint')}</p>
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-medium">{translate('audit.timelineTitle')}</h2>
+        <p className="text-muted-foreground text-sm">{translate('audit.timelineHint')}</p>
+      </div>
 
       {page.data.length === 0 ? (
-        <p>{translate('audit.empty')}</p>
+        <EmptyState title={translate('audit.empty')} />
       ) : (
-        <ol>
+        <Timeline>
           {page.data.map((entry) => (
-            <li key={entry.id}>
-              <AuditRow entry={entry} translate={translate} />
-            </li>
+            <AuditRow key={entry.id} entry={entry} translate={translate} />
           ))}
-        </ol>
+        </Timeline>
       )}
 
       {page.meta.hasMore && (
-        <p>
+        <p className="text-muted-foreground text-sm">
           {translate('audit.showingRecent', {
             count: page.data.length,
             total: page.meta.total,
@@ -102,23 +102,32 @@ export function AuditRow({
   readonly translate: Translate;
 }): ReactNode {
   return (
-    <>
-      <span>{new Date(entry.occurredAt).toISOString().replace('T', ' ').slice(0, 19)}</span>{' '}
-      <strong>{entry.action}</strong>{' '}
-      {entry.outcome !== 'SUCCESS' && (
-        <Badge tone={entry.outcome === 'DENIED' ? 'warning' : 'danger'}>
-          {translate(entry.outcome === 'DENIED' ? 'audit.outcome.denied' : 'audit.outcome.failed')}
-        </Badge>
-      )}
-      {entry.reason !== null && <em> — {entry.reason}</em>}
-      <br />
-      <small>
-        {translate('audit.sequence', { sequence: entry.sequence })} ·{' '}
-        {translate('audit.digest', {
-          digest: entry.hash.slice(0, 12),
-          version: entry.chainHashVersion,
-        })}
-      </small>
-    </>
+    <TimelineItem
+      timestamp={new Date(entry.occurredAt).toISOString().replace('T', ' ').slice(0, 19)}
+      title={
+        <span className="flex flex-wrap items-center gap-2">
+          {/* `font-mono` because the action code is an identifier an auditor matches against an
+              export, and a proportional face makes two similar codes harder to tell apart. */}
+          <strong className="font-mono">{entry.action}</strong>
+          {entry.outcome !== 'SUCCESS' && (
+            <Badge tone={entry.outcome === 'DENIED' ? 'warning' : 'danger'}>
+              {translate(
+                entry.outcome === 'DENIED' ? 'audit.outcome.denied' : 'audit.outcome.failed',
+              )}
+            </Badge>
+          )}
+          {entry.reason !== null && <em className="text-muted-foreground">— {entry.reason}</em>}
+        </span>
+      }
+      meta={
+        <>
+          {translate('audit.sequence', { sequence: entry.sequence })} ·{' '}
+          {translate('audit.digest', {
+            digest: entry.hash.slice(0, 12),
+            version: entry.chainHashVersion,
+          })}
+        </>
+      }
+    />
   );
 }

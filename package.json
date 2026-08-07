@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "turbo run build",
+    "verify:styles": "turbo run verify:styles",
     "dev": "turbo run dev",
     "lint": "pnpm format:check && turbo run lint",
     "typecheck": "turbo run typecheck",

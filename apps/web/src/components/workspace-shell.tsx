@@ -8,6 +8,7 @@ import type { ReactNode } from 'react';
 import {
   AppShell,
   AppShellProvider,
+  Button,
   NavigationDrawer,
   Sidebar,
   SidebarNav,
@@ -143,15 +144,13 @@ function ThemeToggle(): ReactNode {
   const { scheme, toggle } = useTheme({ storageKey: 'edms.theme' });
 
   return (
-    <button
-      type="button"
-      onClick={toggle}
-      className="hover:bg-accent inline-flex h-9 items-center rounded-md px-3 text-sm"
-      aria-label={translate('nav.appearance')}
-    >
+    // `ghost` is what the hand-written classes here were already imitating — the same height,
+    // radius, padding and `hover:bg-accent`. Stating it once in the platform is the difference
+    // between a button that matches the top bar and one that matches it until either changes.
+    <Button variant="ghost" onClick={toggle} aria-label={translate('nav.appearance')}>
       {scheme === null
         ? translate('nav.appearance')
         : translate(scheme === 'dark' ? 'nav.lightMode' : 'nav.darkMode')}
-    </button>
+    </Button>
   );
 }

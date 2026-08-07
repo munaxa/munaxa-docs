@@ -110,6 +110,15 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Phase 5.1 — UI foundation completion and platform design system adoption
+
+> Numbered by the brief that commissioned it rather than by position: it follows Phase 19 and
+> finishes what that audit found, on the UI-foundation track rather than the feature track.
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 5.1 — UI Foundation Completion](./reports/phase-5.1-ui-foundation-completion.md) | The ten deliverables, and the three things they turned up. Why the regression guard took two attempts — the first draft passed against a deliberately broken build, because `css.includes('.bg-primary')` matches inside `.bg-primary-strong`, so every sentinel resolved on the strength of a different class and the check reported a healthy stylesheet missing 59% of itself; a guard that fails open converts an absent check into a false assurance, which is why its helpers now have tests of their own and why the sentinel list is documented as the weaker signal. The second silent defect, of Phase 19's exact family: `--color-surface-hover` referenced by five hover states and defined nowhere in the platform, the tokens or this repository, so five affordances had never done anything and nothing could have caught it. And a correction to Phase 19 itself, which called `SkipLink` unused and its absence an accessibility defect — it is used, through `AppShell`'s `skipLinkLabel`, and a symbol grep cannot see a prop. What moved: every raw table to the platform's `Table` and the `scope="col"` the hand-written markup omitted, both audit trails to `Timeline`, twelve hand-styled form controls to `Field`/`Input`/`Select`, adoption 54 to 62 of 180. What deliberately did not, with the type signatures the platform would need instead: `FileManager`, whose fixed name/size/modified columns cannot carry a document number or a confidentiality mark; and `ApprovalFlow`, whose binary all/any cannot express `QUORUM` or `PERCENT` and whose statuses have no `CANCELLED` — mapping which onto `skipped` would tell an auditor a control was evaluated and did not apply when it was never reached, which is a false statement in a compliance record rather than a visual imperfection |
+
 ### Phase 19 — shared platform compliance and integration audit
 
 | Document | Purpose |

@@ -66,7 +66,7 @@ export function FolderTree({
                   `/documents?libraryId=${library.id}&folderId=${library.rootFolderId}` as Route
                 }
                 aria-current={library.id === selectedLibraryId ? 'true' : undefined}
-                className="block truncate rounded px-2 py-1 hover:bg-[var(--color-surface-hover)] aria-[current]:font-medium"
+                className="block truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium"
               >
                 {library.name}
               </Link>
@@ -89,7 +89,7 @@ export function FolderTree({
                 <Link
                   href={`/documents?libraryId=${selectedLibraryId}&folderId=${folder.id}` as Route}
                   aria-current={folder.id === selectedFolderId ? 'true' : undefined}
-                  className="flex items-center gap-2 truncate rounded px-2 py-1 hover:bg-[var(--color-surface-hover)] aria-[current]:font-medium"
+                  className="flex items-center gap-2 truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium"
                   style={{ paddingInlineStart: `${String(0.5 + indent * 0.75)}rem` }}
                 >
                   <span className="flex-1 truncate">{folder.name}</span>
@@ -109,16 +109,13 @@ export function FolderTree({
           <li>
             <Link
               href="/documents?favorite=true"
-              className="block rounded px-2 py-1 hover:bg-[var(--color-surface-hover)]"
+              className="block rounded px-2 py-1 hover:bg-accent"
             >
               {translate('documents.nav.favorites')}
             </Link>
           </li>
           <li>
-            <Link
-              href="/documents/recent"
-              className="block rounded px-2 py-1 hover:bg-[var(--color-surface-hover)]"
-            >
+            <Link href="/documents/recent" className="block rounded px-2 py-1 hover:bg-accent">
               {translate('documents.nav.recent')}
             </Link>
           </li>

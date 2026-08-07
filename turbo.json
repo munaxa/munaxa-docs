@@ -14,6 +14,13 @@
     "typecheck": {
       "dependsOn": ["^build", "prisma:generate", "typegen"]
     },
+    // Reads the built stylesheet, so it depends on `build` rather than on sources. Never cached:
+    // the artefact it inspects is `build`'s output, and a cached pass would be a statement about
+    // inputs when the whole point is to check what came out.
+    "verify:styles": {
+      "dependsOn": ["build"],
+      "cache": false
+    },
     "validate": {},
     "test": {
       "dependsOn": ["^build", "prisma:generate", "typegen"],

@@ -3,7 +3,20 @@
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Badge, Button, Card, EmptyState, Select, useToast } from '@munaxa/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Select,
+  TBody,
+  TD,
+  TH,
+  THead,
+  TR,
+  Table,
+  useToast,
+} from '@munaxa/ui';
 
 import type { EffectivePermissions, ScopeChainNode, StoredAclEntry } from '@edms/contracts';
 import { AclEffect, AclSubjectType, ALL_PERMISSIONS, Permission } from '@edms/domain';
@@ -240,51 +253,45 @@ export function PermissionsScreen({
         {entries.length === 0 ? (
           <EmptyState title={translate('permissions.noEntries')} />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="mt-3 w-full text-sm">
-              <thead>
-                <tr>
-                  <th className="text-start">{translate('permissions.subject')}</th>
-                  <th className="text-start">{translate('permissions.permission')}</th>
-                  <th className="text-start">{translate('permissions.effect')}</th>
+          <Table className="mt-3">
+            <THead>
+              <TR>
+                <TH>{translate('permissions.subject')}</TH>
+                <TH>{translate('permissions.permission')}</TH>
+                <TH>{translate('permissions.effect')}</TH>
+                {canManage ? <TH>{translate('permissions.actions')}</TH> : null}
+              </TR>
+            </THead>
+            <TBody>
+              {entries.map((entry) => (
+                <TR key={entry.id}>
+                  <TD>{nameOf(entry)}</TD>
+                  <TD>{entry.permission}</TD>
+                  <TD>
+                    <Badge tone={entry.effect === AclEffect.DENY ? 'danger' : 'success'}>
+                      {translate(
+                        entry.effect === AclEffect.DENY ? 'permissions.deny' : 'permissions.allow',
+                      )}
+                    </Badge>
+                  </TD>
                   {canManage ? (
-                    <th className="text-start">{translate('permissions.actions')}</th>
+                    <TD>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={working}
+                        onClick={() => {
+                          void save(entries.filter((candidate) => candidate.id !== entry.id));
+                        }}
+                      >
+                        {translate('permissions.revoke')}
+                      </Button>
+                    </TD>
                   ) : null}
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry) => (
-                  <tr key={entry.id}>
-                    <td className="text-start">{nameOf(entry)}</td>
-                    <td className="text-start">{entry.permission}</td>
-                    <td className="text-start">
-                      <Badge tone={entry.effect === AclEffect.DENY ? 'danger' : 'success'}>
-                        {translate(
-                          entry.effect === AclEffect.DENY
-                            ? 'permissions.deny'
-                            : 'permissions.allow',
-                        )}
-                      </Badge>
-                    </td>
-                    {canManage ? (
-                      <td className="text-start">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          disabled={working}
-                          onClick={() => {
-                            void save(entries.filter((candidate) => candidate.id !== entry.id));
-                          }}
-                        >
-                          {translate('permissions.revoke')}
-                        </Button>
-                      </td>
-                    ) : null}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
         )}
 
         {canManage ? (
@@ -382,34 +389,32 @@ export function PermissionsScreen({
         {effective === null ? (
           <EmptyState title={translate('permissions.pickPerson')} />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="mt-3 w-full text-sm">
-              <thead>
-                <tr>
-                  <th className="text-start">{translate('permissions.permission')}</th>
-                  <th className="text-start">{translate('permissions.outcome')}</th>
-                  {/* ADR-0005's mitigation, as a column. */}
-                  <th className="text-start">{translate('permissions.decidedBy')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {effective.permissions.map((row) => (
-                  <tr key={row.permission}>
-                    <td className="text-start">{row.permission}</td>
-                    <td className="text-start">
-                      <Badge tone={row.allowed ? 'success' : 'muted'}>
-                        {translate(row.allowed ? 'permissions.allowed' : 'permissions.refused')}
-                      </Badge>
-                    </td>
-                    <td className="text-start">
-                      {row.decidedAtName ?? translate('permissions.noNode')}
-                      <span className="ms-2 text-xs">{translate(reasonKey(row.reason))}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Table className="mt-3">
+            <THead>
+              <TR>
+                <TH>{translate('permissions.permission')}</TH>
+                <TH>{translate('permissions.outcome')}</TH>
+                {/* ADR-0005's mitigation, as a column. */}
+                <TH>{translate('permissions.decidedBy')}</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {effective.permissions.map((row) => (
+                <TR key={row.permission}>
+                  <TD>{row.permission}</TD>
+                  <TD>
+                    <Badge tone={row.allowed ? 'success' : 'muted'}>
+                      {translate(row.allowed ? 'permissions.allowed' : 'permissions.refused')}
+                    </Badge>
+                  </TD>
+                  <TD>
+                    {row.decidedAtName ?? translate('permissions.noNode')}
+                    <span className="ms-2 text-xs">{translate(reasonKey(row.reason))}</span>
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
         )}
       </Card>
     </section>
