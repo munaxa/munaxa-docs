@@ -194,6 +194,25 @@ export class QuotaExceededError extends DomainError {
   }
 }
 
+/**
+ * The caller has spent its budget for this surface — Phase 5.
+ *
+ * `retryAfterSeconds` is carried on the error rather than only in a header, so the same fact
+ * reaches a JSON client, a log line and the `Retry-After` header from one place. It is a whole
+ * number of seconds because that is what the header is defined to carry.
+ */
+export class TooManyRequestsError extends DomainError {
+  constructor(
+    readonly retryAfterSeconds: number,
+    details: ErrorDetails = {},
+  ) {
+    super(ErrorCode.RATE_LIMITED, 'Too many requests. Try again shortly.', {
+      ...details,
+      retryAfterSeconds,
+    });
+  }
+}
+
 export const RETRYABLE_ERROR_CODES: readonly ErrorCodeKey[] = Object.freeze([
   ErrorCode.RATE_LIMITED,
   ErrorCode.DEPENDENCY_UNAVAILABLE,

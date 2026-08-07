@@ -107,7 +107,14 @@ export async function signOut(): Promise<void> {
 
 async function storeSession(result: AuthenticationResponse): Promise<void> {
   const store = await cookies();
-  const secure = process.env.NODE_ENV === 'production';
+  // Every environment but the two that genuinely run without TLS.
+  //
+  // `=== 'production'` was the test until Phase 5, and it was wrong for one deployment shape this
+  // product actually has: `NODE_ENV=staging` is a value the API's own configuration enum accepts,
+  // and a staging deployment served over HTTPS was writing session cookies without `Secure`. That
+  // is a cookie a downgrade can strip off the wire, holding a live refresh token, in the
+  // environment most likely to be reachable from the internet without being watched closely.
+  const secure = process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test';
 
   // `Lax` rather than `Strict`: someone following a link into the workspace from an email
   // should not arrive signed out. The tokens are useless to another origin regardless, because

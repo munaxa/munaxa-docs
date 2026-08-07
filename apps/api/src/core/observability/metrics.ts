@@ -47,6 +47,8 @@ export const MetricName = {
   AUDIT_CHAIN_VERIFIED: 'audit.chain.verified',
   ACCESS_DENIED: 'authorization.denied',
   STORAGE_PRESIGN: 'storage.presign',
+  RATE_LIMIT_EXCEEDED: 'ratelimit.exceeded',
+  RATE_LIMIT_DEGRADED: 'ratelimit.degraded',
 } as const;
 
 export type MetricNameKey = (typeof MetricName)[keyof typeof MetricName];
@@ -134,6 +136,19 @@ export const METRIC_CATALOGUE: Readonly<Record<MetricNameKey, MetricDescriptor>>
     kind: 'COUNTER',
     labels: ['operation', 'driver'],
     help: 'Signed storage URLs issued, by operation and storage driver.',
+  },
+  [MetricName.RATE_LIMIT_EXCEEDED]: {
+    kind: 'COUNTER',
+    // The rule id, which is a bounded set declared in `core/security/rate-limit.ts`. Never the
+    // subject: an IP address or a user id here is the unbounded cardinality this catalogue exists
+    // to refuse, and it would take the metrics backend down during the incident it was added for.
+    labels: ['rule'],
+    help: 'Requests refused by the rate limiter, by rule.',
+  },
+  [MetricName.RATE_LIMIT_DEGRADED]: {
+    kind: 'COUNTER',
+    labels: ['rule'],
+    help: 'Rate limit checks that could not reach the store and allowed the request, by rule.',
   },
 });
 

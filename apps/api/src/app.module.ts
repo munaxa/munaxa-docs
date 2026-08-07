@@ -1,6 +1,8 @@
 import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
+import { RateLimitGuard } from './core/security/rate-limit.guard';
+
 import { AuditModule } from './core/audit';
 import {
   API_KEY_AUTHENTICATOR,
@@ -125,6 +127,10 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     { provide: API_KEY_AUTHENTICATOR, useExisting: IdentityApiKeyAuthenticator },
     AuthenticationMiddleware,
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    // First, deliberately: an anonymous flood is refused before anything expensive happens. The
+    // identity dimensions still work, because the authentication *middleware* has already run by
+    // the time any guard does.
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     { provide: APP_GUARD, useClass: TenantIsolationGuard },
     { provide: APP_GUARD, useClass: RbacGuard },
