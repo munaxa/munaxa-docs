@@ -1,0 +1,225 @@
+import type {
+  AdministratorDashboard,
+  ApprovalInboxItem,
+  DocumentSummary,
+  Folder,
+  Library,
+  SearchResults,
+  UserDashboard,
+} from '@edms/contracts';
+import { DocumentStatus } from '@edms/domain';
+
+import type { ListState } from '../lib/admin/list-state';
+
+/**
+ * Fixtures for the rendered suites.
+ *
+ * Typed against the real contracts rather than cast, so a contract change breaks these at compile
+ * time instead of producing a screen the tests render happily and nobody ships. That is the whole
+ * value: a fixture that drifts is a test asserting a shape the API stopped returning.
+ *
+ * Values are deliberately boring except where a value is *load-bearing for accessibility* — a
+ * document with no number, a task under a delegation, a result set with facets — because those are
+ * the branches that render extra markup, and extra markup is where an unnamed control appears.
+ */
+
+const STAMPS = {
+  version: 1,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  createdBy: '019489f0-0000-7000-8000-00000000000a',
+  updatedAt: '2026-01-02T00:00:00.000Z',
+  updatedBy: '019489f0-0000-7000-8000-00000000000a',
+  deletedAt: null,
+  deletedBy: null,
+} as const;
+
+export function documentSummary(overrides: Partial<DocumentSummary> = {}): DocumentSummary {
+  return {
+    ...STAMPS,
+    id: '019489f0-0000-7000-8000-000000000101',
+    title: 'Quality Manual',
+    status: DocumentStatus.PUBLISHED,
+    documentNumber: 'QM-0001',
+    folderId: '019489f0-0000-7000-8000-000000000201',
+    folderName: 'Quality',
+    documentTypeName: 'Manual',
+    categoryName: 'Quality Management',
+    confidentialityName: 'Internal',
+    ownerUserId: '019489f0-0000-7000-8000-00000000000a',
+    isFavorite: false,
+    file: null,
+    ...overrides,
+  };
+}
+
+/** A row with nothing optional filled in — the branch that renders fallbacks. */
+export function bareDocumentSummary(): DocumentSummary {
+  return documentSummary({
+    id: '019489f0-0000-7000-8000-000000000102',
+    title: 'Untitled draft',
+    status: DocumentStatus.DRAFT,
+    documentNumber: null,
+    categoryName: null,
+    file: null,
+  });
+}
+
+export function library(overrides: Partial<Library> = {}): Library {
+  return {
+    ...STAMPS,
+    id: '019489f0-0000-7000-8000-000000000301',
+    code: 'QUA',
+    name: 'Quality',
+    description: null,
+    ownerScopeType: 'COMPANY',
+    ownerScopeId: null,
+    ownerScopeName: 'Munaxa',
+    rootFolderId: '019489f0-0000-7000-8000-000000000200',
+    folderCount: 1,
+    ...overrides,
+  };
+}
+
+export function folder(overrides: Partial<Folder> = {}): Folder {
+  return {
+    ...STAMPS,
+    id: '019489f0-0000-7000-8000-000000000201',
+    libraryId: '019489f0-0000-7000-8000-000000000301',
+    libraryName: 'Quality',
+    parentId: null,
+    name: 'Procedures',
+    description: null,
+    path: '/Procedures',
+    depth: 1,
+    inheritAcl: true,
+    isRoot: false,
+    childCount: 0,
+    ...overrides,
+  };
+}
+
+export function listState(overrides: Partial<ListState> = {}): ListState {
+  return {
+    page: 1,
+    pageSize: 25,
+    sortBy: null,
+    sortDirection: 'asc',
+    search: '',
+    deleted: 'live',
+    filters: {},
+    ...overrides,
+  };
+}
+
+export function approvalInboxItem(overrides: Partial<ApprovalInboxItem> = {}): ApprovalInboxItem {
+  return {
+    id: '019489f0-0000-7000-8000-000000000401',
+    workflowInstanceId: '019489f0-0000-7000-8000-000000000403',
+    stageId: '019489f0-0000-7000-8000-000000000402',
+    stageIndex: 0,
+    stageName: 'Quality review',
+    assigneeId: '019489f0-0000-7000-8000-00000000000a',
+    assigneeName: 'Test Person',
+    resolvedBy: 'ROLE',
+    sequence: 1,
+    state: 'PENDING',
+    decision: null,
+    decidedById: null,
+    decidedByName: null,
+    decidedAt: null,
+    comment: null,
+    onBehalfOfId: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    dueAt: '2026-02-01T00:00:00.000Z',
+    documentId: '019489f0-0000-7000-8000-000000000101',
+    documentTitle: 'Quality Manual',
+    documentNumber: 'QM-0001',
+    documentTypeName: 'Manual',
+    overdue: false,
+    onBehalfOf: null,
+    ...overrides,
+    // The one assertion in this file, and it is necessary rather than lazy: spreading
+    // `Partial<T>` widens every required-but-nullable field to include `undefined`, which
+    // `onBehalfOf` and `comment` both are. The base above is exhaustive, so the shape is right.
+  } as ApprovalInboxItem;
+}
+
+export function searchResults(overrides: Partial<SearchResults> = {}): SearchResults {
+  return {
+    data: [],
+    meta: { total: 0, unrestricted: false },
+    facets: {},
+    nextCursor: null,
+    ...overrides,
+  };
+}
+
+// --- Dashboard --------------------------------------------------------------------------------
+
+const READY_COUNT = { state: 'READY', count: 3 } as const;
+/** A tile the caller may not see. Renders different markup from a counted one. */
+const FORBIDDEN_COUNT = { state: 'FORBIDDEN', count: null } as const;
+
+export function userDashboard(overrides: Partial<UserDashboard> = {}): UserDashboard {
+  return {
+    drafts: READY_COUNT,
+    rejected: READY_COUNT,
+    pending: READY_COUNT,
+    overdue: { state: 'READY', count: 0 },
+    checkedOut: READY_COUNT,
+    favorites: READY_COUNT,
+    unreadNotifications: READY_COUNT,
+    activity: [
+      {
+        id: 'a1',
+        occurredAt: '2026-01-02T09:00:00.000Z',
+        action: 'DOCUMENT_APPROVED',
+        subjectType: 'DOCUMENT',
+        subjectId: '019489f0-0000-7000-8000-000000000101',
+        outcome: 'SUCCESS',
+      },
+    ],
+    delegations: [
+      {
+        id: 'd1',
+        direction: 'RECEIVED',
+        counterpartName: 'Other Person',
+        startsAt: '2026-01-01T00:00:00.000Z',
+        endsAt: null,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+export function administratorDashboard(
+  overrides: Partial<AdministratorDashboard> = {},
+): AdministratorDashboard {
+  const breakdown = {
+    state: 'READY' as const,
+    total: 4,
+    entries: [
+      { key: 'DRAFT', count: 1 },
+      { key: 'PUBLISHED', count: 3 },
+    ],
+  };
+
+  return {
+    anyGranted: true,
+    documents: breakdown,
+    workflow: breakdown,
+    approvals: { state: 'READY', pending: 2, overdue: 1 },
+    storage: {
+      state: 'READY',
+      blobCount: 10,
+      storedBytes: 1024,
+      referencedBytes: 1024,
+      unreferencedBlobs: 0,
+    },
+    users: breakdown,
+    departments: READY_COUNT,
+    dispositionsDue: FORBIDDEN_COUNT,
+    legalHolds: READY_COUNT,
+    ...overrides,
+  };
+}

@@ -12,7 +12,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --project=logic --project=a11y",
+    "test:visual": "vitest run --project=browser"
   },
   "dependencies": {
     "@edms/contracts": "workspace:*",
@@ -35,10 +36,20 @@
     "@munaxa/config-eslint": "^1.0.0",
     "@munaxa/config-typescript": "^1.0.0",
     "@tailwindcss/postcss": "^4.0.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
     "@types/node": "^22.10.7",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "axe-core": "^4.13.0",
     "eslint": "^9.18.0",
+    "jsdom": "^30.0.1",
+    "pixelmatch": "^7.2.0",
+    "playwright": "^1.62.1",
+    "pngjs": "^7.0.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"

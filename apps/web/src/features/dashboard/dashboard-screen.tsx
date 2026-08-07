@@ -151,7 +151,7 @@ export function DashboardScreen({
           emptyKey="dashboard.recent.empty"
           isEmpty={recent.length === 0}
           action={
-            <Link href={'/documents/recent'} className="text-primary text-xs">
+            <Link href={'/documents/recent'} className="text-primary-strong text-xs">
               {translate('dashboard.seeAll')}
             </Link>
           }
@@ -164,7 +164,7 @@ export function DashboardScreen({
           emptyKey="dashboard.favorites.empty"
           isEmpty={favorites.length === 0}
           action={
-            <Link href={'/documents?favorite=true'} className="text-primary text-xs">
+            <Link href={'/documents?favorite=true'} className="text-primary-strong text-xs">
               {translate('dashboard.seeAll')}
             </Link>
           }
@@ -220,7 +220,7 @@ export function DashboardScreen({
           emptyKey="dashboard.delegations.empty"
           isEmpty={user.delegations.length === 0}
           action={
-            <Link href={'/delegations'} className="text-primary text-xs">
+            <Link href={'/delegations'} className="text-primary-strong text-xs">
               {translate('dashboard.seeAll')}
             </Link>
           }
@@ -412,7 +412,7 @@ function DocumentLines({
           <Stack direction="horizontal" gap={2} align="baseline" justify="between">
             <Link
               href={`/documents/${document.id}` as Route}
-              className="hover:text-primary min-w-0 truncate"
+              className="hover:text-primary-strong min-w-0 truncate"
             >
               {document.title}
             </Link>
