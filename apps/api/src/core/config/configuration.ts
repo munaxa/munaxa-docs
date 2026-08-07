@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { loadPlatformConfig, toPlatformSection, type PlatformConfig } from './platform';
+
 /**
  * Typed configuration, validated once at boot.
  *
@@ -29,15 +31,31 @@ const booleanFromEnv = z
   .transform((value) => value === 'true')
   .or(z.boolean());
 
+/**
+ * The settings this product owns.
+ *
+ * Ten settings are **not** here any more: they moved to `core/config/platform.ts`, where
+ * `@munaxa/config` validates them — the signing secret, the Redis URL, the log level, the four
+ * token and session lifetimes, the concurrent-session cap, the token issuer and the trusted
+ * origins. The variables are unchanged and no deployment moves; only who decides what they mean.
+ *
+ * The division is ownership, not size. The platform knows what a session timeout *is* — that it
+ * has an idle deadline and an absolute one, and that one cannot exceed the other. It has no view
+ * on how many pages a preview may render, which CSV profile an evidence bundle is written under,
+ * or whether the cloud profile may run on a local filesystem, and it should never acquire one.
+ * Those are this product's rules and they stay here, in zod, unchanged.
+ *
+ * Both validators run on every boot and their problems are reported together, so an operator
+ * still learns everything wrong in one restart. See `loadConfig`.
+ */
 export const configSchema = z
   .object({
     NODE_ENV: environmentSchema.default('development'),
     APP_NAME: z.string().default('munaxa-docs-api'),
     APP_VERSION: z.string().default('0.1.0'),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
-    /** Allowed browser origins. Never `*`: the API is credentialed. */
-    CORS_ORIGINS: z.string().default('http://localhost:3000'),
-    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    // `CORS_ORIGINS` and `LOG_LEVEL` moved to `core/config/platform.ts` — see the note above
+    // `configSchema`. The variables are unchanged; only who validates them moved.
 
     DEPLOYMENT_PROFILE: deploymentProfileSchema.default('ON_PREMISE'),
 
@@ -73,8 +91,6 @@ export const configSchema = z
      */
     DATABASE_MAX_TENANT_CLIENTS: z.coerce.number().int().min(1).max(1_000).default(25),
 
-    REDIS_URL: z.string().url(),
-
     /**
      * Whether this process consumes background jobs as well as enqueuing them.
      *
@@ -94,45 +110,16 @@ export const configSchema = z
     OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
     OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(200).max(60_000).default(2_000),
 
-    /** Signing material for access tokens. Rotated by adding a key, never by editing one. */
-    JWT_ISSUER: z.string().default('https://docs.munaxa.com'),
+    /**
+     * The token audience, and the one JWT setting that stayed here.
+     *
+     * `@munaxa/config`'s `MUNAXA_TOKEN_AUDIENCE` is a list, because a platform token may be
+     * presented to several services. This product compares `payload.aud` to a single string, and
+     * widening `auth.audience` to an array to adopt a field would change the shape `AppConfig`
+     * exposes and the meaning of that comparison — a rewrite of the token service dressed as a
+     * configuration migration. The rest of the JWT and session settings moved; this one did not.
+     */
     JWT_AUDIENCE: z.string().default('munaxa-docs'),
-    JWT_ACCESS_SECRET: z.string().min(32),
-    JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(900),
-    JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().min(3_600).default(2_592_000),
-
-    /**
-     * The bound a refresh lineage cannot rotate its way past.
-     *
-     * `JWT_REFRESH_TTL_SECONDS` expires an individual token, and a family that keeps rotating
-     * replaces each one before it lapses — so before this existed, a stolen token the thief kept
-     * warm was a permanent credential. This deadline never moves, whatever the family does.
-     *
-     * Defaults to 30 days, matching the refresh window, so an existing deployment gets the bound
-     * without choosing a number. The platform clamps it at 30 days regardless.
-     */
-    SESSION_ABSOLUTE_TTL_SECONDS: z.coerce
-      .number()
-      .int()
-      .min(3_600)
-      .max(2_592_000)
-      .default(2_592_000),
-
-    /**
-     * How many live sessions one user may hold. Oldest is evicted rather than the newest refused:
-     * denying locks a user out of the device in their hand, with no security gain, since both
-     * outcomes cap the number of live sessions.
-     */
-    /**
-     * How long a lineage may go unused before it dies.
-     *
-     * The platform caps this at 8 hours and clamps anything larger, so the default states the cap
-     * rather than pretending a bigger number would be honoured. This is the one behavioural change
-     * of the session migration: before it, a refresh token unused for 29 days still worked.
-     */
-    SESSION_IDLE_TTL_SECONDS: z.coerce.number().int().min(300).max(28_800).default(28_800),
-
-    SESSION_MAX_CONCURRENT: z.coerce.number().int().min(1).max(100).default(10),
 
     /**
      * Where an OIDC provider sends the browser back to — Phase 17.
@@ -887,7 +874,7 @@ export interface AppConfig {
     /** The machine-readable schema. Permitted in production — Phase 17 split the two. */
     readonly openApiDocumentEnabled: boolean;
   };
-  readonly log: { readonly level: RawConfig['LOG_LEVEL'] };
+  readonly log: { readonly level: PlatformConfig['MUNAXA_LOG_LEVEL'] };
   readonly database: {
     readonly url: string;
     readonly migrationUrl: string | null;
@@ -1078,6 +1065,33 @@ function tenantSourceOf(raw: RawConfig): AppConfig['deployment']['tenants'] {
   return { source: 'SINGLE', id: raw.TENANT_ID ?? '', slug: raw.TENANT_SLUG ?? '' };
 }
 
+/**
+ * Everything wrong with the environment, from both validators, in one message.
+ *
+ * Two parsers now run — `@munaxa/config` over the settings the platform owns, zod over the
+ * product's — and the whole point of failing at startup is that an operator learns every problem
+ * in one restart rather than one per restart. Running them in sequence and throwing on the first
+ * would have halved that, so both run and their issues are joined.
+ *
+ * Neither message ever carries a value. Half of these are secrets, and the error that rejected an
+ * invalid one must not be what copies it into a log.
+ */
+function platformIssues(source: Readonly<Record<string, string | undefined>>): readonly string[] {
+  try {
+    loadPlatformConfig(source);
+    return [];
+  } catch (error) {
+    // `PlatformError` carries the issue list in `details`; the message already renders it. Reading
+    // the rendered form keeps this independent of a details shape the platform may extend.
+    const message = error instanceof Error ? error.message : String(error);
+    return message
+      .split('\n')
+      .slice(1)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   // An empty variable means "not set", not "set to the empty string". Both `.env.example` and
   // most deployment tooling write `FOO=` for an optional value left unfilled, and without this
@@ -1086,27 +1100,31 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     Object.entries(source).filter(([, value]) => value !== undefined && value.trim() !== ''),
   );
   const parsed = configSchema.safeParse(provided);
+  const productIssues = parsed.success
+    ? []
+    : parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`);
+  const issues = [...platformIssues(provided), ...productIssues];
+  if (issues.length > 0) {
+    throw new ConfigurationError(issues);
+  }
   if (!parsed.success) {
-    // The message names the variables, never their values: an invalid secret must not be
-    // echoed into a log line by the very error that rejected it.
-    throw new ConfigurationError(
-      parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`),
-    );
+    // Unreachable: `productIssues` is non-empty whenever the parse failed. Present so the narrowing
+    // below is the compiler's rather than a non-null assertion.
+    throw new ConfigurationError(['(root): configuration could not be parsed']);
   }
   const raw = parsed.data;
+  const { auth, redis, log, http } = toPlatformSection(loadPlatformConfig(provided));
   return {
     env: raw.NODE_ENV,
     isProduction: raw.NODE_ENV === 'production',
     deployment: { profile: raw.DEPLOYMENT_PROFILE, tenants: tenantSourceOf(raw) },
     app: { name: raw.APP_NAME, version: raw.APP_VERSION, port: raw.PORT },
     http: {
-      corsOrigins: raw.CORS_ORIGINS.split(',')
-        .map((origin) => origin.trim())
-        .filter((origin) => origin.length > 0),
+      corsOrigins: http.corsOrigins,
       openApiEnabled: raw.OPENAPI_ENABLED,
       openApiDocumentEnabled: raw.OPENAPI_DOCUMENT_ENABLED,
     },
-    log: { level: raw.LOG_LEVEL },
+    log: { level: log.level },
     database: {
       url: raw.DATABASE_URL,
       migrationUrl: raw.DATABASE_MIGRATION_URL ?? null,
@@ -1114,21 +1132,21 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       statementTimeoutMs: raw.DATABASE_STATEMENT_TIMEOUT_MS,
       maxTenantClients: raw.DATABASE_MAX_TENANT_CLIENTS,
     },
-    redis: { url: raw.REDIS_URL },
+    redis: { url: redis.url },
     queue: {
       consumersEnabled: raw.QUEUE_CONSUMERS_ENABLED,
       outboxBatchSize: raw.OUTBOX_BATCH_SIZE,
       outboxPollIntervalMs: raw.OUTBOX_POLL_INTERVAL_MS,
     },
     auth: {
-      issuer: raw.JWT_ISSUER,
+      issuer: auth.issuer,
       audience: raw.JWT_AUDIENCE,
-      accessSecret: raw.JWT_ACCESS_SECRET,
-      accessTtlSeconds: raw.JWT_ACCESS_TTL_SECONDS,
-      refreshTtlSeconds: raw.JWT_REFRESH_TTL_SECONDS,
-      sessionIdleTtlSeconds: raw.SESSION_IDLE_TTL_SECONDS,
-      sessionAbsoluteTtlSeconds: raw.SESSION_ABSOLUTE_TTL_SECONDS,
-      maxConcurrentSessions: raw.SESSION_MAX_CONCURRENT,
+      accessSecret: auth.accessSecret,
+      accessTtlSeconds: auth.accessTtlSeconds,
+      refreshTtlSeconds: auth.refreshTtlSeconds,
+      sessionIdleTtlSeconds: auth.sessionIdleTtlSeconds,
+      sessionAbsoluteTtlSeconds: auth.sessionAbsoluteTtlSeconds,
+      maxConcurrentSessions: auth.maxConcurrentSessions,
       federationRedirectUri:
         raw.FEDERATION_REDIRECT_URI ??
         `${raw.WEB_BASE_URL.replace(/\/+$/, '')}/auth/federation/callback`,

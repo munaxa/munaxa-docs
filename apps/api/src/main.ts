@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from './app.module';
 import { configureApp, configureOpenApi } from './bootstrap';
+import { describePlatformConfig } from './core/config/platform';
 import { LOGGER, type Logger } from './core/observability/logger';
 
 /**
@@ -26,6 +27,9 @@ async function bootstrap(): Promise<void> {
     env: config.env,
     version: config.app.version,
     openApi: config.http.openApiEnabled,
+    // The settings `@munaxa/config` owns, named the way the application names them. Secrets are
+    // absent by construction rather than redacted — see `describePlatformConfig`.
+    platform: describePlatformConfig(process.env),
   });
 }
 

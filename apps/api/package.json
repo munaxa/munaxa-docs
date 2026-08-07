@@ -24,6 +24,7 @@
     "@munaxa/audit": "^2.3.0",
     "@munaxa/auth": "^2.3.0",
     "@munaxa/cache": "^2.3.0",
+    "@munaxa/config": "^2.3.0",
     "@munaxa/crypto": "^2.3.0",
     "@munaxa/interfaces": "^2.3.0",
     "@munaxa/logging": "^2.3.0",

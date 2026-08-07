@@ -53,6 +53,9 @@ importers:
       '@munaxa/cache':
         specifier: ^2.3.0
         version: 2.3.0
+      '@munaxa/config':
+        specifier: ^2.3.0
+        version: 2.3.0
       '@munaxa/crypto':
         specifier: ^2.3.0
         version: 2.3.0
@@ -867,6 +870,10 @@ packages:
 
   '@munaxa/config-typescript@1.0.0':
     resolution: {integrity: sha512-C6oMv9k87Ss6tvwiPAdaysQCOgdt5U5V8eEtdCspg/lcKh4dxMua5Xn09RM9HaI1m59ONiYlTERW4UDzgjHKrw==, tarball: https://npm.pkg.github.com/download/@munaxa/config-typescript/1.0.0/a5329d53fe1c29534452c0a4b8e318d2105a3f7e}
+
+  '@munaxa/config@2.3.0':
+    resolution: {integrity: sha512-x148hFUspDtaoH3hXEQ+alTnMDJCpv2i0LlbCSvVFtDlRJ02Lsy3PjSeSj2QXH0b5yfFwKDyiEUovAfG7+51Kg==, tarball: https://npm.pkg.github.com/download/@munaxa/config/2.3.0/2e621156c905f18053b8fb210a563d2093c97b06}
+    engines: {node: '>=22.12.0'}
 
   '@munaxa/conformance@2.3.0':
     resolution: {integrity: sha512-l9js/hJA07/3VMsqfsIOHULWueJuTBzUlFYweRrDq2yeCV0T7eiQNzkweZzwbYnH2TbI+M3d5EAR9ue2T1IGYg==, tarball: https://npm.pkg.github.com/download/@munaxa/conformance/2.3.0/cee279663d903b76b4293f3fc9ae47bee3b3d689}
@@ -3867,6 +3874,11 @@ snapshots:
       - typescript
 
   '@munaxa/config-typescript@1.0.0': {}
+
+  '@munaxa/config@2.3.0':
+    dependencies:
+      '@munaxa/interfaces': 2.3.0
+      '@munaxa/types': 2.3.0
 
   '@munaxa/conformance@2.3.0':
     dependencies:
