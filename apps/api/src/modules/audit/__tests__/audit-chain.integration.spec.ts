@@ -14,8 +14,8 @@ import {
 import { uuidv7 } from '@edms/utils';
 
 import type { AuditActor } from '../../../core/audit/audit-writer.port';
-import { GENESIS_HASH, verifyChain } from '../../../core/audit/hash-chain';
-import { toChainLink } from '../application/audit-verification.service';
+import { GENESIS_HASH } from '../../../core/audit/hash-chain';
+import { PlatformChainVerifier } from '../infrastructure/platform-chain.verifier';
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 
@@ -115,6 +115,13 @@ beforeAll(async () => {
   await owner.$disconnect();
 });
 
+/**
+ * The verifier under test.
+ *
+ * Every assertion here walks a whole tenant chain, so the head is always genesis.
+ */
+const chainVerifier = new PlatformChainVerifier();
+
 describe('the audit chain against PostgreSQL', () => {
   it('starts at genesis and links each event to the last', async () => {
     await record(ACME, 'DOCUMENT_VIEWED');
@@ -131,7 +138,7 @@ describe('the audit chain against PostgreSQL', () => {
     expect(events[0]?.previousHash).toBe(GENESIS_HASH);
     expect(events.map((event) => event.sequence)).toEqual([1n, 2n, 3n]);
 
-    const result = verifyChain(events.map(toChainLink), { fromSequence: 1n });
+    const result = chainVerifier.verify(events, null);
     expect(result).toMatchObject({ intact: true, brokenAt: null, reason: null, verified: 3 });
   });
 
@@ -165,7 +172,7 @@ describe('the audit chain against PostgreSQL', () => {
     const sequences = events.map((event) => Number(event.sequence));
     expect(sequences).toEqual(Array.from({ length: sequences.length }, (_, i) => i + 1));
 
-    const result = verifyChain(events.map(toChainLink), { fromSequence: 1n });
+    const result = chainVerifier.verify(events, null);
     expect(result.intact).toBe(true);
   });
 

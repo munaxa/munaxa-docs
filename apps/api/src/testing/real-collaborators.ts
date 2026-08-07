@@ -46,6 +46,7 @@ import { PrismaAuditExportRepository } from '../modules/audit/infrastructure/pri
 import { StorageCheckpointStore } from '../modules/audit/infrastructure/storage-checkpoint.store';
 import { ChainedAuditWriter } from '../modules/audit/infrastructure/chained-audit.writer';
 import { PlatformAuditRepository } from '../modules/audit/infrastructure/platform-audit.repository';
+import { PlatformChainVerifier } from '../modules/audit/infrastructure/platform-chain.verifier';
 import { PrismaAuditRepository } from '../modules/audit/infrastructure/prisma-audit.repository';
 import { DefaultOrganizationService } from '../modules/organization/application/organization.service';
 import { PrismaScopeRepository } from '../modules/organization/infrastructure/prisma-scope.repository';
@@ -1180,6 +1181,7 @@ export function realAuditStack(options: AuditStackOptions): AuditStack {
   const verification = new AuditVerificationService(
     repository,
     checkpoints,
+    new PlatformChainVerifier(),
     outbox,
     options.unitOfWork,
     options.clock,

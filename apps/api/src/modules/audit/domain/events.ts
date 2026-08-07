@@ -47,9 +47,17 @@ export interface AuditChainBrokenPayload {
   readonly expectedHash: string;
   readonly actualHash: string;
   /**
-   * Which of the three accusations this is: `DIGEST_MISMATCH` (a field was altered),
-   * `LINK_MISMATCH` (a record was inserted or removed mid-chain), or `SEQUENCE_GAP` (a record
-   * was removed and took its link with it — the hole a hash alone cannot see).
+   * Which finding this is — and only three of the five are accusations.
+   *
+   * `DIGEST_MISMATCH` (a field was altered), `LINK_MISMATCH` (a record was inserted or removed
+   * mid-chain, or a batch did not follow the checkpoint it resumed from) and `SEQUENCE_GAP` (a
+   * record was removed and took its link with it — the hole a hash alone cannot see) are
+   * tampering.
+   *
+   * `UNVERIFIABLE_FORMAT` and `UNVERIFIABLE_RECORD` are not. They mean this build could not check
+   * the record: an unrecognised canonical format, or a record missing an identifier its format
+   * hashes. A consumer that pages somebody about an intrusion on either of those is sending them
+   * after an attacker who was never there — read `reason` before choosing the severity.
    */
   readonly reason: string;
 }

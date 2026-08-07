@@ -9,7 +9,12 @@ import { createHash } from 'node:crypto';
  * application role, and this catches anyone who gets around them
  * (`docs/architecture/13-audit-architecture.md`).
  *
- * Pure and deterministic on purpose — the verifier that runs daily is the same function.
+ * Pure and deterministic on purpose.
+ *
+ * **This file no longer verifies.** `@munaxa/audit`'s `verifyChain` recomputes the chain, through
+ * `PlatformChainVerifier`, against the three formats in `platform-canonical.ts` — which reproduce
+ * `chainHash` byte for byte, and are asserted against this function directly rather than against a
+ * fixture. What is left here is the digest itself, kept because that assertion needs both sides.
  *
  * ## Why there are two versions
  *
@@ -52,10 +57,9 @@ export const CHAIN_HASH_V3 = 3;
 /**
  * What a new append is written with. Reading dispatches on the row's own stamp, never this.
  *
- * The append path no longer reads it: `@munaxa/audit` seals new records under
- * `DOCS_CANONICAL_V3`, which reproduces `chainHash(…, CHAIN_HASH_V3)` byte for byte
- * (`platform-canonical.spec.ts`). It survives because the *verifier* still needs a version to
- * fall back to for a row stamped with something this build does not recognise.
+ * Neither path reads it any more: `@munaxa/audit` seals under `DOCS_CANONICAL_V3` and verifies
+ * against the row's own `formatVersion`. It survives as the statement of which digest is current,
+ * which `attestedFields` and the evidence bundle still need.
  */
 export const CURRENT_CHAIN_HASH_VERSION = CHAIN_HASH_V3;
 
@@ -155,13 +159,15 @@ export function canonicalize(value: unknown): string {
  * has to keep verifying. The v2 material *appends* rather than interleaving, for the same
  * reason a wire format appends: a third version can extend it without moving anything.
  *
- * **Nothing appends through this any more.** `@munaxa/audit` seals every new record, under the
- * same three formats expressed as `CanonicalFormat`s in `platform-canonical.ts`. What is left
- * here is the *verification* path — `verifyChain` below, and the daily pass that calls it — which
- * has not been migrated. Keeping one function rather than two implementations of the same digest
- * was the point of expressing the formats over this one: `platform-canonical.spec.ts` asserts the
- * two agree by comparing against this function directly, so a drift is a failing test rather than
- * a trail that silently stops verifying.
+ * **Nothing in the product calls this any more** — not the writer, not the verifier. Both go
+ * through `@munaxa/audit`, under the same three digests expressed as `CanonicalFormat`s in
+ * `platform-canonical.ts`.
+ *
+ * It survives for one reason, and it is a good one: `platform-canonical.spec.ts` asserts the
+ * Platform's formats reproduce *this function's* bytes, rather than a stored fixture. This is what
+ * wrote every row in every deployment, and the table refuses the `UPDATE` that would rehash one —
+ * so if the two ever disagree, the evidence is gone. That makes this the second half of the
+ * highest-stakes test in the repository, and deleting it would delete the comparison.
  */
 export function chainHash(
   previousHash: string,
@@ -197,97 +203,4 @@ export function chainHash(
     material.push(event.apiClientId ?? '');
   }
   return createHash('sha256').update(material.join('|'), 'utf8').digest('hex');
-}
-
-export interface ChainLink {
-  readonly hash: string;
-  readonly previousHash: string;
-  readonly version: ChainHashVersion;
-  readonly event: ChainedEventInput;
-}
-
-export interface VerificationResult {
-  readonly intact: boolean;
-  /** The first link whose digest does not recompute — where the trail stops being evidence. */
-  readonly brokenAt: string | null;
-  /** What went wrong at `brokenAt`, so an alert says more than "something". */
-  readonly reason: BreakReason | null;
-  readonly expectedHash: string | null;
-  readonly actualHash: string | null;
-  readonly verified: number;
-}
-
-/**
- * How a chain can fail, and each is a different accusation.
- *
- * `DIGEST_MISMATCH` — a field was altered. `LINK_MISMATCH` — a record was removed or inserted
- * in the middle. `SEQUENCE_GAP` — a record was removed, and the chain of the survivors is
- * intact because the removal took the link with it. The last is the case the hash alone cannot
- * see, and the reason `sequence` exists at all.
- */
-export type BreakReason = 'DIGEST_MISMATCH' | 'LINK_MISMATCH' | 'SEQUENCE_GAP';
-
-export interface VerifyOptions {
-  /** The digest the first link must chain from — a checkpoint's hash, or genesis. */
-  readonly from?: string;
-  /**
-   * The sequence the first link must carry. Given, the walk also proves contiguity; omitted,
-   * it proves only that what is present chains, which is a weaker claim and is reported as one.
-   */
-  readonly fromSequence?: bigint;
-}
-
-export function verifyChain(
-  links: readonly ChainLink[],
-  options: VerifyOptions | string = {},
-): VerificationResult {
-  // A bare string is the Phase 1 signature — the starting digest — kept working because the
-  // pure verifier is called from the chain's own tests as well as from the daily job.
-  const { from = GENESIS_HASH, fromSequence } =
-    typeof options === 'string' ? { from: options, fromSequence: undefined } : options;
-
-  let previous = from;
-  let expectedSequence = fromSequence;
-  let verified = 0;
-
-  for (const link of links) {
-    if (expectedSequence !== undefined && link.event.sequence !== expectedSequence) {
-      return broken(link, 'SEQUENCE_GAP', null, null, verified);
-    }
-    if (link.previousHash !== previous) {
-      return broken(link, 'LINK_MISMATCH', previous, link.previousHash, verified);
-    }
-    const recomputed = chainHash(previous, link.event, link.version);
-    if (recomputed !== link.hash) {
-      return broken(link, 'DIGEST_MISMATCH', recomputed, link.hash, verified);
-    }
-    previous = link.hash;
-    expectedSequence = link.event.sequence + 1n;
-    verified += 1;
-  }
-  return {
-    intact: true,
-    brokenAt: null,
-    reason: null,
-    expectedHash: null,
-    actualHash: null,
-    verified,
-  };
-}
-
-function broken(
-  link: ChainLink,
-  reason: BreakReason,
-  expectedHash: string | null,
-  actualHash: string | null,
-  verified: number,
-): VerificationResult {
-  return {
-    intact: false,
-    brokenAt: link.event.eventId,
-    reason,
-    expectedHash,
-    actualHash,
-    verified,
-  };
 }

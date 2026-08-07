@@ -26,7 +26,6 @@ import {
   CURRENT_CHAIN_HASH_VERSION,
   GENESIS_HASH,
   chainHash,
-  verifyChain,
 } from '../../../core/audit/hash-chain';
 import type { AppConfig } from '../../../core/config/configuration';
 import { PrismaUnitOfWork, requireTransaction } from '../../../core/prisma/unit-of-work';
@@ -38,8 +37,8 @@ import {
   realDocumentLibrary,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
-import { toChainLink } from '../application/audit-verification.service';
-import { AuditExportState, type AuditEventRecord } from '../application/ports';
+import { PlatformChainVerifier } from '../infrastructure/platform-chain.verifier';
+import { AuditExportState, type AuditEventRecord, type ChainTail } from '../application/ports';
 import { verifyManifestSignature } from '../domain/evidence-bundle';
 
 /**
@@ -193,6 +192,24 @@ afterAll(async () => {
   await rm(storageRoot, { recursive: true, force: true });
 });
 
+/**
+ * The verifier under test, and the head a slice must continue from.
+ *
+ * `headBefore` restates what the local verifier took as `{ from, fromSequence }`: the digest the
+ * caller carried forward, at the position immediately before the slice's own first record. A
+ * slice starting at genesis has no head — 64 zeros and sequence 0 is this product's spelling of
+ * "nothing precedes this".
+ */
+const chainVerifier = new PlatformChainVerifier();
+
+function headBefore(from: string, events: readonly AuditEventRecord[]): ChainTail | null {
+  const first = events[0];
+  if (first === undefined || (from === GENESIS_HASH && first.sequence === 1n)) {
+    return null;
+  }
+  return { sequence: first.sequence - 1n, hash: from };
+}
+
 describe('the chain, verified against what the database actually holds', () => {
   it('verifies a chain the real writer appended, and checkpoints outside the database', async () => {
     await record('DOCUMENT_VIEWED');
@@ -274,10 +291,7 @@ describe('the chain, verified against what the database actually holds', () => {
       index === 1 ? { ...event, action: 'DOCUMENT_MOVED' } : event,
     );
 
-    const result = verifyChain(altered.map(toChainLink), {
-      from: slice.from,
-      fromSequence: 1n,
-    });
+    const result = chainVerifier.verify(altered, headBefore(slice.from, altered));
 
     expect(result.intact).toBe(false);
     expect(result.reason).toBe('DIGEST_MISMATCH');
@@ -293,9 +307,7 @@ describe('the chain, verified against what the database actually holds', () => {
     // Under the Phase 1 digest this row would verify: `reason` was not in the material. Every row
     // written since Phase 9 carries the wider one, and this is what that buys.
     expect(slice.events[0]?.chainHashVersion).toBe(CURRENT_CHAIN_HASH_VERSION);
-    expect(
-      verifyChain(altered.map(toChainLink), { from: slice.from, fromSequence: 1n }).intact,
-    ).toBe(false);
+    expect(chainVerifier.verify(altered, headBefore(slice.from, altered)).intact).toBe(false);
   });
 
   it('detects a gap in the sequence, which the digests alone cannot see', async () => {
@@ -304,15 +316,10 @@ describe('the chain, verified against what the database actually holds', () => {
     // links with it. Only contiguity makes the hole visible, and only when the range's start is
     // asserted — which is what a signed checkpoint provides.
     const truncated = slice.events.slice(0, -2);
-    expect(
-      verifyChain(truncated.map(toChainLink), { from: slice.from, fromSequence: 1n }).intact,
-    ).toBe(true);
+    expect(chainVerifier.verify(truncated, headBefore(slice.from, truncated)).intact).toBe(true);
 
     const middleRemoved = [...slice.events.slice(0, 1), ...slice.events.slice(2)];
-    const result = verifyChain(middleRemoved.map(toChainLink), {
-      from: slice.from,
-      fromSequence: 1n,
-    });
+    const result = chainVerifier.verify(middleRemoved, headBefore(slice.from, middleRemoved));
     expect(result.intact).toBe(false);
     expect(result.reason).toBe('SEQUENCE_GAP');
   });
@@ -341,7 +348,7 @@ describe('the chain, verified against what the database actually holds', () => {
       actorId: null,
       onBehalfOfId: null,
       channel: 'SYSTEM',
-      action: 'LEGACY',
+      action: 'PURGED',
       subjectType: 'CONFIGURATION',
       subjectId: uuidv7(),
       outcome: 'SUCCESS',
@@ -353,21 +360,46 @@ describe('the chain, verified against what the database actually holds', () => {
       apiClientId: null,
     };
     const firstHash = chainHash(GENESIS_HASH, first, CHAIN_HASH_V1);
-    const second = { ...first, eventId: uuidv7(), sequence: 2n, action: 'CURRENT' };
+    const second = { ...first, eventId: uuidv7(), sequence: 2n, action: 'PUBLISHED' };
     const secondHash = chainHash(firstHash, second, CURRENT_CHAIN_HASH_VERSION);
 
+    // Sealed by `chainHash` — what wrote every row in every deployment — and verified by the
+    // Platform. That is the whole assertion: the digests did not move when verification did.
+    const asRow = (
+      event: typeof first,
+      hash: string,
+      previousHash: string,
+      chainHashVersion: number,
+    ): AuditEventRecord => ({
+      id: asId<AnyId>(event.eventId),
+      tenantId: asId<TenantId>(event.tenantId),
+      sequence: event.sequence,
+      occurredAt: event.occurredAt,
+      actorId: null,
+      onBehalfOfId: null,
+      channel: 'SYSTEM',
+      action: event.action as AuditEventRecord['action'],
+      subjectType: 'CONFIGURATION',
+      subjectId: asId<AnyId>(event.subjectId),
+      outcome: 'SUCCESS',
+      payload: event.payload,
+      reason: null,
+      correlationId: event.correlationId,
+      ipAddress: null,
+      userAgent: null,
+      apiClientId: null,
+      hash,
+      previousHash,
+      chainHashVersion,
+    });
+
     expect(
-      verifyChain(
+      chainVerifier.verify(
         [
-          { hash: firstHash, previousHash: GENESIS_HASH, version: CHAIN_HASH_V1, event: first },
-          {
-            hash: secondHash,
-            previousHash: firstHash,
-            version: CURRENT_CHAIN_HASH_VERSION,
-            event: second,
-          },
+          asRow(first, firstHash, GENESIS_HASH, CHAIN_HASH_V1),
+          asRow(second, secondHash, firstHash, CURRENT_CHAIN_HASH_VERSION),
         ],
-        { fromSequence: 1n },
+        null,
       ).intact,
     ).toBe(true);
   });
@@ -473,9 +505,9 @@ describe('buffered read auditing', () => {
     expect(slice.events.length).toBe(before + 5);
     // The property that makes the exemption safe: buffered events are still hash-chained, and
     // the sequence is still gap-free across the join between buffered and synchronous writes.
-    expect(
-      verifyChain(slice.events.map(toChainLink), { from: slice.from, fromSequence: 1n }).intact,
-    ).toBe(true);
+    expect(chainVerifier.verify(slice.events, headBefore(slice.from, slice.events)).intact).toBe(
+      true,
+    );
   });
 
   it('keeps the instant of the read, not the instant of the flush', async () => {

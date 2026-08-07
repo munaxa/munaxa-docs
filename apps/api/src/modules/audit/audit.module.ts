@@ -13,12 +13,14 @@ import {
   AUDIT_EXPORT_REPOSITORY,
   AUDIT_REPOSITORY,
   AUDIT_SERVICE,
+  CHAIN_VERIFIER,
 } from './application/ports';
 import { AuditActivityReader } from './infrastructure/audit-activity.reader';
 import { AuditLaneConsumer } from './infrastructure/audit-lane.consumer';
 import { BufferedReadAuditWriter } from './infrastructure/buffered-read-audit.writer';
 import { ChainedAuditWriter } from './infrastructure/chained-audit.writer';
 import { PlatformAuditRepository } from './infrastructure/platform-audit.repository';
+import { PlatformChainVerifier } from './infrastructure/platform-chain.verifier';
 import { PrismaAuditExportRepository } from './infrastructure/prisma-audit-export.repository';
 import { PrismaAuditRepository } from './infrastructure/prisma-audit.repository';
 import { StorageCheckpointStore } from './infrastructure/storage-checkpoint.store';
@@ -71,6 +73,9 @@ import { AuditReportSource } from './infrastructure/report-source.adapter';
     { provide: AUDIT_EXPORT_REPOSITORY, useClass: PrismaAuditExportRepository },
     { provide: AUDIT_WRITER, useClass: ChainedAuditWriter },
     { provide: AUDIT_CHECKPOINT_STORE, useClass: StorageCheckpointStore },
+    // The chain, recomputed by `@munaxa/audit`. A port because the adapter needs the row-to-record
+    // mapping, which lives in infrastructure and the application layer may not reach.
+    { provide: CHAIN_VERIFIER, useClass: PlatformChainVerifier },
     // Activity is a view of the trail, not a second log — see core/activity/activity.port.ts.
     { provide: ACTIVITY_READER, useClass: AuditActivityReader },
     // §5's buffer. Registered as a class as well as a token because it implements Nest's

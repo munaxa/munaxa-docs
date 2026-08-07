@@ -3,13 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { asId, type AnyId, type DomainEventDraft } from '@edms/domain';
 
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
-import {
-  CURRENT_CHAIN_HASH_VERSION,
-  type ChainLink,
-  GENESIS_HASH,
-  isChainHashVersion,
-  verifyChain,
-} from '../../../core/audit/hash-chain';
+import { GENESIS_HASH } from '../../../core/audit/hash-chain';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { METRICS, MetricName, type Metrics } from '../../../core/observability/metrics';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
@@ -21,11 +15,16 @@ import { signCheckpoint } from '../infrastructure/storage-checkpoint.store';
 import {
   AUDIT_CHECKPOINT_STORE,
   AUDIT_REPOSITORY,
+  CHAIN_VERIFIER,
+  isTampering,
   type AuditCheckpoint,
   type AuditCheckpointStore,
   type AuditEventRecord,
   type AuditRepository,
+  type ChainTail,
   type ChainVerification,
+  type ChainVerifier,
+  type SliceVerification,
 } from './ports';
 
 /**
@@ -66,6 +65,7 @@ export class AuditVerificationService {
   constructor(
     @Inject(AUDIT_REPOSITORY) private readonly repository: AuditRepository,
     @Inject(AUDIT_CHECKPOINT_STORE) private readonly checkpoints: AuditCheckpointStore,
+    @Inject(CHAIN_VERIFIER) private readonly verifier: ChainVerifier,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
@@ -93,12 +93,22 @@ export class AuditVerificationService {
         { intact: 'false' },
         walk.result.verified,
       );
-      this.logger.error('The audit chain failed verification', {
-        tenantId,
-        brokenAtEventId: walk.result.brokenAt,
-        reason: walk.result.reason,
-        fromSequence: startSequence.toString(),
-      });
+      // Two different messages, because they are two different findings. A tamper report says
+      // somebody altered the trail; an unverifiable record says this build could not check it —
+      // an unrecognised canonical format, or a record missing an identifier its format hashes.
+      // Both fail the pass and both refuse a checkpoint, because a range that was not verified
+      // must not be attested as though it were. Only one of them accuses anybody.
+      const tampering = walk.result.reason !== null && isTampering(walk.result.reason);
+      this.logger.error(
+        tampering ? 'The audit chain failed verification' : 'The audit chain could not be verified',
+        {
+          tenantId,
+          brokenAtEventId: walk.result.brokenAt,
+          reason: walk.result.reason,
+          tampering,
+          fromSequence: startSequence.toString(),
+        },
+      );
       await this.publish(
         auditChainBrokenEvent(asId<AnyId>(walk.result.brokenAt ?? tenantId), {
           brokenAtEventId: walk.result.brokenAt ?? '',
@@ -162,11 +172,17 @@ export class AuditVerificationService {
    * no checkpoint and moves no resume point — an export is a read, and a read that advanced the
    * verifier's position would let anyone with `audit:export` skip a night's verification.
    */
-  verifyRange(events: readonly AuditEventRecord[], from: string) {
-    return verifyChain(events.map(toLink), {
-      from,
-      ...(events[0] === undefined ? {} : { fromSequence: events[0].sequence }),
-    });
+  verifyRange(events: readonly AuditEventRecord[], from: string): SliceVerification {
+    const first = events[0];
+    // The head the batch must continue from: the digest the caller carried forward, at the
+    // position immediately before the batch's own first record. Exactly what this method asserted
+    // before the migration, when it passed `from` and `fromSequence` as two arguments.
+    const head: ChainTail | null =
+      first === undefined ? null : { sequence: first.sequence - 1n, hash: from };
+    return this.verifier.verify(
+      events,
+      head?.hash === GENESIS_HASH && head.sequence === 0n ? null : head,
+    );
   }
 
   /**
@@ -180,8 +196,13 @@ export class AuditVerificationService {
     const budget = this.config.audit.verifyMaxEvents;
     const batchSize = this.config.audit.verifyBatchSize;
 
-    let cursor = startSequence;
-    let previousHash = startHash;
+    // One value now, not two: a resume point is a position *and* a digest, and the Platform's
+    // `from` takes both together. Threading them separately is what made a record removed from
+    // the front of a batch invisible before this migration.
+    let head: ChainTail | null =
+      startSequence === 0n && startHash === GENESIS_HASH
+        ? null
+        : { sequence: startSequence, hash: startHash };
     let lastSequence = startSequence;
     let lastHash = startHash;
     let verified = 0;
@@ -192,19 +213,16 @@ export class AuditVerificationService {
         break;
       }
       const slice = await this.unitOfWork.run(() =>
-        this.repository.sliceBySequence(cursor, Math.min(batchSize, remaining)),
+        this.repository.sliceBySequence(head?.sequence ?? 0n, Math.min(batchSize, remaining)),
       );
       if (slice.events.length === 0) {
         break;
       }
-      // The digest carried forward, never `slice.from`. On the first batch that digest comes
-      // from the resume checkpoint, which is *signed*; on later batches it is the last verified
-      // row's. Taking it from the slice instead would verify the batch against itself, and a
-      // forged row carrying a consistent `previousHash` would pass.
-      const result = verifyChain(slice.events.map(toLink), {
-        from: previousHash,
-        fromSequence: cursor + 1n,
-      });
+      // The head carried forward, never `slice.from`. On the first batch it comes from the resume
+      // checkpoint, which is *signed*; on later batches it is the last verified row's. Taking it
+      // from the slice instead would verify the batch against itself, and a forged row carrying a
+      // consistent `previousHash` would pass.
+      const result = this.verifier.verify(slice.events, head);
       verified += result.verified;
       if (!result.intact) {
         return { result: { ...result, verified }, lastSequence, lastHash };
@@ -213,8 +231,7 @@ export class AuditVerificationService {
       if (last === undefined) {
         break;
       }
-      cursor = last.sequence;
-      previousHash = last.hash;
+      head = { sequence: last.sequence, hash: last.hash };
       lastSequence = last.sequence;
       lastHash = last.hash;
     }
@@ -280,36 +297,3 @@ export class AuditVerificationService {
     await this.unitOfWork.run(() => this.outbox.publish([event]));
   }
 }
-
-function toLink(event: AuditEventRecord): ChainLink {
-  return {
-    hash: event.hash,
-    previousHash: event.previousHash,
-    // A row carrying a version this build does not know is treated as the widest one it does,
-    // which fails verification rather than passing it. An unknown digest is not a digest to trust.
-    version: isChainHashVersion(event.chainHashVersion)
-      ? event.chainHashVersion
-      : CURRENT_CHAIN_HASH_VERSION,
-    event: {
-      eventId: event.id,
-      tenantId: event.tenantId,
-      sequence: event.sequence,
-      occurredAt: event.occurredAt,
-      actorId: event.actorId,
-      onBehalfOfId: event.onBehalfOfId,
-      channel: event.channel,
-      action: event.action,
-      subjectType: event.subjectType,
-      subjectId: event.subjectId,
-      outcome: event.outcome,
-      payload: event.payload,
-      reason: event.reason,
-      correlationId: event.correlationId,
-      ipAddress: event.ipAddress,
-      userAgent: event.userAgent,
-      apiClientId: event.apiClientId,
-    },
-  };
-}
-
-export { toLink as toChainLink };

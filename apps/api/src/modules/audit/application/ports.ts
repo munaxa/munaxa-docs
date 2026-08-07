@@ -150,6 +150,64 @@ export interface AuditCheckpointStore {
   isAuthentic(checkpoint: AuditCheckpoint): boolean;
 }
 
+/**
+ * How a chain can fail, and each is a different accusation.
+ *
+ * The first three are tampering. `DIGEST_MISMATCH` — a field was altered. `LINK_MISMATCH` — a
+ * record was inserted or removed mid-chain, or a batch does not follow the checkpoint it resumed
+ * from. `SEQUENCE_GAP` — a record was removed and took its link with it, which is the case the
+ * hash alone cannot see and the reason `sequence` exists.
+ *
+ * The last two are **not**. A record this build cannot verify has not been shown to be sound and
+ * has not been shown to be broken, and an alert that said otherwise would send somebody looking
+ * for an intruder who was never there. They still fail the pass and still refuse a checkpoint,
+ * because a range that was not verified must not be attested as though it were.
+ */
+export type BreakReason =
+  | 'DIGEST_MISMATCH'
+  | 'LINK_MISMATCH'
+  | 'SEQUENCE_GAP'
+  | 'UNVERIFIABLE_FORMAT'
+  | 'UNVERIFIABLE_RECORD';
+
+/** True for the three that accuse somebody of altering the trail. */
+export function isTampering(reason: BreakReason): boolean {
+  return reason !== 'UNVERIFIABLE_FORMAT' && reason !== 'UNVERIFIABLE_RECORD';
+}
+
+export interface SliceVerification {
+  readonly intact: boolean;
+  /** The first record that does not verify, by its own id — what an auditor looks up. */
+  readonly brokenAt: string | null;
+  readonly reason: BreakReason | null;
+  /** `DIGEST_MISMATCH` only: what the record's contents produce, and what it claims. */
+  readonly expectedHash: string | null;
+  readonly actualHash: string | null;
+  readonly verified: number;
+}
+
+export const CHAIN_VERIFIER = Symbol('ChainVerifier');
+
+/**
+ * Recomputing the chain — the Platform's job, behind this product's vocabulary.
+ *
+ * A port rather than a direct call because the adapter lives in `infrastructure/` (it needs the
+ * row-to-record mapping) and this layer may not reach there. What crosses the boundary is
+ * deliberately this product's own `ChainTail` rather than the Platform's `ChainHead`: they are
+ * structurally the same, and the application layer should not have to name a Platform type to
+ * express "where the last pass got to".
+ */
+export interface ChainVerifier {
+  /**
+   * Verify `events` as the continuation of `from`, or from genesis when `from` is null.
+   *
+   * The resume point is a position *and* a digest, and both halves matter: given only the digest,
+   * a record removed from the front of the batch is invisible, because every record present still
+   * chains to the one before it.
+   */
+  verify(events: readonly AuditEventRecord[], from: ChainTail | null): SliceVerification;
+}
+
 /** The bundle jobs, and what each one produced. */
 export const AUDIT_EXPORT_REPOSITORY = Symbol('AuditExportRepository');
 
