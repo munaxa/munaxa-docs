@@ -66,3 +66,8 @@ school/apps/mobile/*.iml
 
 # Sentry
 .sentryclirc
+
+# Visual-regression output. The baselines are committed; the diff and the actual frame a failing
+# run writes beside them are evidence for that run, not artefacts to keep.
+apps/web/src/test/__screenshots__/*.actual.png
+apps/web/src/test/__screenshots__/*.diff.png

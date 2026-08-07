@@ -21,6 +21,13 @@
       "dependsOn": ["build"],
       "cache": false
     },
+    // Reads the built stylesheet and launches a browser, so it depends on `build` for the same
+    // reason `verify:styles` does. Never cached: it is a statement about rendered output.
+    "test:visual": {
+      "dependsOn": ["build"],
+      "cache": false
+    },
+
     "validate": {},
     "test": {
       "dependsOn": ["^build", "prisma:generate", "typegen"],

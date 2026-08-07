@@ -77,6 +77,16 @@ jobs:
       - name: Verify the platform stylesheet
         run: pnpm verify:styles
 
+      # Colour contrast and screenshots, in real Chromium. Separate from `Test` because both read
+      # the *built* stylesheet: jsdom has no cascade, so contrast cannot be judged there, and a
+      # screenshot needs layout. Chromium is downloaded by the browser install below rather than
+      # bundled, so this step is where a broken palette or an accidental restyle is caught.
+      - name: Install Chromium
+        run: pnpm --filter @edms/web exec playwright install --with-deps chromium
+
+      - name: Accessibility contrast and visual regression
+        run: pnpm test:visual
+
   integration:
     name: Integration · real PostgreSQL, two tenants
     runs-on: ubuntu-latest

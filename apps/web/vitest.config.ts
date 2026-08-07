@@ -48,7 +48,23 @@ export default defineConfig({
           name: 'a11y',
           environment: 'jsdom',
           include: ['src/**/*.spec.tsx'],
+          exclude: ['src/test/visual.spec.tsx'],
           setupFiles: ['src/test/setup.tsx'],
+        },
+      },
+      {
+        // Contrast and screenshots, in real Chromium. Separate because it reads the *built*
+        // stylesheet, so it has to run after `build` — and `test` runs before it. `pnpm
+        // test:visual` is the turbo task that orders them.
+        extends: true,
+        resolve: { alias },
+        test: {
+          name: 'browser',
+          environment: 'node',
+          include: ['src/test/visual.spec.tsx'],
+          setupFiles: ['src/test/setup-ssr.tsx'],
+          testTimeout: 60_000,
+          hookTimeout: 60_000,
         },
       },
     ],

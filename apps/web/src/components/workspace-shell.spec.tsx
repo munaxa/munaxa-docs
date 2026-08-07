@@ -5,7 +5,7 @@ import { ALL_PERMISSIONS } from '@edms/domain';
 
 import { destinationsFor } from '../lib/navigation';
 import { expectNoViolations, renderWithProviders } from '../test/a11y';
-import { WorkspaceShell } from './workspace-shell';
+import { NAVIGATION_ICON_IDS, WorkspaceShell } from './workspace-shell';
 
 /**
  * The shell — the frame every workspace screen sits inside, and therefore the one place where an
@@ -67,6 +67,27 @@ describe('workspace shell accessibility', () => {
     shell();
     const current = document.querySelectorAll('[aria-current="page"]');
     expect(current.length).toBe(1);
+  });
+
+  it('gives every destination a real icon, not the fallback', () => {
+    // The collapsed rail renders *only* the icon — the label becomes `sr-only`. A destination
+    // with no entry in the map is a blank row of clickable space, so a new destination must not
+    // be able to reach the fallback silently.
+    const missing = destinationsFor(ALL_PERMISSIONS)
+      .map((destination) => destination.id)
+      .filter((id) => !NAVIGATION_ICON_IDS.includes(id));
+    expect(missing, `destinations with no icon: ${missing.join(', ')}`).toStrictEqual([]);
+  });
+
+  it('hides the navigation icons from assistive technology', () => {
+    shell();
+    // The row already carries its label — visibly when open, as `sr-only` text when collapsed.
+    // An announced icon would say the same thing twice.
+    for (const link of screen.getAllByRole('link')) {
+      for (const svg of link.querySelectorAll('svg')) {
+        expect(svg.getAttribute('aria-hidden')).toBe('true');
+      }
+    }
   });
 
   it('gives every navigation link an accessible name', () => {
