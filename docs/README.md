@@ -111,6 +111,15 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Phase 6.0 — enterprise feature completion audit
+
+> The audit that turns nineteen phases of delivery into a roadmap. Numbered by the brief that
+> commissioned it; it follows Phase 5.2 and opens the feature track that Phase 6.1 continues.
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 6.0 — Enterprise Feature Completion Audit](./reports/phase-6.0-enterprise-feature-completion-audit.md) | Every module measured against its own architecture document, ADR, permission matrix, audit catalogue and notification catalogue — by reading the code rather than the reports about it. The four things genuinely missing rather than merely unpolished: a lifecycle that stops short of its own state machine, so `ARCHIVED` happens only as a retention sweep's side effect, nothing watches `effective_to`, and `EXPIRED` is unreachable; a bulk path whose asynchronous half was never wired, so `bulk.synchronousLimit` is a setting nothing reads, `documents.bulk` is a lane with no producer and no consumer, and five thousand transactions run inside one HTTP request — the exact failure the setting's own documentation describes; four shipped API surfaces with no UI at all, two of which have their server actions already written and called by nothing; and sharing, watching, acknowledgement and document linking, three of which the notification catalogue already names as recipient classes. The mechanical census: zero `TODO`s, exact `en`/`ar` key parity at 1 383, and exactly three permissions that are documented, seeded to roles and enforced by nothing. Why Phase 19's nine-row platform violation list was re-verified rather than carried forward, and which seven of the nine are closed. A prioritised roadmap in which twenty-four of twenty-seven items are a screen, a consumer, a writer or an enforcement against something already built — and none is a rebuild |
+
 ### Phase 5.1 — UI foundation completion and platform design system adoption
 
 > Numbered by the brief that commissioned it rather than by position: it follows Phase 19 and
