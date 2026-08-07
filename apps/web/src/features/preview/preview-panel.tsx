@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { Document, PreviewContent, PreviewManifest, PreviewText } from '@edms/contracts';
-import { Alert, Button, Card, Spinner, useToast } from '@munaxa/ui';
+import { Alert, Button, Card, Input, Spinner, useToast } from '@munaxa/ui';
 
 import { useTranslate } from '../../app/providers';
 import {
@@ -169,7 +169,7 @@ export function PreviewPanel({
         {manifest.state === 'READY' ? (
           <div className="flex flex-wrap items-center gap-1">
             {manifest.hasText ? (
-              <input
+              <Input
                 type="search"
                 value={query}
                 onChange={(event) => {

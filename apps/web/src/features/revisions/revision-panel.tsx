@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Alert, Badge, Button, Card, Dropzone, Progress, useToast } from '@munaxa/ui';
+import { Alert, Badge, Button, Card, Dropzone, Progress, Select, useToast } from '@munaxa/ui';
 
 import type {
   Document,
@@ -389,31 +389,23 @@ function CompareSection({
       <div className="mt-2 flex flex-wrap items-end gap-2">
         <label className="flex flex-col text-sm">
           {translate('revisions.compare.from')}
-          <select
-            className="mt-1 rounded border bg-transparent p-1"
-            value={from}
-            onChange={(event) => setFrom(event.target.value)}
-          >
+          <Select className="mt-1" value={from} onChange={(event) => setFrom(event.target.value)}>
             {choices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="flex flex-col text-sm">
           {translate('revisions.compare.to')}
-          <select
-            className="mt-1 rounded border bg-transparent p-1"
-            value={to}
-            onChange={(event) => setTo(event.target.value)}
-          >
+          <Select className="mt-1" value={to} onChange={(event) => setTo(event.target.value)}>
             {choices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <Button type="button" variant="outline" onClick={compare}>
           {translate('revisions.compare.run')}

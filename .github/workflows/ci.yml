@@ -70,6 +70,13 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # The one failure mode above cannot see. `@source` is what pulls the platform's utility
+      # classes into this application's stylesheet, and when it stops resolving the build still
+      # succeeds — it just emits a stylesheet missing every class only the platform uses. Phase 19
+      # found that state in production-bound code with all six gates green.
+      - name: Verify the platform stylesheet
+        run: pnpm verify:styles
+
   integration:
     name: Integration · real PostgreSQL, two tenants
     runs-on: ubuntu-latest

@@ -4,7 +4,20 @@ import type { Route } from 'next';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { type FormEvent, type ReactNode, useState } from 'react';
 
-import { Badge, Button, Card, useToast } from '@munaxa/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+  TBody,
+  TD,
+  TH,
+  THead,
+  TR,
+  Table,
+  useToast,
+} from '@munaxa/ui';
 
 import type {
   ExportFormatValue,
@@ -259,25 +272,20 @@ export function ReportsScreen({
                     {parameter.required ? ' *' : ''}
                   </span>
                   {parameter.values === null ? (
-                    <input
+                    <Input
                       name={parameter.name}
                       type={parameter.kind === 'DATE' ? 'date' : 'text'}
                       defaultValue={value(parameter.name)}
-                      className="border-border rounded-md border px-2 py-1"
                     />
                   ) : (
-                    <select
-                      name={parameter.name}
-                      defaultValue={value(parameter.name)}
-                      className="border-border rounded-md border px-2 py-1"
-                    >
+                    <Select name={parameter.name} defaultValue={value(parameter.name)}>
                       <option value="">{translate('reports.any')}</option>
                       {parameter.values.map((option) => (
                         <option key={option} value={option}>
                           {option}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   )}
                 </label>
               ))}
@@ -324,34 +332,29 @@ export function ReportsScreen({
               <ReportChart descriptor={selected} rows={page.data} />
 
               {/*
-                `overflow-x-auto` rather than a fixed layout: a report has as many columns as the
-                catalogue gives it, and a table that wrapped would put one row on three lines on the
-                screen somebody is reading a hundred rows on.
+                The platform's `Table` scrolls its own overflow rather than wrapping, which is
+                what this needs: a report has as many columns as the catalogue gives it, and a
+                table that wrapped would put one row on three lines on the screen somebody is
+                reading a hundred rows on.
               */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-border border-b text-start">
-                      {page.columns.map((column) => (
-                        <th key={column.key} className="px-2 py-1 text-start font-medium">
-                          {labelled(translate, COLUMN_LABELS, column.key)}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {page.data.map((row, index) => (
-                      <tr key={index} className="border-border/50 border-b">
-                        {page.columns.map((column) => (
-                          <td key={column.key} className="px-2 py-1">
-                            {cell(row[column.key])}
-                          </td>
-                        ))}
-                      </tr>
+              <Table>
+                <THead>
+                  <TR>
+                    {page.columns.map((column) => (
+                      <TH key={column.key}>{labelled(translate, COLUMN_LABELS, column.key)}</TH>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </TR>
+                </THead>
+                <TBody>
+                  {page.data.map((row, index) => (
+                    <TR key={index}>
+                      {page.columns.map((column) => (
+                        <TD key={column.key}>{cell(row[column.key])}</TD>
+                      ))}
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
               {page.data.length === 0 ? (
                 <p className="text-muted-foreground text-sm">{translate('reports.empty')}</p>
               ) : null}
