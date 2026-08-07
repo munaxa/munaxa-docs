@@ -12,6 +12,17 @@ to it, or supersede a decision with an [ADR](./adr/). Where this set and
 [`PLATFORM_ENGINEERING_STANDARDS.md`](https://github.com/tam2om/munaxa/blob/main/PLATFORM_ENGINEERING_STANDARDS.md) disagree, the
 rulebook governs.
 
+## Start here, if you are adopting the Platform
+
+Phase 0 described what Munaxa Docs would be. Two later documents describe what it **became**, and
+they are the ones a new product needs:
+
+- **[The Munaxa Architecture Reference Manual](./munaxa-architecture-reference-manual.md)** — the
+  authoritative engineering reference for the whole ecosystem. Ownership matrices, Platform
+  evolution, lessons, and what is implemented versus merely intended.
+- **[Adopting the Munaxa Platform](./future-product-migration-guide.md)** — the practical guide for
+  Munaxa School, Munaxa Work and everything after them.
+
 ## The ten decisions that shape everything else
 
 1. **A document is not a file.** Identity, revision and stored bytes are three separate records
