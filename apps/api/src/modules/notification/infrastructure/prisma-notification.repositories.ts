@@ -229,11 +229,17 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
     });
   }
 
-  async markRead(id: NotificationMessageId, at: Date): Promise<void> {
+  async markRead(id: NotificationMessageId, recipientId: UserId, at: Date): Promise<void> {
     // `readAt: null` in the predicate keeps the first read's timestamp: when somebody saw it is
     // a fact, and re-reading does not change it.
+    //
+    // `recipientId` is Phase 6.4's addition and is the one that makes this an authorisation
+    // rather than a lookup: the tenant clause alone let anybody holding `notification:manage` —
+    // which is seeded to every role, `GUEST` included — clear a colleague's unread marker with an
+    // id they had guessed or seen. `updateMany` matching nothing is the correct refusal here: the
+    // route answers `204` either way, so a wrong id cannot be used to discover a right one.
     await requireTransaction().notificationMessage.updateMany({
-      where: { id, tenantId: requireContext().tenantId, readAt: null },
+      where: { id, tenantId: requireContext().tenantId, recipientId, readAt: null },
       data: { readAt: at },
     });
   }

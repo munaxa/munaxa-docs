@@ -100,7 +100,9 @@ export class NotificationController {
   @Post(':id/read')
   @HttpCode(HttpStatus.NO_CONTENT)
   async markRead(@Param('id') id: string): Promise<void> {
-    await this.unitOfWork.run(() => this.notifications.markRead(asId<NotificationMessageId>(id)));
+    await this.unitOfWork.run(() =>
+      this.notifications.markRead(asId<NotificationMessageId>(id), this.caller()),
+    );
   }
 
   /**

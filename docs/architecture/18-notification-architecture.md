@@ -92,7 +92,17 @@ Security notifications ignore preferences deliberately: a user must be told thei
 
 ### What Phase 12 built from this table, and what it deliberately did not
 
-Every row above has a catalogue entry in `notification-types.ts` and a producer, **except two**:
+Every row above has a catalogue entry in `notification-types.ts` and a producer, **except two**
+— a claim that was **false for a third row until Phase 6.4**, and worth leaving visible rather than
+quietly editing. `DocumentApproved` / `DocumentRejected` had a catalogue entry, `en` and `ar`
+templates, a branch in `NotificationEventService`, a route to the notification lane and an assertion
+that the route exists. What they did not have was a **publisher**: approval and rejection both run
+through `DocumentService.transition`, which wrote an audit row and no outbox row, so neither
+notification had ever reached anybody. Phase 6.4 publishes both from that transition. The lesson is
+narrow and general: a route is not a producer, and a test that hands a consumer a synthetic event
+proves translation rather than production.
+
+The two that genuinely gain nothing:
 
 - **`RevisionPublished` to "everyone who acknowledged the previous revision"** needs an
   acknowledgement model, and there is none in the product. A notification type keyed to a table
@@ -168,7 +178,7 @@ a document title is. The template language gained no loop; the digest gained a l
 | --- | --- |
 | Lost events | Transactional outbox — the event commits with the change ([ADR-0011](./adr/0011-transactional-outbox-for-async-work.md)) |
 | Duplicates | Idempotency key per `(eventId, recipientId, channel)`; a second delivery is a no-op |
-| Provider outage | Exponential backoff, capped attempts, dead-letter queue with operator visibility; in-app delivery is unaffected because it is a database write |
+| Provider outage | Exponential backoff, capped attempts, dead-letter state with operator visibility; in-app delivery is unaffected because it is a database write. **Built in Phase 6.4**, and the only row in this table that nothing had built: a transient failure wrote `FAILED`, `claimQueued` selects `QUEUED`, and `DeliveryState.FAILED` was read by no query in the product — so a provider unreachable for one minute lost every email queued in that minute, permanently and silently. A retryable failure now returns to `QUEUED` behind a `release_at` on the same curve the outbox dispatcher uses, five attempts; the fifth leaves `FAILED` as the dead letter, and `notification.delivery.failures{outcome}` separates a blip from a loss |
 | Bounces | Recorded, repeated hard bounces suppress the address and alert an administrator. **Built in Phase 12**: `notification_suppression` is keyed by the *address* rather than by a user, because suppression is a fact about a mailbox — a corrected address is reachable again at once, and an inherited one does not inherit its predecessor's bounces. The threshold is a tenant setting; the crossing writes `NOTIFICATION_SUPPRESSED` to the trail and alerts **once** |
 | Ordering | Not guaranteed across types; each message carries the event timestamp and the UI orders by it |
 | Storm control | Bulk operations (import 5 000 documents, re-permission a subtree) emit **one summary notification**, never one per object. **Built in Phase 12** as `notification_batch`: an open window per operation that *increments*. A delayed job keyed on the batch would coalesce too and would keep the first payload, so a summary of five hundred purges would say "1". The idempotency key above does nothing here — it prevents duplicates of *one* event, and a sweep produces five hundred distinct ones. **First exercised in Phase 16**, which is the first thing in this product that produces a storm: `bulk.operation-completed` is the second coalesced family after `retention.due`, keyed on `bulk:{requesterId}` |

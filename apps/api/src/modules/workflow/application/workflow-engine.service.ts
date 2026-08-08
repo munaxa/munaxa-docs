@@ -970,8 +970,7 @@ export class WorkflowEngine {
     // instance is the definition's `onReject`, which is authored per stage.
     const refusal = tasks.find(
       (task) =>
-        task.decision === TaskDecision.REJECTED ||
-        task.decision === TaskDecision.CHANGES_REQUESTED,
+        task.decision === TaskDecision.REJECTED || task.decision === TaskDecision.CHANGES_REQUESTED,
     );
     const definition = await this.definitionFor(aggregate.instance.workflowVersionId);
     const authored = definition?.stages[stage.index];

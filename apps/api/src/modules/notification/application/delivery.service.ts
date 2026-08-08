@@ -222,8 +222,7 @@ export class DeliveryService {
       // Escalated once the attempts are spent, because the two are different operational facts:
       // one send failed, versus this message is now dead and 18 §8's "never silently dropped" is
       // being honoured only by the row it leaves behind.
-      const say = state === DeliveryState.QUEUED ? this.logger.warn : this.logger.error;
-      say.call(this.logger, 'Notification delivery failed', {
+      const detail = {
         messageId: message.id,
         channel: message.channel,
         permanent: receipt.permanentFailure,
@@ -231,7 +230,12 @@ export class DeliveryService {
         willRetry: retryable,
         // The reason, never the address: a log is not the place to accumulate a mailing list.
         reason: receipt.failureReason,
-      });
+      };
+      if (state === DeliveryState.QUEUED) {
+        this.logger.warn('Notification delivery failed', detail);
+      } else {
+        this.logger.error('Notification delivery failed', detail);
+      }
     }
     if (receipt.permanentFailure) {
       await this.recordBounce(message.address, receipt.failureReason ?? 'permanent failure', at);
