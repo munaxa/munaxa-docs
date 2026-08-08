@@ -111,6 +111,14 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Phase 6.3 — authorization and permission enforcement completeness
+
+> The third phase from the Phase 6.0 roadmap, and the one that had to disprove a finding of its own.
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 6.3 — Authorization & Permission Enforcement Completeness](./reports/phase-6.3-authorization-enforcement.md) | The P1 Phase 6.2 raised about `context.roles` carrying role keys where the ACL subject expects identifiers — investigated empirically and **disproved**, along with the claim that the integration suite had caught it. Neither was true: the failure that prompted the change reported a *domain* refusal rather than a reach refusal, its real cause was a metadata field the test had invented, and `roleIdsFor` matches `role.key` or `role.id` by design at a single deliberate boundary. Four tests now prove a role key and a role id produce identical decisions down to the node that decided them — and that an unknown name and another tenant's role id both grant nothing, because a tolerance that accepted anything would be a hole. Why `library:view` was not the phantom the audit called it but a real gap wearing a phantom's clothes: the capability existed and was gated on `library:manage`, so an auditor — seeded with view and deliberately without manage — could not list a library at all, and the document browser's library selector showed them nothing. Why `report:manage` was left unused, again. And the blind spot in a boot-time assertion that had run for eighteen phases: it checked every route against the catalogue and never the catalogue against the routes, which is exactly where two permissions hid. The third check added here found a fourth on its first run — and that one turned out to be enforced in a handler body, because whether a decision is a rejection is a property of the request rather than of the route |
+
 ### Phase 6.2 — bulk operations and asynchronous processing
 
 > The second phase built from the Phase 6.0 roadmap, and the one that closes its P0.

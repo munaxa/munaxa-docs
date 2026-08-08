@@ -51,7 +51,33 @@ import type { LibraryAdminService } from '../application/library-admin.service';
 export class LibraryAdminController {
   constructor(@Inject(LIBRARY_ADMIN_SERVICE) private readonly libraries: LibraryAdminService) {}
 
+  /**
+   * Reading the libraries — `library:view`, which overrides the class's `library:manage`.
+   *
+   * **Phase 6.3, and the correction of a real gap rather than a tidy-up.** `library:view` has been
+   * in the catalogue and in `08-permission-model.md` §6's matrix since Phase 1, granted to eight
+   * roles, and enforced by nothing — Phase 6.0 found it by counting non-seed references and getting
+   * zero. The reason it gated nothing is that the only route which lists libraries was gated on
+   * `library:manage`, and the two are not the same decision.
+   *
+   * The consequence was demonstrable rather than theoretical. `AUDITOR` is seeded with
+   * `library:view` and deliberately without `library:manage` — it *"reads everything in scope and
+   * may never mutate anything"* — so an auditor could not list the libraries at all, and the
+   * workspace document browser, which fetches this route to populate its library selector, showed
+   * them nothing to browse.
+   *
+   * Reads move to `library:view`; every write below keeps `library:manage`. That is the boundary the
+   * matrix always described.
+   *
+   * **One consequence, stated rather than left to be found:** a tenant that has hand-built a role
+   * holding `library:manage` *without* `library:view` loses list access. Every seeded role that
+   * holds manage also holds view, and §6's matrix grants view strictly more widely than manage, so
+   * that combination is a misconfiguration rather than a supported shape — but it is a change, and
+   * the guard requires *all* declared permissions rather than any, so it cannot be expressed as
+   * "either".
+   */
   @Get()
+  @RequirePermission(Permission.LIBRARY_VIEW)
   async list(
     @Query(new ZodValidationPipe(libraryListQuerySchema))
     query: ReturnType<typeof libraryListQuerySchema.parse>,
@@ -60,6 +86,7 @@ export class LibraryAdminController {
   }
 
   @Get(':id')
+  @RequirePermission(Permission.LIBRARY_VIEW)
   @ScopedTo('id', ScopeType.LIBRARY)
   async get(@Param('id') id: string): Promise<Library> {
     return toLibrary(await this.libraries.getLibrary(id));
