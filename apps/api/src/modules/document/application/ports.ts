@@ -204,6 +204,26 @@ export interface DocumentRepository {
    */
   setStatus(id: DocumentId, expectedVersion: number, status: DocumentStatusKey): Promise<void>;
   /**
+   * The effective window of the document's *current* revision, or null when it has none.
+   *
+   * On the revision rather than the document (`10-revision-architecture.md` §6), so this reads
+   * through `current_revision_id` — the effective one, not the latest. A document with a draft
+   * revision beneath a published one is effective for as long as the published one says.
+   */
+  effectiveWindowOf(id: DocumentId): Promise<EffectiveWindow | null>;
+  /**
+   * Published documents whose current revision stopped being effective before `today` — Phase 6.1.
+   *
+   * `today` is a calendar day in the tenant's own timezone, resolved by the caller, and the
+   * comparison is strict: `effective_to` is the last day the revision **is** effective, so a
+   * window ending today is still open today. Doing the arithmetic in the caller rather than in SQL
+   * keeps the one timezone decision in one place and testable without a database.
+   *
+   * Only `PUBLISHED` and only live rows, which is what makes the sweep idempotent: a document this
+   * pass expires stops matching, so a redelivered job finds nothing to do.
+   */
+  listExpiredEffective(today: string, limit: number): Promise<readonly ExpiryCandidate[]>;
+  /**
    * Writes the document's number, once.
    *
    * `document_number IS NULL` sits in the `WHERE`, so this is the write-once path rather than a
@@ -262,6 +282,21 @@ export interface DocumentRepository {
    * comparison of anything.
    */
   findByFileObject(fileObjectId: string): Promise<readonly DuplicateMatchRow[]>;
+}
+
+/** The window the current revision is (or was) effective for, as stored calendar days. */
+export interface EffectiveWindow {
+  readonly revisionId: string;
+  readonly effectiveFrom: string | null;
+  readonly effectiveTo: string | null;
+}
+
+/** A published document whose effective window has closed — Phase 6.1's sweep reads these. */
+export interface ExpiryCandidate {
+  readonly documentId: string;
+  readonly revisionId: string;
+  /** The last day it was effective. Carried so the audit row states the arithmetic's input. */
+  readonly effectiveTo: string;
 }
 
 /** A document a cascade touched, with what its revisions and schedule need. */
@@ -503,6 +538,14 @@ export interface DocumentService {
    * for the recycle bin, which is a surface over this rather than a second implementation.
    */
   restore(id: string, expectedVersion: number | undefined): Promise<void>;
+  /**
+   * One tenant's pass of the effective-window sweep — Phase 6.1.
+   *
+   * On this port because the sweep is scheduled on `retention.run`, and the lane's single
+   * subscriber lives in Retention. It reaches Document through `DOCUMENT_EXPIRY`, exactly as the
+   * integrity verifier reaches Storage through `INTEGRITY_SWEEP`.
+   */
+  expireEffective(limit: number): Promise<{ examined: number; expired: number }>;
 }
 
 export const DOCUMENT_NUMBER_SERVICE = Symbol('DocumentNumberService');

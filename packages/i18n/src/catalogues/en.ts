@@ -839,6 +839,8 @@ export const en = {
       notReachable: 'This file has not cleared the malware check.',
       assignNumber: 'Assign a number',
       permissions: 'Permissions',
+      archive: 'Archive',
+      reinstate: 'Reinstate',
     },
     number: {
       pending: 'Pending',
@@ -851,6 +853,17 @@ export const en = {
     move: {
       warning:
         'Moving a document changes the folder its permissions are inherited from, so it can change who is able to see it.',
+    },
+    archive: {
+      warning:
+        'Archiving retires this document from active use. It stays readable, searchable and downloadable, and it can be reinstated. Nothing is deleted.',
+      reason: 'Why is it being archived?',
+      reasonHint: 'Recorded in the audit trail. For example: superseded by QA-POL-2026-000012.',
+    },
+    reinstate: {
+      warning:
+        'Reinstating returns this document to active use as the published record. If its effective window has closed, publish a new revision instead.',
+      reasonHint: 'Recorded in the audit trail. For example: withdrawn in error.',
     },
     upload: {
       title: 'Add documents',

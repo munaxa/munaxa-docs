@@ -27,6 +27,9 @@ import {
 import {
   BLOB_REAPER,
   type BlobReaper,
+  DOCUMENT_EXPIRY,
+  type DocumentExpiry,
+  type DocumentExpirySweep,
   type IntegritySweep,
   DOCUMENT_DISPOSITION,
   type DocumentDisposition,
@@ -79,6 +82,7 @@ export class DefaultRetentionService implements RetentionService {
     @Inject(TOMBSTONE_REPOSITORY) private readonly tombstones: TombstoneRepository,
     @Inject(DOCUMENT_DISPOSITION) private readonly documents: DocumentDisposition,
     @Inject(BLOB_REAPER) private readonly blobs: BlobReaper,
+    @Inject(DOCUMENT_EXPIRY) private readonly documentExpiry: DocumentExpiry,
     @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(LOGGER) private readonly logger: Logger,
@@ -238,6 +242,18 @@ export class DefaultRetentionService implements RetentionService {
    */
   verifyStoredIntegrity(): Promise<IntegritySweep> {
     return this.blobs.verifyStoredIntegrity();
+  }
+
+  /**
+   * `documents.expire-effective` — Phase 6.1, and a pass-through exactly like the one above it.
+   *
+   * Nothing about expiry is decided here, and that is the point of the line being this short: the
+   * boundary arithmetic, the tenant timezone, the transaction per document and the `EXPIRED` audit
+   * row are all Document's, reached through `DOCUMENT_EXPIRY`. This class is on the path only
+   * because it is the service the lane's single consumer already holds.
+   */
+  expireEffectiveDocuments(limit: number): Promise<DocumentExpirySweep> {
+    return this.documentExpiry.expireEffective(limit);
   }
 
   // --- Internals ----------------------------------------------------------------------------

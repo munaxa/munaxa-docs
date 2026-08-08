@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-import { Permission, type AnyId, asId } from '@edms/domain';
+import { DocumentStatus, Permission, type AnyId, asId } from '@edms/domain';
 import type {
   CategoryId,
   DocumentId,
@@ -36,6 +36,8 @@ import type {
   DocumentRepository,
   DocumentRow,
   DuplicateMatchRow,
+  EffectiveWindow,
+  ExpiryCandidate,
   NewDocument,
 } from '../application/ports';
 
@@ -168,6 +170,66 @@ export class PrismaDocumentRepository implements DocumentRepository {
     if (count === 0) {
       throw new VersionConflictError(expectedVersion, expectedVersion);
     }
+  }
+
+  /** The effective window of the *current* revision — the effective one, never the latest. */
+  async effectiveWindowOf(id: DocumentId): Promise<EffectiveWindow | null> {
+    const row = await requireTransaction().document.findFirst({
+      where: { id, tenantId: this.tenantId(), deletedAt: null },
+      select: {
+        currentRevision: {
+          select: { id: true, effectiveFrom: true, effectiveTo: true },
+        },
+      },
+    });
+    if (row?.currentRevision == null) {
+      return null;
+    }
+    return {
+      revisionId: row.currentRevision.id,
+      effectiveFrom: asCalendarDay(row.currentRevision.effectiveFrom),
+      effectiveTo: asCalendarDay(row.currentRevision.effectiveTo),
+    };
+  }
+
+  /**
+   * Published documents whose current revision's window closed before `today`.
+   *
+   * `effective_to` is a `date` column, so the stored value is midnight UTC of the calendar day the
+   * publisher named. Comparing against `${today}T00:00:00.000Z` with `lt` is therefore the strict
+   * calendar comparison the port documents — a window ending today does not match, and one that
+   * ended yesterday does — with no timezone arithmetic happening in SQL, where it could not be
+   * unit-tested. It is the same construction `numbering-issue.service.ts` uses to turn a tenant's
+   * calendar day back into an instant.
+   *
+   * Ordered by `effective_to` so the longest-expired are settled first: a bounded pass that cannot
+   * clear a backlog in one night should clear the oldest of it.
+   */
+  async listExpiredEffective(today: string, limit: number): Promise<readonly ExpiryCandidate[]> {
+    const rows = await requireTransaction().document.findMany({
+      where: {
+        tenantId: this.tenantId(),
+        deletedAt: null,
+        status: DocumentStatus.PUBLISHED,
+        currentRevision: {
+          is: { effectiveTo: { lt: new Date(`${today}T00:00:00.000Z`) } },
+        },
+      },
+      select: {
+        id: true,
+        currentRevision: { select: { id: true, effectiveTo: true } },
+      },
+      orderBy: { currentRevision: { effectiveTo: Prisma.SortOrder.asc } },
+      take: limit,
+    });
+    return rows.flatMap((row) => {
+      const day = asCalendarDay(row.currentRevision?.effectiveTo ?? null);
+      // The `where` already refuses a null window; the guard is what makes that fact visible to
+      // the type system rather than asserted with a `!`.
+      return row.currentRevision === null || day === null
+        ? []
+        : [{ documentId: row.id, revisionId: row.currentRevision.id, effectiveTo: day }];
+    });
   }
 
   async assignNumber(id: DocumentId, documentNumber: string, at: Date): Promise<boolean> {
@@ -609,6 +671,19 @@ interface JoinedMetadata {
   referenceValue: string | null;
   selectValues: string[];
   field: { key: string; name: string; dataType: string };
+}
+
+/**
+ * A `date` column back to the calendar day it holds.
+ *
+ * PostgreSQL hands a `date` back as midnight **UTC** of that day, so the day is the first ten
+ * characters of the ISO string and no timezone conversion belongs here — converting into the
+ * tenant's zone would shift a date-only value by a day for half the world, which is the classic way
+ * an effective window ends up off by one. The tenant's zone decides *which day is today*, in the
+ * caller; it does not decide what day a stored date is.
+ */
+function asCalendarDay(value: Date | null): string | null {
+  return value === null ? null : value.toISOString().slice(0, 10);
 }
 
 function toRevisionView(revision: JoinedRevision) {

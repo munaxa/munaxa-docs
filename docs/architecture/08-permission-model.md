@@ -241,6 +241,26 @@ The UI row is a rule about *direction*, not about effort: a screen may hide anyt
 it may decide nothing. A button hidden by inferring from a status is a second implementation of a
 permission; a button hidden because the server said `false` is a rendering.
 
+### The boot assertion catches an unguarded route, and cannot catch an unused permission
+
+The first row above fails the boot when a mutating route declares no permission. It has nothing to
+say about the opposite defect: a permission that is in this catalogue, granted by the matrix above,
+seeded to roles, offered in the role editor — and named by **no route at all**. Nothing fails, no
+test goes red, and an administrator who grants it is granting a control that does not exist. That is
+strictly worse than an absent permission, because it reads as applied.
+
+`document:archive` was in exactly that state from Phase 1 until Phase 6.1: two roles held it and no
+endpoint asked for it. Phase 6.0 found it by counting non-seed references per catalogue entry and
+getting zero, which is the check a boot assertion cannot make — the API cannot tell a permission
+awaiting its phase from one whose phase shipped without it.
+
+`POST /documents/{id}/archive` and `POST /documents/{id}/reinstate` now declare it, both `@ScopedTo`
+the document, so it is enforced at the route, at the object and in the query predicate like every
+other row. **Two entries remain unenforced** and are named here so the next reader does not have to
+count again: `library:view`, which is a real gap, and `report:manage`, which is deliberate and
+documented in `report-definition.service.ts` — it exists for *shared* report definitions, and no
+definition is shared yet.
+
 ## 8. Caching
 
 Resolved decisions are cached per `(userId, scopeId, permission)` in Redis with a short TTL, and

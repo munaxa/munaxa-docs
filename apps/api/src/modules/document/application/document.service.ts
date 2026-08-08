@@ -6,6 +6,7 @@ import {
   AuditOutcome,
   AuditSubjectType,
   type DocumentId,
+  Settings,
   DocumentOrigin,
   type DocumentOriginKey,
   DocumentStatus,
@@ -17,6 +18,7 @@ import {
   ScopeType,
   type UserId,
   asId,
+  calendarDay,
 } from '@edms/domain';
 import { type Page, squish } from '@edms/utils';
 
@@ -28,6 +30,7 @@ import {
   LegalHoldError,
   NotFoundError,
   ValidationError,
+  VersionConflictError,
 } from '../../../core/errors/application-errors';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { READ_AUDIT_BUFFER, type ReadAuditBuffer } from '../../../core/audit/read-audit.port';
@@ -38,6 +41,7 @@ import {
   checkVersion,
   requireVersion,
 } from '../../../core/persistence';
+import { SETTINGS_READER, type SettingsReader } from '../../../core/settings/settings.port';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import {
   ORGANIZATION_SERVICE,
@@ -46,9 +50,12 @@ import {
 import { DocumentAudit } from '../domain/audit-actions';
 import { implementedTransitionsFrom, isFrozen, isLegalTransition } from '../domain/lifecycle';
 import {
+  documentArchivedEvent,
   documentCreatedEvent,
   documentDeletedEvent,
+  documentExpiredEvent,
   documentMovedEvent,
+  documentReinstatedEvent,
   documentRestoredEvent,
 } from '../domain/events';
 import {
@@ -123,6 +130,7 @@ export class DefaultDocumentService {
     @Inject(RETENTION_SCHEDULER) private readonly retention: RetentionScheduler,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(READ_AUDIT_BUFFER) private readonly readAudit: ReadAuditBuffer,
+    @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
     private readonly writer: AdministeredWriter,
   ) {}
 
@@ -616,6 +624,213 @@ export class DefaultDocumentService {
     });
   }
 
+  // --- Archival ---------------------------------------------------------------------------
+
+  /**
+   * Retires a record from the live shelf. It stays readable, searchable and downloadable.
+   *
+   * ## Why this is not a second lifecycle
+   *
+   * Every line that decides anything here is already written elsewhere: legality is
+   * `LEGAL_TRANSITIONS`', the version guard and the status write are `applyLifecycleTransition`'s,
+   * and the audit row is `AdministeredWriter`'s. This method contributes a permission boundary at
+   * the controller, a mandatory reason, and one event. That is deliberate — Phase 6.0 found
+   * `ARCHIVED` reachable only through the retention disposition adapter, and the fix that would
+   * have been quickest (a status write of its own) is the one that creates the second
+   * implementation the brief forbids.
+   *
+   * ## Idempotency
+   *
+   * Inherited rather than added. `applyLifecycleTransition` treats a transition to the state the
+   * document is already in as a no-op that still records a row marked `unchanged`, which is the
+   * semantics the engine has relied on since Phase 4 — archiving an archived document is a
+   * success, not a `409`.
+   *
+   * ## A legal hold does not block this
+   *
+   * Stated because its absence would otherwise read as an oversight. ADR-0010 §5 suspends
+   * *disposition*: a hold exists to stop a record being destroyed or hidden from discovery.
+   * Archiving destroys nothing and hides nothing — the record stays readable and stays indexed —
+   * so a hold has no opinion about it. The delete path, which does start a clock, checks holds two
+   * methods above and continues to.
+   */
+  async archive(id: string, expectedVersion: number | undefined, reason: string): Promise<void> {
+    const stated = squish(reason);
+    if (stated.length === 0) {
+      // The same rule as a delete, for the same reason: "why was this retired" is the first
+      // question an auditor asks about an archived controlled document, and a blank is not an
+      // answer. It goes to the trail's own attested `reason` column, not to a payload field.
+      throw new ValidationError('A reason is required.', [
+        { field: 'reason', message: 'required' },
+      ]);
+    }
+
+    // `read` rather than `write`, and that is the one subtle line in this method: it is
+    // "a transaction without an audit row of its own". `applyLifecycleTransition` opens its own
+    // `write` inside, which joins this transaction (`PrismaUnitOfWork.run` returns the ambient one)
+    // and writes **one** `ARCHIVED` row. Using `write` here would wrap it in a second row
+    // describing the same act, which is the duplication 13 §2 exists to prevent — and the version
+    // guard and the event still commit or roll back with it, because it is all one transaction.
+    await this.writer.read(async () => {
+      const current = await this.require(id, false);
+      requireVersion(expectedVersion, current.version);
+
+      await this.applyLifecycleTransition({
+        documentId: id,
+        to: DocumentStatus.ARCHIVED,
+        workflowInstanceId: null,
+        reason: stated,
+        auditAction: DocumentAudit.DOCUMENT_ARCHIVED,
+        attestReason: true,
+        // Which path retired it. The retention adapter writes `via: 'RETENTION'` against the same
+        // action, so "when did this leave the shelf" is one query and "who decided" is a payload
+        // field rather than a second action.
+        auditFacts: { via: 'EXPLICIT' },
+      });
+
+      if (current.status !== DocumentStatus.ARCHIVED) {
+        // Only on a real transition. A redelivered or repeated archive is a success that changed
+        // nothing, and an event announcing it would tell the search index and every webhook
+        // subscriber that something happened when nothing did.
+        await this.outbox.publish([
+          documentArchivedEvent(asId<AnyId>(id), { documentId: id, reason: stated }),
+        ]);
+      }
+    });
+  }
+
+  /**
+   * Returns an archived record to the shelf.
+   *
+   * ## Why it refuses a closed effective window
+   *
+   * `ARCHIVED → PUBLISHED` is the only return `LEGAL_TRANSITIONS` allows, and a document whose
+   * current revision stopped being effective last March would be published-and-immediately-expired:
+   * the next sweep would take it straight back out, and the trail would carry a reinstatement and
+   * an expiry minutes apart that describe no decision anybody made. Refusing with the reason named
+   * is the honest answer, and the way forward — publish a revision with a new window — is the one
+   * the product already has.
+   *
+   * A soft-deleted document is not reachable here at all: `setStatus` matches on `deleted_at IS
+   * NULL`, so putting a deleted record back is the recycle bin's job and stays it.
+   */
+  async reinstate(id: string, expectedVersion: number | undefined, reason: string): Promise<void> {
+    const stated = squish(reason);
+    if (stated.length === 0) {
+      throw new ValidationError('A reason is required.', [
+        { field: 'reason', message: 'required' },
+      ]);
+    }
+
+    await this.writer.read(async () => {
+      const current = await this.require(id, false);
+      requireVersion(expectedVersion, current.version);
+
+      if (current.status === DocumentStatus.ARCHIVED) {
+        const window = await this.documents.effectiveWindowOf(asId<DocumentId>(id));
+        const timezone = await this.settings.get(Settings.TIMEZONE);
+        const today = calendarDay(this.writer.clock.now(), timezone);
+        if (window !== null && window.effectiveTo !== null && window.effectiveTo < today) {
+          throw new ValidationError(
+            'This document’s effective window closed on ' +
+              `${window.effectiveTo}. Publish a revision with a new effective window instead of reinstating it.`,
+            [{ field: 'effectiveTo', message: 'closed' }],
+          );
+        }
+      }
+
+      await this.applyLifecycleTransition({
+        documentId: id,
+        to: DocumentStatus.PUBLISHED,
+        workflowInstanceId: null,
+        reason: stated,
+        auditAction: DocumentAudit.DOCUMENT_REINSTATED,
+        attestReason: true,
+      });
+
+      if (current.status !== DocumentStatus.PUBLISHED) {
+        await this.outbox.publish([
+          documentReinstatedEvent(asId<AnyId>(id), { documentId: id, reason: stated }),
+        ]);
+      }
+    });
+  }
+
+  /**
+   * One tenant's pass of the effective-window sweep — the only thing in the product that reads
+   * `effective_to` and acts on it.
+   *
+   * ## The boundary, and why it is `<` rather than `<=`
+   *
+   * `effective_to` is the last day the revision **is** effective — `10-revision-architecture.md`
+   * §6 calls it "the window this revision is (or was) effective for", and publication refuses a
+   * window that ends before it starts, so a same-day window is one valid day rather than none. A
+   * document whose window ends today is therefore still current today and expires when the
+   * tenant's own calendar day turns. `calendarDay(now, tenantTimezone) > effectiveTo` is that
+   * sentence, and it is the same helper the numbering rules and the working calendars resolve
+   * their day boundaries with.
+   *
+   * ## Determinism, idempotency and retry
+   *
+   * The candidate query names `PUBLISHED` documents with a closed window, so a document this pass
+   * expires is not a candidate on the next one — a redelivered job re-reads and finds nothing, and
+   * a pass interrupted halfway resumes at the same place because each document is settled in its
+   * own transaction. Two passes racing settle it once: `applyLifecycleTransition` guards on the
+   * version it read, so the loser gets a conflict rather than a second `EXPIRED` row.
+   *
+   * ## Per document rather than per batch
+   *
+   * One transaction each, which is `BulkExecutor`'s rule and for its reason: the alternative is one
+   * transaction over five hundred documents, where a single version conflict rolls back the other
+   * four hundred and ninety-nine expiries and the audit rows that recorded them.
+   */
+  async expireEffective(limit: number): Promise<{ examined: number; expired: number }> {
+    const timezone = await this.writer.read(() => this.settings.get(Settings.TIMEZONE));
+    const today = calendarDay(this.writer.clock.now(), timezone);
+    const due = await this.writer.read(() => this.documents.listExpiredEffective(today, limit));
+
+    let expired = 0;
+    for (const candidate of due) {
+      try {
+        // One transaction per document, and `read` for the same reason as `archive`: the
+        // transition writes the single `EXPIRED` row inside it.
+        await this.writer.read(async () => {
+          await this.applyLifecycleTransition({
+            documentId: candidate.documentId,
+            to: DocumentStatus.EXPIRED,
+            workflowInstanceId: null,
+            reason: null,
+            auditAction: DocumentAudit.DOCUMENT_EXPIRED,
+            // The arithmetic that produced the decision, so a disputed expiry is settled from the
+            // trail rather than by re-running the sweep against a tenant setting that has since
+            // changed. `timezone` is part of it: the same instant expires a document in Auckland
+            // and does not in Los Angeles.
+            auditFacts: { effectiveTo: candidate.effectiveTo, evaluatedOn: today, timezone },
+          });
+          await this.outbox.publish([
+            documentExpiredEvent(asId<AnyId>(candidate.documentId), {
+              documentId: candidate.documentId,
+              revisionId: candidate.revisionId,
+              effectiveTo: candidate.effectiveTo,
+            }),
+          ]);
+        });
+        expired += 1;
+      } catch (error) {
+        if (error instanceof VersionConflictError || error instanceof InvalidTransitionError) {
+          // Somebody moved it between the candidate read and the write — a check-out, a
+          // publication with a new window, a concurrent pass. The next sweep asks again, and
+          // failing the whole pass over one document that is no longer a candidate would stop
+          // every later document in the batch from expiring.
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return { examined: due.length, expired };
+  }
+
   // --- Favourites ------------------------------------------------------------------------
 
   /**
@@ -757,6 +972,35 @@ export class DefaultDocumentService {
     readonly to: DocumentStatusKey;
     readonly workflowInstanceId: string | null;
     readonly reason: string | null;
+    /**
+     * The action to record instead of `DOCUMENT_CHANGED` — Phase 6.1, and the whole of how
+     * archival, reinstatement and expiry get their own audit rows without a second lifecycle.
+     *
+     * `13-audit-architecture.md` §2 files `ARCHIVED`, `REINSTATED` and `EXPIRED` as actions in
+     * their own right, and every other transition in the product is a `DOCUMENT_CHANGED`. The
+     * alternative was a second method that performs the same status move and records a different
+     * row — which is exactly the "second lifecycle implementation" that would then disagree with
+     * this one the first time somebody adds a state. So the *transition* stays in one place, with
+     * one legality check, one idempotency rule, one version guard and one revision-machine sync,
+     * and only the name on the audit row varies.
+     *
+     * Omitted by every caller that existed before Phase 6.1, so those keep `DOCUMENT_CHANGED`
+     * byte-for-byte.
+     */
+    readonly auditAction?: string;
+    /** Extra facts for the audit payload — `via` for an archive, the closed window for an expiry. */
+    readonly auditFacts?: Readonly<Record<string, unknown>>;
+    /**
+     * Promotes the reason to the trail's own **attested** `reason` column — Phase 6.1.
+     *
+     * Opt-in rather than automatic, because `reason` has gone into the payload's `after` for every
+     * transition since Phase 4 and the workflow callers depend on that shape. What makes the column
+     * different is Phase 9: the hash digest was widened to cover `reason`, so a sentence there is
+     * attested by the chain while the same sentence in a `jsonb` payload is only covered as part of
+     * a blob the verifier cannot address. An archive's stated ground is evidence, so it belongs in
+     * the attested half — exactly as a delete's does.
+     */
+    readonly attestReason?: boolean;
   }): Promise<void> {
     await this.writer.write(async () => {
       const current = await this.require(input.documentId, false);
@@ -866,12 +1110,18 @@ export class DefaultDocumentService {
       readonly to: DocumentStatusKey;
       readonly workflowInstanceId: string | null;
       readonly reason: string | null;
+      readonly auditAction?: string;
+      readonly auditFacts?: Readonly<Record<string, unknown>>;
+      readonly attestReason?: boolean;
     },
     from: DocumentStatusKey,
     unchanged: boolean,
   ) {
     return {
-      action: DocumentAudit.DOCUMENT_CHANGED,
+      action: input.auditAction ?? DocumentAudit.DOCUMENT_CHANGED,
+      // Only when the caller asked. Every pre-6.1 caller leaves it off and keeps the payload-only
+      // shape its rows have had for eighteen phases.
+      ...(input.attestReason === true && input.reason !== null && { reason: input.reason }),
       subjectType: AuditSubjectType.DOCUMENT,
       subjectId: asId<AnyId>(input.documentId),
       operation: AdministrativeOperation.UPDATED,
@@ -882,6 +1132,7 @@ export class DefaultDocumentService {
         status: input.to,
         workflowInstanceId: input.workflowInstanceId,
         reason: input.reason,
+        ...(input.auditFacts ?? {}),
         ...(unchanged && { unchanged: true }),
       },
     };

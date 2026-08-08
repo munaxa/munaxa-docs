@@ -1,15 +1,27 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { DocumentStatus, type DocumentId, RevisionStatus, asId } from '@edms/domain';
+import {
+  type AnyId,
+  AuditSubjectType,
+  DocumentStatus,
+  type DocumentId,
+  RevisionStatus,
+  asId,
+} from '@edms/domain';
 
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
-import { RecordStamps } from '../../../core/persistence';
+import {
+  AdministeredWriter,
+  AdministrativeOperation,
+  RecordStamps,
+} from '../../../core/persistence';
 import type {
   DispositionSubject,
   DocumentDisposition,
   PurgeOutcome,
 } from '../../retention/application/ports';
+import { DocumentAudit } from '../domain/audit-actions';
 import { isLegalTransition } from '../domain/lifecycle';
 import { DOCUMENT_CONTENT_GATE, type DocumentContentGate } from '../application/ports';
 
@@ -42,6 +54,7 @@ export class RetentionDispositionAdapter implements DocumentDisposition {
   constructor(
     @Inject(DOCUMENT_CONTENT_GATE) private readonly content: DocumentContentGate,
     private readonly stamps: RecordStamps,
+    private readonly writer: AdministeredWriter,
   ) {}
 
   async describe(documentId: DocumentId): Promise<DispositionSubject | null> {
@@ -153,7 +166,21 @@ export class RetentionDispositionAdapter implements DocumentDisposition {
   /**
    * The non-destructive disposition: the record leaves the live shelf, readable still.
    *
-   * Two things here are decisions rather than mechanism.
+   * Three things here are decisions rather than mechanism.
+   *
+   * **It writes the same `ARCHIVED` action the explicit path writes — Phase 6.1.** Until then this
+   * method moved the status and recorded only `PURGE_EXECUTED`, in Retention's disposition
+   * register, so a document retired by a policy had *nothing* on its own timeline saying it had
+   * left the shelf. That is the `PURGED`/`PURGE_EXECUTED` split (13 §2, two groups, two audiences)
+   * applied to the other disposition, and it is what makes "when did this record leave the shelf"
+   * one query against one action rather than a question whose answer depends on which path
+   * retired it. `via` in the payload carries the difference, because *which path* is a different
+   * question and 13 §2's rule is that an operation belongs in the payload rather than in a second
+   * action.
+   *
+   * The row is written with `writer.record`, the primitive Phase 10 added for exactly this: a
+   * second audit event inside the unit of work already running, so it commits with the status move
+   * or not at all.
    *
    * **A soft-deleted document's effective state is `DELETED`, whatever its status column says.**
    * A delete sets `deleted_at`; it does not move `status`, because the status records where the
@@ -185,6 +212,14 @@ export class RetentionDispositionAdapter implements DocumentDisposition {
     await tx.document.updateMany({
       where: { id: documentId, tenantId: this.tenantId() },
       data: { status: DocumentStatus.ARCHIVED, ...this.stamps.update() },
+    });
+    await this.writer.record({
+      action: DocumentAudit.DOCUMENT_ARCHIVED,
+      subjectType: AuditSubjectType.DOCUMENT,
+      subjectId: asId<AnyId>(documentId),
+      operation: AdministrativeOperation.UPDATED,
+      before: { status: from },
+      after: { status: DocumentStatus.ARCHIVED, via: 'RETENTION' },
     });
     return true;
   }

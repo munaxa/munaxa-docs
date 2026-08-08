@@ -218,7 +218,7 @@ beforeAll(async () => {
   retention = realRetention({
     clock,
     unitOfWork,
-    disposition: realDisposition(clock, library.storage),
+    disposition: realDisposition(clock, library.storage, library.writer),
     storage: library.storagePort,
   });
   notifications = realNotifications({

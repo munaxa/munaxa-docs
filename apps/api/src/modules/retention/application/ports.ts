@@ -278,6 +278,33 @@ export interface BlobReaper {
   verifyStoredIntegrity(): Promise<IntegritySweep>;
 }
 
+export const DOCUMENT_EXPIRY = Symbol('DocumentExpiry');
+
+/**
+ * The seam the effective-window sweep reaches Document through — Phase 6.1.
+ *
+ * Declared here for the same reason `IntegritySweep` is, and it is worth being explicit that this
+ * is not a retention concern wearing a disguise. `documents.expire-effective` is scheduled on
+ * `retention.run` because the lane's properties fit it — off-peak, bounded, serialised per tenant,
+ * safe to miss — and because the queue adapter builds one worker per `subscribe`, so a second
+ * subscriber on that lane would race `RetentionLaneConsumer` for its jobs. The lane has one
+ * consumer, the consumer lives in Retention, and this is how it asks the module that owns the
+ * document lifecycle to run a pass of it.
+ *
+ * Retention decides nothing about expiry. It does not know what `effective_to` is, which timezone
+ * the boundary is computed in, or what `EXPIRED` means — those are all Document's, exactly as what
+ * a checksum is stays Storage's.
+ */
+export interface DocumentExpiry {
+  expireEffective(limit: number): Promise<DocumentExpirySweep>;
+}
+
+/** What one pass of the effective-window sweep found. */
+export interface DocumentExpirySweep {
+  readonly examined: number;
+  readonly expired: number;
+}
+
 /** What one pass of the integrity verifier found. */
 export interface IntegritySweep {
   readonly checked: number;
@@ -321,6 +348,8 @@ export interface RetentionService {
   expireUploadSessions(): Promise<number>;
   /** `storage.verify-integrity`, the lane's third schedule — Phase 18. */
   verifyStoredIntegrity(): Promise<IntegritySweep>;
+  /** `documents.expire-effective`, the lane's fourth schedule — Phase 6.1. */
+  expireEffectiveDocuments(limit: number): Promise<DocumentExpirySweep>;
 }
 
 /**

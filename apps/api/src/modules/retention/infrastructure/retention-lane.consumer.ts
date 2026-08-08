@@ -20,9 +20,21 @@ const SWEEP_SCHEDULE = 'retention.sweep';
 const UPLOAD_SCHEDULE = 'storage.sweep-upload-sessions';
 /** Phase 18's rolling integrity verifier, the third schedule on this lane. */
 const INTEGRITY_SCHEDULE = 'storage.verify-integrity';
+/** Phase 6.1's effective-window sweep, the fourth. */
+const EXPIRY_SCHEDULE = 'documents.expire-effective';
 
 /** How many due schedules one tenant's nightly pass settles. Bounded by the lane's budget. */
 const SWEEP_BATCH = 500;
+
+/**
+ * How many documents one tenant's hourly expiry pass settles.
+ *
+ * Smaller than `SWEEP_BATCH` because this pass runs twenty-four times a day rather than once, and
+ * because a backlog is self-clearing: candidates are ordered by how long ago their window closed,
+ * so a tenant that publishes five hundred documents with the same expiry date works through them
+ * over a few hours rather than holding the lane for one long pass. The steady state is zero.
+ */
+const EXPIRY_BATCH = 200;
 
 /**
  * The `retention.run` lane's first consumer — the last declared lane in the product to gain one.
@@ -35,10 +47,11 @@ const SWEEP_BATCH = 500;
  * tenant-less and fans out one job per tenant from `TENANT_REGISTRY.all()`, because under
  * ADR-0015 there is no "all tenants" pass this product's data model can make.
  *
- * ## One lane, two schedules
+ * ## One lane, four schedules
  *
- * `retention.sweep` (nightly) and `storage.sweep-upload-sessions` (every fifteen minutes) both
- * land here, and sharing the lane is the catalogue's own decision, worth restating: the lane's
+ * `retention.sweep` (nightly), `storage.sweep-upload-sessions` (every fifteen minutes),
+ * `storage.verify-integrity` (nightly) and `documents.expire-effective` (hourly) all land here,
+ * and sharing the lane is the catalogue's own decision, worth restating: the lane's
  * concurrency is 1 because *destruction is never run concurrently with itself*, and the upload
  * sweep belongs behind that same gate — it deletes staged objects, which is destruction too, just
  * of bytes nobody had finished claiming. If the fifteen-minute sweep ever queues behind a long
@@ -74,7 +87,7 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
       await this.handle(job);
     });
 
-    for (const name of [SWEEP_SCHEDULE, UPLOAD_SCHEDULE, INTEGRITY_SCHEDULE]) {
+    for (const name of [SWEEP_SCHEDULE, UPLOAD_SCHEDULE, INTEGRITY_SCHEDULE, EXPIRY_SCHEDULE]) {
       const scheduled = SCHEDULE.find((entry) => entry.name === name);
       if (scheduled === undefined) {
         // The catalogue is the single source of the cron expression; an entry removed from it must
@@ -102,12 +115,16 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
         return this.fanOut(job, 'retention.expire-uploads-tenant');
       case `${INTEGRITY_SCHEDULE}-fanout`:
         return this.fanOut(job, 'storage.verify-integrity-tenant');
+      case `${EXPIRY_SCHEDULE}-fanout`:
+        return this.fanOut(job, 'documents.expire-effective-tenant');
       case 'retention.sweep-tenant':
         return this.sweepTenant(job, payload);
       case 'retention.expire-uploads-tenant':
         return this.expireUploads(job, payload);
       case 'storage.verify-integrity-tenant':
         return this.verifyIntegrity(job, payload);
+      case 'documents.expire-effective-tenant':
+        return this.expireDocuments(job, payload);
       default:
         // Unretryable: the payload will not grow a recognisable shape on a fifth attempt. Logged
         // and dropped, as every consumer since Phase 7 treats a malformed job.
@@ -181,6 +198,32 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
         return;
       }
       this.logger.info('The integrity sweep verified stored blobs', context);
+    });
+  }
+
+  /**
+   * One tenant's pass of the effective-window sweep — Phase 6.1.
+   *
+   * Logged only when it expired something, which is the opposite of `verifyIntegrity` above and
+   * deliberately so. That sweep is a *verifier*, and "it ran and found nothing" is the reassurance
+   * an operator needs; this one is an ordinary state change that fires hourly across every tenant,
+   * and a line per tenant per hour saying "nothing expired" would be twenty-four thousand lines a
+   * day drowning the ones that matter. Its steady state is silence.
+   */
+  private async expireDocuments(job: JobEnvelope, payload: Record<string, unknown>): Promise<void> {
+    const tenantId = asString(payload['tenantId']);
+    if (tenantId === null) {
+      this.logger.warn('Dropped a document expiry job with no tenant', { jobId: job.jobId });
+      return;
+    }
+    await runWithContext(systemContext(tenantId, job.jobId), async () => {
+      const pass = await this.retention.expireEffectiveDocuments(EXPIRY_BATCH);
+      if (pass.expired > 0) {
+        this.logger.info('Documents reached the end of their effective window', {
+          tenantId,
+          ...pass,
+        });
+      }
     });
   }
 }

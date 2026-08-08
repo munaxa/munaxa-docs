@@ -21,12 +21,14 @@ import {
   type Document,
   type DocumentSummary,
   type DuplicateReport,
+  type ArchiveDocumentBody,
   type MoveDocumentBody,
   type RecentDocument,
   type UpdateDocumentBody,
   assignDocumentNumberSchema,
   createDocumentSchema,
   documentListQuerySchema,
+  archiveDocumentSchema,
   moveDocumentSchema,
   updateDocumentSchema,
 } from '@edms/contracts';
@@ -247,6 +249,53 @@ export class DocumentsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async restore(@Param('id') id: string, @IfMatch() version: number | undefined): Promise<void> {
     await this.documents.restore(id, version);
+  }
+
+  /**
+   * Retires a record from the live shelf — Phase 6.1, and the first route ever to gate on
+   * `document:archive`.
+   *
+   * The permission has been in the catalogue and in `08-permission-model.md` §6's matrix since
+   * Phase 1, seeded to the document controller and the library manager, and enforced by **nothing**
+   * — Phase 6.0 found it by counting non-seed references and getting zero. An administrator who
+   * granted it was granting a control that did not exist, which is worse than one that is absent.
+   *
+   * `POST` with a body rather than `PATCH`, for the reason `move` is its own endpoint: archiving is
+   * a lifecycle decision with its own audit action, not a field somebody sets while fixing a title.
+   * The reason is mandatory and lands in the trail's own attested column, exactly as a delete's
+   * does.
+   */
+  @Post(':id/archive')
+  @RequirePermission(Permission.DOCUMENT_ARCHIVE)
+  @ScopedTo('id', ScopeType.DOCUMENT)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async archive(
+    @Param('id') id: string,
+    @IfMatch() version: number | undefined,
+    @Body(new ZodValidationPipe(archiveDocumentSchema)) body: ArchiveDocumentBody,
+  ): Promise<void> {
+    await this.documents.archive(id, version, body.reason);
+  }
+
+  /**
+   * Returns an archived record to the shelf.
+   *
+   * The same permission as archiving, and that is 08 §2's rule applied rather than an oversight: a
+   * permission is a decision somebody can be trusted with *separately*, and "may retire a record"
+   * and "may un-retire the record they retired" are not two such decisions. Splitting them would
+   * suggest a boundary that does not exist and would leave whoever holds only the first able to
+   * take a document off the shelf and unable to put it back.
+   */
+  @Post(':id/reinstate')
+  @RequirePermission(Permission.DOCUMENT_ARCHIVE)
+  @ScopedTo('id', ScopeType.DOCUMENT)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async reinstate(
+    @Param('id') id: string,
+    @IfMatch() version: number | undefined,
+    @Body(new ZodValidationPipe(archiveDocumentSchema)) body: ArchiveDocumentBody,
+  ): Promise<void> {
+    await this.documents.reinstate(id, version, body.reason);
   }
 
   /**

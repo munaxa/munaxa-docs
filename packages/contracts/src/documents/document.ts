@@ -100,6 +100,19 @@ export const moveDocumentSchema = z.object({
 });
 
 /**
+ * Retiring a record from the live shelf, and putting it back — Phase 6.1.
+ *
+ * One schema for both directions, because both ask the same thing of the caller and bound it the
+ * same way: a stated reason, trimmed, `max(500)`, exactly as `deleteDocumentSchema` does. The two
+ * are separate endpoints rather than one with a direction flag, because they are separate
+ * decisions with separate audit actions — and a boolean in a body is how "archive" and "reinstate"
+ * end up one permission.
+ */
+export const archiveDocumentSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+});
+
+/**
  * Manual assignment or legacy import (`09-numbering-architecture.md` §3), behind
  * `numbering:manage`. The number is validated server-side against the document's own rule and
  * codes; a value that collides with any issued, reserved or voided number is refused.
@@ -293,6 +306,7 @@ export const recentDocumentSchema = documentSummarySchema.extend({
 export type CreateDocumentBody = z.infer<typeof createDocumentSchema>;
 export type UpdateDocumentBody = z.infer<typeof updateDocumentSchema>;
 export type MoveDocumentBody = z.infer<typeof moveDocumentSchema>;
+export type ArchiveDocumentBody = z.infer<typeof archiveDocumentSchema>;
 export type AssignDocumentNumberBody = z.infer<typeof assignDocumentNumberSchema>;
 export type Document = z.infer<typeof documentSchema>;
 export type DocumentLock = z.infer<typeof documentLockSchema>;

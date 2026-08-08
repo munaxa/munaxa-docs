@@ -21,6 +21,12 @@ import {
 import { runWithContext, type RequestContext } from '../core/tenancy/tenant-context';
 import { RedisCacheAdapter } from '../infrastructure/cache/redis-cache.adapter';
 import { JwtTokenService } from '../modules/identity/infrastructure/jwt.token-service';
+import {
+  DOCUMENT_EXPIRY,
+  RETENTION_SERVICE,
+  type DocumentExpiry,
+  type RetentionService,
+} from '../modules/retention/application/ports';
 import { aTenantId } from '../testing/factories';
 
 /**
@@ -70,6 +76,25 @@ describe('application composition', () => {
     const moduleRef = await compile();
     expect(moduleRef.get<AppConfig>(APP_CONFIG).app.name).toBe('munaxa-docs-api');
     await moduleRef.close();
+  });
+
+  /**
+   * The seam Phase 6.1 added, checked where a binding belongs: `documents.expire-effective` is
+   * scheduled on the `retention.run` lane, whose single consumer holds `RETENTION_SERVICE` and
+   * reaches Document through `DOCUMENT_EXPIRY`. A schedule wired to an unbound port is precisely
+   * the "port declared but never bound" failure this file exists to catch — and it is what the
+   * whole phase is fixing one layer up, so leaving it unasserted would be the same mistake again.
+   */
+  it('binds the effective-window sweep the retention lane calls', async () => {
+    const moduleRef = await compile();
+    const expiry = moduleRef.get<DocumentExpiry>(DOCUMENT_EXPIRY);
+    expect(expiry).toBeDefined();
+    expect(typeof expiry.expireEffective).toBe('function');
+
+    // And the pass-through the consumer actually calls, so the chain from schedule to use case is
+    // whole rather than merely each half existing.
+    const retention = moduleRef.get<RetentionService>(RETENTION_SERVICE);
+    expect(typeof retention.expireEffectiveDocuments).toBe('function');
   });
 
   it('binds a clock and a storage port, so no use case can name a vendor', async () => {

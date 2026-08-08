@@ -184,6 +184,30 @@ the future, because scheduled publication needs a timer this phase deliberately 
 `FROZEN_STATUSES` gained `CHECKED_OUT` the moment the state became reachable — §1's "new draft
 revision only" — and the revision's own machine now moves in step with the document's:
 submission freezes the draft into `IN_APPROVAL`, every road back to an editable document returns
-it to `DRAFT`, and only publication makes it `PUBLISHED`. Document-level `SUPERSEDED`, `EXPIRED`,
-archival and purge remain unperformed: a newer *revision* supersedes a revision while the document
-stays `PUBLISHED`, nothing yet watches `effective_to`, and archival is a later phase's.
+it to `DRAFT`, and only publication makes it `PUBLISHED`.
+
+**Phase 6.1 performed archival and expiry, which leaves document-level `SUPERSEDED` as the one
+state nothing produces.** Until then `ARCHIVED` was reachable only as a side effect of a retention
+disposition — no user action could retire a record — and `EXPIRED` was reachable by nothing at all,
+so a document could carry an `effective_to` that never arrived. Both are now ordinary transitions
+through `applyLifecycleTransition`, with the same legality check, the same version guard and the
+same idempotency rule as every other:
+
+| Transition | Performed by | Actor | Audit action |
+| --- | --- | --- | --- |
+| `PUBLISHED`/`EXPIRED` → `ARCHIVED` | `POST /documents/{id}/archive`, behind `document:archive` | The person, with a mandatory stated reason | `ARCHIVED`, `via: EXPLICIT` |
+| *(any)* → `ARCHIVED` | The retention disposition, on a schedule whose date arrived | The system | `ARCHIVED`, `via: RETENTION` |
+| `ARCHIVED` → `PUBLISHED` | `POST /documents/{id}/reinstate`, behind `document:archive` | The person, with a mandatory stated reason | `REINSTATED` |
+| `PUBLISHED` → `EXPIRED` | The `documents.expire-effective` sweep, hourly on the `retention.run` lane | The system, never a person | `EXPIRED` |
+
+**The expiry boundary is inclusive and resolved in the tenant's timezone.** `effective_to` is the
+last day the revision *is* effective, so a document whose window ends today is current today and
+expires when that tenant's own calendar day turns — `calendarDay(now, locale.timezone) >
+effective_to`. The sweep is hourly rather than nightly for exactly that reason: one nightly firing
+would be after midnight for some tenants and hours before it for others.
+
+**A read never expires anything.** The state changes only in the sweep, in its own transaction per
+document, so a document is never expired as a side effect of somebody happening to open it.
+
+Document-level `SUPERSEDED` remains unperformed and that is unchanged: a newer *revision*
+supersedes a revision while the document stays `PUBLISHED` (`10-revision-architecture.md` §6).

@@ -140,7 +140,14 @@ export const documentMovedEvent = defineEvent<typeof DOCUMENT_MOVED, DocumentMov
   DOCUMENT_AGGREGATE,
 );
 
-/** Retired from active use, still readable. */
+/**
+ * Retired from active use, still readable.
+ *
+ * Declared in Phase 3 and published for the first time in Phase 6.1 — the payload shape is
+ * unchanged, because "its payload shape never changes once shipped" applies to a declared event
+ * whether or not anything had emitted it yet, and widening it would have been the easier and
+ * wronger move.
+ */
 export const DOCUMENT_ARCHIVED = 'document.archived' as const;
 
 export interface DocumentArchivedPayload {
@@ -150,6 +157,48 @@ export interface DocumentArchivedPayload {
 
 export const documentArchivedEvent = defineEvent<typeof DOCUMENT_ARCHIVED, DocumentArchivedPayload>(
   DOCUMENT_ARCHIVED,
+  1,
+  DOCUMENT_AGGREGATE,
+);
+
+/**
+ * Returned to the shelf from the archive — Phase 6.1.
+ *
+ * Distinct from `document.restored`, which reverses a *delete*. The search index has to re-project
+ * on both and the two mean different things to a reader, so they are two events rather than one
+ * with a discriminator.
+ */
+export const DOCUMENT_REINSTATED = 'document.reinstated' as const;
+
+export interface DocumentReinstatedPayload {
+  readonly documentId: string;
+  readonly reason: string | null;
+}
+
+export const documentReinstatedEvent = defineEvent<
+  typeof DOCUMENT_REINSTATED,
+  DocumentReinstatedPayload
+>(DOCUMENT_REINSTATED, 1, DOCUMENT_AGGREGATE);
+
+/**
+ * The effective window closed and the sweep noticed — Phase 6.1.
+ *
+ * Carries the revision whose window closed and the date it closed on, because the document's own
+ * effectiveness is its current revision's (`10-revision-architecture.md` §6) and a consumer asking
+ * "which revision expired" cannot derive it later: the next publication moves
+ * `current_revision_id` on.
+ */
+export const DOCUMENT_EXPIRED = 'document.expired' as const;
+
+export interface DocumentExpiredPayload {
+  readonly documentId: string;
+  readonly revisionId: string;
+  /** The last day the revision was effective, as the calendar day it was stored as. */
+  readonly effectiveTo: string;
+}
+
+export const documentExpiredEvent = defineEvent<typeof DOCUMENT_EXPIRED, DocumentExpiredPayload>(
+  DOCUMENT_EXPIRED,
   1,
   DOCUMENT_AGGREGATE,
 );
@@ -212,6 +261,8 @@ export const DOCUMENT_EVENT_TYPES: readonly string[] = Object.freeze([
   DOCUMENT_CHECKED_IN,
   DOCUMENT_MOVED,
   DOCUMENT_ARCHIVED,
+  DOCUMENT_REINSTATED,
+  DOCUMENT_EXPIRED,
   DOCUMENT_DELETED,
   DOCUMENT_RESTORED,
   NUMBER_ASSIGNED,
