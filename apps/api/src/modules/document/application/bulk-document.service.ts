@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 
 import {
   type AnyId,
@@ -14,8 +14,10 @@ import {
 
 import {
   BULK_EXECUTOR,
+  BULK_PLAN_REGISTRY,
   type BulkExecutor,
   type BulkPlan,
+  type BulkPlanRegistry,
   type BulkResult,
 } from '../../../core/bulk';
 import { ValidationError } from '../../../core/errors/application-errors';
@@ -57,14 +59,53 @@ import { DefaultDocumentService } from './document.service';
  * resolver does not care whether the row is deleted. A caller who could not see the document before
  * it was deleted cannot restore it.
  */
+/**
+ * The three payloads Document's bulk operations are rebuilt from — Phase 6.2.
+ *
+ * Plain data by construction: whatever is here has to survive `JSON.stringify` into a `jsonb`
+ * column and come back the same, because a queued worker reads it minutes later in a different
+ * request. That constraint is the reason these are declared rather than inferred — a field that
+ * cannot round-trip is a compile error here instead of a runtime surprise in the lane.
+ */
+interface MetadataPayload {
+  readonly categoryId?: string | null;
+  readonly metadata?: Readonly<Record<string, MetadataInputValue>>;
+}
+
+interface UploadPayload {
+  readonly folderId: string;
+  readonly documentTypeId: string;
+  readonly files: readonly {
+    readonly fileObjectId: string;
+    readonly filename: string;
+    readonly title: string;
+  }[];
+  readonly categoryId?: string | null;
+  readonly confidentialityId?: string;
+}
+
 @Injectable()
-export class BulkDocumentService {
+export class BulkDocumentService implements OnModuleInit {
   constructor(
     @Inject(BULK_EXECUTOR) private readonly executor: BulkExecutor,
+    @Inject(BULK_PLAN_REGISTRY) private readonly plans: BulkPlanRegistry,
     @Inject(DOCUMENT_REPOSITORY) private readonly documents: DocumentRepository,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     private readonly service: DefaultDocumentService,
   ) {}
+
+  /**
+   * Tells the registry how to rebuild each of Document's three kinds — Phase 6.2.
+   *
+   * At `onModuleInit` for the same reason `DocumentModule` registers its folder-contents
+   * participant there: the registry is core's, the rules are this module's, and the wiring belongs
+   * where the rules live rather than in a table in core that would have to import three modules.
+   */
+  onModuleInit(): void {
+    this.plans.register(BulkOperationKind.METADATA, (payload) => this.metadataPlan(payload));
+    this.plans.register(BulkOperationKind.RESTORE, () => this.restorePlan());
+    this.plans.register(BulkOperationKind.UPLOAD, (payload) => this.uploadPlan(payload));
+  }
 
   /**
    * The same metadata change, applied to many documents.
@@ -87,9 +128,31 @@ export class BulkDocumentService {
         { field: 'metadata', message: 'required' },
       ]);
     }
-    const plan: BulkPlan = {
+    const payload: MetadataPayload = {
+      ...(input.categoryId !== undefined && { categoryId: input.categoryId }),
+      ...(input.metadata !== undefined && { metadata: input.metadata }),
+    };
+    return this.executor.run({
+      kind: BulkOperationKind.METADATA,
+      payload: payload as unknown as Readonly<Record<string, unknown>>,
+      targetIds: normaliseTargets(input.ids),
+    });
+  }
+
+  /**
+   * The METADATA plan, from its payload — Phase 6.2.
+   *
+   * The synchronous path and the queued worker both arrive here, which is the point: before this
+   * phase the plan was built inline from the request and there was no way to rebuild it anywhere
+   * else, so a queued run would have had to be a second implementation of the same edit.
+   */
+  private metadataPlan(raw: Readonly<Record<string, unknown>>): BulkPlan {
+    const input = raw as unknown as MetadataPayload;
+    return {
       kind: BulkOperationKind.METADATA,
       permission: Permission.DOCUMENT_EDIT,
+      // The audited summary stays what Phase 16 made it: which fields moved, never their values.
+      // The values are in the payload, which is not audited.
       parameters: {
         ...(input.categoryId !== undefined && { categoryId: input.categoryId }),
         ...(input.metadata !== undefined && { metadataFields: Object.keys(input.metadata) }),
@@ -106,7 +169,6 @@ export class BulkDocumentService {
         );
       },
     };
-    return this.executor.run({ plan, targetIds: normaliseTargets(input.ids) });
   }
 
   /**
@@ -122,7 +184,16 @@ export class BulkDocumentService {
    * same one.
    */
   async restore(ids: readonly string[]): Promise<BulkResult> {
-    const plan: BulkPlan = {
+    return this.executor.run({
+      kind: BulkOperationKind.RESTORE,
+      payload: {},
+      targetIds: normaliseTargets(ids),
+    });
+  }
+
+  /** The RESTORE plan. It needs nothing beyond the identifiers, so its payload is empty. */
+  private restorePlan(): BulkPlan {
+    return {
       kind: BulkOperationKind.RESTORE,
       permission: Permission.DOCUMENT_RESTORE,
       parameters: {},
@@ -131,7 +202,6 @@ export class BulkDocumentService {
         await this.service.restore(id, undefined);
       },
     };
-    return this.executor.run({ plan, targetIds: normaliseTargets(ids) });
   }
 
   /**
@@ -162,10 +232,33 @@ export class BulkDocumentService {
     readonly categoryId?: string | null | undefined;
     readonly confidentialityId?: string | undefined;
   }): Promise<BulkResult> {
+    const payload: UploadPayload = {
+      folderId: input.folderId,
+      documentTypeId: input.documentTypeId,
+      files: input.files,
+      ...(input.categoryId !== undefined && { categoryId: input.categoryId }),
+      ...(input.confidentialityId !== undefined && { confidentialityId: input.confidentialityId }),
+    };
+    return this.executor.run({
+      kind: BulkOperationKind.UPLOAD,
+      payload: payload as unknown as Readonly<Record<string, unknown>>,
+      targetIds: normaliseTargets(input.files.map((file) => file.fileObjectId)),
+    });
+  }
+
+  /**
+   * The UPLOAD plan, from its payload.
+   *
+   * The per-file titles and filenames live in the payload rather than in `parameters` for the
+   * reason the schema comment gives: `parameters` is audited, and five thousand filenames in an
+   * audit row is a second copy of the import with no retention policy.
+   */
+  private uploadPlan(raw: Readonly<Record<string, unknown>>): BulkPlan {
+    const input = raw as unknown as UploadPayload;
     const byFileObject = new Map(input.files.map((file) => [file.fileObjectId, file]));
     const folderScope: ScopeRef = { type: ScopeType.FOLDER, id: asId<AnyId>(input.folderId) };
 
-    const plan: BulkPlan = {
+    return {
       kind: BulkOperationKind.UPLOAD,
       permission: Permission.DOCUMENT_CREATE,
       parameters: {
@@ -204,10 +297,6 @@ export class BulkDocumentService {
         });
       },
     };
-    return this.executor.run({
-      plan,
-      targetIds: normaliseTargets(input.files.map((file) => file.fileObjectId)),
-    });
   }
 
   /** A document's scope, if it is live and in this tenant. Null means "you do not reach it". */

@@ -1,0 +1,20 @@
+-- Phase 6.2 — the queued bulk path.
+--
+-- `bulk.synchronousLimit` has existed since Phase 16 and been read by nothing, so a request naming
+-- up to `bulk.maxObjects` (5 000 by default) executed inside one HTTP request. The queued path the
+-- setting was written for needs one thing the record could not carry: enough input to rebuild the
+-- operation in a worker that never saw the request.
+--
+-- A column of its own rather than widening `parameters`, because `parameters` is copied into the
+-- BULK_OPERATION audit row and 13 §3 requires that payload to stay minimised — it names which
+-- metadata fields a bulk edit touched, never their values. This column holds the values, and is
+-- never audited and never returned by the API.
+--
+-- Nullable, so every existing row is valid unchanged: a synchronous operation has nothing to
+-- rebuild.
+--
+-- No new index. The consumer's resume read — "which of this operation's targets already have an
+-- outcome" — is served by `ix_bulk_operation_item_outcome` on (tenant_id, operation_id, outcome)
+-- as a prefix scan, and a second index on the same leading columns would cost every write to earn
+-- nothing.
+ALTER TABLE "bulk_operation" ADD COLUMN "payload" JSONB;

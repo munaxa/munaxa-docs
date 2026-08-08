@@ -44,3 +44,32 @@ export type BulkOperationCompletedDraft = DomainEventDraft<
   typeof BULK_OPERATION_COMPLETED,
   BulkOperationCompletedPayload
 >;
+
+/**
+ * The operation was accepted and handed to the lane — Phase 6.2.
+ *
+ * **An outbox event rather than a direct `enqueue`, and that is not a style choice.**
+ * `ports/queue.port.ts` opens with the rule: *"The API never enqueues inside a transaction: it
+ * writes an outbox row, and the dispatcher enqueues after commit."* A job enqueued before commit
+ * can be delivered against a transaction that then rolls back — here that would mean a worker
+ * looking for an operation row that does not exist. Publishing from inside the transaction that
+ * opened the operation makes the job's existence and the record's existence the same fact.
+ *
+ * The payload is the operation identifier and nothing else. The targets and the plan input live on
+ * the row, which the consumer reads under the tenant's own context — so a queue payload cannot
+ * carry another tenant's identifiers, and a five-thousand-object import is not five thousand UUIDs
+ * in Redis.
+ */
+export const BULK_OPERATION_QUEUED = 'bulk.operation-queued' as const;
+
+export interface BulkOperationQueuedPayload {
+  readonly operationId: string;
+  readonly kind: string;
+  readonly requestedById: string;
+  readonly requested: number;
+}
+
+export const bulkOperationQueuedEvent = defineEvent<
+  typeof BULK_OPERATION_QUEUED,
+  BulkOperationQueuedPayload
+>(BULK_OPERATION_QUEUED, 1, BULK_AGGREGATE);

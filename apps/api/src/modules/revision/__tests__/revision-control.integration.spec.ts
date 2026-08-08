@@ -954,7 +954,7 @@ describe('archival and reinstatement', () => {
     expect(after.status).toBe(DocumentStatus.PUBLISHED);
   });
 
-  it('lets exactly one of two racing archives transition the document', async () => {
+  it('lets two racing archives produce exactly one transition', async () => {
     const documentId = await published();
     const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
 
@@ -962,11 +962,22 @@ describe('archival and reinstatement', () => {
       as(() => library.documents.archive(documentId, before.version, 'First'), CONTROLLER),
       as(() => library.documents.archive(documentId, before.version, 'Second'), CONTROLLER),
     ]);
-    expect(both.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+
+    // **Not "exactly one call succeeds"** — Phase 6.1 asserted that and it was wrong, which is why
+    // it flaked. Both calls legitimately succeed when the loser arrives after the winner committed:
+    // it re-reads an already-`ARCHIVED` document and takes `applyLifecycleTransition`'s idempotent
+    // no-op path, which is a success by design. The loser that arrives *before* the commit gets a
+    // version conflict. Which of the two happens is a scheduling detail, and asserting it made a
+    // correct implementation fail intermittently.
+    //
+    // The invariant is what matters and it holds either way: the document transitioned once.
+    expect(both.filter((outcome) => outcome.status === 'fulfilled').length).toBeGreaterThanOrEqual(
+      1,
+    );
 
     const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
     expect(after.status).toBe(DocumentStatus.ARCHIVED);
-    // The property, asked of the database: one transition, so one event — whatever raced.
+    // One transition, so exactly one event — whatever raced, and whatever succeeded.
     const events = await owner.outboxMessage.findMany({
       where: { tenantId: TENANT, aggregateId: documentId, eventType: 'document.archived' },
     });

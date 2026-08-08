@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Permission, type UserId, asId } from '@edms/domain';
+import { ALL_BULK_OPERATION_KINDS, Permission, type UserId, asId } from '@edms/domain';
 
 import { AppModule } from '../app.module';
 import { ACL_RESOLVER, type AclResolver } from '../core/authorization';
@@ -27,6 +27,7 @@ import {
   type DocumentExpiry,
   type RetentionService,
 } from '../modules/retention/application/ports';
+import { BULK_PLAN_REGISTRY, type BulkPlanRegistry } from '../core/bulk/bulk.port';
 import { aTenantId } from '../testing/factories';
 
 /**
@@ -95,6 +96,24 @@ describe('application composition', () => {
     // whole rather than merely each half existing.
     const retention = moduleRef.get<RetentionService>(RETENTION_SERVICE);
     expect(typeof retention.expireEffectiveDocuments).toBe('function');
+  });
+
+  /**
+   * Every bulk kind can be rebuilt — Phase 6.2.
+   *
+   * A queued operation is executed by rebuilding its plan from a registry the owning module fills
+   * at `onModuleInit`. A kind with no factory would therefore be accepted, persisted, queued, and
+   * then fail at its first delivery — a dead-lettered job rather than a compile error. This is the
+   * only place that can ask the question, because it is the only test that composes all five
+   * modules, and it is the same class of assertion as "a port declared but never bound".
+   */
+  it('registers a bulk plan factory for every kind the product can queue', async () => {
+    const moduleRef = await compile();
+    await moduleRef.init();
+    const registry = moduleRef.get<BulkPlanRegistry>(BULK_PLAN_REGISTRY);
+    for (const kind of ALL_BULK_OPERATION_KINDS) {
+      expect(registry.has(kind), `${kind} has no registered bulk plan factory`).toBe(true);
+    }
   });
 
   it('binds a clock and a storage port, so no use case can name a vendor', async () => {

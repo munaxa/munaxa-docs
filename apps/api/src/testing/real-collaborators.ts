@@ -162,6 +162,10 @@ import { PostgresIndexAdapter } from '../infrastructure/search/postgres-index.ad
 import { PostgresSearchAdapter } from '../infrastructure/search/postgres-search.adapter';
 import { TenantScopedSearch } from '../infrastructure/tenancy/tenant-scoped-search';
 import { DefaultBulkExecutor } from '../core/bulk/bulk-executor';
+import type { JobEnvelope, QueueConsumer } from '../ports/queue.port';
+import { BulkLaneConsumer } from '../core/bulk/bulk-lane.consumer';
+import { DefaultBulkPlanRegistry } from '../core/bulk/bulk-plan.registry';
+import { BulkRequesterDirectoryAdapter } from '../modules/identity/infrastructure/bulk-requester.directory';
 import { PrismaBulkOperationRepository } from '../core/bulk/prisma-bulk.repository';
 import { BulkDocumentService } from '../modules/document/application/bulk-document.service';
 import { BulkExportService } from '../modules/document/application/bulk-export.service';
@@ -1738,6 +1742,19 @@ export interface BulkStack {
   readonly documents: BulkDocumentService;
   readonly exports: BulkExportService;
   readonly acl: PrismaAclResolver;
+  /** Phase 6.2: the registry, so a suite can assert every kind can be rebuilt. */
+  readonly plans: DefaultBulkPlanRegistry;
+  /**
+   * Phase 6.2: the lane's consumer, composed the way `BulkDispatchModule` composes it.
+   *
+   * Built here rather than in the suite because it needs Identity's credential repository, and a
+   * Document suite reaching into Identity's infrastructure is the cross-module import the boundary
+   * lint forbids — `src/testing/` is the one place that composes across modules on purpose.
+   *
+   * The queue is a double that captures the handler instead of subscribing to Redis; everything
+   * below that is the shipped consumer.
+   */
+  readonly deliver: (operationId: string, tenantId: string, times?: number) => Promise<void>;
 }
 
 export function realBulk(options: {
@@ -1750,10 +1767,15 @@ export function realBulk(options: {
   const { stamps, audit, outbox } = realWriteStack(options.clock, options.unitOfWork);
   const acl = realAclResolver(options);
   const operations = new PrismaBulkOperationRepository(stamps);
+  // Phase 6.2: the registry the modules fill. Real rather than a double — what the suites assert
+  // about the queued path is that it runs *the same plan* the synchronous path builds, and a stub
+  // registry would be a second source for exactly the thing under test.
+  const plans = new DefaultBulkPlanRegistry();
   const executor = new DefaultBulkExecutor(
     options.unitOfWork,
     acl,
     operations,
+    plans,
     audit,
     outbox,
     settingsReaderFor(options.settings ?? {}),
@@ -1762,19 +1784,65 @@ export function realBulk(options: {
   );
   const documents = new BulkDocumentService(
     executor,
+    plans,
     realDocumentRepository(options),
     options.unitOfWork,
     options.library.documents,
   );
   const exports = new BulkExportService(
     executor,
+    plans,
     operations,
     realDocumentRepository(options),
     new StorageContentGateAdapter(options.library.storage),
     options.unitOfWork,
     acl,
   );
-  return { executor, operations, documents, exports, acl };
+  // The container calls these at `onModuleInit`; a suite that skipped them would have an executor
+  // that cannot build any plan at all.
+  documents.onModuleInit();
+  exports.onModuleInit();
+
+  const requesters = new BulkRequesterDirectoryAdapter(
+    new PrismaCredentialRepository(),
+    options.unitOfWork,
+  );
+  const deliver = async (operationId: string, tenantId: string, times = 1): Promise<void> => {
+    let handler: ((job: JobEnvelope) => Promise<void>) | null = null;
+    const consumer = new BulkLaneConsumer(
+      {
+        subscribe: (_queue: string, handle: (job: JobEnvelope) => Promise<void>) => {
+          handler = handle;
+          return Promise.resolve();
+        },
+      } as unknown as QueueConsumer,
+      operations,
+      plans,
+      requesters,
+      options.unitOfWork,
+      executor,
+      { queue: { consumersEnabled: true } } as unknown as AppConfig,
+      silentLogger(),
+    );
+    await consumer.onApplicationBootstrap();
+    if (handler === null) {
+      throw new Error('The bulk consumer did not subscribe to its lane.');
+    }
+    const handle = handler as (job: JobEnvelope) => Promise<void>;
+    for (let attempt = 0; attempt < times; attempt += 1) {
+      // The envelope the outbox dispatcher produces for `bulk.operation-queued`.
+      await handle({
+        jobId: `job-${operationId}-${String(attempt)}`,
+        payload: {
+          tenantId,
+          eventType: 'bulk.operation-queued',
+          payload: { operationId },
+        },
+      } as unknown as JobEnvelope);
+    }
+  };
+
+  return { executor, operations, documents, exports, acl, plans, deliver };
 }
 
 // --- Integration platform (Phase 17) -----------------------------------------------------------

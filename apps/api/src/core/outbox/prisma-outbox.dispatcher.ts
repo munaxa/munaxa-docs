@@ -322,6 +322,17 @@ export function routesFor(eventType: string): readonly QueueNameKey[] {
   if (eventType.startsWith('notification.')) {
     return [QueueName.NOTIFICATIONS_DELIVER, ...webhook];
   }
+  if (eventType === 'bulk.operation-queued') {
+    // Phase 6.2. The one event in the product whose purpose is to *schedule work* rather than to
+    // announce that something happened, so it goes to the lane that does the work and nowhere
+    // else.
+    //
+    // Not the notification lane: "your operation was accepted" is the `202` the caller already
+    // holds, and a notification per queued operation would be noise in front of the summary that
+    // arrives when it finishes. Not the webhook fan-out either — a customer's endpoint should hear
+    // about outcomes, and how this deployment schedules its own work is not an outcome.
+    return [QueueName.DOCUMENTS_BULK];
+  }
   if (eventType.startsWith('bulk.')) {
     // Phase 16, and the fourth time this table needed a line rather than a derivation. The
     // lesson Phase 11 and Phase 14 both learned the hard way — an event family whose prefix no

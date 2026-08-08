@@ -16,7 +16,12 @@ import { type Page, type PageRequest, skipFor, toPage } from '@edms/utils';
 import { RecordStamps } from '../persistence/record-stamps';
 import { requireTransaction } from '../prisma/unit-of-work';
 import { requireContext } from '../tenancy/tenant-context';
-import type { BulkItemResult, BulkOperationRecord, BulkOperationRepository } from './bulk.port';
+import type {
+  BulkItemResult,
+  BulkOperationRecord,
+  BulkOperationRepository,
+  QueuedWork,
+} from './bulk.port';
 
 /**
  * The bulk operation record, in the database.
@@ -38,6 +43,7 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
     readonly requestedAt: Date;
     readonly parameters: Readonly<Record<string, unknown>>;
     readonly requested: number;
+    readonly payload?: QueuedWork | undefined;
   }): Promise<void> {
     await requireTransaction().bulkOperation.create({
       data: {
@@ -47,9 +53,80 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
         requestedById: input.requestedById,
         requestedAt: input.requestedAt,
         parameters: input.parameters as Prisma.InputJsonObject,
+        // Phase 6.2: written only for a queued operation, and never copied into the audit row.
+        ...(input.payload !== undefined && {
+          payload: input.payload as unknown as Prisma.InputJsonObject,
+        }),
         requested: input.requested,
         ...this.stamps.creation(),
       },
+    });
+  }
+
+  /** The queued job's own input. Null for a synchronous operation, which has nothing to rebuild. */
+  async payloadOf(id: string): Promise<QueuedWork | null> {
+    const row = await requireTransaction().bulkOperation.findFirst({
+      where: { id, tenantId: this.tenantId() },
+      select: { payload: true },
+    });
+    return (row?.payload ?? null) as QueuedWork | null;
+  }
+
+  /**
+   * The targets this operation has already settled.
+   *
+   * Served by `ix_bulk_operation_item_outcome` as a prefix scan on `(tenant_id, operation_id)`.
+   * Read once per delivery rather than per object: five thousand existence checks would be five
+   * thousand round trips to answer a question one query answers.
+   */
+  async settledTargets(operationId: string): Promise<ReadonlySet<string>> {
+    const rows = await requireTransaction().bulkOperationItem.findMany({
+      where: { tenantId: this.tenantId(), operationId },
+      select: { targetId: true },
+    });
+    return new Set(rows.map((row) => row.targetId));
+  }
+
+  /** The tally so far. Deliberately does not touch `state` — the consumer owns that. */
+  async progress(id: string, tally: BulkTally): Promise<void> {
+    await requireTransaction().bulkOperation.updateMany({
+      where: { id, tenantId: this.tenantId() },
+      data: {
+        requested: tally.requested,
+        applied: tally.applied,
+        refused: tally.refused,
+        blocked: tally.blocked,
+        failed: tally.failed,
+        ...this.stamps.update(),
+      },
+    });
+  }
+
+  /**
+   * The tally, counted from the item rows.
+   *
+   * One grouped query rather than five counts, and read at completion rather than accumulated in
+   * memory — so a resumed operation's final counts describe every delivery that contributed to it.
+   */
+  async tallyOf(operationId: string): Promise<BulkTally> {
+    const rows = await requireTransaction().bulkOperationItem.groupBy({
+      by: ['outcome'],
+      where: { tenantId: this.tenantId(), operationId },
+      _count: { _all: true },
+    });
+    const counted = (outcome: string): number =>
+      rows.find((row) => row.outcome === outcome)?._count._all ?? 0;
+    const applied = counted('APPLIED');
+    const refused = counted('REFUSED');
+    const blocked = counted('BLOCKED');
+    const failed = counted('FAILED');
+    return { requested: applied + refused + blocked + failed, applied, refused, blocked, failed };
+  }
+
+  async markFailed(id: string, reason: string, at: Date): Promise<void> {
+    await requireTransaction().bulkOperation.updateMany({
+      where: { id, tenantId: this.tenantId() },
+      data: { state: 'FAILED', completedAt: at, error: reason, ...this.stamps.update() },
     });
   }
 

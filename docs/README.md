@@ -111,6 +111,14 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Phase 6.2 — bulk operations and asynchronous processing
+
+> The second phase built from the Phase 6.0 roadmap, and the one that closes its P0.
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 6.2 — Bulk Operations & Async Processing](./reports/phase-6.2-bulk-operations-async.md) | A tenant setting that had been read by nothing since Phase 16, so a request naming up to five thousand objects executed every one of them inside one HTTP request — the failure the setting's own documentation describes. Why three of the six findings in the phase's own commissioning audit did not survive inspection: `maxObjects` had always been enforced, `RUNNING` had always been written, and the item table had always been an upsert keyed for redelivery. The obstacle nobody had seen: a `BulkPlan` carries closures, so the lane had no producer not because the consumer was unwritten but because there was nothing to tell one what to do — and why the fix is a payload column that is deliberately *not* the audited one, since `parameters` is copied into the audit row and 13 §3 requires it minimised. Why an `APPLIED` item row now commits inside its object's transaction while the other three outcomes keep Phase 16's placement: the two cases have different requirements, and the gap between them is a second document on an `UPLOAD` redelivery. Why the requester's authority is re-read when the job runs rather than copied when it was asked for, and why that is a second port rather than a reuse of Reporting's. The two architecture violations the repository's own lint caught in this work — core importing a module, and a test reaching into another module's internals — and how each was fixed where the rule pointed rather than worked around. A Phase 6.1 test corrected rather than deleted, with the cause of its flake finally understood. And one new finding raised on the way past: `context.roles` holds role keys where the ACL subject expects identifiers |
+
 ### Phase 6.1 — document lifecycle completion
 
 > The first phase built from the Phase 6.0 roadmap. It closes four of that audit's rows and opens

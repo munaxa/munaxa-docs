@@ -3651,6 +3651,17 @@ model BulkOperation {
   /// approval, the patch for a metadata edit. Minimised like every payload: never a document's
   /// content, never a credential.
   parameters    Json               @default("{}")
+  /// Everything the queued worker needs to rebuild the operation — Phase 6.2.
+  ///
+  /// Separate from `parameters` above, and that separation is the point. `parameters` is the
+  /// audited summary and is copied into the `BULK_OPERATION` audit row, so 13 §3's minimisation
+  /// applies to it: it names *which* metadata fields changed, never their values. This column is
+  /// the job's own input — the values, the per-file titles, the approval comment, the target list
+  /// — and is never audited, never returned by the API and never carried in a queue payload.
+  ///
+  /// Null for a synchronous operation: nothing has to be rebuilt when the request that created it
+  /// is still on the stack.
+  payload       Json?
   requested     Int                @default(0)
   applied       Int                @default(0)
   refused       Int                @default(0)

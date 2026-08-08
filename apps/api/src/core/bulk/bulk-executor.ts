@@ -29,12 +29,15 @@ import { SETTINGS_READER, type SettingsReader } from '../settings/settings.port'
 import { requireContext } from '../tenancy/tenant-context';
 import { OUTBOX_WRITER, type OutboxWriter } from '../outbox/outbox.port';
 import { BulkAudit } from './audit-actions';
-import { bulkOperationCompletedEvent } from './events';
+import { bulkOperationCompletedEvent, bulkOperationQueuedEvent } from './events';
 import {
   BULK_OPERATION_REPOSITORY,
+  BULK_PLAN_REGISTRY,
   type BulkExecutor,
   type BulkItemResult,
   type BulkOperationRepository,
+  type BulkPlan,
+  type BulkPlanRegistry,
   type BulkRequest,
   type BulkResult,
 } from './bulk.port';
@@ -83,12 +86,27 @@ import {
  * one `jsonb` would be a second copy of the operation with no retention policy. Which objects were
  * touched is `bulk_operation_item`, which is a table, indexed, and pageable.
  */
+/**
+ * How many objects a queued run settles between progress updates — Phase 6.2.
+ *
+ * Fifty, and the number is bounded by the *row* rather than by throughput: progress is five columns
+ * on one `bulk_operation` row, and updating it per object would serialise a five-thousand-object
+ * import behind its own progress bar for no reader's benefit. Fifty gives a poller a visible move
+ * every few seconds at this product's per-object cost, and costs one extra write per fifty
+ * transactions.
+ *
+ * It is not a transaction size. Each object keeps its own transaction, which is Phase 16's rule and
+ * the reason one legal hold does not roll back four hundred and ninety-nine other documents.
+ */
+const DEFAULT_PROGRESS_BATCH = 50;
+
 @Injectable()
 export class DefaultBulkExecutor implements BulkExecutor {
   constructor(
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
     @Inject(BULK_OPERATION_REPOSITORY) private readonly operations: BulkOperationRepository,
+    @Inject(BULK_PLAN_REGISTRY) private readonly plans: BulkPlanRegistry,
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
@@ -97,12 +115,25 @@ export class DefaultBulkExecutor implements BulkExecutor {
   ) {}
 
   async run(request: BulkRequest): Promise<BulkResult> {
-    const { plan, targetIds } = request;
+    const { kind, payload, targetIds } = request;
+    // Built here rather than handed in — Phase 6.2. Both paths derive the plan from the same
+    // payload through the same factory, so a queued run cannot drift from the synchronous one.
+    const plan = this.plans.planFor(kind, payload);
     await this.refuseWhenDisabled(plan);
     await this.refuseBadSelection(targetIds);
     const operationId = uuidv7();
     const requestedAt = this.stamps.now();
     const requestedBy = this.requesterId();
+
+    // **The decision this phase exists for.** Below the threshold the caller waits and gets the
+    // per-object outcomes; above it they get an operation to poll. `bulk.synchronousLimit` has
+    // been a tenant setting since Phase 16 and was read by nothing until this line, which is why
+    // a request naming five thousand objects executed five thousand transactions inside one HTTP
+    // request — the failure the setting's own documentation describes.
+    const synchronousLimit = await this.settings.get(Settings.BULK_SYNCHRONOUS_LIMIT);
+    if (targetIds.length > synchronousLimit) {
+      return this.enqueue({ operationId, plan, payload, targetIds, requestedAt, requestedBy });
+    }
 
     await this.unitOfWork.run(() =>
       this.operations.open({
@@ -116,27 +147,8 @@ export class DefaultBulkExecutor implements BulkExecutor {
     );
     await this.unitOfWork.run(() => this.operations.start(operationId, requestedAt));
 
-    let tally: BulkTally = EMPTY_TALLY;
-    const items: BulkItemResult[] = [];
-
-    for (const targetId of targetIds) {
-      const item = await this.runOne(plan, targetId);
-      tally = countOutcome(tally, item.outcome);
-      items.push(item);
-      // Its own transaction, deliberately: an object whose write rolled back must still leave its
-      // outcome behind. Recording it inside the object's transaction would lose exactly the rows
-      // somebody needs — the refusals.
-      await this.unitOfWork.run(() =>
-        this.operations.recordItem({
-          id: uuidv7(),
-          operationId,
-          targetId,
-          outcome: item.outcome,
-          errorCode: item.errorCode,
-          detail: item.detail,
-        }),
-      );
-    }
+    const { tally, items } = await this.process({ operationId, plan, targetIds, settled: null });
+    await this.finalise(plan, operationId, items);
 
     await this.unitOfWork.run(async () => {
       await this.operations.finish({
@@ -169,6 +181,137 @@ export class DefaultBulkExecutor implements BulkExecutor {
   }
 
   /**
+   * Accepts the operation and hands it to the lane — Phase 6.2.
+   *
+   * One transaction: the record, its payload and the outbox row that will become the job. The
+   * queue is **not** touched here, which is `ports/queue.port.ts`'s standing rule — the dispatcher
+   * enqueues after commit, so a job can never be delivered for an operation whose row rolled back.
+   *
+   * The caller gets `REQUESTED` and no items, which is what `BulkResult.items` has documented since
+   * Phase 16: *"present for a synchronous run, empty for a queued one"*.
+   */
+  private async enqueue(input: {
+    readonly operationId: string;
+    readonly plan: BulkPlan;
+    readonly payload: Readonly<Record<string, unknown>>;
+    readonly targetIds: readonly string[];
+    readonly requestedAt: Date;
+    readonly requestedBy: string;
+  }): Promise<BulkResult> {
+    const { operationId, plan, payload, targetIds, requestedAt, requestedBy } = input;
+    await this.unitOfWork.run(async () => {
+      await this.operations.open({
+        id: operationId,
+        kind: plan.kind,
+        requestedById: requestedBy,
+        requestedAt,
+        parameters: plan.parameters,
+        requested: targetIds.length,
+        payload: { payload, targetIds, requestedById: requestedBy },
+      });
+      await this.outbox.publish([
+        bulkOperationQueuedEvent(asId<AnyId>(operationId), {
+          operationId,
+          kind: plan.kind,
+          requestedById: requestedBy,
+          requested: targetIds.length,
+        }),
+      ]);
+    });
+
+    this.logger.info('A bulk operation was queued', {
+      operationId,
+      kind: plan.kind,
+      requested: targetIds.length,
+    });
+
+    return {
+      operationId: asId<AnyId>(operationId),
+      state: BulkOperationState.REQUESTED,
+      tally: { ...EMPTY_TALLY, requested: targetIds.length },
+      items: [],
+    };
+  }
+
+  /**
+   * The loop, shared by both paths — Phase 6.2 lifted it out of `run` unchanged.
+   *
+   * `settled` is the queued path's resume set: targets that already carry an outcome from an
+   * earlier delivery are skipped, which is what makes a redelivered job safe without a second
+   * idempotency store. It is null for a synchronous run, which cannot be redelivered.
+   *
+   * `onBatch` lets the consumer publish progress every so many objects. The synchronous path
+   * passes nothing: nobody is polling a request they are still waiting on.
+   */
+  async process(input: {
+    readonly operationId: string;
+    readonly plan: BulkPlan;
+    readonly targetIds: readonly string[];
+    readonly settled: ReadonlySet<string> | null;
+    readonly onBatch?: ((tally: BulkTally) => Promise<void>) | undefined;
+    readonly batchSize?: number | undefined;
+  }): Promise<{ tally: BulkTally; items: BulkItemResult[] }> {
+    const { operationId, plan, targetIds, settled, onBatch } = input;
+    const batchSize = input.batchSize ?? DEFAULT_PROGRESS_BATCH;
+    let tally: BulkTally = EMPTY_TALLY;
+    const items: BulkItemResult[] = [];
+    let sinceBatch = 0;
+
+    for (const targetId of targetIds) {
+      if (settled?.has(targetId) === true) {
+        // Already settled by an earlier delivery. Not re-applied, and not re-counted either — the
+        // tally this pass produces describes this pass, and `finish` writes the sum of the item
+        // rows rather than of one delivery's arithmetic.
+        continue;
+      }
+      const item = await this.runOne(plan, operationId, targetId);
+      tally = countOutcome(tally, item.outcome);
+      items.push(item);
+      sinceBatch += 1;
+      if (onBatch !== undefined && sinceBatch >= batchSize) {
+        await onBatch(tally);
+        sinceBatch = 0;
+      }
+    }
+    return { tally, items };
+  }
+
+  /** The executor's clock, so the consumer stamps its transitions from the same source. */
+  now(): Date {
+    return this.stamps.now();
+  }
+
+  /**
+   * Finishes a queued operation: the tally from the item rows, the audit row, the summary event.
+   *
+   * The tally is recomputed from `bulk_operation_item` rather than from the pass that just ran,
+   * and that is the resume case made correct: a delivery that settled two hundred of five hundred
+   * objects and died leaves a successor whose own arithmetic describes three hundred. The rows are
+   * the record; the pass is an episode.
+   */
+  async complete(operationId: string, plan: BulkPlan, requestedById: string): Promise<void> {
+    const tally = await this.unitOfWork.run(() => this.operations.tallyOf(operationId));
+    await this.unitOfWork.run(async () => {
+      await this.operations.finish({
+        id: operationId,
+        state: BulkOperationState.COMPLETED,
+        tally,
+        at: this.stamps.now(),
+        error: null,
+      });
+      await this.recordOperation(operationId, plan.kind, plan.parameters, tally);
+      await this.outbox.publish([
+        bulkOperationCompletedEvent(asId<AnyId>(operationId), {
+          operationId,
+          kind: plan.kind,
+          requestedById,
+          ...tally,
+        }),
+      ]);
+    });
+  }
+
+  /**
    * The tenant's own answer to "do we work this way" — the brief's feature flags, read through
    * `SETTINGS_READER` because that is where anything configurable lives.
    *
@@ -178,7 +321,7 @@ export class DefaultBulkExecutor implements BulkExecutor {
    * for. Two flags rather than one, because a quality manager who wants drag-select and wants
    * every approval to be a deliberate individual act has a coherent position.
    */
-  private async refuseWhenDisabled(plan: BulkRequest['plan']): Promise<void> {
+  private async refuseWhenDisabled(plan: BulkPlan): Promise<void> {
     if (!(await this.settings.get(Settings.FEATURE_BULK_OPERATIONS))) {
       throw new ValidationError('Bulk operations are turned off for this organisation.', [
         { field: 'feature', message: 'disabled' },
@@ -225,9 +368,14 @@ export class DefaultBulkExecutor implements BulkExecutor {
    * on. An administrator revoking an ACL entry mid-batch stops the objects after it rather than
    * racing the ones in flight.
    */
-  private async runOne(plan: BulkRequest['plan'], targetId: string): Promise<BulkItemResult> {
+  private async runOne(
+    plan: BulkPlan,
+    operationId: string,
+    targetId: string,
+  ): Promise<BulkItemResult> {
+    let applied = false;
     try {
-      return await this.unitOfWork.run(async () => {
+      const result = await this.unitOfWork.run(async () => {
         const scope = await plan.resolveScope(targetId);
         if (scope === null) {
           // Unreachable and non-existent give the same answer. Distinguishing them here would make
@@ -239,6 +387,27 @@ export class DefaultBulkExecutor implements BulkExecutor {
           return refused(targetId, `Refused at ${decision.reason}.`);
         }
         await plan.apply(targetId);
+        // **The item row commits with the mutation** — Phase 6.2, and the whole of why a
+        // redelivered job cannot apply anything twice.
+        //
+        // Phase 16 recorded every item in its own transaction, for a good reason it stated: an
+        // object whose write rolled back must still leave its outcome behind, or a refusal would
+        // be indistinguishable from an object nobody attempted. That reasoning is right for the
+        // three not-applied outcomes and wrong for this one. An `APPLIED` row written *after* the
+        // object's transaction leaves a window — commit the mutation, crash, redeliver — in which
+        // the resume set does not know the object was done. For a metadata edit that is harmless
+        // repetition; for `UPLOAD` it is a second document, because `create` mints a new
+        // identifier every time. Writing it here closes the window by construction: the mutation
+        // and the fact that it happened are one commit or neither.
+        await this.operations.recordItem({
+          id: uuidv7(),
+          operationId,
+          targetId,
+          outcome: BulkItemOutcome.APPLIED,
+          errorCode: null,
+          detail: null,
+        });
+        applied = true;
         return {
           targetId,
           outcome: BulkItemOutcome.APPLIED as BulkItemOutcomeKey,
@@ -246,9 +415,56 @@ export class DefaultBulkExecutor implements BulkExecutor {
           detail: null,
         };
       });
+      if (applied) {
+        return result;
+      }
+      // A refusal decided before anything was written: its transaction committed nothing, so the
+      // outcome is recorded separately, exactly as Phase 16 recorded every outcome.
+      await this.record(operationId, result);
+      return result;
     } catch (error) {
-      return this.outcomeFor(targetId, error);
+      const outcome = this.outcomeFor(targetId, error);
+      // The object's transaction rolled back and took any row it wrote with it. This one is its
+      // own, which is the case Phase 16's comment is about.
+      await this.record(operationId, outcome);
+      return outcome;
     }
+  }
+
+  /**
+   * The operation's own completion step, when its kind has one.
+   *
+   * Called before `finish`, so an artefact that cannot be written fails the operation rather than
+   * completing one that claims an artefact it does not have.
+   */
+  async finalise(
+    plan: BulkPlan,
+    operationId: string,
+    items: readonly BulkItemResult[],
+  ): Promise<void> {
+    if (plan.finalise === undefined) {
+      return;
+    }
+    const applied = items
+      .filter((item) => item.outcome === BulkItemOutcome.APPLIED)
+      .map((item) => item.targetId);
+    if (applied.length > 0) {
+      await plan.finalise(operationId, applied);
+    }
+  }
+
+  /** One outcome, in its own transaction, for the objects whose own transaction did not commit. */
+  private async record(operationId: string, item: BulkItemResult): Promise<void> {
+    await this.unitOfWork.run(() =>
+      this.operations.recordItem({
+        id: uuidv7(),
+        operationId,
+        targetId: item.targetId,
+        outcome: item.outcome,
+        errorCode: item.errorCode,
+        detail: item.detail,
+      }),
+    );
   }
 
   /**

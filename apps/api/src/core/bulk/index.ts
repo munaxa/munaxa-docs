@@ -1,5 +1,6 @@
 export * from './audit-actions';
 export * from './bulk-executor';
+export * from './bulk-plan.registry';
 export * from './bulk.module';
 export * from './bulk.port';
 export * from './events';
