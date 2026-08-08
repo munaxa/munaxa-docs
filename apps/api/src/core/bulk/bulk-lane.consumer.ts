@@ -221,10 +221,17 @@ function requesterContext(
   return {
     ...baseContext(tenantId, correlationId),
     userId,
-    // Role **identifiers**, because that is what the executor's ACL subject is built from:
-    // `DefaultBulkExecutor.subject()` maps `context.roles` straight onto `roleIds`. Supplying keys
-    // here would resolve every object to "no roles" and refuse the whole operation — which is
-    // exactly what the integration suite caught on the first run of this consumer.
+    // Role identifiers.
+    //
+    // **Phase 6.2 justified this line wrongly and Phase 6.3 corrected it.** The claim was that
+    // supplying role *keys* here would refuse every object, and that the integration suite had
+    // caught it. Neither was true: the failure that prompted the change reported `BLOCKED`, which
+    // is a domain refusal, and its actual cause was a metadata field the test invented. Keys would
+    // have worked — `PrismaAclRepository.roleIdsFor` matches `role.key` or `role.id` by design, and
+    // `acl.integration.spec.ts` now proves the two produce identical decisions.
+    //
+    // Identifiers are kept anyway, because they are what this port already had and resolving them
+    // costs the repository one less key lookup. It is a preference, not a correctness requirement.
     roles: [...authority.roleIds],
     permissions: [...authority.permissions],
     permissionVersion: authority.permissionVersion,

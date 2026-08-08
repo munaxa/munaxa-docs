@@ -243,19 +243,30 @@ shape of another module's needs.
 object's reach is resolved against them and the per-object audit rows name them. A system context
 would both over-authorise it and attribute four hundred document changes to nobody.
 
-### A pre-existing inconsistency this phase surfaced and did **not** fix
+### A "pre-existing inconsistency" this phase reported — **and Phase 6.3 disproved**
 
-`DefaultBulkExecutor.subject()` maps `context.roles` directly onto the ACL subject's `roleIds`, but
-`AuthenticationMiddleware` populates `context.roles` with role **keys**. The first draft of the
-consumer supplied keys, matching the middleware, and the integration suite refused every object —
-which is how the mismatch surfaced. The consumer now supplies role identifiers, so the queued path
-resolves reach correctly.
-
-**Whether the synchronous HTTP path has the same mismatch is a question this phase did not answer**,
-and it is not this phase's to answer: it would be a change to how every request builds its ACL
-subject. It is filed in [§15](#15-remaining-phase-6-backlog) as its own item, because it is either
-harmless (the resolver may normalise) or a live authorization defect, and the difference is worth a
-phase looking at rather than a paragraph guessing.
+> **Correction, added by Phase 6.3.** What follows was this report's original claim. It was wrong,
+> and it is left in place with its correction rather than edited away, because a report that
+> silently rewrites its own findings is one nobody can audit.
+>
+> *Original claim:* `DefaultBulkExecutor.subject()` maps `context.roles` onto the ACL subject's
+> `roleIds` while `AuthenticationMiddleware` fills `context.roles` with role **keys**; the first
+> draft of the consumer supplied keys and "the integration suite refused every object — which is how
+> the mismatch surfaced"; whether the synchronous path shares the defect was filed as P1.
+>
+> **Two things were wrong with that.** The suite did not catch a role mismatch: the failure reported
+> `BLOCKED`, which is a *domain* refusal, not `REFUSED`, which is the reach answer — and its real
+> cause was a metadata field the test had invented. I changed the representation, saw the test still
+> fail, and only then found the actual cause; the inference was never checked against the evidence.
+>
+> And the mismatch is not a mismatch. `PrismaAclRepository.roleIdsFor` partitions its input by UUID
+> shape and matches `role.key` **or** `role.id`, returning canonical identifiers either way — a
+> deliberate tolerance with a comment saying so. `AuthorizationSubject.roleIds` is misnamed; the
+> behaviour is correct on every path. Phase 6.3 proves it with four tests in
+> `acl.integration.spec.ts`, including that an unknown role name and another tenant's role id both
+> grant nothing.
+>
+> The consumer still passes identifiers — a preference, not a correctness requirement.
 
 ---
 
@@ -513,7 +524,7 @@ suite ran, so the integration result is against the migrated schema.
 | — | `bulk.synchronousLimit` decorative | ✅ **Closed** |
 | — | `FAILED` unreachable | ✅ **Closed** |
 | — | `maxObjects` unenforced | ✅ **Was never open** — Phase 6.0 was wrong |
-| **1** | **`context.roles` — keys or ids?** The executor maps them onto `roleIds`; the middleware fills them with keys. Either harmless or a live authorization defect on the synchronous bulk path | **New, raised by this phase. P1** |
+| ~~**1**~~ | ~~**`context.roles` — keys or ids?**~~ | **Closed by Phase 6.3: harmless.** The resolver normalises both representations deliberately. See the correction in §7 |
 | 2 | Bulk import screen, and the progress UI that belongs with it | **Open, P2.** §9 |
 | 3 | Notification when a queued operation completes | **Open.** `bulk.operation-completed` already reaches the notification lane and has a type; a queued run now produces it from the worker. Worth verifying end to end |
 | 4 | Mid-run progress assertion | **Open, P3.** §10 |

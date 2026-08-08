@@ -8,11 +8,58 @@ import {
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { DiscoveryService, MetadataScanner, Reflector } from '@nestjs/core';
 
-import { isPermissionKey } from '@edms/domain';
+import { ALL_PERMISSIONS, Permission, type PermissionKey, isPermissionKey } from '@edms/domain';
 
 import { LOGGER, type Logger } from '../observability/logger';
 import { PUBLIC_ROUTE } from '../auth/public.decorator';
 import { REQUIRED_PERMISSIONS } from './permission.decorator';
+
+/**
+ * Permissions no route declares, on purpose — Phase 6.3.
+ *
+ * The registry's two original checks both run **route → catalogue**: they catch a mutating route
+ * with no permission, and a route naming a permission that does not exist. Neither can see the
+ * opposite direction, and that is where two real defects hid for eighteen phases: `document:archive`
+ * and `library:view` were in the catalogue, in `08-permission-model.md` §6's matrix and seeded to
+ * roles, while **no route declared either**. An administrator granting one was granting a control
+ * that did not exist, and nothing failed. Phase 6.0 found them by counting references by hand,
+ * which is not a check — it is somebody remembering to look.
+ *
+ * So the third check runs catalogue → routes. It cannot simply require every permission to have a
+ * route, because two legitimately do not, and the point of an allowlist is that *being on it is a
+ * decision somebody took*. Adding a permission that nothing enforces now costs a line here and the
+ * sentence explaining it, rather than costing nothing and being discovered by an audit.
+ */
+const UNROUTED_BY_DESIGN: Readonly<Record<PermissionKey, string>> = Object.freeze({
+  /**
+   * Enforced in the use case rather than at a route, and correctly: it is not a gate on
+   * `GET /search` — everybody with `document:view` may search — but a *modifier* that decides
+   * whether the ACL predicate is applied at all. `search.service.ts` reads it, and the trail
+   * records `SEARCH_PERFORMED` when it fires, which is the audit a bypass deserves.
+   */
+  [Permission.SEARCH_ALL]: 'A capability modifier read by SearchService, not a route gate.',
+  /**
+   * Reserved. `08-permission-model.md` §6 gives it to the tenant administrator and the document
+   * controller, which is the shape of a permission for *shared* report definitions — and no
+   * definition is shared: `report-definition.service.ts` scopes every one to its owner and says so.
+   * Binding it to personal definitions would put an author's own saved filter behind a permission
+   * the matrix does not give them.
+   */
+  [Permission.REPORT_MANAGE]: 'Reserved for shared report definitions, which do not exist yet.',
+  /**
+   * Enforced, and not by a decorator — which this check found on its first run, and which is the
+   * third legitimate reason a catalogue entry names no route.
+   *
+   * `POST /approval-tasks/{id}/decision` is gated on `document:approve`; a *rejection* additionally
+   * needs this, and whether the request is one is a property of the body rather than of the route.
+   * `@RequirePermission` declares a route's fixed requirement and cannot express "only when the
+   * decision is REJECTED", so `ApprovalController.decide` checks it in the handler and
+   * `WorkflowEngine` resolves it per object as well. Two keys because the matrix has two: a
+   * reviewer who may agree is not necessarily one who may refuse.
+   */
+  [Permission.DOCUMENT_REJECT]:
+    'Conditionally enforced in ApprovalController.decide on a rejection.',
+} as Record<PermissionKey, string>);
 
 const MUTATING_METHODS = new Set([
   RequestMethod.POST,
@@ -59,6 +106,17 @@ export class RoutePermissionRegistry implements OnApplicationBootstrap {
         `These routes declare permissions that are not in the catalogue:\n  - ${unknown.join('\n  - ')}`,
       );
     }
+    /**
+     * And every permission in the catalogue is either declared by a route or listed above — Phase
+     * 6.3, and the direction the first two checks cannot see.
+     */
+    const phantom = this.findPhantomPermissions();
+    if (phantom.length > 0) {
+      throw new Error(
+        `These permissions are in the catalogue and enforced by no route. Wire them, or add them to ` +
+          `UNROUTED_BY_DESIGN with the reason:\n  - ${phantom.join('\n  - ')}`,
+      );
+    }
     this.logger.info('Route permission check passed', {
       controllers: this.discovery.getControllers().length,
     });
@@ -96,6 +154,39 @@ export class RoutePermissionRegistry implements OnApplicationBootstrap {
       }
     }
     return offenders;
+  }
+
+  /** Catalogue entries no route declares and no line above excuses. */
+  private findPhantomPermissions(): string[] {
+    const declared = new Set<string>();
+    for (const wrapper of this.discovery.getControllers()) {
+      const instance = wrapper.instance as Record<string, unknown> | null;
+      if (!instance) {
+        continue;
+      }
+      const prototype = Object.getPrototypeOf(instance) as Type<unknown>;
+      const controllerClass = (wrapper.metatype ?? prototype) as Type<unknown>;
+      for (const methodName of this.scanner.getAllMethodNames(prototype)) {
+        const handler = instance[methodName];
+        if (typeof handler !== 'function') {
+          continue;
+        }
+        const found = this.reflector.getAllAndOverride<unknown>(REQUIRED_PERMISSIONS, [
+          handler,
+          controllerClass,
+        ]);
+        if (Array.isArray(found)) {
+          for (const permission of found as unknown[]) {
+            if (typeof permission === 'string') {
+              declared.add(permission);
+            }
+          }
+        }
+      }
+    }
+    return ALL_PERMISSIONS.filter(
+      (permission) => !declared.has(permission) && UNROUTED_BY_DESIGN[permission] === undefined,
+    );
   }
 
   private findUngatedMutatingRoutes(): string[] {

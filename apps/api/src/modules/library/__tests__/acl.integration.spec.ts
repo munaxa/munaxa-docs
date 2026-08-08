@@ -724,3 +724,93 @@ async function seedDocument(folderId: string, title: string): Promise<string> {
   });
   return asId<DocumentId>(id);
 }
+
+/**
+ * What `AuthorizationSubject.roleIds` actually accepts — Phase 6.3.
+ *
+ * ## Why this suite gained a section about a field name
+ *
+ * Phase 6.2 raised a P1: `AuthenticationMiddleware` fills `context.roles` with role **keys**, and
+ * every ACL call site — `AclGuard`, `DefaultBulkExecutor`, the three reporting readers — maps that
+ * array straight onto a field called `roleIds`. Read as names alone, that is a caller passing keys
+ * where identifiers are required, on every request in the product.
+ *
+ * It is not. `PrismaAclRepository.roleIdsFor` partitions its input by UUID shape and matches
+ * `role.key` **or** `role.id`, returning canonical identifiers either way — a deliberate tolerance
+ * with a comment saying so. The field is misnamed; the behaviour is correct.
+ *
+ * That distinction cannot be settled by reading, which is why these tests exist rather than a
+ * paragraph. `READER_ROLE` is a UUID and its key is the string `READER`, so the two representations
+ * are genuinely different values and an equality between their decisions is a real assertion.
+ */
+describe('the role representation the ACL subject accepts', () => {
+  it('resolves identically whether the caller carries a role key or a role id', async () => {
+    const byKey = await asAlice(() =>
+      permissions.resolver.resolve(
+        // What every HTTP request actually carries: `context.roles` from the token's claims.
+        subject(ALICE, 'READER'),
+        documentScope(openDocumentId),
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+    const byId = await asAlice(() =>
+      permissions.resolver.resolve(
+        subject(ALICE, READER_ROLE),
+        documentScope(openDocumentId),
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+
+    expect(byKey.allowed, 'a role key must authorise exactly as a role id does').toBe(true);
+    expect(byId.allowed).toBe(true);
+    // Not merely both-allowed: the *same* decision, down to which node decided it. A tolerance that
+    // allowed through a different route would be a different bug wearing this one's clothes.
+    expect(byKey).toEqual(byId);
+  });
+
+  it('refuses a permission the role does not hold, in both representations', async () => {
+    // The negative half, which is what makes the positive half mean something. `READER` holds
+    // `document:view` and `document:create` and nothing else, so neither representation may
+    // produce an allow for `document:delete`.
+    for (const role of ['READER', READER_ROLE]) {
+      const decision = await asAlice(() =>
+        permissions.resolver.resolve(
+          subject(ALICE, role),
+          documentScope(openDocumentId),
+          Permission.DOCUMENT_DELETE,
+        ),
+      );
+      expect(decision.allowed, `${role} must not grant document:delete`).toBe(false);
+    }
+  });
+
+  it('grants nothing for a role name that matches no role at all', async () => {
+    // The tolerance must not become a hole: an unrecognised string resolves to no role rather than
+    // to every role, so a forged claim buys nothing. `roleIdsFor` returns an empty set and the
+    // resolver falls through to closed-by-default.
+    const decision = await asAlice(() =>
+      permissions.resolver.resolve(
+        subject(ALICE, 'ROLE_THAT_DOES_NOT_EXIST'),
+        documentScope(openDocumentId),
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe('CLOSED_BY_DEFAULT');
+  });
+
+  it('grants nothing for another tenant’s role id', async () => {
+    // A well-formed UUID naming a role that exists in some other tenant. `roleIdsFor` scopes its
+    // lookup to the ambient tenant, so this resolves to no role — the same answer as a typo.
+    const decision = await asAlice(() =>
+      permissions.resolver.resolve(
+        subject(ALICE, uuidv7()),
+        documentScope(openDocumentId),
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+
+    expect(decision.allowed).toBe(false);
+  });
+});
