@@ -315,6 +315,28 @@ export const en = {
       changesAffectFutureOnly:
         'Changes apply to documents created afterwards. Documents that already exist keep the policy they were created under.',
     },
+    templates: {
+      title: 'Document templates',
+      description:
+        'The controlled starting point a new document is filed from: its type, its classification, and where it goes by default.',
+      one: 'document template',
+      documentType: 'Document type',
+      documentTypeHint:
+        'Decides numbering, approval and revision labelling. It cannot be changed on a document afterwards, which is why a template names it.',
+      confidentiality: 'Confidentiality',
+      confidentialityHint:
+        'What documents from this template start as. Deliberately not inherited from the folder, so a confidential form stays confidential wherever it is filed.',
+      category: 'Category',
+      categoryHint: 'Optional. Business classification, independent of the folder.',
+      defaultFolder: 'Default folder',
+      defaultFolderHint:
+        'Optional. Where documents from this template go unless the person filing one chooses otherwise.',
+      body: 'Body',
+      noBody: 'Defaults only',
+      isActive: 'Available for use',
+      isActiveHint:
+        'Turning this off keeps the template and stops anybody starting a document from it.',
+    },
     categories: {
       title: 'Categories',
       description: 'Business classification, independent of where a document is filed.',

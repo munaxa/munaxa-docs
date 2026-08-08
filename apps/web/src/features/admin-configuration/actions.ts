@@ -3,6 +3,7 @@
 import {
   type Category,
   type ConfidentialityLevel,
+  type DocumentTemplate,
   type DocumentType,
   type HeldNumberBlock,
   type MetadataField,
@@ -12,6 +13,7 @@ import {
   type SettingsResponse,
   createCategorySchema,
   createConfidentialityLevelSchema,
+  createDocumentTemplateSchema,
   createDocumentTypeSchema,
   createMetadataFieldSchema,
   createNumberingRuleSchema,
@@ -22,6 +24,7 @@ import {
   resetSettingSchema,
   updateCategorySchema,
   updateConfidentialityLevelSchema,
+  updateDocumentTemplateSchema,
   updateDocumentTypeSchema,
   updateMetadataFieldSchema,
   updateNumberingRuleSchema,
@@ -310,4 +313,47 @@ export async function resetSetting(input: unknown): Promise<ActionResult<Setting
   return validated(resetSettingSchema, input, (body) =>
     adminWrite<SettingsResponse>({ path: '/admin/settings/reset', method: 'POST', body }),
   );
+}
+
+// --- Document templates ---------------------------------------------------------------------
+//
+// Phase 6.5. The five routes `DocumentTemplatesController` has carried since Phase 16 with nothing
+// calling them: a complete CRUD contract, `template:manage`, soft delete and restore, and no way
+// to reach any of it from the product. Written here rather than in a feature of its own because a
+// template *is* configuration in the same family as a document type — it names one, and its whole
+// purpose is to fix the defaults a new document of that type starts with.
+//
+// `POST /document-templates/:id/documents` is deliberately **not** here. Creating from a template
+// is an ordinary `document:create` performed from the document library, not an administrative act,
+// and putting it on this screen would put a create button behind `template:manage`.
+
+export async function createDocumentTemplate(
+  input: unknown,
+): Promise<ActionResult<DocumentTemplate>> {
+  return validated(createDocumentTemplateSchema, input, (body) =>
+    adminWrite<DocumentTemplate>({ path: '/document-templates', method: 'POST', body }),
+  );
+}
+
+export async function updateDocumentTemplate(
+  id: string,
+  version: number,
+  input: unknown,
+): Promise<ActionResult<DocumentTemplate>> {
+  return validated(updateDocumentTemplateSchema, input, (body) =>
+    adminWrite<DocumentTemplate>({
+      path: `/document-templates/${id}`,
+      method: 'PATCH',
+      body,
+      version,
+    }),
+  );
+}
+
+export async function deleteDocumentTemplate(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/document-templates/${id}`, method: 'DELETE', version });
+}
+
+export async function restoreDocumentTemplate(id: string, version: number): Promise<ActionResult> {
+  return adminWrite({ path: `/document-templates/${id}/restore`, method: 'POST', version });
 }
