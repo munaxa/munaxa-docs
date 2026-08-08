@@ -1276,6 +1276,8 @@ export const en = {
       fileQuarantined: 'File quarantined',
       addressSuppressed: 'Email address suppressed',
       auditChainBroken: 'Audit chain failed verification',
+      bulkOperationCompleted: 'Bulk operation finished',
+      digestSummary: 'Your notification summary',
     },
   },
   /**

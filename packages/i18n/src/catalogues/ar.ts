@@ -1176,6 +1176,8 @@ export const ar: Catalogue = {
       fileQuarantined: 'تم عزل ملف',
       addressSuppressed: 'تم تعليق عنوان بريد',
       auditChainBroken: 'فشل التحقق من سلسلة التدقيق',
+      bulkOperationCompleted: 'انتهت العملية المجمّعة',
+      digestSummary: 'ملخّص الإشعارات',
     },
   },
   /** شاشة الصلاحيات — المرحلة 14. مفاتيح الصلاحيات نفسها لا تُترجم: فهي معرّفات الكتالوج. */

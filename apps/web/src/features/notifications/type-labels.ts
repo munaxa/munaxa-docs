@@ -38,6 +38,12 @@ const LABELS: Readonly<Record<string, MessageKey>> = Object.freeze({
   'security.file-quarantined': 'notifications.type.fileQuarantined',
   'security.address-suppressed': 'notifications.type.addressSuppressed',
   'audit.chain-broken': 'notifications.type.auditChainBroken',
+  // Phase 6.4. Both types have had a producer since Phase 12 and Phase 16 respectively and neither
+  // had a label, so the two notifications a person is *most* likely to see after a large operation
+  // both rendered as the generic fallback the comment above calls "unhelpful". A digest is the one
+  // that arrives in an inbox with no other clue what it is.
+  'bulk.operation-completed': 'notifications.type.bulkOperationCompleted',
+  'digest.summary': 'notifications.type.digestSummary',
 });
 
 export function labelKeyFor(typeKey: string): MessageKey {

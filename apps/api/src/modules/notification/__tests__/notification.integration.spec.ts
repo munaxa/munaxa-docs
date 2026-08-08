@@ -884,3 +884,189 @@ describe('delegation events, delivered at last', () => {
     expect(created).toBe(4);
   });
 });
+
+/**
+ * 18 §7's provider-outage row, which was the one row in that table nothing had built — Phase 6.4.
+ *
+ * The gap was not subtle once looked at, only invisible: a transient failure wrote `FAILED`,
+ * `claimQueued` selects `QUEUED`, and `DeliveryState.FAILED` appeared in exactly one place in the
+ * product — the assignment that produced it. Nothing read it, nothing re-queued it, and the
+ * `attempts` column had been incremented since Phase 12 and consulted by nobody. A mail provider
+ * unreachable for sixty seconds therefore lost every email queued in that minute, permanently.
+ *
+ * It is asserted here rather than in a unit test because the whole mechanism is a column and a
+ * predicate: `release_at` in the future, `claimQueued` refusing to claim it, and the same pass a
+ * few minutes later finding it due. A repository double would answer from the same belief as the
+ * code under test.
+ */
+
+/**
+ * 18 §7's provider-outage row, which was the one row in that table nothing had built — Phase 6.4.
+ *
+ * The gap was not subtle once looked at, only invisible: a transient failure wrote `FAILED`,
+ * `claimQueued` selects `QUEUED`, and `DeliveryState.FAILED` appeared in exactly one place in the
+ * product — the assignment that produced it. Nothing read it, nothing re-queued it, and the
+ * `attempts` column had been incremented since Phase 12 and consulted by nobody. A mail provider
+ * unreachable for sixty seconds therefore lost every email queued in that minute, permanently. The
+ * in-app copy survived, because that row *is* its delivery, which is why the loss was invisible
+ * from a screen.
+ *
+ * Asserted against a real database rather than a double, because the whole mechanism is a column
+ * and a predicate: `release_at` in the future, `claimQueued` declining to claim it, and a pass a
+ * few minutes later finding it due.
+ *
+ * Ada rather than Bob throughout: Bob turned `document.published` off in the preferences describe
+ * above and never turned it back on, which is a good assertion there and would silently mean "no
+ * row to retry" here.
+ */
+describe('a provider outage delays a message rather than losing it', () => {
+  const transient = {
+    accepted: false,
+    providerMessageId: null,
+    failureReason: 'connection refused',
+    permanentFailure: false,
+  };
+  const accepted = {
+    accepted: true,
+    providerMessageId: 'provider-ok',
+    failureReason: null,
+    permanentFailure: false,
+  };
+
+  /** Queues one email for Ada and returns its row id. */
+  async function queueOne(): Promise<string> {
+    const eventId = uuidv7();
+    await asSystem(() =>
+      stack.events.handle({
+        eventId,
+        eventType: 'document.published',
+        payload: { documentId: DOCUMENT },
+      }),
+    );
+    // By the idempotency key rather than by recency: `created_at` is the database's clock while
+    // everything else here runs on the movable one, so "the newest row" is not a question this
+    // suite can ask honestly.
+    const row = await owner.notificationMessage.findFirstOrThrow({
+      where: {
+        tenantId: TENANT,
+        idempotencyKey: `${eventId}:${ADA}:${NotificationChannel.EMAIL}`,
+      },
+    });
+    return row.id;
+  }
+
+  function failuresSince(index: number, outcome: string): number {
+    return stack.metrics.recorded
+      .slice(index)
+      .filter(
+        (entry) =>
+          entry.name === 'notification.delivery.failures' && entry.labels['outcome'] === outcome,
+      ).length;
+  }
+
+  it('re-queues a transient failure behind a backoff instead of marking it failed', async () => {
+    now = new Date('2026-08-20T09:00:00.000Z');
+    const id = await queueOne();
+
+    stack.transport.receipt = transient;
+    await runWithContext(contextFor(null), () =>
+      stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+
+    const afterFirst = await owner.notificationMessage.findUniqueOrThrow({ where: { id } });
+    // Queued again, not failed — and held behind an instant, which is the whole mechanism.
+    expect(afterFirst.state).toBe(DeliveryState.QUEUED);
+    expect(afterFirst.attempts).toBe(1);
+    expect(afterFirst.releaseAt).not.toBeNull();
+    expect(afterFirst.releaseAt?.getTime()).toBeGreaterThan(now.getTime());
+
+    // And it is genuinely withheld: a pass a second later must not pick it up, or the backoff is
+    // a number in a column rather than a delay.
+    const sentBefore = stack.transport.sent.length;
+    now = new Date('2026-08-20T09:00:01.000Z');
+    await runWithContext(contextFor(null), () =>
+      stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+    expect(stack.transport.sent.length).toBe(sentBefore);
+
+    // Once the backoff has elapsed and the provider is back, it goes out — and the retry instant
+    // is cleared, so a message that was retried and then sent keeps no stale one.
+    now = new Date('2026-08-20T09:10:00.000Z');
+    stack.transport.receipt = accepted;
+    await runWithContext(contextFor(null), () =>
+      stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+
+    const settled = await owner.notificationMessage.findUniqueOrThrow({ where: { id } });
+    expect(settled.state).toBe(DeliveryState.SENT);
+    expect(settled.attempts).toBe(2);
+    expect(settled.releaseAt).toBeNull();
+    expect(settled.sentAt).not.toBeNull();
+  });
+
+  it('gives up after the capped attempts and leaves the message dead, visibly', async () => {
+    now = new Date('2026-08-21T09:00:00.000Z');
+    const id = await queueOne();
+    const before = stack.metrics.recorded.length;
+
+    stack.transport.receipt = transient;
+    // Five attempts is the cap. Each pass moves the clock past the previous backoff, which is the
+    // only reason a later pass claims the row at all.
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      now = new Date(now.getTime() + 600_000);
+      await runWithContext(contextFor(null), () =>
+        stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+      );
+    }
+
+    const dead = await owner.notificationMessage.findUniqueOrThrow({ where: { id } });
+    expect(dead.state).toBe(DeliveryState.FAILED);
+    expect(dead.attempts).toBe(5);
+    // No further instant: a dead letter is not a message waiting, and tomorrow's pass must not
+    // resurrect it. §8's "never silently dropped" is honoured by the row, which still says why.
+    expect(dead.releaseAt).toBeNull();
+    expect(dead.failureReason).toContain('connection refused');
+
+    // What an operator sees. Counted loosely on purpose: a delivery pass claims every due message
+    // in the tenant, so the batch legitimately contains other rows left over from the describes
+    // above. What matters is that both labels are produced, because alerting belongs on `terminal`
+    // — `retrying` is what an ordinary provider blip looks like and must not page anybody.
+    expect(failuresSince(before, 'retrying')).toBeGreaterThanOrEqual(4);
+    expect(failuresSince(before, 'terminal')).toBeGreaterThanOrEqual(1);
+
+    // And it stays dead.
+    now = new Date('2026-08-22T09:00:00.000Z');
+    const sentBefore = stack.transport.sent.length;
+    await runWithContext(contextFor(null), () =>
+      stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+    expect(stack.transport.sent.length).toBe(sentBefore);
+
+    stack.transport.receipt = accepted;
+  });
+
+  it('still refuses to retry a hard bounce, which is about the address rather than the provider', async () => {
+    now = new Date('2026-08-23T09:00:00.000Z');
+    const id = await queueOne();
+
+    stack.transport.receipt = {
+      accepted: false,
+      providerMessageId: null,
+      failureReason: 'mailbox does not exist',
+      permanentFailure: true,
+    };
+    await runWithContext(contextFor(null), () =>
+      stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+
+    const bounced = await owner.notificationMessage.findUniqueOrThrow({ where: { id } });
+    // Suppressed on the first attempt, with no backoff: repeating a send to a mailbox that does
+    // not exist only damages the sending domain's reputation. This is the case the retry above
+    // must not have swallowed.
+    expect(bounced.state).toBe(DeliveryState.SUPPRESSED);
+    expect(bounced.releaseAt).toBeNull();
+
+    stack.transport.receipt = accepted;
+    await inTransaction(() => stack.admin.releaseSuppression(addressOf('ada')));
+  });
+});

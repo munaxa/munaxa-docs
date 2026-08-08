@@ -394,6 +394,15 @@ export interface WorkflowDocumentGate {
     readonly to: DocumentStatusKey;
     readonly workflowInstanceId: string | null;
     readonly reason: string | null;
+    /**
+     * The reviewer's own words on a refusal — Phase 6.4, optional and read only by the
+     * `document.rejected` event Document publishes.
+     *
+     * Separate from `reason`, which is the stage outcome and is what the audit payload has
+     * recorded since Phase 4. Widening `reason` to carry a sentence would change eighteen phases
+     * of trail rows to improve one notification.
+     */
+    readonly decisionComment?: string | null;
   }): Promise<void>;
 }
 

@@ -1439,3 +1439,112 @@ describe('numbering', () => {
     ).toBe('VOIDED');
   });
 });
+
+/**
+ * The two notifications 18 §4 names that nobody had ever been sent — Phase 6.4.
+ *
+ * `document.approved` and `document.rejected` were declared in Phase 3, routed to the notification
+ * lane in Phase 12, given a catalogue entry, `en` and `ar` templates, a branch in
+ * `NotificationEventService` and an assertion in `outbox-routing.spec.ts` that they reach
+ * `NOTIFICATIONS_DELIVER` — and **no code path had ever published one**. Approval and rejection
+ * both run through `DocumentService.transition`, which wrote an audit row and no outbox row at all.
+ *
+ * Nothing caught it because every test of that path asks a different question. The notification
+ * suite hands `NotificationEventService.handle` a synthetic event, which proves the translation and
+ * not the production. The routing spec asserts `routesFor('document.approved')`, which is a claim
+ * about a table and not about a publisher. This module's own tests asserted the document's status
+ * and the number it was given, both of which were correct throughout.
+ *
+ * So the assertion has to be made *here* — after a real decision, against the real outbox table —
+ * because this is the only suite that runs the act. A test that stubs any part of it is the test
+ * that already existed and already passed.
+ */
+describe('approving and rejecting announce themselves', () => {
+  async function eventsFor(documentId: string, eventType: string) {
+    const rows = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, eventType, aggregateId: documentId },
+    });
+    return rows;
+  }
+
+  it('publishes document.approved with the number the approval assigned', async () => {
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+    const task = await owner.approvalTask.findFirstOrThrow({ where: { instanceId } });
+    await as(
+      () =>
+        workflow.engine.decide({
+          taskId: asId<ApprovalTaskId>(task.id),
+          decision: TaskDecision.APPROVED,
+          comment: null,
+        }),
+      REVIEWER,
+    );
+
+    const published = await eventsFor(documentId, 'document.approved');
+    // Exactly one: the fact is the document's, published once from the transition that performs it
+    // — not once per stage and not once per task.
+    expect(published).toHaveLength(1);
+    const payload = published[0]?.payload as Record<string, unknown>;
+    expect(payload['documentId']).toBe(documentId);
+    expect(payload['workflowInstanceId']).toBe(instanceId);
+    // Read from the row inside the same transaction that assigned it, which is the reason this
+    // event can carry the number at all: `assignAtApproval` runs before the engine transitions.
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(payload['documentNumber']).toBe(document.documentNumber);
+    expect(payload['revisionId']).toBe(document.latestRevisionId);
+
+    // And it commits with the change rather than beside it: the outbox row and the status are the
+    // same transaction, so a notification can never describe an approval that rolled back
+    // (ADR-0011).
+    expect(document.status).toBe(DocumentStatus.APPROVED);
+  });
+
+  it('publishes document.rejected carrying the comment a person will read', async () => {
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+    const task = await owner.approvalTask.findFirstOrThrow({ where: { instanceId } });
+    await as(
+      () =>
+        workflow.engine.decide({
+          taskId: asId<ApprovalTaskId>(task.id),
+          decision: TaskDecision.REJECTED,
+          comment: 'The tolerances in section 4 are wrong.',
+        }),
+      REVIEWER,
+    );
+
+    const rejected = await eventsFor(documentId, 'document.rejected');
+    expect(rejected).toHaveLength(1);
+    const payload = rejected[0]?.payload as Record<string, unknown>;
+    expect(payload['documentId']).toBe(documentId);
+    // The `comment` the notification template renders. It reaches the payload as the transition's
+    // `reason`, which is what the engine passes the decision's comment as.
+    expect(payload['comment']).toBe('The tolerances in section 4 are wrong.');
+    expect(payload['decidedBy']).toBe(REVIEWER);
+    // No number was issued, so none is claimed.
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.documentNumber).toBeNull();
+    expect(document.status).toBe(DocumentStatus.REJECTED);
+  });
+
+  it('says nothing about a transition 18 §4 names no recipient for', async () => {
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+    await as(() => workflow.engine.submit(asId<DocumentId>(documentId), null));
+
+    // Submission moves the document to SUBMITTED and is deliberately silent: §4 has no row for it,
+    // `document.submitted` carries a `workflowVersionId` the transition does not hold, and this
+    // phase's rule is that an event whose intended recipient is undefined stays unpublished rather
+    // than being invented. The assertion exists so that "nothing was published" is a decision on
+    // the record rather than the absence this phase just finished correcting elsewhere.
+    expect(await eventsFor(documentId, 'document.submitted')).toHaveLength(0);
+    expect(await eventsFor(documentId, 'document.approved')).toHaveLength(0);
+  });
+});
