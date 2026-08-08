@@ -642,6 +642,16 @@ export const ar: Catalogue = {
       released: 'ستُحاوَل مراسلة ذلك العنوان مرة أخرى',
     },
     settings: {
+      searchIndex: 'فهرس البحث',
+      searchIndexDescription:
+        'يعيد بناء فهرس البحث لكل المستندات. يعمل في الخلفية ولا يغيّر أي مستند؛ ولا يلزم إلا بعد استرجاع أو تغيير في الفهرسة.',
+      rebuildSearchIndex: 'إعادة بناء فهرس البحث',
+      searchRebuildRequested: 'تمت جدولة إعادة البناء.',
+      searchNeverRebuilt: 'لم تُعِد هذه المؤسسة بناء فهرسها من قبل.',
+      searchRebuildSummary: 'تمت فهرسة {count} مستندًا، بدأت {startedAt}.',
+      searchRebuildRunning: 'قيد التنفيذ',
+      searchRebuildCompleted: 'اكتملت',
+      searchRebuildFailed: 'فشلت',
       title: 'الإعدادات',
       description: 'اللغة والأمان وسياسة التدقيق لهذه المؤسسة.',
       value: 'القيمة',

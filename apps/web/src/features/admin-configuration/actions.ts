@@ -10,6 +10,7 @@ import {
   type NumberingPreview,
   type NumberingRule,
   type RetentionPolicy,
+  type SearchRebuild,
   type SettingsResponse,
   createCategorySchema,
   createConfidentialityLevelSchema,
@@ -356,4 +357,20 @@ export async function deleteDocumentTemplate(id: string, version: number): Promi
 
 export async function restoreDocumentTemplate(id: string, version: number): Promise<ActionResult> {
   return adminWrite({ path: `/document-templates/${id}/restore`, method: 'POST', version });
+}
+
+// --- Search index maintenance ---------------------------------------------------------------
+//
+// Phase 6.5. An **operator** action, not a user feature, which is why it is a button on the
+// settings screen rather than a workspace of its own: 12 §12 separates user features from operator
+// ones, and a full-index reprojection is the second. It has been reachable only by hand-crafting a
+// request since Phase 8.
+//
+// Asynchronous already, and left that way. `POST /search/rebuild` answers `202` and the work runs
+// on the search lane, resumable, exactly as Phase 6.2 requires of anything that could touch every
+// document in a tenant. Nothing here waits for it; the status endpoint beside it is what reports
+// progress, and both are the existing contract rather than a second job model.
+
+export async function requestSearchRebuild(): Promise<ActionResult<SearchRebuild>> {
+  return adminWrite<SearchRebuild>({ path: '/search/rebuild', method: 'POST' });
 }

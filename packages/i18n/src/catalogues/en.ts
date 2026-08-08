@@ -708,6 +708,16 @@ export const en = {
       released: 'Mail to that address will be attempted again',
     },
     settings: {
+      searchIndex: 'Search index',
+      searchIndexDescription:
+        'Reprojects every document into the search index. Runs in the background and does not change any document; a rebuild is only needed after a restore or an index change.',
+      rebuildSearchIndex: 'Rebuild the search index',
+      searchRebuildRequested: 'A rebuild has been queued.',
+      searchNeverRebuilt: 'This organisation has never rebuilt its index.',
+      searchRebuildSummary: '{count} documents indexed, started {startedAt}.',
+      searchRebuildRunning: 'Running',
+      searchRebuildCompleted: 'Completed',
+      searchRebuildFailed: 'Failed',
       title: 'Settings',
       description: 'Locale, security and audit policy for this organisation.',
       value: 'Value',

@@ -78,13 +78,7 @@ describe('the document templates screen', () => {
     // A third distinct tree: no table, no create button, an alert instead. A template cannot exist
     // before the type it names, and saying so up front is what this branch is.
     await expectAccessible(
-      <TemplatesScreen
-        rows={[]}
-        total={0}
-        state={listState()}
-        {...CHOICES}
-        documentTypes={[]}
-      />,
+      <TemplatesScreen rows={[]} total={0} state={listState()} {...CHOICES} documentTypes={[]} />,
     );
   });
 });
