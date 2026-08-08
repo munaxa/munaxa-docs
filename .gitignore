@@ -71,3 +71,7 @@ school/apps/mobile/*.iml
 # run writes beside them are evidence for that run, not artefacts to keep.
 apps/web/src/test/__screenshots__/*.actual.png
 apps/web/src/test/__screenshots__/*.diff.png
+
+# Redis writes its snapshot into whatever directory it was started from, which during local
+# integration runs is the repository root. It is a runtime artefact of a test dependency.
+dump.rdb
