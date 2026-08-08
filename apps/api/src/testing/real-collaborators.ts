@@ -1476,6 +1476,8 @@ export interface NotificationStack {
   readonly suppressions: PrismaNotificationSuppressionRepository;
   readonly batches: PrismaNotificationBatchRepository;
   readonly transport: RecordingTransport;
+  /** Phase 6.4's delivery-failure counter, so a suite can assert what an operator would see. */
+  readonly metrics: RecordingMetrics;
 }
 
 /**
@@ -1516,6 +1518,7 @@ export function realNotifications(options: {
     logger,
   );
   const transport = new RecordingTransport();
+  const metrics = new RecordingMetrics();
   const delivery = new DeliveryService(
     messages,
     suppressions,
@@ -1526,6 +1529,7 @@ export function realNotifications(options: {
     options.unitOfWork,
     directory,
     logger,
+    metrics,
     writer,
   );
   const digests = new DigestService(
@@ -1569,6 +1573,7 @@ export function realNotifications(options: {
     suppressions,
     batches,
     transport,
+    metrics,
   };
 }
 

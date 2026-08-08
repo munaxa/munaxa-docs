@@ -12,6 +12,7 @@ import {
 } from '@edms/domain';
 
 import { LOGGER, type Logger } from '../../../core/observability/logger';
+import { METRICS, MetricName, type Metrics } from '../../../core/observability/metrics';
 import {
   AdministeredWriter,
   AdministrativeOperation,
@@ -38,6 +39,34 @@ const BATCH_SIZE = 50;
 
 /** How many held messages one release pass moves back into the queue. */
 const RELEASE_BATCH = 500;
+
+/**
+ * How many times one message is attempted before it is left dead — Phase 6.4.
+ *
+ * 18 §7's provider-outage row asks for "exponential backoff, capped attempts, dead-letter queue
+ * with operator visibility", and it was the one row in that table nothing had built: a transient
+ * failure wrote `FAILED`, `claimQueued` selects only `QUEUED`, and `DeliveryState.FAILED` was read
+ * by no query in the product. A provider unreachable for one minute therefore lost every email
+ * queued in that minute, permanently and silently — the in-app copy survived, because that row is
+ * its own delivery, which is why the loss was invisible from a screen.
+ *
+ * A constant rather than a tenant setting, matching the outbox dispatcher's own backoff: how many
+ * times to re-dial a mail server is a property of the deployment's plumbing, not a policy a quality
+ * manager has an opinion about. The bounce threshold above is a setting because *that* one is a
+ * judgement about people's mailboxes.
+ *
+ * Five attempts over the curve below is a little under half an hour, which outlasts an ordinary
+ * provider blip and does not keep a genuinely dead endpoint warm for a working day.
+ */
+const MAX_DELIVERY_ATTEMPTS = 5;
+
+/**
+ * Exponential, capped at five minutes — the same shape and the same cap as the outbox dispatcher's,
+ * deliberately, so a deployment has one backoff curve to reason about rather than two.
+ */
+function backoffMs(attempts: number): number {
+  return Math.min(300_000, 1_000 * 2 ** Math.min(attempts, 8));
+}
 
 export interface DeliveryOutcome {
   readonly attempted: number;
@@ -86,6 +115,7 @@ export class DeliveryService {
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(USER_DIRECTORY) private readonly users: UserDirectory,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(METRICS) private readonly metrics: Metrics,
     private readonly writer: AdministeredWriter,
   ) {}
 
@@ -156,27 +186,49 @@ export class DeliveryService {
     }
 
     const at = this.clock.now();
+    // How many attempts this message will have made once this one is recorded. The column has
+    // been incremented on every attempt since Phase 12 and, until Phase 6.4, was read by nothing.
+    const attempts = message.attempts + 1;
+    const exhausted = attempts >= MAX_DELIVERY_ATTEMPTS;
+    const retryable = !receipt.accepted && !receipt.permanentFailure && !exhausted;
+
     const state = receipt.accepted
       ? DeliveryState.SENT
       : receipt.permanentFailure
         ? // A hard bounce is not worth retrying: the address is wrong, and repeating it only
           // damages the sending domain's reputation.
           DeliveryState.SUPPRESSED
-        : DeliveryState.FAILED;
+        : retryable
+          ? // Back into the queue with a future `release_at` — see `retryAt` below.
+            DeliveryState.QUEUED
+          : DeliveryState.FAILED;
 
     await this.unitOfWork.run(() =>
       this.messages.recordDelivery(message.id, {
         state,
         failureReason: receipt.failureReason,
         at,
+        retryAt: retryable ? new Date(at.getTime() + backoffMs(attempts)) : null,
       }),
     );
 
     if (!receipt.accepted) {
-      this.logger.warn('Notification delivery failed', {
+      this.metrics.increment(MetricName.NOTIFICATION_DELIVERY_FAILURES, {
+        channel: message.channel,
+        // The label an alert fires on: a transient failure during a provider blip is noise, and a
+        // message that has run out of attempts is a notification nobody will ever receive.
+        outcome: state === DeliveryState.QUEUED ? 'retrying' : 'terminal',
+      });
+      // Escalated once the attempts are spent, because the two are different operational facts:
+      // one send failed, versus this message is now dead and 18 §8's "never silently dropped" is
+      // being honoured only by the row it leaves behind.
+      const say = state === DeliveryState.QUEUED ? this.logger.warn : this.logger.error;
+      say.call(this.logger, 'Notification delivery failed', {
         messageId: message.id,
         channel: message.channel,
         permanent: receipt.permanentFailure,
+        attempts,
+        willRetry: retryable,
         // The reason, never the address: a log is not the place to accumulate a mailing list.
         reason: receipt.failureReason,
       });

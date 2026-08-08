@@ -53,6 +53,7 @@ export class DocumentContextAdapter implements WorkflowDocumentGate {
     readonly to: DocumentStatusKey;
     readonly workflowInstanceId: string | null;
     readonly reason: string | null;
+    readonly decisionComment?: string | null;
   }): Promise<void> {
     // Joins the engine's transaction — `AdministeredWriter` nests, so the status change, the
     // approval that caused it and both audit events commit together or not at all. Two audit
@@ -64,6 +65,11 @@ export class DocumentContextAdapter implements WorkflowDocumentGate {
       to: input.to,
       workflowInstanceId: input.workflowInstanceId,
       reason: input.reason,
+      // Phase 6.4. Forwarded rather than dropped: this adapter is the seam between the engine's
+      // port and Document's use case, and a field it does not copy is a field the use case never
+      // sees however carefully both sides declare it — which is exactly how the reviewer's comment
+      // arrived at `document.rejected` as the literal `REJECTED` until a test asked.
+      decisionComment: input.decisionComment ?? null,
     });
   }
 }

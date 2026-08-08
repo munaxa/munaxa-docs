@@ -337,7 +337,12 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
 
   async recordDelivery(
     id: NotificationMessageId,
-    outcome: { state: DeliveryStateKey; failureReason: string | null; at: Date },
+    outcome: {
+      state: DeliveryStateKey;
+      failureReason: string | null;
+      at: Date;
+      retryAt?: Date | null;
+    },
   ): Promise<void> {
     await requireTransaction().notificationMessage.update({
       where: { id },
@@ -346,6 +351,12 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
         failureReason: outcome.failureReason,
         sentAt: outcome.state === DeliveryState.SENT ? outcome.at : null,
         attempts: { increment: 1 },
+        // Phase 6.4. The one column a retry needs, and it already existed: `claimQueued` withholds
+        // a QUEUED row whose `release_at` is in the future, which is how quiet hours and digests
+        // have always worked. Writing a backoff instant into it makes a failed send wait rather
+        // than be picked up by the pass a minute later. Cleared on every other outcome so a row
+        // that was retried and then sent does not keep a stale instant.
+        releaseAt: outcome.retryAt ?? null,
       },
     });
   }

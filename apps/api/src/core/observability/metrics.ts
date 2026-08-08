@@ -41,6 +41,7 @@ export const MetricName = {
   MESSAGE_DURATION: 'message.duration',
   OUTBOX_PENDING: 'outbox.pending',
   OUTBOX_DISPATCH_FAILURES: 'outbox.dispatch.failures',
+  NOTIFICATION_DELIVERY_FAILURES: 'notification.delivery.failures',
   QUEUE_DEPTH: 'queue.depth',
   JOB_DURATION: 'job.duration',
   JOB_FAILURES: 'job.failures',
@@ -102,6 +103,20 @@ export const METRIC_CATALOGUE: Readonly<Record<MetricNameKey, MetricDescriptor>>
     kind: 'COUNTER',
     labels: ['reason'],
     help: 'Outbox rows the dispatcher could not enqueue.',
+  },
+  /**
+   * 18 §7's "dead-letter queue with operator visibility", at the level this product provides it
+   * elsewhere — Phase 6.4.
+   *
+   * `outcome` separates a blip from a loss: `retrying` is a send that will be attempted again and
+   * is expected to be noisy during a provider incident, `terminal` is a message that has spent its
+   * attempts and will never reach anybody. Alerting belongs on the second. Both labels are bounded
+   * — two outcomes, and the channel catalogue — so the series count cannot grow with traffic.
+   */
+  [MetricName.NOTIFICATION_DELIVERY_FAILURES]: {
+    kind: 'COUNTER',
+    labels: ['channel', 'outcome'],
+    help: 'Notification sends that failed, split by whether they will be retried.',
   },
   [MetricName.QUEUE_DEPTH]: {
     kind: 'GAUGE',

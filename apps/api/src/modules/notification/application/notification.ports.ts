@@ -188,6 +188,14 @@ export interface NotificationMessageRepository {
       readonly state: DeliveryStateKey;
       readonly failureReason: string | null;
       readonly at: Date;
+      /**
+       * When a retryable failure may be attempted again — Phase 6.4.
+       *
+       * Only meaningful beside `QUEUED`: it is written to `release_at`, which `claimQueued`
+       * already treats as "not due yet". Absent or null on every other outcome, which clears any
+       * instant a previous attempt left behind.
+       */
+      readonly retryAt?: Date | null;
     },
   ): Promise<void>;
 }

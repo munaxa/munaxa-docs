@@ -968,6 +968,11 @@ export class WorkflowEngine {
 
     // Rejected, changes requested, or a threshold that can no longer be met. What each does to the
     // instance is the definition's `onReject`, which is authored per stage.
+    const refusal = tasks.find(
+      (task) =>
+        task.decision === TaskDecision.REJECTED ||
+        task.decision === TaskDecision.CHANGES_REQUESTED,
+    );
     const definition = await this.definitionFor(aggregate.instance.workflowVersionId);
     const authored = definition?.stages[stage.index];
     const returnToAuthor =
@@ -1015,8 +1020,14 @@ export class WorkflowEngine {
       await this.documents.transition({
         documentId: aggregate.instance.documentId,
         to: DocumentStatus.REJECTED,
-        workflowInstanceId: aggregate.instance.id,
         reason: outcome,
+        workflowInstanceId: aggregate.instance.id,
+        // What the reviewer wrote, carried to `document.rejected`'s payload and from there to the
+        // notification's `comment` placeholder — Phase 6.4. `reason` above stays the stage outcome
+        // because it is what the audit payload has recorded since Phase 4; this is a second field
+        // that the trail does not read. The first refusing task, because a stage that ends
+        // `REJECTED` ends on one: the completion rule stops the moment the outcome is settled.
+        decisionComment: refusal?.comment ?? null,
       });
     }
 

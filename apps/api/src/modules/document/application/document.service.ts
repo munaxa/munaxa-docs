@@ -50,12 +50,14 @@ import {
 import { DocumentAudit } from '../domain/audit-actions';
 import { implementedTransitionsFrom, isFrozen, isLegalTransition } from '../domain/lifecycle';
 import {
+  documentApprovedEvent,
   documentArchivedEvent,
   documentCreatedEvent,
   documentDeletedEvent,
   documentExpiredEvent,
   documentMovedEvent,
   documentReinstatedEvent,
+  documentRejectedEvent,
   documentRestoredEvent,
 } from '../domain/events';
 import {
@@ -1001,6 +1003,20 @@ export class DefaultDocumentService {
      * the attested half — exactly as a delete's does.
      */
     readonly attestReason?: boolean;
+    /**
+     * What the person who refused it actually wrote — Phase 6.4, and additive on purpose.
+     *
+     * `reason` cannot carry it. For every transition since Phase 4 that field has held the *stage
+     * outcome* — the literal `REJECTED` — and it is written into the audit payload's `after`, so
+     * replacing it with a sentence would change the shape of eighteen phases of trail rows to
+     * improve one email. This is a separate field, read by nothing but `document.rejected`'s
+     * payload, and omitted by every caller that is not a refusal.
+     *
+     * 18 §4's `DocumentRejected` row and the catalogue's `comment` placeholder are what it is for:
+     * without it the notification renders "Reason: REJECTED", which tells its reader nothing they
+     * did not learn from the subject line.
+     */
+    readonly decisionComment?: string | null;
   }): Promise<void> {
     await this.writer.write(async () => {
       const current = await this.require(input.documentId, false);
@@ -1044,11 +1060,83 @@ export class DefaultDocumentService {
         }
       }
 
+      await this.announce(input.to, current, input);
+
       return {
         result: undefined,
         change: this.transitioned(input, current.status, false),
       };
     });
+  }
+
+  /**
+   * The two transitions that are announced outside the trail — Phase 6.4, and the gap it closed.
+   *
+   * `document.approved` and `document.rejected` have been declared since Phase 3, routed to the
+   * notification lane since Phase 12, given a catalogue entry, an `en` and an `ar` template, a
+   * `documentEvent` branch in `NotificationEventService` and an assertion in `outbox-routing.spec.ts`
+   * that they reach `NOTIFICATIONS_DELIVER` — and **nothing had ever published one**. Approval and
+   * rejection both run through `transition`, which wrote an audit row and no outbox row at all, so
+   * two of `18-notification-architecture.md` §4's named rows delivered nothing to anybody. The
+   * integration suite did not catch it because it hands `NotificationEventService.handle` a
+   * synthetic event rather than approving a document, which tests the translation and not the
+   * production. 18 §4's own prose says every row "has a catalogue entry and a producer, except
+   * two"; this is the correction, and the Phase 6.0 audit repeated the same mistake.
+   *
+   * Published here rather than in Workflow, because the fact is the *document's*: its aggregate is
+   * `document`, a rejection recorded against a workflow instance would not route to the search
+   * index, and Workflow already publishes its own `workflow.completed` beside this one for the
+   * different fact that an approval *process* ended.
+   *
+   * **Only these two.** `CHANGES_REQUESTED` has a §4 row and no declared event, and inventing one
+   * would be adding a notification type — the phase's own prohibition — so it stays in the backlog.
+   * `document.submitted` is declared and carries a `workflowVersionId` this method does not have;
+   * it has no §4 row either, so it remains produced by nobody and is recorded as such.
+   *
+   * The payloads keep the shape they shipped with in Phase 3. Phase 6.1 set the precedent when it
+   * first emitted `document.archived`: a declared event's shape does not widen on first use, even
+   * when a field turns out to be optional in practice. A definition that does not assign numbers
+   * leaves `documentNumber` empty rather than making it nullable.
+   */
+  private async announce(
+    to: DocumentStatusKey,
+    current: DocumentRow,
+    input: {
+      readonly workflowInstanceId: string | null;
+      readonly reason: string | null;
+      readonly decisionComment?: string | null;
+    },
+  ): Promise<void> {
+    if (to === DocumentStatus.APPROVED) {
+      await this.outbox.publish([
+        documentApprovedEvent(asId<AnyId>(current.id), {
+          documentId: current.id,
+          revisionId: current.latestRevisionId ?? '',
+          // Assigned by `assignAtApproval` in this same transaction, before the engine transitions
+          // the document — so it is already on the row this method was handed. Empty when the
+          // definition does not number at approval, which is a real configuration rather than a
+          // missing value.
+          documentNumber: current.documentNumber ?? '',
+          workflowInstanceId: input.workflowInstanceId ?? '',
+        }),
+      ]);
+      return;
+    }
+    if (to === DocumentStatus.REJECTED) {
+      await this.outbox.publish([
+        documentRejectedEvent(asId<AnyId>(current.id), {
+          documentId: current.id,
+          revisionId: current.latestRevisionId ?? '',
+          // Safe here and not in the branch above: a deadline can auto-*approve* a non-controlling
+          // stage with nobody signed in, and `onOverdue`'s only other terminal action returns the
+          // document to DRAFT. A rejection is always somebody's decision.
+          decidedBy: this.requireActor(),
+          // The reviewer's words when the caller supplied them, and the outcome otherwise — a
+          // rejection driven by something other than a decision still says what happened.
+          comment: input.decisionComment ?? input.reason ?? '',
+        }),
+      ]);
+    }
   }
 
   /**
