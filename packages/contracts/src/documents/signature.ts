@@ -45,6 +45,42 @@ export const signRevisionSchema = z.object({
   mfaCode: z.string().trim().min(6).max(16).optional(),
 });
 
+/**
+ * Asking what the statement will say, before saying it — Phase 6.6A.
+ *
+ * The same three inputs `signRevisionSchema` takes, minus the credentials: §11.200
+ * re-authentication belongs to the *act*, and a query string is the last place a password should
+ * be. `statement` is here because the signer's own words are part of the attested bytes — a
+ * preview that omitted them would show a statement the signature will not match.
+ *
+ * A query rather than a body because this changes nothing, and the route is a `GET` for the same
+ * reason verification is.
+ */
+export const previewSignatureStatementQuerySchema = z.object({
+  revisionId: uuidSchema,
+  purpose: signaturePurposeSchema,
+  statement: z.string().trim().max(2_000).optional(),
+});
+
+/**
+ * What the ceremony displays.
+ *
+ * `statementBody` is the field name the verification response already uses for the same artefact,
+ * deliberately: they are the same bytes, produced by the same construction, and giving them two
+ * names in one contract would invite a client to treat them as two things.
+ *
+ * `preparedAt` is the instant embedded in those bytes. It is surfaced because a preview cannot
+ * know when the signature will be taken — every other line is byte-identical to what will be
+ * signed, and that one is not — so a screen can say so rather than implying a promise the server
+ * did not make.
+ */
+export const signatureStatementPreviewSchema = z.object({
+  revisionId: uuidSchema,
+  purpose: signaturePurposeSchema,
+  statementBody: z.string(),
+  preparedAt: isoDateTimeSchema,
+});
+
 export const withdrawSignatureSchema = z.object({
   /** Required. A withdrawal with no stated ground is the record of an act nobody can review. */
   reason: z.string().trim().min(1).max(1_000),
@@ -94,6 +130,8 @@ export const signatureVerificationSchema = z.object({
 });
 
 export type SignRevisionBody = z.infer<typeof signRevisionSchema>;
+export type PreviewSignatureStatementQuery = z.infer<typeof previewSignatureStatementQuerySchema>;
+export type SignatureStatementPreview = z.infer<typeof signatureStatementPreviewSchema>;
 export type WithdrawSignatureBody = z.infer<typeof withdrawSignatureSchema>;
 export type DocumentSignature = z.infer<typeof documentSignatureSchema>;
 export type SignatureVerification = z.infer<typeof signatureVerificationSchema>;

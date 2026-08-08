@@ -61,6 +61,26 @@ export interface SignatureRecord {
   readonly withdrawnReason: string | null;
 }
 
+/**
+ * What the signing ceremony is shown before it asks anybody to attest anything — Phase 6.6A.
+ *
+ * `statementBody` is the *same bytes* `SignatureRecord.statementBody` will hold, produced by the
+ * same construction from the same facts: Phase 6.6 stopped because no route returned it before a
+ * signature existed, and a browser that rebuilt it would be displaying a second artefact rather
+ * than the one being signed.
+ *
+ * `preparedAt` is the instant embedded in those bytes, surfaced so a screen can say what it is.
+ * The signed statement carries the instant of *signing*, which is necessarily later — that one
+ * line is the only thing a preview cannot promise, and naming it here is what keeps a ceremony
+ * from implying otherwise.
+ */
+export interface StatementPreview {
+  readonly revisionId: RevisionId;
+  readonly purpose: SignaturePurposeKey;
+  readonly statementBody: string;
+  readonly preparedAt: Date;
+}
+
 export interface NewSignature {
   readonly id: string;
   readonly documentId: string;

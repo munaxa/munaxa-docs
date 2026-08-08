@@ -1,10 +1,13 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 
 import {
   type DocumentSignature,
+  type PreviewSignatureStatementQuery,
   type SignRevisionBody,
+  type SignatureStatementPreview,
   type SignatureVerification,
   type WithdrawSignatureBody,
+  previewSignatureStatementQuerySchema,
   signRevisionSchema,
   withdrawSignatureSchema,
 } from '@edms/contracts';
@@ -30,6 +33,11 @@ import { DocumentSignatureService } from '../application/signature.service';
  * it. A withdrawal is `document:sign` again *and* the service refuses anybody but the signer, which
  * is two gates for one act because the permission says "you may sign here" and the second says
  * "this one is yours".
+ *
+ * The statement preview added by Phase 6.6A is `document:sign` rather than `document:view`, and
+ * that is the one judgement on this controller worth stating twice: it discloses nothing a reader
+ * cannot already see, and it is guarded as the first step of a ceremony rather than as a way of
+ * reading. Its own comment argues the case.
  */
 @Controller({ path: 'documents/:id/signatures', version: '1' })
 export class DocumentSignaturesController {
@@ -40,6 +48,44 @@ export class DocumentSignaturesController {
   @ScopedTo('id', ScopeType.DOCUMENT)
   async list(@Param('id') id: string): Promise<readonly DocumentSignature[]> {
     return (await this.signatures.listForDocument(id)).map(toSignature);
+  }
+
+  /**
+   * The statement, before it is signed — Phase 6.6A, and the route Phase 6.6 stopped for.
+   *
+   * `document:sign` rather than `document:view`, which is the whole security decision here. The
+   * statement itself discloses nothing a reader cannot already see — the document's number, the
+   * revision's label, the content digest, the caller's *own* name and address — so the permission
+   * is not protecting a secret. It is saying what the surface is *for*: this is the first step of
+   * a §11.50 ceremony, and it belongs to the people who may complete one. Widening it to
+   * `document:view` would make the preview a capability of its own, reachable by callers with no
+   * business assembling an attestation.
+   *
+   * Declared above the `:signatureId` routes so a reader sees why there is no ambiguity: those
+   * match two segments, this matches one, and `statement` is not a signature identifier.
+   *
+   * It asks for no credentials. §11.200 re-authentication belongs to the `POST` below.
+   */
+  @Get('statement')
+  @RequirePermission(Permission.DOCUMENT_SIGN)
+  @ScopedTo('id', ScopeType.DOCUMENT)
+  async statement(
+    @Param('id') id: string,
+    @Query(new ZodValidationPipe(previewSignatureStatementQuerySchema))
+    query: PreviewSignatureStatementQuery,
+  ): Promise<SignatureStatementPreview> {
+    const preview = await this.signatures.previewStatement({
+      documentId: id,
+      revisionId: query.revisionId,
+      purpose: query.purpose,
+      statement: query.statement ?? null,
+    });
+    return {
+      revisionId: preview.revisionId,
+      purpose: preview.purpose,
+      statementBody: preview.statementBody,
+      preparedAt: preview.preparedAt.toISOString(),
+    };
   }
 
   @Post()
