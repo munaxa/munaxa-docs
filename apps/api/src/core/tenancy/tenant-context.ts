@@ -96,6 +96,17 @@ export function requireContext(): RequestContext {
   return context;
 }
 
+/**
+ * The context if there is one — Phase 6.7B.
+ *
+ * `requireContext` throws, which is right for anything that must not run unscoped. The rate-limit
+ * guard runs *before* authentication on unauthenticated routes and must key on what it has, so it
+ * needs to ask without asserting.
+ */
+export function optionalContext(): RequestContext | null {
+  return storage.getStore() ?? null;
+}
+
 export function currentTenantId(): TenantId | null {
   return storage.getStore()?.tenantId ?? null;
 }

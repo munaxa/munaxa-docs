@@ -1,6 +1,8 @@
 import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
+import { RateLimitGuard } from './core/security/rate-limit.guard';
+
 import { AuditModule } from './core/audit';
 import {
   API_KEY_AUTHENTICATOR,
@@ -129,6 +131,10 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     { provide: API_KEY_AUTHENTICATOR, useExisting: IdentityApiKeyAuthenticator },
     AuthenticationMiddleware,
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    // Before authentication, deliberately — Phase 6.7B. Sign-in must be limited by address before
+    // an identity exists, and a limiter that only ran for authenticated callers would leave the one
+    // endpoint credential stuffing actually targets unprotected.
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     { provide: APP_GUARD, useClass: TenantIsolationGuard },
     { provide: APP_GUARD, useClass: RbacGuard },
