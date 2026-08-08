@@ -117,6 +117,19 @@ beforeAll(async () => {
   });
   await owner.$disconnect();
 
+  // A clean limiter, because this suite now runs against a real one — Phase 6.7 Part A.
+  //
+  // `auth.login` allows ten attempts per five minutes *per address*, and the sign-ins below plus
+  // the rate-limit tests at the end exceed that from a single test host. Without this the suite
+  // would pass once and fail every rerun inside the window, which is the self-inflicted flakiness
+  // a security control must not introduce into its own repository. The fixture owns its
+  // preconditions here exactly as it owns the tenant it creates above.
+  const { RedisCacheAdapter } = await import('../infrastructure/cache/redis-cache.adapter');
+  const { loadConfig } = await import('../core/config/configuration');
+  const cache = new RedisCacheAdapter(loadConfig());
+  await cache.deleteByPrefix('rl:');
+  await cache.onModuleDestroy();
+
   const { AppModule } = await import('../app.module');
   const { configureApp } = await import('../bootstrap');
 
@@ -260,4 +273,89 @@ describe('authentication over HTTP', () => {
       Array.from({ length: rows.length }, (_, index) => index + 1),
     );
   });
+});
+
+/**
+ * The rate limit, over real HTTP — Phase 6.7 Part A's missing proof.
+ *
+ * Every other rate-limit assertion in this repository invokes `RateLimitGuard.canActivate` with a
+ * constructed `ExecutionContext`. That proves the *mechanism* — distributed counting, tenant
+ * namespacing, fail-closed behaviour — and proves nothing about whether a request ever reaches it.
+ * Phase 6.3 and 6.4 both found controls that were declared, configured and unreachable, so this
+ * suite is where the claim becomes true: a request enters the real server, traverses the real
+ * `APP_GUARD` chain, and is refused.
+ */
+describe('rate limiting over HTTP', () => {
+  it('refuses the sixth signing attempt with 429, before authorization decides anything', async () => {
+    const { body: session } = await post<AuthBody>('/api/v1/auth/login', {
+      email,
+      password: PASSWORD,
+      tenant: slug,
+    });
+
+    // Ada holds `user:manage` and not `document:sign`, so authorization will refuse every one of
+    // these. That is what makes the assertion sharp: the first five are refused by RBAC and the
+    // sixth by the rate limiter, which can only happen if the limiter runs *before* it. The
+    // signature domain never sees any of them, so nothing here depends on a signable document.
+    const documentId = uuidv7();
+    const body = { revisionId: uuidv7(), purpose: 'APPROVAL' };
+    const statuses: number[] = [];
+
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const response = await fetch(`${baseUrl}/api/v1/documents/${documentId}/signatures`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.accessToken}`,
+        },
+        body: JSON.stringify(body),
+      });
+      statuses.push(response.status);
+      if (attempt === 6) {
+        const problem = (await response.json()) as { code: string; detail: string };
+        expect(problem.code).toBe('RATE_LIMITED');
+        // The refusal names the outcome and nothing about the infrastructure behind it.
+        expect(`${problem.code} ${problem.detail}`).not.toMatch(
+          /redis|cache|counter|ECONNREFUSED/i,
+        );
+      }
+    }
+
+    // Five attempts admitted by the limiter (and refused by authorization), the sixth stopped by
+    // the limiter itself — `document.sign` is 5 per 15 minutes.
+    expect(statuses.slice(0, 5).every((status) => status !== 429)).toBe(true);
+    expect(statuses[5]).toBe(429);
+  }, 60_000);
+
+  it('limits sign-in before authentication runs, so an anonymous caller is bounded too', async () => {
+    // Why `RateLimitGuard` is registered ahead of `AuthenticationGuard`: credential stuffing is
+    // unauthenticated by definition, and a limiter that only ran for authenticated callers would
+    // leave the one endpoint it targets wide open. `auth.login` is 10 per 5 minutes, keyed on the
+    // submitted address — never resolved to an account, so a fictitious address is counted exactly
+    // like a real one and this test uses one.
+    const stranger = `${uuidv7()}@nobody.test`;
+    const statuses: number[] = [];
+
+    for (let attempt = 1; attempt <= 11; attempt += 1) {
+      const { status } = await post<ProblemBody>('/api/v1/auth/login', {
+        email: stranger,
+        password: 'wrong',
+        tenant: slug,
+      });
+      statuses.push(status);
+    }
+
+    // A `429` appears, and every request that produced one was **unauthenticated** — which is the
+    // property this test exists for. The exact position is deliberately not asserted: `auth.login`
+    // is keyed on address *and* identity, and the eight sign-ins the tests above perform share this
+    // suite's address budget. Pinning the index would make this test depend on how many logins its
+    // neighbours happen to do. The precise boundary is proven in isolation by
+    // `core/security/__tests__/rate-limit.integration.spec.ts`; what only this level can show is
+    // that an anonymous caller is bounded at all.
+    expect(statuses).toContain(429);
+    expect(statuses.filter((status) => status === 429).length).toBeGreaterThan(0);
+    // And the refusals before it were credential failures, not something else — so the limiter is
+    // sitting in front of authentication rather than replacing it.
+    expect(statuses.some((status) => status === 401 || status === 400)).toBe(true);
+  }, 60_000);
 });
