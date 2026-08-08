@@ -24,6 +24,7 @@ import {
 } from './core/observability';
 import { OutboxModule } from './core/outbox';
 import { BulkModule } from './core/bulk';
+import { BulkDispatchModule } from './modules/bulk/bulk-dispatch.module';
 import { PersistenceModule } from './core/persistence';
 import { PrismaModule } from './core/prisma';
 import { TenancyModule, TenantIsolationGuard } from './core/tenancy';
@@ -89,6 +90,9 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
 
     // Domain modules, in dependency order (02-backend-architecture.md §3).
     IdentityModule,
+    // After Identity, because the lane's consumer resolves the requester's current authority
+    // through a port Identity provides — Phase 6.2.
+    BulkDispatchModule,
     OrganizationModule,
     AdministrationModule,
     LibraryModule,

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
+import { Settings } from '@edms/domain';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -707,3 +708,266 @@ function appliedIds(result: { items: readonly { targetId: string; outcome: strin
 function refusedIds(result: { items: readonly { targetId: string; outcome: string }[] }): string[] {
   return result.items.filter((item) => item.outcome === 'REFUSED').map((item) => item.targetId);
 }
+
+/**
+ * The queued path — Phase 6.2, against the same real PostgreSQL.
+ *
+ * ## The defect these exist to make unrepeatable
+ *
+ * `bulk.synchronousLimit` has been a tenant setting since Phase 16, documented as the line above
+ * which an operation is queued *"because a request holding a connection open for four thousand
+ * transactions is a request that dies to a proxy timeout with half its work committed and no way to
+ * find out which half"* — and it was read by nothing. `documents.bulk` was a lane with no producer
+ * and no consumer. So a request naming up to `bulk.maxObjects` (5 000 by default) executed every
+ * object inside the HTTP request.
+ *
+ * The first test below is the regression guard, and it is written to fail if somebody deletes the
+ * decision and returns to synchronous execution: it asserts not merely that the *state* is
+ * `REQUESTED` but that **nothing was applied** — no item rows, and the documents untouched. A
+ * reimplementation that ran the objects and then reported `REQUESTED` would pass a state assertion
+ * and fail this one.
+ */
+describe('the synchronous threshold', () => {
+  /** A stack whose threshold is low enough to cross with a handful of documents. */
+  function bulkWithLimit(limit: number): BulkStack {
+    return realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: limit },
+    });
+  }
+
+  it('does NOT execute the objects in the request when the selection exceeds the limit', async () => {
+    const ids = await seedDocuments(openFolderId, 4, 'over-limit');
+    const stack = bulkWithLimit(3);
+
+    const result = await asAda(() => stack.documents.setMetadata({ ids, categoryId: null }));
+
+    // The operation was accepted, not performed.
+    expect(result.state).toBe('REQUESTED');
+    expect(result.items).toHaveLength(0);
+    expect(result.tally.applied).toBe(0);
+
+    // The assertion that survives a lazy reimplementation: the database is untouched. Not one
+    // object was applied, and not one item row exists — so "queued" cannot be a label put on work
+    // that already happened.
+    const items = await owner.bulkOperationItem.count({
+      where: { tenantId: TENANT, operationId: String(result.operationId) },
+    });
+    expect(items, 'a queued operation must not have executed any object').toBe(0);
+
+    const row = await owner.bulkOperation.findUniqueOrThrow({
+      where: { id: String(result.operationId) },
+    });
+    expect(row.state).toBe('REQUESTED');
+    expect(row.requested).toBe(4);
+    expect(row.startedAt).toBeNull();
+    // The plan's input is on the row, which is what makes the operation rebuildable by a worker
+    // that never saw the request.
+    expect(row.payload).not.toBeNull();
+
+    // And the job exists as an outbox row rather than having been pushed at the queue inside the
+    // transaction — `ports/queue.port.ts`'s standing rule.
+    const queued = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, aggregateId: String(result.operationId) },
+    });
+    expect(queued.map((message) => message.eventType)).toEqual(['bulk.operation-queued']);
+  });
+
+  it('runs synchronously at exactly the limit, and queues one object past it', async () => {
+    // The boundary, from both sides, with the same stack and the same operation.
+    const atLimit = await seedDocuments(openFolderId, 3, 'at-limit');
+    const overLimit = await seedDocuments(openFolderId, 4, 'past-limit');
+    const stack = bulkWithLimit(3);
+
+    const sync = await asAda(() => stack.documents.setMetadata({ ids: atLimit, categoryId: null }));
+    expect(sync.state).toBe('COMPLETED');
+    expect(sync.items).toHaveLength(3);
+
+    const queued = await asAda(() =>
+      stack.documents.setMetadata({ ids: overLimit, categoryId: null }),
+    );
+    expect(queued.state).toBe('REQUESTED');
+    expect(queued.items).toHaveLength(0);
+  });
+
+  it('runs synchronously below the limit', async () => {
+    const ids = await seedDocuments(openFolderId, 2, 'under-limit');
+    const stack = bulkWithLimit(3);
+
+    const result = await asAda(() => stack.documents.setMetadata({ ids, categoryId: null }));
+
+    expect(result.state).toBe('COMPLETED');
+    expect(result.items).toHaveLength(2);
+  });
+
+  it('still enforces maxObjects, before any operation row exists', async () => {
+    const ids = await seedDocuments(openFolderId, 4, 'ceiling');
+    const stack = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: {
+        [Settings.BULK_MAX_OBJECTS.key]: 3,
+        [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1,
+      },
+    });
+
+    const before = await owner.bulkOperation.count({ where: { tenantId: TENANT } });
+    await expect(
+      asAda(() => stack.documents.setMetadata({ ids, categoryId: null })),
+    ).rejects.toThrow(/at most 3/);
+
+    // Rejected before an asynchronous operation was created — not truncated, and not queued and
+    // then refused by a worker.
+    const after = await owner.bulkOperation.count({ where: { tenantId: TENANT } });
+    expect(after).toBe(before);
+  });
+});
+
+describe('the queued worker', () => {
+  /**
+   * Drives the real consumer, composed by the shared harness.
+   *
+   * The composition lives in `real-collaborators.ts` because it needs Identity's credential
+   * repository, and a Document suite importing Identity's infrastructure is the cross-module reach
+   * the boundary lint forbids. Everything below the queue double is the shipped code: the tenant
+   * context, the requester's authority read at execution time, the resume set, the plan rebuilt
+   * from the row, the per-object transactions and the completion.
+   */
+  const deliver = (operationId: string, times = 1): Promise<void> =>
+    bulk.deliver(operationId, TENANT, times);
+
+  it('executes a queued operation, and the objects are applied only then', async () => {
+    const ids = await seedDocuments(openFolderId, 4, 'worker-run');
+    const stack = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 },
+    });
+    const queued = await asAda(() => stack.documents.setMetadata({ ids, categoryId: null }));
+    expect(queued.state).toBe('REQUESTED');
+
+    await deliver(String(queued.operationId));
+
+    const row = await owner.bulkOperation.findUniqueOrThrow({
+      where: { id: String(queued.operationId) },
+    });
+    expect(row.state).toBe('COMPLETED');
+    expect(row.applied).toBe(4);
+    expect(row.startedAt).not.toBeNull();
+    expect(row.completedAt).not.toBeNull();
+
+    // The mutations actually happened, through the module's own single-object use case.
+    const items = await owner.bulkOperationItem.findMany({
+      where: { tenantId: TENANT, operationId: String(queued.operationId) },
+    });
+    expect(items).toHaveLength(4);
+    expect(items.every((item) => item.outcome === 'APPLIED')).toBe(true);
+
+    // One operation-level audit row, exactly as a synchronous run writes.
+    const audit = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: String(queued.operationId), action: 'BULK_OPERATION' },
+    });
+    expect(audit).toHaveLength(1);
+  });
+
+  it('is safe under duplicate delivery: the second pass applies nothing again', async () => {
+    const ids = await seedDocuments(openFolderId, 3, 'redelivered');
+    const stack = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 },
+    });
+    const queued = await asAda(() => stack.documents.restore(ids));
+
+    // Twice, as an at-least-once queue may deliver it.
+    await deliver(String(queued.operationId), 2);
+
+    const items = await owner.bulkOperationItem.findMany({
+      where: { tenantId: TENANT, operationId: String(queued.operationId) },
+    });
+    // One row per object however many times the job arrived — the unique index and the resume set
+    // together, which is why no second idempotency store was needed.
+    expect(items).toHaveLength(3);
+
+    const row = await owner.bulkOperation.findUniqueOrThrow({
+      where: { id: String(queued.operationId) },
+    });
+    expect(row.state).toBe('COMPLETED');
+    expect(row.requested).toBe(3);
+  });
+
+  it('records a partial failure honestly rather than hiding it', async () => {
+    // Two real documents and two identifiers that resolve to nothing — the suite's own refusal
+    // mechanism, and the one that makes "unreachable" and "absent" the same answer. The operation
+    // still COMPLETES, because a refusal is the answer rather than a failure to produce one.
+    const mine = await seedDocuments(openFolderId, 2, 'mixed-mine');
+    const theirs = [uuidv7(), uuidv7()];
+    const stack = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 },
+    });
+    const queued = await asAda(() =>
+      stack.documents.setMetadata({ ids: [...mine, ...theirs], categoryId: null }),
+    );
+
+    await deliver(String(queued.operationId));
+
+    const row = await owner.bulkOperation.findUniqueOrThrow({
+      where: { id: String(queued.operationId) },
+    });
+    expect(row.state).toBe('COMPLETED');
+    expect(row.applied).toBe(2);
+    expect(row.refused).toBe(2);
+    expect(row.requested).toBe(4);
+  });
+
+  it('does not run another tenant’s operation', async () => {
+    const ids = await seedDocuments(openFolderId, 3, 'cross-tenant');
+    const stack = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 },
+    });
+    const queued = await asAda(() => stack.documents.setMetadata({ ids, categoryId: null }));
+
+    // The same operation identifier, delivered under a different tenant. Under ADR-0015 a tenant
+    // is a database, and the worker reads the row through the tenant in the envelope — never by
+    // inferring one from the identifiers — so this finds nothing and does nothing.
+    const stranger = asId<TenantId>(uuidv7());
+    await bulk.deliver(String(queued.operationId), stranger);
+
+    const row = await owner.bulkOperation.findUniqueOrThrow({
+      where: { id: String(queued.operationId) },
+    });
+    expect(row.state, 'another tenant must not be able to execute this operation').toBe(
+      'REQUESTED',
+    );
+    const items = await owner.bulkOperationItem.count({
+      where: { tenantId: TENANT, operationId: String(queued.operationId) },
+    });
+    expect(items).toBe(0);
+  });
+
+  it('registers a plan factory for every kind this stack composes', () => {
+    // Document's three and the export. `APPROVAL` belongs to Workflow, which this stack does not
+    // compose — the assertion that *every* kind is registered belongs where every module is, and
+    // `composition.spec.ts` makes it against the real container.
+    for (const kind of ['METADATA', 'RESTORE', 'UPLOAD', 'EXPORT'] as const) {
+      expect(bulk.plans.has(kind), `${kind} has no registered plan factory`).toBe(true);
+    }
+  });
+});

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 
 import {
   type AnyId,
@@ -15,8 +15,10 @@ import {
 
 import {
   BULK_EXECUTOR,
+  BULK_PLAN_REGISTRY,
   type BulkExecutor,
   type BulkPlan,
+  type BulkPlanRegistry,
   type BulkResult,
 } from '../../../core/bulk';
 import { ForbiddenError, ValidationError } from '../../../core/errors/application-errors';
@@ -60,14 +62,25 @@ import { WorkflowEngine } from './workflow-engine.service';
  * also keeps `document:reject` out of this path entirely, so the permission that a rejection
  * additionally needs cannot be reached in bulk at all.
  */
+/** What an APPROVAL run is rebuilt from. Plain data, so it survives the round trip through `jsonb`. */
+interface ApprovalPayload {
+  readonly decision: TaskDecisionKey;
+  readonly comment: string | null;
+}
+
 @Injectable()
-export class BulkApprovalService {
+export class BulkApprovalService implements OnModuleInit {
   constructor(
     @Inject(BULK_EXECUTOR) private readonly executor: BulkExecutor,
+    @Inject(BULK_PLAN_REGISTRY) private readonly plans: BulkPlanRegistry,
     @Inject(APPROVAL_QUERY_REPOSITORY) private readonly queries: ApprovalQueryRepository,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     private readonly engine: WorkflowEngine,
   ) {}
+
+  onModuleInit(): void {
+    this.plans.register(BulkOperationKind.APPROVAL, (payload) => this.approvalPlan(payload));
+  }
 
   async decide(input: {
     readonly taskIds: readonly string[];
@@ -88,7 +101,23 @@ export class BulkApprovalService {
       throw new ForbiddenError('approve documents');
     }
 
-    const plan: BulkPlan = {
+    return this.executor.run({
+      kind: BulkOperationKind.APPROVAL,
+      payload: { decision: input.decision, comment: input.comment },
+      targetIds: normaliseTargets(input.taskIds),
+    });
+  }
+
+  /**
+   * The APPROVAL plan, from its payload — Phase 6.2.
+   *
+   * The comment is in the payload and not in `parameters`, which stays `{ decision }` exactly as
+   * Phase 16 left it: an approver's free text belongs on the task's own decision record, not
+   * duplicated into an audit payload that 13 §3 requires to be minimised.
+   */
+  private approvalPlan(raw: Readonly<Record<string, unknown>>): BulkPlan {
+    const input = raw as unknown as ApprovalPayload;
+    return {
       kind: BulkOperationKind.APPROVAL,
       permission: Permission.DOCUMENT_APPROVE,
       parameters: { decision: input.decision },
@@ -111,8 +140,6 @@ export class BulkApprovalService {
         });
       },
     };
-
-    return this.executor.run({ plan, targetIds: normaliseTargets(input.taskIds) });
   }
 
   private holds(permission: string): boolean {

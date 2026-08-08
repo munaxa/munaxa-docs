@@ -80,6 +80,10 @@ import {
   DASHBOARD_PEOPLE_METRICS,
 } from '../dashboard/application/ports';
 import { REPORT_PEOPLE_SOURCE, REPORT_SUBJECT_READER } from '../reporting/application/ports';
+// From the port file rather than the barrel: the barrel re-exports `BulkModule`, and a feature
+// module importing another module's class is how two modules start referencing each other.
+import { BULK_REQUESTER_DIRECTORY } from '../../core/bulk/bulk.port';
+import { BulkRequesterDirectoryAdapter } from './infrastructure/bulk-requester.directory';
 import {
   IdentityReportSource,
   IdentityReportSubjectReader,
@@ -126,6 +130,10 @@ import {
     // for, which is Phase 11's rule applied to a queue.
     { provide: REPORT_PEOPLE_SOURCE, useClass: IdentityReportSource },
     { provide: REPORT_SUBJECT_READER, useClass: IdentityReportSubjectReader },
+    // Phase 6.2: the same rule as the row above, for the second queue in the product that runs
+    // under somebody's reach. A wider answer, because a bulk operation has a tenant-wide
+    // permission floor as well as a per-object ACL check — see the adapter's own note.
+    { provide: BULK_REQUESTER_DIRECTORY, useClass: BulkRequesterDirectoryAdapter },
     // Phase 13: account counts for the administrator tile, and Phase 11's deferred delegation
     // card — both answered by the module that owns the tables, never read from the dashboard.
     { provide: DASHBOARD_PEOPLE_METRICS, useClass: IdentityDashboardMetrics },
@@ -180,6 +188,8 @@ import {
   exports: [
     REPORT_PEOPLE_SOURCE,
     REPORT_SUBJECT_READER,
+    // Phase 6.2: the bulk lane's consumer resolves the requester's current authority through it.
+    BULK_REQUESTER_DIRECTORY,
     DASHBOARD_PEOPLE_METRICS,
     DASHBOARD_DELEGATION_METRICS,
     AUTHENTICATION_SERVICE,

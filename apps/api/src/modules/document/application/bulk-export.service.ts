@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 
 import {
   type AnyId,
@@ -15,9 +15,11 @@ import {
 import {
   BULK_EXECUTOR,
   BULK_OPERATION_REPOSITORY,
+  BULK_PLAN_REGISTRY,
   type BulkExecutor,
   type BulkOperationRepository,
   type BulkPlan,
+  type BulkPlanRegistry,
   type BulkResult,
 } from '../../../core/bulk';
 import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
@@ -75,9 +77,10 @@ import {
  * it would cost.
  */
 @Injectable()
-export class BulkExportService {
+export class BulkExportService implements OnModuleInit {
   constructor(
     @Inject(BULK_EXECUTOR) private readonly executor: BulkExecutor,
+    @Inject(BULK_PLAN_REGISTRY) private readonly plans: BulkPlanRegistry,
     @Inject(BULK_OPERATION_REPOSITORY) private readonly operations: BulkOperationRepository,
     @Inject(DOCUMENT_REPOSITORY) private readonly documents: DocumentRepository,
     @Inject(DOCUMENT_CONTENT_GATE) private readonly content: DocumentContentGate,
@@ -95,9 +98,27 @@ export class BulkExportService {
    * links.
    */
   async export(ids: readonly string[]): Promise<BulkResult> {
-    const released: DocumentRow[] = [];
+    return this.executor.run({
+      kind: BulkOperationKind.EXPORT,
+      payload: {},
+      targetIds: normaliseTargets(ids),
+    });
+  }
 
-    const plan: BulkPlan = {
+  onModuleInit(): void {
+    this.plans.register(BulkOperationKind.EXPORT, () => this.exportPlan());
+  }
+
+  /**
+   * The EXPORT plan — Phase 6.2, and the one kind whose shape had to change to be queueable.
+   *
+   * Phase 16 accumulated the released rows in a closure and attached the manifest after
+   * `executor.run` returned. That is unavailable to a worker, which never holds the closure, so
+   * the manifest step is now `finalise` and reads its rows back from the applied targets. The
+   * bytes, the manifest and the artefact are otherwise unchanged.
+   */
+  private exportPlan(): BulkPlan {
+    return {
       kind: BulkOperationKind.EXPORT,
       permission: Permission.DOCUMENT_DOWNLOAD,
       parameters: {},
@@ -123,15 +144,23 @@ export class BulkExportService {
             { field: 'revisionId', message: 'absent' },
           ]);
         }
-        released.push(row);
+        // Read, and refused above if there is nothing to release. The row itself is re-read in
+        // `finalise` from the applied targets rather than carried here, because a closure does not
+        // survive the queue.
+      },
+      finalise: async (operationId, appliedTargetIds) => {
+        const released: DocumentRow[] = [];
+        for (const id of appliedTargetIds) {
+          const row = await this.rowOf(id);
+          if (row !== null) {
+            released.push(row);
+          }
+        }
+        if (released.length > 0) {
+          await this.attachManifest(asId<AnyId>(operationId), released);
+        }
       },
     };
-
-    const result = await this.executor.run({ plan, targetIds: normaliseTargets(ids) });
-    if (result.tally.applied > 0) {
-      await this.attachManifest(result.operationId, released);
-    }
-    return result;
   }
 
   /**
