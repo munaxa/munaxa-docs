@@ -16,13 +16,13 @@ import {
 } from '@munaxa/ui';
 import { useRouter } from 'next/navigation';
 
-import type { Setting, SettingsResponse } from '@edms/contracts';
+import type { SearchRebuild, Setting, SettingsResponse } from '@edms/contracts';
 import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../../app/providers';
 import type { ActionResult } from '../../lib/admin/action-result';
 import { AdminScreen } from '../admin-shared';
-import { resetSetting, updateSetting } from './actions';
+import { requestSearchRebuild, resetSetting, updateSetting } from './actions';
 
 const GROUP_LABELS: Readonly<Record<string, MessageKey>> = {
   locale: 'admin.settings.groupLocale',
@@ -47,7 +47,14 @@ const GROUP_LABELS: Readonly<Record<string, MessageKey>> = {
  * tenant running on a configuration they did not choose, and the only way anyone finds out is if
  * somebody says so.
  */
-export function SettingsScreen({ settings }: { settings: SettingsResponse }): ReactNode {
+export function SettingsScreen({
+  settings,
+  searchRebuild,
+}: {
+  settings: SettingsResponse;
+  /** The most recent rebuild, or null when this tenant has never run one. */
+  searchRebuild: SearchRebuild | null;
+}): ReactNode {
   const translate = useTranslate();
   const toast = useToast();
   const router = useRouter();
@@ -114,9 +121,100 @@ export function SettingsScreen({ settings }: { settings: SettingsResponse }): Re
           </div>
         </Section>
       ))}
+
+      <SearchIndexSection latest={searchRebuild} />
     </AdminScreen>
   );
 }
+
+/**
+ * Rebuilding the search index — an operator action, on the screen operators already have.
+ *
+ * **Why here and not on a page of its own.** 12 §12 separates user features from operator ones, and
+ * this is squarely the second: nobody rebuilds an index as part of doing their job, and a
+ * destination in the menu would advertise it as something to do. The two routes behind it have
+ * declared `settings:manage` since Phase 8 — the same permission this screen already requires — so
+ * placing it here needs no new permission, no new destination and no new guard. Creating an
+ * operations console for one button is what §12 tells this phase not to do.
+ *
+ * **Asynchronous, and shown as such.** `POST /search/rebuild` answers `202`; the work runs on the
+ * search lane and is resumable. This renders the state the API reports and nothing it computes
+ * itself — a client that inferred "probably finished by now" from a start time would be inventing a
+ * status model beside the one that exists.
+ *
+ * The button is not disabled while a rebuild is running. The API decides whether a second request
+ * is admissible, and a client that guessed would either block a legitimate re-run after a failure
+ * or let one through against a service that had already refused it. What it does instead is say
+ * plainly that one is in progress.
+ */
+function SearchIndexSection({ latest }: { latest: SearchRebuild | null }): ReactNode {
+  const translate = useTranslate();
+  const toast = useToast();
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  const request = (): void => {
+    setBusy(true);
+    void requestSearchRebuild().then((result) => {
+      setBusy(false);
+      if (result.ok) {
+        toast.success(translate('admin.settings.searchRebuildRequested'));
+        router.refresh();
+        return;
+      }
+      toast.error(result.detail ?? translate(`error.${result.code}`));
+    });
+  };
+
+  return (
+    <Section title={translate('admin.settings.searchIndex')}>
+      <Panel>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted">{translate('admin.settings.searchIndexDescription')}</p>
+          <p className="text-sm" data-testid="search-rebuild-state">
+            {latest === null ? (
+              translate('admin.settings.searchNeverRebuilt')
+            ) : (
+              <>
+                <Badge tone={TONE_FOR_REBUILD[latest.state]}>
+                  {translate(REBUILD_STATE_LABELS[latest.state])}
+                </Badge>{' '}
+                {translate('admin.settings.searchRebuildSummary', {
+                  count: latest.documentsIndexed,
+                  startedAt: latest.startedAt,
+                })}
+              </>
+            )}
+          </p>
+          {latest?.error === null || latest?.error === undefined ? null : (
+            // Shown rather than swallowed, for the same reason the settings diagnostics above are:
+            // a rebuild that failed silently is an index quietly serving stale answers.
+            <Alert tone="danger" live="status">
+              {latest.error}
+            </Alert>
+          )}
+          <div>
+            <Button type="button" onClick={request} disabled={busy}>
+              {translate('admin.settings.rebuildSearchIndex')}
+            </Button>
+          </div>
+        </div>
+      </Panel>
+    </Section>
+  );
+}
+
+const REBUILD_STATE_LABELS: Readonly<Record<SearchRebuild['state'], MessageKey>> = {
+  RUNNING: 'admin.settings.searchRebuildRunning',
+  COMPLETED: 'admin.settings.searchRebuildCompleted',
+  FAILED: 'admin.settings.searchRebuildFailed',
+};
+
+const TONE_FOR_REBUILD: Readonly<Record<SearchRebuild['state'], 'muted' | 'success' | 'danger'>> = {
+  RUNNING: 'muted',
+  COMPLETED: 'success',
+  FAILED: 'danger',
+};
 
 /**
  * One setting, with its own save button.
