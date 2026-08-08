@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 
 import {
   type AnyId,
@@ -33,7 +34,33 @@ import type {
  */
 @Injectable()
 export class PrismaDocumentSignatureRepository implements DocumentSignatureRepository {
+  /**
+   * Writes the signature, and translates the one violation that is a *business* outcome — 6.7.
+   *
+   * `uq_document_signature_live` is the partial unique index this table's comment has described
+   * since Phase 16 and which nothing created until Phase 6.7. It is what actually stops two
+   * concurrent requests minting two live attestations of the same fact: the service's
+   * `liveSignatureExists` check is a read-then-write, and `TenantDatabase.withTenant` opens its
+   * transaction with no `isolationLevel`, so under READ COMMITTED both callers can pass the check.
+   *
+   * The loser of that race must receive the same answer as somebody who simply signed twice in a
+   * row — which the service already produces — rather than a raw constraint error or a `500`. So
+   * `P2002` is translated here, at the boundary that knows what the index means, and every other
+   * failure is rethrown untouched. This is the pattern `prisma-document-lock.repository.ts`
+   * established for the live-lock index.
+   */
   async insert(signature: NewSignature): Promise<void> {
+    try {
+      await this.write(signature);
+    } catch (error) {
+      if (isLiveSignatureViolation(error)) {
+        throw new DuplicateSignatureError();
+      }
+      throw error;
+    }
+  }
+
+  private async write(signature: NewSignature): Promise<void> {
     await requireTransaction().documentSignature.create({
       data: {
         id: signature.id,
@@ -188,4 +215,29 @@ function printedNameOf(statementBody: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * The loser of a signing race, named.
+ *
+ * A distinct class rather than a bare `ValidationError` so `DocumentSignatureService` can answer it
+ * with the message it already uses for a sequential duplicate — one outcome for one situation,
+ * whichever layer noticed it — without this file importing the service's wording.
+ */
+export class DuplicateSignatureError extends Error {
+  constructor() {
+    super('A live signature already exists for this signer, revision and purpose.');
+    this.name = 'DuplicateSignatureError';
+  }
+}
+
+/** The one violation `insert` translates; anything else is a genuine failure. */
+function isLiveSignatureViolation(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002' &&
+    // Named, so an unrelated unique index on this table in a later phase is not silently reported
+    // as "you already signed this".
+    JSON.stringify(error.meta ?? {}).includes('uq_document_signature_live')
+  );
 }

@@ -42,6 +42,7 @@ import {
   type SignerAuthenticator,
 } from './signature.ports';
 import { DOCUMENT_CONFIGURATION, type DocumentConfiguration } from './configuration.port';
+import { DuplicateSignatureError } from '../infrastructure/prisma-signature.repository';
 
 /**
  * Taking, withdrawing and verifying an electronic signature.
@@ -116,6 +117,41 @@ export class DocumentSignatureService {
       }
     }
 
+    try {
+      return await this.signWithin({
+        input,
+        signerId,
+        secret,
+        reauthenticated,
+      });
+    } catch (error) {
+      // The same refusal the in-transaction check produces, for the same situation reached a
+      // different way — Phase 6.7. That check is a read-then-write and `TenantDatabase.withTenant`
+      // opens its transaction with no `isolationLevel`, so under READ COMMITTED a concurrent signer
+      // can pass it. `uq_document_signature_live` is what actually stops the second insert; its
+      // violation is translated here into the outcome a caller already understands, rather than
+      // reaching the API as a `500`.
+      if (error instanceof DuplicateSignatureError) {
+        throw new ValidationError('You have already signed this revision for that purpose.', [
+          { field: 'purpose', message: 'duplicate' },
+        ]);
+      }
+      throw error;
+    }
+  }
+
+  private async signWithin(context: {
+    readonly input: {
+      readonly documentId: string;
+      readonly revisionId: string;
+      readonly purpose: SignaturePurposeKey;
+      readonly statement: string | null;
+    };
+    readonly signerId: string;
+    readonly secret: string;
+    readonly reauthenticated: boolean;
+  }): Promise<SignatureRecord> {
+    const { input, signerId, secret, reauthenticated } = context;
     return this.writer.write<SignatureRecord>(async () => {
       const document = await this.documents.findById(asId<DocumentId>(input.documentId), false);
       if (document === null) {

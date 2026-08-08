@@ -1,0 +1,43 @@
+-- Phase 6.7 — the invariant `document_signature` has described since Phase 16 and never enforced.
+--
+-- The schema comment above the table's indexes reads: "One live signature per person, revision and
+-- purpose. Partial on `withdrawn_at`, so a withdrawn signature does not block the person signing
+-- again — which is the whole reason a withdrawal is a row rather than a delete."
+--
+-- The three declarations beneath that comment are `@@index`, not `@@unique`, and the migration that
+-- created them emits three plain `CREATE INDEX`. The constraint the comment describes was never
+-- created, so the only thing standing between two concurrent requests and two live signatures was
+-- `DocumentSignatureService.liveSignatureExists` — a read-then-write, running under READ COMMITTED
+-- because `TenantDatabase.withTenant` opens its transaction with no `isolationLevel`. Both
+-- transactions could pass the check and both could insert.
+--
+-- In a 21 CFR Part 11 record that is not a cosmetic duplicate. It is two attestations of the same
+-- fact, with different identifiers and different witnesses, and an inspection cannot tell which one
+-- the signer meant.
+--
+-- ## Why these four columns
+--
+-- Taken from the domain rule the service already enforces, not from the comment:
+-- `liveSignatureExists({ revisionId, signerUserId, purpose })` is the application check, and
+-- `tenant_id` leads because every index on this table does and because a tenant is the isolation
+-- boundary (ADR-0015). A signature on a *different* revision, of a different purpose, or by a
+-- different signer is a different act and stays permitted — which is what makes this the existing
+-- rule rather than a new one.
+--
+-- ## Why partial on `withdrawn_at`
+--
+-- ADR-0017 §7 makes a withdrawal a row's own columns rather than a delete, precisely so the history
+-- survives. A total unique index would therefore make withdrawal one-way: having taken a signature
+-- back, the signer could never sign that revision for that purpose again, and the product would
+-- have quietly turned an ordinary correction into a permanent bar. `WHERE withdrawn_at IS NULL`
+-- constrains only the live set, which is the set the rule is about.
+--
+-- ## Safety
+--
+-- Additive. No column is added, removed or rewritten; no historical row changes; no signature
+-- semantics change. Both tenant databases were checked for rows that would violate it before this
+-- was written — zero conflicting groups in each — and the index creation itself fails loudly rather
+-- than silently dropping anything if that ever stops being true.
+CREATE UNIQUE INDEX "uq_document_signature_live"
+  ON "document_signature" ("tenant_id", "revision_id", "signer_user_id", "purpose")
+  WHERE "withdrawn_at" IS NULL;
