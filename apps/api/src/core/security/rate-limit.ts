@@ -85,7 +85,14 @@ export const ROUTE_RULES: readonly RouteRule[] = Object.freeze([
 
 /** The rule governing one request, or `default` when no route rule matches. */
 export function ruleForRequest(method: string, path: string): RouteRule {
-  const normalised = path.replace(/^\/v\d+/, '').replace(/\/$/, '');
+  // The global prefix and the version both come off. `configureApp` mounts everything under
+  // `/api` and adds URI versioning, so a real request arrives as `/api/v1/auth/login` — stripping
+  // only the version would leave `/api/auth/login`, which matches no pattern in the table and
+  // would make every rule silently inert. Found by the HTTP test, not by reading the code.
+  const normalised = path
+    .replace(/^\/api/, '')
+    .replace(/^\/v\d+/, '')
+    .replace(/\/$/, '');
   return (
     ROUTE_RULES.find(
       (entry) => entry.method === method.toUpperCase() && entry.pattern.test(normalised),

@@ -1,10 +1,11 @@
 # Phase 6.7 — Rate Limiting Completion (Part A)
 
-**Status: PARTIALLY COMPLETE**
+**Status: COMPLETE**
 
-Distributed rate limiting is implemented, bound and proven at the guard layer against real Redis
-across two independent instances. One requirement of §17 is **not** met — the proof does not run
-through the full HTTP pipeline via a booted Nest app — so `COMPLETE` would overstate it.
+Distributed rate limiting is implemented, bound, and proven twice over: at the guard layer against
+real Redis across two independent instances, and — as of this update — through the **real HTTP
+pipeline** of a booted Nest application. The gap that held the status at PARTIALLY COMPLETE is
+closed, and closing it found two genuine defects that inspection had missed.
 
 | Objective | Outcome |
 | --- | --- |
@@ -17,7 +18,7 @@ through the full HTTP pipeline via a booted Nest app — so `COMPLETE` would ove
 | No enumeration introduced | ✅ keyed on the submitted address, never resolved |
 | No process-local fallback | ✅ none exists |
 | `@nestjs/throttler` removed | ✅ proven unused first |
-| **End-to-end HTTP-pipeline test** | ❌ **not written** |
+| **End-to-end HTTP-pipeline test** | ✅ **written and passing** |
 
 ---
 
@@ -124,13 +125,48 @@ and never returned. The test asserts the message mentions no Redis, connection o
 | Credential route refused when the limiter is unreachable | ✅ |
 | Non-credential route still served when the limiter is unreachable | ✅ |
 
-**What is not proven, and why it keeps the status at PARTIALLY COMPLETE.** §17 requires at least one
-test driving N requests and an N+1 rejection *through the real HTTP pipeline*. These tests construct
-a genuine `ExecutionContext` and exercise the guard exactly as Nest invokes it, with real Redis and
-real tenant context — but they do not boot the Nest application and issue HTTP requests. The guard's
-*binding* is asserted by inspection of `app.module.ts` rather than by a request traversing it. That
-is a real gap in the proof, not a formality, and it is the one thing standing between this and
-COMPLETE.
+These nine prove the **mechanism**. They do not prove a request reaches it — which is what the HTTP
+proof below adds.
+
+## 13a. The real HTTP proof — and the two defects it caught
+
+Added to `apps/api/src/__tests__/auth.e2e.integration.spec.ts`, the repository's existing e2e
+harness: a genuinely booted Nest application (`createNestApplication` + `configureApp` + `listen`),
+real guards, real Postgres, real Redis, real `fetch` over a real socket.
+
+**Route:** `POST /api/v1/documents/:id/signatures`, six times, with a real bearer token.
+
+| Request | Status | Refused by |
+| --- | --- | --- |
+| 1–5 | not `429` (RBAC refuses — Ada holds `user:manage`, not `document:sign`) | authorization |
+| **6** | **`429`, `code: RATE_LIMITED`** | **the rate limiter** |
+
+That sequence is the assertion, and its shape is the point: the first five are refused by
+*authorization* and the sixth by the *limiter*, which can only happen if the limiter runs ahead of
+it. The signature domain never sees any of them, so nothing depends on a signable document, and the
+sixth refusal cannot be mistaken for a domain rejection. The `429` body was asserted to mention no
+Redis, cache, counter or connection error.
+
+**Ordering** is proven separately: eleven unauthenticated sign-in attempts with a fictitious address
+produce a `429` alongside ordinary credential failures — an anonymous caller is bounded, which is
+the whole reason the guard sits before `AuthenticationGuard`.
+
+### Two defects this test found that inspection did not
+
+1. **The route table never matched a real path.** `ruleForRequest` stripped `/v1`, but
+   `configureApp` mounts everything under `/api`, so a real request arrives as
+   `/api/v1/documents/…`. Stripping only the version left `/api/documents/…`, which matches no
+   pattern — **every rule would have been silently inert in production** while all nine guard-level
+   tests passed. Fixed by stripping the global prefix too.
+2. **The suite made itself flaky.** `auth.login` allows ten attempts per five minutes per address,
+   and this suite's eight sign-ins plus the new tests exceed it, so it passed once and failed every
+   rerun inside the window. The fixture now flushes `rl:` keys in `beforeAll` — owning its limiter
+   preconditions exactly as it owns the tenant it creates. Verified by running it twice in
+   succession, green both times.
+
+The first is precisely the failure mode §"TEST FAILURE DISCIPLINE" warned about: a guard that is
+registered, configured, tested and unreachable. It is the third such finding in this sequence, after
+Phase 6.3's phantom permissions and Phase 6.4's unread `DeliveryState.FAILED`.
 
 ## 14. Dependency report
 
@@ -160,7 +196,7 @@ and `RATE_LIMIT_MAX_REQUESTS` (60 s / 300) remain parsed and remain unread — t
 | Bounded key cardinality | ✅ closed rule and dimension sets, TTL on every key |
 | No sensitive values in keys or logs | ✅ |
 | Observable limiter failures | ✅ `error` on a credential refusal, `warn` otherwise |
-| **End-to-end HTTP proof** | ❌ |
+| **End-to-end HTTP proof** | ✅ |
 
 ## 17. Validation
 
@@ -196,24 +232,24 @@ confirmed by restarting the infrastructure and re-running to a clean 634 — not
 
 | Blocker | State |
 | --- | --- |
-| 1 — signature endpoint unlimited | 🟡 **Substantially closed.** Limited to 5 / 15 min, Redis-backed, distributed across instances, fails closed, tenant-isolated, concurrency-safe — all proven. The HTTP-pipeline proof §19 of the 6.6 brief would want is the remaining gap |
+| 1 — signature endpoint unlimited | ✅ **CLOSED.** Limited to 5 / 15 min, Redis-backed, distributed, fail-closed, tenant-isolated, concurrency-safe — and proven refused with `429` on the sixth real HTTP request |
 | 2 — concurrent live signatures | ✅ Closed by Part B |
 
-**I am not stating "Phase 6.6 is now unblocked."** The criteria require real HTTP rate limiting
-proven end to end, and the proof stops at the guard. The security property is very likely correct —
-the guard is bound in the composition root and the mechanism is proven against real Redis — but
-"likely correct" is what Phase 6.6 refused to accept about the previous two controls, and it would
-be inconsistent to accept it here.
+**Phase 6.6 is now unblocked.** Both blockers are closed and both are proven by executed tests
+rather than by inspection — which is the standard this sequence set for itself and, given that the
+HTTP test caught a defect that would have made every rule inert, the standard that was needed.
+
+The Phase 6.6 signature UI remains a separate phase and was not started here.
 
 ## 20. Phase 6.7 Final Status
 
-**PARTIALLY COMPLETE.**
+**COMPLETE.**
 
-Part B is complete and proven. Part A is implemented, bound, and proven at the guard layer against
-real Redis with two instances, tenant isolation, concurrency, boundary and fail-closed behaviour —
-and is one test short of the standard this sequence has held itself to.
+Part B was complete already. Part A is now implemented, bound, and proven at both levels: the
+mechanism against real Redis across two instances, and the binding through a real HTTP request that
+receives `429` from a booted application.
 
-**To reach COMPLETE:** boot the Nest application in an integration test, issue N real HTTP requests
-to `POST /v1/documents/:id/signatures` and assert the N+1 receives `429`. That single test converts
-"the guard is registered and works" into "the route enforces it", and closes Blocker 1 outright.
-Estimated: half a day.
+Writing that last test was not a formality. It found that the route table never matched a real path
+because of the `/api` global prefix — meaning every rule would have been inert in production while
+nine guard-level tests reported green. That is the exact failure this sequence has now seen three
+times, and it is why "the guard is registered" was never sufficient evidence.
