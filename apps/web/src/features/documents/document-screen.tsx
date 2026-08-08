@@ -22,8 +22,10 @@ import {
   text,
 } from '../admin-shared';
 import {
+  archiveDocument,
   assignDocumentNumber,
   moveDocument,
+  reinstateDocument,
   requestDownload,
   setFavorite,
   updateDocument,
@@ -54,6 +56,7 @@ export function DocumentScreen({
   canDownload,
   canAssignNumber,
   canManagePermissions,
+  canArchive,
   preview,
   approvals,
   revisions,
@@ -82,6 +85,14 @@ export function DocumentScreen({
    * every endpoint behind it.
    */
   readonly canManagePermissions?: boolean;
+  /**
+   * `document:archive` — Phase 6.1, and the first affordance this permission has ever had.
+   *
+   * A server-computed boolean like every other on this screen. Hiding the button is a courtesy;
+   * `POST /documents/{id}/archive` re-checks the permission and the ACL scope regardless
+   * (`08-permission-model.md` §7).
+   */
+  readonly canArchive?: boolean;
   /**
    * The document's approval, rendered by Workflow's own feature and passed in.
    *
@@ -117,6 +128,8 @@ export function DocumentScreen({
   const [editing, setEditing] = useState(false);
   const [moving, setMoving] = useState(false);
   const [numbering, setNumbering] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [reinstating, setReinstating] = useState(false);
 
   // Manual assignment applies only to an unnumbered document that is not in approval — while it
   // is, the workflow owns numbering and the API refuses (09 §3).
@@ -125,6 +138,16 @@ export function DocumentScreen({
     document.documentNumber === null &&
     document.status !== 'SUBMITTED' &&
     document.status !== 'UNDER_REVIEW';
+
+  // Archival is offered only from the states the lifecycle can leave — `IMPLEMENTED_TRANSITIONS`
+  // allows `PUBLISHED`, `EXPIRED` and `SUPERSEDED`, and offering it on a draft would render a
+  // button whose only outcome is a 409. Reinstatement is the mirror, from `ARCHIVED`.
+  const offerArchive =
+    canArchive === true &&
+    (document.status === 'PUBLISHED' ||
+      document.status === 'EXPIRED' ||
+      document.status === 'SUPERSEDED');
+  const offerReinstate = canArchive === true && document.status === 'ARCHIVED';
 
   // The effective revision is what a reader reads; the latest may be an unapproved draft
   // beneath it, and the two are told apart everywhere they render.
@@ -227,6 +250,16 @@ export function DocumentScreen({
               }}
             >
               {translate('documents.actions.permissions')}
+            </Button>
+          )}
+          {offerArchive && (
+            <Button type="button" variant="outline" onClick={() => setArchiving(true)}>
+              {translate('documents.actions.archive')}
+            </Button>
+          )}
+          {offerReinstate && (
+            <Button type="button" variant="outline" onClick={() => setReinstating(true)}>
+              {translate('documents.actions.reinstate')}
             </Button>
           )}
         </div>
@@ -415,6 +448,49 @@ export function DocumentScreen({
             name="documentNumber"
             label={translate('documents.field.number')}
             hint={translate('documents.assignNumber.hint')}
+            required
+          />
+        </FormDialog>
+      )}
+
+      {archiving && (
+        // `FormDialog` is the screen's existing pattern for an action that needs a typed reason —
+        // the same component the move and the manual number assignment use, and the same one that
+        // renders the pending, error and success states. It closes and refreshes on success;
+        // `onSubmit`'s `ActionResult` carries a failure back into the dialogue rather than a toast,
+        // so the person keeps what they typed.
+        <FormDialog
+          open
+          title={translate('documents.actions.archive')}
+          description={translate('documents.archive.warning')}
+          onClose={() => setArchiving(false)}
+          onSubmit={(data) => archiveDocument(document.id, document.version, text(data, 'reason'))}
+          onSaved={refresh}
+        >
+          <TextField
+            name="reason"
+            label={translate('documents.archive.reason')}
+            hint={translate('documents.archive.reasonHint')}
+            required
+          />
+        </FormDialog>
+      )}
+
+      {reinstating && (
+        <FormDialog
+          open
+          title={translate('documents.actions.reinstate')}
+          description={translate('documents.reinstate.warning')}
+          onClose={() => setReinstating(false)}
+          onSubmit={(data) =>
+            reinstateDocument(document.id, document.version, text(data, 'reason'))
+          }
+          onSaved={refresh}
+        >
+          <TextField
+            name="reason"
+            label={translate('documents.archive.reason')}
+            hint={translate('documents.reinstate.reasonHint')}
             required
           />
         </FormDialog>

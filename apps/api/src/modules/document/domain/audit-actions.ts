@@ -48,6 +48,45 @@ export const DocumentAudit = {
    * filing it under `DOCUMENT` would put it on the timeline of no document at all.
    */
   DOCUMENT_TEMPLATE_CHANGED: 'DOCUMENT_TEMPLATE_CHANGED',
+  /**
+   * The record left the live shelf — Phase 6.1, and the first of the two rows
+   * `13-audit-architecture.md` §2 has listed as *owing* since Phase 9.
+   *
+   * Its own action rather than a `DOCUMENT_CHANGED` with `operation: UPDATED`, and the reason is
+   * the one §2 gives for every split in this file: "which records were retired last quarter" is a
+   * question a records-management report asks by itself, and answering it by filtering a stream
+   * that also contains every retitle makes the common query the expensive one. It is also the
+   * question an ISO 9001 surveillance audit opens with.
+   *
+   * **Written by both archive paths**, which is the point of the row rather than an accident. An
+   * explicit archive and a retention disposition that archives are the same fact about the record —
+   * it is no longer current — and an auditor asking "when did this leave the shelf" must not have
+   * to know which of the two put it there. The payload's `via` says which, because *that* is a
+   * different question and it belongs in the payload rather than in a second action.
+   */
+  DOCUMENT_ARCHIVED: 'ARCHIVED',
+  /**
+   * The record came back to the shelf — §2's `REINSTATED`, the other half of the owed pair.
+   *
+   * Deliberately **not** `RESTORED`. A restore reverses a *delete* and is `DOCUMENT_CHANGED` with
+   * `operation: RESTORED`; a reinstatement reverses an *archival*, and the two differ in what an
+   * auditor concludes from them — one says a record was recovered from the recycle bin, the other
+   * says a retired record was returned to active use, which is a controlled-document decision
+   * somebody is accountable for.
+   */
+  DOCUMENT_REINSTATED: 'REINSTATED',
+  /**
+   * The effective window closed — Phase 6.1.
+   *
+   * Its own action for the same reason as the two above, plus one specific to it: this is the only
+   * document action in the catalogue whose actor is **always** the system. A trail filtered to
+   * "changes nobody made" is how an operator confirms the nightly sweep is running, and folding it
+   * into `DOCUMENT_CHANGED` would hide it among ten thousand rows that do have an actor.
+   *
+   * Not in `13-audit-architecture.md` §2's original Document group, and added to it in the same
+   * commit as this line — the standing rule for a new action.
+   */
+  DOCUMENT_EXPIRED: 'EXPIRED',
 } as const;
 
 export type DocumentAuditAction = (typeof DocumentAudit)[keyof typeof DocumentAudit];

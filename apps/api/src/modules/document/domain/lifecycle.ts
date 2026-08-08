@@ -14,9 +14,14 @@ import { DocumentStatus, type DocumentStatusKey } from '@edms/domain';
  *
  * Phase 4 fills in the half of this table that submission and approval reach. The rest — check-out,
  * publication superseding a prior revision, archival, purge — is written here because the table is
- * the design and a partial table would be a second thing to reconcile later, but the transitions
- * belonging to Phases 5, 6, 9 and 10 have nothing that performs them yet. `availableTransitions`
- * reports what the *engine* can do today, which is deliberately narrower than what the table allows.
+ * the design and a partial table would be a second thing to reconcile later.
+ *
+ * **Phase 6.1 closed the archival and expiry gap.** `ARCHIVED` was reachable only as a retention
+ * disposition's side effect and `EXPIRED` was reachable by nothing at all, so two states the table
+ * had allowed since Phase 0 were states no user action could produce. Both now have an explicit
+ * path, both go through `applyLifecycleTransition` like every other transition, and
+ * `IMPLEMENTED_TRANSITIONS` below says so. `availableTransitions` still reports what the product
+ * can do today, which remains deliberately narrower than what the table allows.
  */
 
 /**
@@ -140,15 +145,41 @@ export const IMPLEMENTED_TRANSITIONS: Readonly<
    */
   [DocumentStatus.APPROVED]: Object.freeze([DocumentStatus.PUBLISHED]),
   /**
-   * Check-out is Phase 6's. `SUPERSEDED`, `EXPIRED` and `ARCHIVED` stay unoffered: nothing
-   * yet supersedes a *document* (a newer revision supersedes a revision, and the document
-   * stays `PUBLISHED`), nothing watches `effective_to`, and archival is a later phase.
+   * Check-out is Phase 6's. `ARCHIVED` and `EXPIRED` are Phase 6.1's — the first offered by
+   * `POST /documents/{id}/archive`, the second by the nightly sweep that finally watches
+   * `effective_to`.
+   *
+   * `SUPERSEDED` stays unoffered, and that is unchanged rather than overlooked: nothing supersedes
+   * a *document*. A newer revision supersedes a revision and the document stays `PUBLISHED`, which
+   * is `10-revision-architecture.md` §6's separation of the two machines.
    */
-  [DocumentStatus.PUBLISHED]: Object.freeze([DocumentStatus.CHECKED_OUT]),
+  [DocumentStatus.PUBLISHED]: Object.freeze([
+    DocumentStatus.CHECKED_OUT,
+    DocumentStatus.EXPIRED,
+    DocumentStatus.ARCHIVED,
+  ]),
   [DocumentStatus.CHECKED_OUT]: Object.freeze([DocumentStatus.PUBLISHED, DocumentStatus.DRAFT]),
+  /**
+   * Unreachable as a *document* state, so nothing can leave it — but the row is the table's, not
+   * this phase's, and `LEGAL_TRANSITIONS` allows `SUPERSEDED → ARCHIVED`. Offering it here would
+   * put a transition on `GET /documents/{id}/transitions` that no document can ever be in a
+   * position to make.
+   */
   [DocumentStatus.SUPERSEDED]: Object.freeze([]),
-  [DocumentStatus.ARCHIVED]: Object.freeze([DocumentStatus.DELETED]),
-  [DocumentStatus.EXPIRED]: Object.freeze([]),
+  /**
+   * Reinstatement — Phase 6.1, and the `REINSTATED` half of 13 §2's owed pair.
+   *
+   * To `PUBLISHED` rather than to wherever it came from: a document is archived *from* the shelf,
+   * and putting it back is putting it back on the shelf. `LEGAL_TRANSITIONS` allows exactly this
+   * pair and no other return, so there is no second reading to choose between.
+   */
+  [DocumentStatus.ARCHIVED]: Object.freeze([DocumentStatus.PUBLISHED, DocumentStatus.DELETED]),
+  /**
+   * An expired document may be archived, or checked out to produce the revision that replaces it.
+   * Both are `LEGAL_TRANSITIONS`' own rows; Phase 6.1 is what makes the state reachable at all,
+   * and a reachable state with no way out would be a trap.
+   */
+  [DocumentStatus.EXPIRED]: Object.freeze([DocumentStatus.ARCHIVED, DocumentStatus.CHECKED_OUT]),
   [DocumentStatus.DELETED]: Object.freeze([DocumentStatus.DRAFT]),
   [DocumentStatus.PURGED]: Object.freeze([]),
 });

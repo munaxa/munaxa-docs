@@ -1,6 +1,7 @@
 import type {
   AdministratorDashboard,
   ApprovalInboxItem,
+  Document,
   DocumentSummary,
   Folder,
   Library,
@@ -48,6 +49,69 @@ export function documentSummary(overrides: Partial<DocumentSummary> = {}): Docum
     ownerUserId: '019489f0-0000-7000-8000-00000000000a',
     isFavorite: false,
     file: null,
+    ...overrides,
+  };
+}
+
+/**
+ * A whole document, for the record screen.
+ *
+ * Phase 5.2 named `DocumentScreen` the largest uncovered surface precisely because this fixture did
+ * not exist — sixteen props including a full document. It is typed against the contract like every
+ * other fixture here, so a contract change breaks it at compile time rather than producing a screen
+ * the tests render happily.
+ *
+ * `PUBLISHED` by default, because that is the state most of the record screen's affordances are
+ * gated on — including Phase 6.1's archive.
+ */
+export function document(overrides: Partial<Document> = {}): Document {
+  const revision = {
+    id: '019489f0-0000-7000-8000-000000000401',
+    ordinal: 0,
+    label: 'Rev 0',
+    status: 'PUBLISHED' as const,
+    changeNote: null,
+    createdAt: STAMPS.createdAt,
+    createdBy: STAMPS.createdBy,
+    file: {
+      fileObjectId: '019489f0-0000-7000-8000-000000000501',
+      filename: 'quality-manual.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 1024,
+      checksumSha256: 'a'.repeat(64),
+      scanStatus: 'CLEAN' as const,
+      reachable: true,
+      thumbnailUrl: null,
+    },
+  };
+  return {
+    ...STAMPS,
+    id: '019489f0-0000-7000-8000-000000000101',
+    folderId: '019489f0-0000-7000-8000-000000000201',
+    folderName: 'Quality',
+    folderPath: 'quality',
+    libraryId: '019489f0-0000-7000-8000-000000000301',
+    libraryName: 'Quality',
+    documentTypeId: '019489f0-0000-7000-8000-000000000601',
+    documentTypeName: 'Manual',
+    categoryId: null,
+    categoryName: null,
+    confidentialityId: '019489f0-0000-7000-8000-000000000701',
+    confidentialityName: 'Internal',
+    confidentialityRank: 10,
+    title: 'Quality Manual',
+    description: null,
+    status: DocumentStatus.PUBLISHED,
+    origin: 'UPLOAD',
+    documentNumber: 'QM-0001',
+    numberedAt: STAMPS.createdAt,
+    pendingNumber: null,
+    ownerUserId: STAMPS.createdBy,
+    latestRevision: revision,
+    currentRevision: revision,
+    liveLock: null,
+    metadata: [],
+    isFavorite: false,
     ...overrides,
   };
 }

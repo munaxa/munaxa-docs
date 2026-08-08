@@ -139,7 +139,7 @@ import { OrganizationReportSource } from '../modules/organization/infrastructure
 import { RetentionReportSource } from '../modules/retention/infrastructure/report-source.adapter';
 import { AuditReportSource } from '../modules/audit/infrastructure/report-source.adapter';
 import { DefaultLegalHoldService } from '../modules/retention/application/legal-hold.service';
-import type { DocumentDisposition } from '../modules/retention/application/ports';
+import type { DocumentDisposition, DocumentExpiry } from '../modules/retention/application/ports';
 import { DefaultRecycleBinService } from '../modules/retention/application/recycle-bin.service';
 import { RetentionSchedulerService } from '../modules/retention/application/retention-scheduler.service';
 import { DefaultRetentionService } from '../modules/retention/application/retention.service';
@@ -335,6 +335,15 @@ export interface DocumentLibraryStack {
    * an interval, and a test that waited for the interval would be a test that sleeps.
    */
   readonly readAudit: BufferedReadAuditWriter;
+  /**
+   * The administered writer this stack writes through — Phase 6.1's addition.
+   *
+   * Exposed so `realDisposition` can be composed with the *same* writer rather than a second one.
+   * The retention disposition now writes an `ARCHIVED` row on the document's timeline, and two
+   * writers in one suite would mean two audit-writer instances chaining the same tenant's events —
+   * which is a composition nothing ships.
+   */
+  readonly writer: AdministeredWriter;
 }
 
 export interface DocumentLibraryOptions {
@@ -348,6 +357,8 @@ export interface DocumentLibraryOptions {
   readonly antivirus: AntivirusPort;
   /** Answers `userExists`. Identity's own admin service needs a database this suite has not seeded. */
   readonly users: Pick<UserAdminService, 'get'>;
+  /** Overrides for the settings Document reads — Phase 6.1's `locale.timezone`. */
+  readonly documentSettings?: Readonly<Record<string, unknown>>;
   /** Overrides for Phase 10's retention settings — the recycle-bin window, the blob grace. */
   readonly retentionSettings?: Readonly<Record<string, unknown>>;
 }
@@ -431,6 +442,10 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     }),
     outbox,
     readAudit,
+    // Phase 6.1: the expiry sweep resolves `locale.timezone` through this. A suite that needs a
+    // different zone passes `documentSettings`, exactly as `retentionSettings` overrides Phase
+    // 10's — the catalogue default (`UTC`) otherwise.
+    settingsReaderFor(options.documentSettings ?? {}),
     writer,
   );
 
@@ -485,6 +500,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     localStorage,
     storagePort: scopedStorage,
     readAudit,
+    writer,
   };
 }
 
@@ -1286,6 +1302,12 @@ export function realRetention(
      * at the call rather than quietly reporting a pass that never ran.
      */
     readonly storageService?: DefaultStorageService;
+    /**
+     * Phase 6.1's `DOCUMENT_EXPIRY`. Optional for the same reason `storageService` is: the suites
+     * that never fire `documents.expire-effective` are unchanged, and one that calls the sweep
+     * without supplying it fails by name rather than by reporting a pass that never ran.
+     */
+    readonly documentExpiry?: DocumentExpiry;
   },
 ): RetentionStack {
   const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
@@ -1316,6 +1338,13 @@ export function realRetention(
       tombstones,
       options.disposition,
       reaper,
+      options.documentExpiry ?? {
+        expireEffective: () => {
+          throw new Error(
+            'This suite called the effective-window sweep without supplying `documentExpiry`.',
+          );
+        },
+      },
       settingsReaderFor(options.settings ?? {}),
       outbox,
       silentLogger(),
@@ -1377,9 +1406,16 @@ export function realDelegation(options: {
 export function realDisposition(
   clock: ClockPort,
   storage: DefaultStorageService,
+  writer: AdministeredWriter,
 ): RetentionDispositionAdapter {
   const stamps = new RecordStamps(clock);
-  return new RetentionDispositionAdapter(new StorageContentGateAdapter(storage), stamps);
+  return new RetentionDispositionAdapter(
+    new StorageContentGateAdapter(storage),
+    stamps,
+    // The caller's own, not a fresh one: the `ARCHIVED` row this adapter writes has to land on the
+    // same hash chain as everything else the suite writes.
+    writer,
+  );
 }
 
 /**

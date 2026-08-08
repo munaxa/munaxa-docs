@@ -111,6 +111,15 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Phase 6.1 — document lifecycle completion
+
+> The first phase built from the Phase 6.0 roadmap. It closes four of that audit's rows and opens
+> three new ones.
+
+| Document | Purpose |
+| --- | --- |
+| [Phase 6.1 — Document Lifecycle Completion](./reports/phase-6.1-document-lifecycle-completion.md) | Two states the design table allowed from Phase 0 and nothing performed, finally performed: `ARCHIVED`, which until now happened only as a retention sweep's side effect, and `EXPIRED`, which was reachable by nothing at all — so a document could carry an expiry date that never arrived. Why `LEGAL_TRANSITIONS` was not edited by one line, and why that is the evidence the lifecycle was completed rather than redesigned. How the audit action varies without a second lifecycle: two optional fields on the one transition method, omitted by every caller that predates the phase. Why the two archive paths stay two code paths and converge on one invariant — `setStatus` matches on `deleted_at IS NULL` and the retention disposition's job includes archiving deleted records, so merging them would have meant weakening the predicate that keeps any caller from moving a deleted document's status. Why the expiry sweep is hourly rather than nightly (one firing is after midnight for some tenants and hours before it for others), why it shares the `retention.run` lane rather than taking one (a second subscriber would race the lane's existing consumer — the defect that gave delegation a lane of its own), and why `effective_to` is inclusive. The permission that was in the catalogue, in the matrix, seeded to two roles and named by no route for eighteen phases, and why that is worse than an absent one. The defect this phase introduced and its own integration suite caught before it shipped — a stated reason in the payload rather than in the trail's attested column, which would have left an archive's justification outside Phase 9's hash digest. Why `LINKED` was deliberately **not** written. And every gate run against a real PostgreSQL with two tenant databases: 594 integration tests, zero skipped |
+
 ### Phase 6.0 — enterprise feature completion audit
 
 > The audit that turns nineteen phases of delivery into a roadmap. Numbered by the brief that

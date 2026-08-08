@@ -18,7 +18,7 @@
 
 | Group | Events |
 | --- | --- |
-| Document | `CREATED`, `VIEWED`, `DOWNLOADED`, `PRINTED`, `METADATA_CHANGED`, `MOVED`, `LINKED`, `ARCHIVED`, `REINSTATED`, `DELETED`, `RESTORED`, `PURGED` |
+| Document | `CREATED`, `VIEWED`, `DOWNLOADED`, `PRINTED`, `METADATA_CHANGED`, `MOVED`, `LINKED`, `ARCHIVED`, `REINSTATED`, `EXPIRED`, `DELETED`, `RESTORED`, `PURGED` |
 | Revision | `UPLOADED`, `CHECKED_OUT`, `CHECKED_IN`, `CHECKOUT_CANCELLED`, `CHECKOUT_FORCED`, `PUBLISHED`, `SUPERSEDED`, `RESTORED_FROM` |
 | Workflow | `SUBMITTED`, `STAGE_ACTIVATED`, `APPROVED`, `REJECTED`, `CHANGES_REQUESTED`, `TASK_REASSIGNED`, `ESCALATED`, `AUTO_APPROVED`, `WITHDRAWN`, `WORKFLOW_PUBLISHED`, `WORKFLOW_CHANGED` |
 | Numbering | `NUMBER_RESERVED`, `NUMBER_ASSIGNED`, `NUMBER_VOIDED`, `RULE_CHANGED` |
@@ -35,6 +35,7 @@
 | Export | `AUDIT_EXPORTED`, `REPORT_EXPORTED`, `BULK_DOWNLOAD` |
 | Integration (Phase 17) | `API_CLIENT_CREATED`, `API_CLIENT_REVOKED`, `USER_PROVISIONED_FROM_PROVIDER`, `IDENTITY_PROVIDER_CHANGED`, `WEBHOOK_ENDPOINT_CHANGED`, `AUDIT_SINK_CHANGED` |
 | Document (Phase 16) | `DOCUMENT_SIGNED`, `DOCUMENT_TEMPLATE_CHANGED` |
+| Document (Phase 6.1) | `ARCHIVED`, `REINSTATED`, `EXPIRED` |
 | Bulk (Phase 16) | `BULK_OPERATION` |
 
 **The table above is the whole catalogue, and Phase 9 is where it became so.** The rows from
@@ -60,7 +61,9 @@ scan, which is most of them.
 | ~~`MFA_ENROLLED`, `MFA_FAILED`~~ | Phase 14 — written |
 | ~~`REPORT_EXPORTED`~~ | Phase 15 — written |
 | ~~The Integration group~~ | Phase 17 — written, all six |
-| `ARCHIVED`, `REINSTATED`, `LINKED` | The phase that builds each capability — **still owing after Phase 17**, which built none of them either: an integration platform archives nothing, reinstates nothing and links nothing |
+| ~~`ARCHIVED`, `REINSTATED`~~ | **Phase 6.1 — written.** Both paths of the archive write `ARCHIVED`; the explicit return writes `REINSTATED` |
+| ~~`EXPIRED`~~ | **Phase 6.1 — written**, and new to this catalogue. The effective-window sweep's own action, always with a null actor |
+| `LINKED` | The phase that builds document linking. **Still owing** — a link is a relationship between two documents that has no table, and Phase 6.1 was a lifecycle phase, not that one |
 | ~~`INTEGRITY_MISMATCH`~~ | **Written from Phase 18** — the rolling integrity verifier (17 §8). Storage's action, because each module owns the actions it writes; its outcome is `FAILED`, because the sweep succeeded and the blob did not |
 
 Phase 9's own are `AUDIT_EXPORTED`, `BULK_DOWNLOAD` and `ACCESS_DENIED`, and all three are written.
@@ -114,14 +117,37 @@ its subject type is `CONFIGURATION` because a template belongs on no document's 
 `BULK_RESTORED` beside `RESTORED` in a filter and give *"every restore last quarter"* two right
 answers.
 
-**`ARCHIVED`, `REINSTATED` and `LINKED` are still owing, and Phase 16 is not their phase.** The row
-above says "the phase that builds each capability", and this one built none of them: archiving and
-reinstatement are lifecycle transitions `06-document-lifecycle.md` defines and nothing yet performs
-— `document:archive` is in the catalogue and no route declares it — and a document *link* is a
-relationship between two documents that has no table. Bulk operations do not make any of the three
-writable: a bulk restore reverses a *delete* and writes `DOCUMENT_CHANGED` with
-`operation: RESTORED`, which is the row Phase 10 established and is a different act from
-reinstating an archived record. Templates do not either — a document created from one is `CREATED`.
+**`ARCHIVED`, `REINSTATED` and `LINKED` were still owing after Phase 16, and Phase 16 was not their
+phase.** The row above says "the phase that builds each capability", and that one built none of
+them: archiving and reinstatement are lifecycle transitions `06-document-lifecycle.md` defines and
+nothing then performed — `document:archive` was in the catalogue and no route declared it — and a
+document *link* is a relationship between two documents that has no table. Bulk operations did not
+make any of the three writable: a bulk restore reverses a *delete* and writes `DOCUMENT_CHANGED`
+with `operation: RESTORED`, which is the row Phase 10 established and is a different act from
+reinstating an archived record. Templates did not either — a document created from one is `CREATED`.
+
+**Phase 6.1 built two of the three, and added a fourth action beside them.** `ARCHIVED` and
+`REINSTATED` are written because the capability now exists; `EXPIRED` is new to this catalogue and
+is the sweep's own row. Three things about them are decisions rather than mechanism:
+
+- **`ARCHIVED` is written by both archive paths**, with `via: EXPLICIT` or `via: RETENTION` in the
+  payload. They are the same fact about the record — it is no longer current — and an auditor asking
+  *"when did this leave the shelf"* must not have to know which path put it there. *Which* path is a
+  different question, and §2's standing rule puts an operation in the payload rather than in a second
+  action. Before this phase the retention path wrote only `PURGE_EXECUTED`, in the disposition
+  register, so a document retired by policy had nothing at all on its own timeline.
+- **`REINSTATED` is deliberately not `RESTORED`.** A restore reverses a delete; a reinstatement
+  reverses an archival. An auditor concludes different things from them — one says a record came
+  back from the recycle bin, the other that a retired record was returned to active use by somebody
+  accountable for the decision.
+- **`EXPIRED` is the only Document action whose actor is always null.** Nobody decides it; the
+  calendar does. That is what makes *"changes nobody made"* a filterable question, and it is why the
+  row carries the arithmetic that produced it — the closed window, the day it was evaluated on, and
+  the timezone that day was resolved in — so a disputed expiry is settled from the trail rather than
+  by re-running the sweep against a tenant setting that has since changed.
+
+**`LINKED` is still owing**, and unchanged: a document link has no table, no route and no service.
+Writing the action without the capability would be a writer nothing calls.
 
 **What a bulk operation writes, and why it is N + 1 rather than 1.** Each object's own use case
 writes its own row on its own document's timeline, exactly as a single-object request would; the

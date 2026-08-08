@@ -336,6 +336,39 @@ export const SCHEDULE: readonly ScheduledJob[] = Object.freeze([
   },
   {
     /**
+     * The only thing that watches `effective_to` — Phase 6.1.
+     *
+     * `06-document-lifecycle.md` allowed `PUBLISHED → EXPIRED` from Phase 0 and nothing performed
+     * it, so a document could carry an expiry date that never arrived. This is what makes the
+     * state reachable, and it is a *sweep* rather than a timer per document for the reason
+     * `notifications.deliver` gives: five thousand delayed jobs discovering that midnight has
+     * passed is five thousand schedules where one belongs, and a delayed job lives in Redis while
+     * a controlled document's expiry must survive a broker restart.
+     *
+     * On `retention.run` rather than a lane of its own, which is `storage.verify-integrity`'s
+     * decision applied a second time and for the same reasons: the work is off-peak, bounded per
+     * pass, serialised per tenant, safe to miss because the next pass picks it up, and identical
+     * in shape to the sweep already on this lane. It also has to be here — the queue adapter
+     * builds one worker per `subscribe`, so a second subscriber on `retention.run` would race
+     * `RetentionLaneConsumer` for that lane's jobs, which is the defect that gave delegation a
+     * lane of its own.
+     *
+     * **Hourly rather than nightly, and that is the timezone answer.** Expiry is a calendar-day
+     * boundary in the *tenant's* zone (`locale.timezone`), the deployment serves tenants in many,
+     * and a single nightly firing would be after midnight for some and hours before it for others.
+     * Each pass asks each tenant whether its own day has turned, so the answer is right everywhere
+     * and the sweep is a no-op in the twenty-three hours it has nothing to do. It is the same
+     * shape, and the same reasoning, as `notifications.digest-daily`'s hourly cron.
+     */
+    name: 'documents.expire-effective',
+    queue: QueueName.RETENTION_RUN,
+    cron: '20 * * * *',
+    lockKey: 'schedule:documents.expire-effective',
+    description:
+      'Expires published documents whose effective window has closed, in the tenant’s own timezone.',
+  },
+  {
+    /**
      * Drains what `NotificationService` queued.
      *
      * A schedule rather than a delayed job per message, because delivery is a *batch* property:

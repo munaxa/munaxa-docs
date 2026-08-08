@@ -153,6 +153,7 @@ export default async function DocumentPage({
       canDownload={access.permissions.includes(Permission.DOCUMENT_DOWNLOAD)}
       canAssignNumber={access.permissions.includes(Permission.NUMBERING_MANAGE)}
       canManagePermissions={access.permissions.includes(Permission.DOCUMENT_PERMISSION_MANAGE)}
+      canArchive={access.permissions.includes(Permission.DOCUMENT_ARCHIVE)}
       preview={
         preview === null ? undefined : (
           <PreviewPanel

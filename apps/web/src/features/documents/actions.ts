@@ -9,6 +9,7 @@ import {
   completeUploadSchema,
   createDocumentSchema,
   createUploadSchema,
+  archiveDocumentSchema,
   deleteDocumentSchema,
   moveDocumentSchema,
   updateDocumentSchema,
@@ -132,6 +133,33 @@ export async function deleteDocument(
 
 export async function restoreDocument(id: string, version: number): Promise<ActionResult> {
   return adminWrite({ path: `/documents/${id}/restore`, method: 'POST', version });
+}
+
+/**
+ * Retires a record from the live shelf, or puts it back — Phase 6.1.
+ *
+ * Two thin wrappers over one schema rather than one function with a direction argument, so a call
+ * site reads as the decision it is taking. Both carry the version, so an archive decided against a
+ * document somebody has since edited loses rather than overwriting.
+ */
+export async function archiveDocument(
+  id: string,
+  version: number,
+  reason: string,
+): Promise<ActionResult> {
+  return validated(archiveDocumentSchema, { reason }, (body) =>
+    adminWrite({ path: `/documents/${id}/archive`, method: 'POST', version, body }),
+  );
+}
+
+export async function reinstateDocument(
+  id: string,
+  version: number,
+  reason: string,
+): Promise<ActionResult> {
+  return validated(archiveDocumentSchema, { reason }, (body) =>
+    adminWrite({ path: `/documents/${id}/reinstate`, method: 'POST', version, body }),
+  );
 }
 
 export async function setFavorite(id: string, favorite: boolean): Promise<ActionResult> {

@@ -116,6 +116,14 @@ function as<T>(work: () => Promise<T>, userId: UserId = AUTHOR): Promise<T> {
 }
 
 let counter = 0;
+/**
+ * The ambient context the `retention.run` lane builds for a scheduled pass: a tenant, and no user.
+ * Mirrors `RetentionLaneConsumer.systemContext` rather than approximating it.
+ */
+function asSystem<T>(work: () => Promise<T>): Promise<T> {
+  return runWithContext({ ...contextFor(CONTROLLER), userId: null, permissions: [] }, work);
+}
+
 function unique(prefix: string): string {
   counter += 1;
   return `${prefix}${String(counter).padStart(3, '0')}`;
@@ -821,5 +829,338 @@ describe('history and compare', () => {
     // One side is a draft: no approved snapshot yet, and the answer says so rather than
     // diffing live values that prove nothing.
     expect(identical.metadata.available).toBe(false);
+  });
+});
+
+/**
+ * Archival, reinstatement and expiry — Phase 6.1, against the same real PostgreSQL.
+ *
+ * In this suite rather than a new one because every assertion below starts from a *published*
+ * document, and this file is the one that can produce one: the upload, the type, the workflow, the
+ * number and the publication are already here. A second harness would be four hundred lines of
+ * duplicate setup to reach the same first line.
+ *
+ * What only a database can be asked, and therefore why these are integration tests rather than unit
+ * tests of the service:
+ *
+ *  - **The audit row commits with the status change.** One transaction, one row, and no row at all
+ *    when the transition is refused.
+ *  - **Two concurrent archives produce one transition.** The optimistic version guard is the
+ *    referee and only PostgreSQL can say which write lost.
+ *  - **The sweep's candidate query is a `date` comparison.** The boundary is a property of how
+ *    PostgreSQL stores and compares `effective_to`, and a stubbed repository would be asserting the
+ *    stub's arithmetic.
+ */
+describe('archival and reinstatement', () => {
+  it('archives a published document, with one ARCHIVED row carrying the reason', async () => {
+    const documentId = await published();
+
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(
+      () => library.documents.archive(documentId, before.version, 'Superseded by QA-0002'),
+      CONTROLLER,
+    );
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.ARCHIVED);
+
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: documentId, action: 'ARCHIVED' },
+    });
+    expect(rows).toHaveLength(1);
+    // The reason is in the trail's own attested column, not in the payload — Phase 9 widened the
+    // hash digest to cover it, so this is the half an auditor can prove was not edited.
+    expect(rows[0]?.reason).toBe('Superseded by QA-0002');
+    expect(rows[0]?.actorId).toBe(CONTROLLER);
+    expect((rows[0]?.payload as { after?: { via?: string } }).after?.via).toBe('EXPLICIT');
+
+    const events = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, aggregateId: documentId, eventType: 'document.archived' },
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it('refuses a blank reason before it touches anything', async () => {
+    const documentId = await published();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+
+    await expect(
+      as(() => library.documents.archive(documentId, before.version, '   '), CONTROLLER),
+    ).rejects.toThrow(/reason/i);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.PUBLISHED);
+  });
+
+  it('is idempotent: archiving an archived document succeeds and adds no second transition', async () => {
+    const documentId = await published();
+    const first = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(() => library.documents.archive(documentId, first.version, 'Retired'), CONTROLLER);
+
+    const second = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(
+      () => library.documents.archive(documentId, second.version, 'Retired again'),
+      CONTROLLER,
+    );
+
+    const still = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(still.status).toBe(DocumentStatus.ARCHIVED);
+
+    // Two rows, because two people asked and the trail records what was asked — but the second is
+    // marked `unchanged`, and only one `document.archived` event was ever published, because only
+    // one of them was a transition.
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: documentId, action: 'ARCHIVED' },
+      orderBy: { sequence: 'asc' },
+    });
+    expect(rows).toHaveLength(2);
+    expect((rows[1]?.payload as { after?: { unchanged?: boolean } }).after?.unchanged).toBe(true);
+
+    const events = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, aggregateId: documentId, eventType: 'document.archived' },
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it('refuses an archive from a state the table does not allow, and writes nothing', async () => {
+    // A draft: the invalid-transition case, and the one that proves the refusal is atomic — a
+    // rejected transition leaves neither a status change nor an audit row behind it.
+    const documentId = await aDocument();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(before.status).toBe(DocumentStatus.DRAFT);
+
+    await expect(
+      as(() => library.documents.archive(documentId, before.version, 'Too early'), CONTROLLER),
+    ).rejects.toThrow(/DRAFT/);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.DRAFT);
+    expect(after.version).toBe(before.version);
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: documentId, action: 'ARCHIVED' },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it('refuses an archive decided against a version somebody has since moved on', async () => {
+    const documentId = await published();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+
+    await expect(
+      as(() => library.documents.archive(documentId, before.version - 1, 'Stale'), CONTROLLER),
+    ).rejects.toThrow();
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.PUBLISHED);
+  });
+
+  it('lets exactly one of two racing archives transition the document', async () => {
+    const documentId = await published();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+
+    const both = await Promise.allSettled([
+      as(() => library.documents.archive(documentId, before.version, 'First'), CONTROLLER),
+      as(() => library.documents.archive(documentId, before.version, 'Second'), CONTROLLER),
+    ]);
+    expect(both.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.ARCHIVED);
+    // The property, asked of the database: one transition, so one event — whatever raced.
+    const events = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, aggregateId: documentId, eventType: 'document.archived' },
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it('reinstates an archived document, with a REINSTATED row of its own', async () => {
+    const documentId = await published();
+    const archivedFrom = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(
+      () => library.documents.archive(documentId, archivedFrom.version, 'Retired'),
+      CONTROLLER,
+    );
+
+    const archived = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(
+      () => library.documents.reinstate(documentId, archived.version, 'Withdrawn in error'),
+      CONTROLLER,
+    );
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.PUBLISHED);
+
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: documentId, action: 'REINSTATED' },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.reason).toBe('Withdrawn in error');
+    // Distinct from a recycle-bin restore, which is what the separate action exists to say.
+    const restores = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: documentId, action: 'RESTORED' },
+    });
+    expect(restores).toHaveLength(0);
+  });
+
+  it('refuses to reinstate a document whose effective window has closed', async () => {
+    const documentId = await aDocument();
+    await approved(documentId);
+    await as(
+      () =>
+        revision.control.publish(documentId, {
+          effectiveFrom: '2026-01-01',
+          effectiveTo: '2026-01-31',
+        }),
+      CONTROLLER,
+    );
+    const published0 = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(
+      () => library.documents.archive(documentId, published0.version, 'Retired'),
+      CONTROLLER,
+    );
+
+    const archived = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await expect(
+      as(
+        () => library.documents.reinstate(documentId, archived.version, 'Bring it back'),
+        CONTROLLER,
+      ),
+    ).rejects.toThrow(/2026-01-31/);
+
+    // Still archived: refusing is the whole point — reinstating would publish a document the very
+    // next sweep would expire again, for a decision nobody took.
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.ARCHIVED);
+  });
+
+  it('refuses to archive another tenant’s document', async () => {
+    const documentId = await published();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+
+    // Same database, a different tenant in the ambient context: the repository's own `tenant_id`
+    // predicate is what must refuse, and a `404` rather than a `403` is 08 §7's rule — the
+    // existence of another tenant's document is not a fact this caller may learn.
+    // (Cross-*database* isolation under ADR-0015 is `tenant-isolation.integration.spec.ts`'s.)
+    const otherTenant = asId<TenantId>(uuidv7());
+    await expect(
+      runWithContext({ ...contextFor(CONTROLLER), tenantId: otherTenant }, () =>
+        library.documents.archive(documentId, before.version, 'Not mine'),
+      ),
+    ).rejects.toThrow(/not found|requested resource/i);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.PUBLISHED);
+  });
+});
+
+describe('the effective-window sweep', () => {
+  /** Publishes with an explicit window, which is what makes a document expirable. */
+  async function publishedWithWindow(from: string, to: string): Promise<string> {
+    const documentId = await aDocument();
+    await approved(documentId);
+    await as(
+      () => revision.control.publish(documentId, { effectiveFrom: from, effectiveTo: to }),
+      CONTROLLER,
+    );
+    return documentId;
+  }
+
+  it('expires a document whose window closed, and records the arithmetic', async () => {
+    const documentId = await publishedWithWindow('2026-01-01', '2026-01-31');
+
+    // Run the way the lane runs it: `RetentionLaneConsumer.systemContext` has no user, because
+    // nobody made this decision — the calendar did. Asserting a null actor only means something
+    // if the pass was invoked the way production invokes it.
+    const pass = await asSystem(() => library.documents.expireEffective(50));
+    expect(pass.expired).toBeGreaterThanOrEqual(1);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.EXPIRED);
+
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: documentId, action: 'EXPIRED' },
+    });
+    expect(rows).toHaveLength(1);
+    const payload = rows[0]?.payload as {
+      after?: { effectiveTo?: string; evaluatedOn?: string; timezone?: string };
+    };
+    expect(payload.after?.effectiveTo).toBe('2026-01-31');
+    expect(payload.after?.evaluatedOn).toBe('2026-03-02');
+    expect(payload.after?.timezone).toBe('UTC');
+    // The system acted alone, which is what makes "changes nobody made" a filterable question.
+    expect(rows[0]?.actorId).toBeNull();
+
+    const events = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, aggregateId: documentId, eventType: 'document.expired' },
+    });
+    expect(events).toHaveLength(1);
+  });
+
+  it('does not expire a window that ends today — the boundary is inclusive', async () => {
+    // The clock is frozen at 2026-03-02. A window ending today is one the document is still
+    // effective for, so it must survive this pass and expire on the next day's.
+    const documentId = await publishedWithWindow('2026-01-01', '2026-03-02');
+
+    await as(() => library.documents.expireEffective(50), CONTROLLER);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.PUBLISHED);
+  });
+
+  it('expires a window that ended yesterday — the other side of the same boundary', async () => {
+    const documentId = await publishedWithWindow('2026-01-01', '2026-03-01');
+
+    await as(() => library.documents.expireEffective(50), CONTROLLER);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.EXPIRED);
+  });
+
+  it('leaves a document with no effective window alone, forever', async () => {
+    const documentId = await published();
+
+    await as(() => library.documents.expireEffective(50), CONTROLLER);
+
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(after.status).toBe(DocumentStatus.PUBLISHED);
+  });
+
+  it('is retry-safe: a second pass expires nothing again and writes no second row', async () => {
+    const documentId = await publishedWithWindow('2026-01-01', '2026-01-31');
+    await as(() => library.documents.expireEffective(50), CONTROLLER);
+
+    // The redelivery case. The candidate query names `PUBLISHED` documents, so an expired one is
+    // no longer a candidate — which is what makes the job idempotent without a dedupe table.
+    const second = await as(() => library.documents.expireEffective(50), CONTROLLER);
+    expect(second.examined, 'an already-expired document must not be a candidate again').toBe(0);
+
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: documentId, action: 'EXPIRED' },
+    });
+    expect(rows).toHaveLength(1);
+  });
+
+  it('settles each document in its own transaction, so one conflict does not lose the batch', async () => {
+    const first = await publishedWithWindow('2026-01-01', '2026-01-31');
+    const second = await publishedWithWindow('2026-01-02', '2026-02-01');
+
+    const pass = await as(() => library.documents.expireEffective(50), CONTROLLER);
+    expect(pass.expired).toBeGreaterThanOrEqual(2);
+
+    for (const documentId of [first, second]) {
+      const row = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+      expect(row.status).toBe(DocumentStatus.EXPIRED);
+    }
+  });
+
+  it('expires nothing for a tenant that owns nothing', async () => {
+    await publishedWithWindow('2026-01-01', '2026-01-31');
+
+    const otherTenant = asId<TenantId>(uuidv7());
+    const pass = await runWithContext({ ...contextFor(CONTROLLER), tenantId: otherTenant }, () =>
+      library.documents.expireEffective(50),
+    );
+    expect(pass.examined).toBe(0);
+    expect(pass.expired).toBe(0);
   });
 });

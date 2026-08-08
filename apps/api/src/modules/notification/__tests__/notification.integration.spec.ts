@@ -129,6 +129,7 @@ const documents: DocumentService = {
   exists: () => Promise.resolve(true),
   availableTransitions: () => Promise.resolve([]),
   restore: () => Promise.resolve(),
+  expireEffective: () => Promise.resolve({ examined: 0, expired: 0 }),
 };
 
 function contextFor(userId: UserId | null): RequestContext {

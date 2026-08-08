@@ -5,7 +5,7 @@ import { IdentityModule } from '../identity/identity.module';
 import { LibraryModule } from '../library/library.module';
 import { OrganizationModule } from '../organization/organization.module';
 import { PreviewModule } from '../preview/preview.module';
-import { DOCUMENT_DISPOSITION } from '../retention/application/ports';
+import { DOCUMENT_DISPOSITION, DOCUMENT_EXPIRY } from '../retention/application/ports';
 import { RetentionModule } from '../retention/retention.module';
 import { RevisionModule } from '../revision/revision.module';
 import { FolderContentsRegistry } from '../library/application/folder-contents.port';
@@ -39,6 +39,7 @@ import { PrismaDocumentSignatureRepository } from './infrastructure/prisma-signa
 import { PrismaDocumentTemplateRepository } from './infrastructure/prisma-template.repository';
 import { IdentitySignerAuthenticator } from './infrastructure/identity-signer.authenticator';
 import { DocumentFolderContentsParticipant } from './infrastructure/folder-contents.participant';
+import { DocumentExpiryAdapter } from './infrastructure/document-expiry.adapter';
 import { RetentionDispositionAdapter } from './infrastructure/retention-disposition.adapter';
 import { StorageContentGateAdapter } from './infrastructure/storage-content-gate.adapter';
 import { BulkDocumentsController } from './presentation/bulk-documents.controller';
@@ -140,6 +141,7 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     // way. The folder-contents participant is the document half of a folder's delete cascade,
     // registered into Library's registry at boot (see `folder-contents.participant.ts`).
     { provide: DOCUMENT_DISPOSITION, useClass: RetentionDispositionAdapter },
+    { provide: DOCUMENT_EXPIRY, useClass: DocumentExpiryAdapter },
     DocumentFolderContentsParticipant,
     // Phase 7: the preview access decisions — permission → state → confidentiality — live
     // beside the download's, because they are the same decisions about the same record.
@@ -168,6 +170,7 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     DOCUMENT_SERVICE,
     DOCUMENT_NUMBER_SERVICE,
     DOCUMENT_DISPOSITION,
+    DOCUMENT_EXPIRY,
     DASHBOARD_DOCUMENT_METRICS,
   ],
 })

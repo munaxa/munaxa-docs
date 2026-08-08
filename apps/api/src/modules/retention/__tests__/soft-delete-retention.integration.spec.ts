@@ -301,7 +301,7 @@ beforeAll(async () => {
     unitOfWork,
     storage: library.storagePort,
     storageService: library.storage,
-    disposition: realDisposition(clock, library.storage),
+    disposition: realDisposition(clock, library.storage, library.writer),
     settings: {
       [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
       [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
