@@ -149,7 +149,17 @@ export interface NotificationMessageRepository {
   listInbox(recipientId: UserId, query: InboxQuery): Promise<Page<NotificationMessageRecord>>;
   /** How many of one person's in-app notifications are unread. */
   countUnread(recipientId: UserId): Promise<number>;
-  markRead(id: NotificationMessageId, at: Date): Promise<void>;
+  /**
+   * Marks one message read — **scoped to its recipient**, Phase 6.4.
+   *
+   * `recipientId` is a parameter rather than an implicit tenant predicate because the tenant is
+   * not the boundary here: two colleagues in one tenant are two inboxes, and a route that takes a
+   * message id from the URL reaches whichever row that id names. Until this phase the predicate
+   * was `(id, tenantId)`, so a signed-in user who held a colleague's message id could clear their
+   * unread marker — the one route on that controller whose "no user identifier on the wire"
+   * argument did not hold, because `:id` is one.
+   */
+  markRead(id: NotificationMessageId, recipientId: UserId, at: Date): Promise<void>;
   /** Marks every unread in-app notification read at once, and says how many it moved. */
   markAllRead(recipientId: UserId, at: Date): Promise<number>;
   /**
@@ -306,6 +316,6 @@ export interface NotificationService {
   notify(command: NotifyCommand): Promise<readonly NotificationMessageId[]>;
   inbox(userId: UserId, query: InboxQuery): Promise<Page<NotificationMessageRecord>>;
   unreadCount(userId: UserId): Promise<number>;
-  markRead(id: NotificationMessageId): Promise<void>;
+  markRead(id: NotificationMessageId, recipientId: UserId): Promise<void>;
   markAllRead(userId: UserId): Promise<number>;
 }

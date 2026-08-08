@@ -745,7 +745,7 @@ describe('the inbox', () => {
     expect(unread).toBe(inbox.meta.total);
 
     const first = inbox.data[0]!.id;
-    await inTransaction(() => stack.notifications.markRead(first), ADA);
+    await inTransaction(() => stack.notifications.markRead(first, ADA), ADA);
     const afterOne = await inTransaction(() => stack.notifications.unreadCount(ADA), ADA);
     expect(afterOne).toBe(unread - 1);
 
@@ -770,12 +770,12 @@ describe('the inbox', () => {
     );
     const id = unreadPage.data[0]!.id;
 
-    await inTransaction(() => stack.notifications.markRead(id), ADA);
+    await inTransaction(() => stack.notifications.markRead(id, ADA), ADA);
     const firstReadAt = (await owner.notificationMessage.findUniqueOrThrow({ where: { id } }))
       .readAt;
 
     now = new Date(now.getTime() + 60_000);
-    await inTransaction(() => stack.notifications.markRead(id), ADA);
+    await inTransaction(() => stack.notifications.markRead(id, ADA), ADA);
     const secondReadAt = (await owner.notificationMessage.findUniqueOrThrow({ where: { id } }))
       .readAt;
 
@@ -1068,5 +1068,111 @@ describe('a provider outage delays a message rather than losing it', () => {
 
     stack.transport.receipt = accepted;
     await inTransaction(() => stack.admin.releaseSuppression(addressOf('ada')));
+  });
+});
+
+/**
+ * Whose inbox is whose — Phase 6.4's authorisation finding.
+ *
+ * `NotificationController`'s own comment states the property this describe checks: "every route
+ * here is about the caller's own notifications, and none takes a user identifier — that absence is
+ * the authorisation". It was true of four routes out of five. `POST /notifications/:id/read` takes
+ * an identifier, and the predicate behind it was `(id, tenantId)`, so anybody in the tenant holding
+ * `notification:manage` — a permission seeded to *every* role, `GUEST` included — could clear a
+ * colleague's unread marker with an id they had seen or guessed. Message ids are UUIDv7, which are
+ * time-ordered, so guessing is not the barrier it looks like.
+ *
+ * Not a disclosure: the route returns `204` whichever way it goes, so it is not even an oracle for
+ * whether an id exists. It is an integrity defect, and it made a stated security property false.
+ */
+describe('a notification belongs to one person', () => {
+  async function anUnreadFor(recipientId: UserId): Promise<string> {
+    const eventId = uuidv7();
+    await asSystem(() =>
+      stack.events.handle({
+        eventId,
+        eventType: 'document.checked-in',
+        payload: { documentId: DOCUMENT, newRevisionId: uuidv7(), ordinal: 9 },
+      }),
+    );
+    const row = await owner.notificationMessage.findFirstOrThrow({
+      where: {
+        tenantId: TENANT,
+        idempotencyKey: `${eventId}:${recipientId}:${NotificationChannel.IN_APP}`,
+      },
+    });
+    return row.id;
+  }
+
+  it('refuses to let one user mark another user’s notification read', async () => {
+    now = new Date('2026-08-24T09:00:00.000Z');
+    const adasMessage = await anUnreadFor(ADA);
+
+    // Bob is an ordinary signed-in colleague, holding the same permission the controller requires.
+    await inTransaction(() => stack.notifications.markRead(asId(adasMessage), BOB), BOB);
+
+    const untouched = await owner.notificationMessage.findUniqueOrThrow({
+      where: { id: adasMessage },
+    });
+    expect(untouched.readAt).toBeNull();
+
+    // And Ada can still read her own, so the predicate refuses the impostor rather than everybody.
+    await inTransaction(() => stack.notifications.markRead(asId(adasMessage), ADA), ADA);
+    expect(
+      (await owner.notificationMessage.findUniqueOrThrow({ where: { id: adasMessage } })).readAt,
+    ).not.toBeNull();
+  });
+
+  it('never lets a recipient from another tenant reach a message', async () => {
+    now = new Date('2026-08-24T10:00:00.000Z');
+    const adasMessage = await anUnreadFor(ADA);
+
+    // A neighbouring tenant's user id, carried in a context that names *this* tenant — the shape a
+    // manipulated payload would take, since a real cross-tenant request cannot reach this database
+    // at all under ADR-0015. Neither half matches, and the row is untouched.
+    const stranger = asId<UserId>(uuidv7());
+    await inTransaction(() => stack.notifications.markRead(asId(adasMessage), stranger), stranger);
+
+    expect(
+      (await owner.notificationMessage.findUniqueOrThrow({ where: { id: adasMessage } })).readAt,
+    ).toBeNull();
+  });
+
+  it('shows a person only their own inbox, and counts only their own unread', async () => {
+    now = new Date('2026-08-24T11:00:00.000Z');
+    const page = await inTransaction(
+      () => stack.notifications.inbox(BOB, { ...normalizePageRequest({}), unreadOnly: false }),
+      BOB,
+    );
+    // The list is the assertion: every row is Bob's, so a page cannot carry a neighbour's subject
+    // line even when the two were produced by one event.
+    const rows = await owner.notificationMessage.findMany({
+      where: { tenantId: TENANT, id: { in: page.data.map((entry) => entry.id) } },
+      select: { recipientId: true },
+    });
+    expect(rows.every((row) => row.recipientId === BOB)).toBe(true);
+  });
+
+  it('tells nobody about a document they may not see, however the event names them', async () => {
+    now = new Date('2026-08-24T12:00:00.000Z');
+    const before = (await messagesFor(MALLORY)).length;
+
+    // Mallory holds no role, so the ACL walk refuses her — and the event names her *explicitly* as
+    // an assignee, which is the case that matters: a recipient list is derived from an event, and
+    // an event is not entitled to decide who may be told a document exists (18 §8).
+    await asSystem(() =>
+      stack.events.handle({
+        eventId: uuidv7(),
+        eventType: 'workflow.task-assigned',
+        payload: {
+          documentId: DOCUMENT,
+          assigneeIds: [MALLORY],
+          stageName: 'Quality review',
+          dueAt: '2026-08-25T09:00:00.000Z',
+        },
+      }),
+    );
+
+    expect((await messagesFor(MALLORY)).length).toBe(before);
   });
 });

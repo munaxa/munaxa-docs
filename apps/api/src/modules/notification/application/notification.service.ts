@@ -158,8 +158,8 @@ export class DefaultNotificationService implements NotificationService {
     return this.messages.countUnread(recipientId);
   }
 
-  markRead(id: NotificationMessageId): Promise<void> {
-    return this.messages.markRead(id, this.clock.now());
+  markRead(id: NotificationMessageId, recipientId: UserId): Promise<void> {
+    return this.messages.markRead(id, recipientId, this.clock.now());
   }
 
   markAllRead(recipientId: UserId): Promise<number> {
