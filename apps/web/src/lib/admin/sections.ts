@@ -171,6 +171,21 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = Object.freeze([
         descriptionKey: 'admin.documentTypes.description',
         permission: Permission.SETTINGS_MANAGE,
       },
+      {
+        // Last in the section, and after document types for the ordering reason above: a template
+        // names a type, a confidentiality level and optionally a category, so an administrator
+        // working top to bottom reaches it only once all three exist.
+        //
+        // The one destination in this section not gated on `settings:manage`. `template:manage` is
+        // its own permission because authoring the starting point for a controlled document is the
+        // document controller's job rather than the system administrator's — and the routes behind
+        // this screen have declared it since Phase 16.
+        id: 'templates',
+        href: '/admin/templates',
+        titleKey: 'admin.templates.title',
+        descriptionKey: 'admin.templates.description',
+        permission: Permission.TEMPLATE_MANAGE,
+      },
     ],
   },
   {
