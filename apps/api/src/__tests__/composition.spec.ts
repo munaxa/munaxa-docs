@@ -12,6 +12,8 @@ import { APP_CONFIG, type AppConfig } from '../core/config';
 import { TenantDatabase } from '../core/prisma';
 import {
   CLOCK_PORT,
+  QUEUE_CONSUMER,
+  QUEUE_PORT,
   SEARCH_PORT,
   STORAGE_PORT,
   type ClockPort,
@@ -69,6 +71,21 @@ describe('application composition', () => {
       })
       .overrideProvider(RedisCacheAdapter)
       .useValue({ get: vi.fn(), set: vi.fn(), delete: vi.fn() })
+      // The broker, doubled — Phase 6.2, and the reason is a CI failure this file caused.
+      //
+      // `moduleRef.init()` runs `onApplicationBootstrap`, and every lane consumer subscribes there.
+      // Against the real ports that opens a Redis connection, so a test asserting *dependency
+      // injection* would silently require a broker — which is exactly what happened: the
+      // bulk-registry test below passed locally, where Redis happens to run, and timed out on the
+      // unit-test job, which has no Redis service because it is not supposed to need one.
+      //
+      // Doubling them keeps this file's question the one it has always asked — does the container
+      // resolve, and are the defaults safe — and leaves "does BullMQ deliver" to the adapter's own
+      // tests and the integration suite, where a broker is provisioned on purpose.
+      .overrideProvider(QUEUE_PORT)
+      .useValue({ enqueue: vi.fn(), schedule: vi.fn() })
+      .overrideProvider(QUEUE_CONSUMER)
+      .useValue({ subscribe: vi.fn(() => Promise.resolve()) })
       .compile();
     return moduleRef;
   }
