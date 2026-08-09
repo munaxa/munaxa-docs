@@ -910,6 +910,13 @@ export const en = {
       reasonHint: 'Recorded in the audit trail. For example: withdrawn in error.',
     },
     upload: {
+      /** Phase 7.1 — the upload dialogue's sections, so eleven controls read as three groups. */
+      sectionFiles: 'Files',
+      sectionFilesHint: 'Each file becomes its own document in this folder.',
+      sectionClassification: 'Classification',
+      sectionClassificationHint: 'How this document is filed, numbered and who may see it.',
+      sectionDetails: 'Details',
+
       title: 'Add documents',
       scanTitle: 'Scan documents',
       into: 'Into {folder}',

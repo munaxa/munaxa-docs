@@ -322,7 +322,16 @@ export function DocumentScreen({
             {document.documentNumber === null && document.pendingNumber !== null && (
               <Badge tone="warning">{translate('documents.number.pending')}</Badge>
             )}
-            {effectiveRevision !== null && <Badge tone="success">{effectiveRevision.label}</Badge>}
+            {effectiveRevision !== null && (
+              /*
+                `muted`, not `success` — the same measurement Phase 7 made for the status badge, and
+                this one slipped through because no baseline rendered the record page. The platform's
+                success tone is **4.18:1** here against the 4.5:1 that 12px text needs. The revision
+                label does not need a colour to be read: it sits beside the number it belongs to, in
+                the identity block, which is the only place it appears.
+              */
+              <Badge tone="muted">{effectiveRevision.label}</Badge>
+            )}
             {draftRevision !== null && (
               <Badge tone="muted">
                 {translate('documents.revision.draftBadge', { label: draftRevision.label })}
@@ -446,10 +455,16 @@ export function DocumentScreen({
                 value={translate(`documents.scanStatus.${file.scanStatus}`)}
               />
               {/*
-                The digest, in full. It is what makes "the bytes an approver approved are unchanged"
-                provable rather than promised, and truncating it would make it decorative.
+                The digest, in full — and since Phase 7.1 actually in full, wrapping across lines in
+                a monospaced face rather than being cut off by a `truncate` the original comment did
+                not know was there. A hexadecimal digest read in a fixed-width face is one somebody
+                can compare against another by eye, which is the only way this value is ever used.
               */}
-              <Property label={translate('documents.file.checksum')} value={file.checksumSha256} />
+              <Property
+                label={translate('documents.file.checksum')}
+                value={file.checksumSha256}
+                wrap
+              />
             </dl>
           )}
         </Card>
@@ -615,16 +630,35 @@ export function DocumentScreen({
 function Property({
   label,
   value,
+  wrap,
 }: {
   readonly label: string;
   readonly value: string | null;
+  /**
+   * Let the value break across lines instead of truncating it — Phase 7.1.
+   *
+   * One property needs it and the reason is worth stating: the content digest. Phase 3 shipped it
+   * *in full* on purpose — "it is what makes 'the bytes an approver approved are unchanged' provable
+   * rather than promised, and truncating it would make it decorative" — and then rendered it inside
+   * a `truncate`, so the screen showed about a third of it. That was a contradiction between the
+   * comment and the pixels for four phases.
+   *
+   * It was also a layout defect. A sixty-four character hexadecimal string has no break opportunity,
+   * so it set the automatic minimum size of its grid item, and the whole two-card row inherited a
+   * 588px floor. On a 390px phone the record page overflowed by 198px — measured, not inferred.
+   * `break-all` fixes both at once: the digest is fully readable, and the card can be as narrow as
+   * the viewport.
+   */
+  readonly wrap?: boolean | undefined;
 }): ReactNode {
   return (
     <div className="min-w-0">
       <dt className="text-sm opacity-70">{label}</dt>
       {/* A dash rather than an empty cell: "not set" and "the server did not say" look identical
           otherwise, and only the first is an ordinary state. */}
-      <dd className="truncate">{value === null || value === '' ? '—' : value}</dd>
+      <dd className={wrap === true ? 'font-mono text-xs break-all' : 'truncate'}>
+        {value === null || value === '' ? '—' : value}
+      </dd>
     </div>
   );
 }

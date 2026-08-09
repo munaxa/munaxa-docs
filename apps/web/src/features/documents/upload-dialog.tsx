@@ -11,6 +11,7 @@ import type { ActionResult } from '../../lib/admin/action-result';
 import {
   type Choice,
   FormDialog,
+  FormSection,
   PickerField,
   SelectField,
   TextAreaField,
@@ -211,93 +212,107 @@ export function UploadDialog({
       onSaved={onSaved}
       submitLabel={translate('documents.upload.fileCount', { count: String(ready.length) })}
     >
-      <Dropzone
-        multiple
-        accept={origin === 'SCAN' ? SCANNER_FORMATS : SUPPORTED_EXTENSIONS.join(',')}
-        onFiles={accept}
-        labels={{
-          prompt: translate(
-            origin === 'SCAN' ? 'documents.upload.scanPrompt' : 'documents.upload.prompt',
-          ),
-          browse: translate('documents.upload.browse'),
-          hint: translate('documents.upload.hint'),
-        }}
-      />
-
-      {files.length > 0 && (
-        <ul className="flex flex-col gap-3">
-          {files.map((entry) => (
-            <li key={entry.key} className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <span className="flex-1 truncate">{entry.file.name}</span>
-                <span className="text-sm opacity-70">{formatFileSize(entry.file.size)}</span>
-                <PhaseBadge entry={entry} />
-              </div>
-              {entry.progress.phase === 'transferring' && (
-                <Progress
-                  value={Math.round(entry.progress.fraction * 100)}
-                  label={translate('documents.upload.phase.transferring')}
-                />
-              )}
-              {entry.problem !== null && <Alert tone="danger">{entry.problem}</Alert>}
-              {entry.stored !== null && entry.stored.duplicates.length > 0 && (
-                <DuplicateWarning
-                  matches={entry.stored.duplicates}
-                  acknowledged={entry.acknowledged}
-                  onAcknowledge={() => {
-                    update(entry.key, { acknowledged: true });
-                  }}
-                />
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {unscanned.length > 0 && (
-        // Stored, and not attachable. Saying so here is the difference between a refusal somebody
-        // understands and one that looks arbitrary two clicks later.
-        <Alert tone="warning">{translate('documents.upload.unscanned')}</Alert>
-      )}
-      {blocked.length > 0 && (
-        <Alert tone="warning">{translate('documents.upload.blockedByDuplicates')}</Alert>
-      )}
-
-      <SelectField
-        name="documentTypeId"
-        label={translate('documents.field.documentType')}
-        required
-        value={documentTypeId}
-        onValueChange={(value) => {
-          // The type decides which fields exist, so values entered against the previous one are not
-          // values on this one. Re-rendering the field set from the new type is what clears them.
-          setDocumentTypeId(value);
-        }}
-        choices={documentTypes}
-      />
-      <PickerField
-        name="categoryId"
-        label={translate('documents.field.category')}
-        options={categories}
-        clearable
-      />
-      <PickerField
-        name="confidentialityId"
-        label={translate('documents.field.confidentiality')}
-        hint={translate('documents.field.confidentialityHint')}
-        options={confidentialityLevels}
-        clearable
-      />
-      <TextAreaField name="description" label={translate('documents.field.description')} />
-
-      {selectedType !== undefined && (
-        <MetadataFields
-          key={selectedType.value}
-          fields={selectedType.fields}
-          userChoices={users}
-          departmentChoices={departments}
+      <FormSection
+        first
+        title={translate('documents.upload.sectionFiles')}
+        description={translate('documents.upload.sectionFilesHint')}
+      >
+        <Dropzone
+          multiple
+          accept={origin === 'SCAN' ? SCANNER_FORMATS : SUPPORTED_EXTENSIONS.join(',')}
+          onFiles={accept}
+          labels={{
+            prompt: translate(
+              origin === 'SCAN' ? 'documents.upload.scanPrompt' : 'documents.upload.prompt',
+            ),
+            browse: translate('documents.upload.browse'),
+            hint: translate('documents.upload.hint'),
+          }}
         />
-      )}
+
+        {files.length > 0 && (
+          <ul className="flex flex-col gap-3">
+            {files.map((entry) => (
+              <li key={entry.key} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="flex-1 truncate">{entry.file.name}</span>
+                  <span className="text-sm opacity-70">{formatFileSize(entry.file.size)}</span>
+                  <PhaseBadge entry={entry} />
+                </div>
+                {entry.progress.phase === 'transferring' && (
+                  <Progress
+                    value={Math.round(entry.progress.fraction * 100)}
+                    label={translate('documents.upload.phase.transferring')}
+                  />
+                )}
+                {entry.problem !== null && <Alert tone="danger">{entry.problem}</Alert>}
+                {entry.stored !== null && entry.stored.duplicates.length > 0 && (
+                  <DuplicateWarning
+                    matches={entry.stored.duplicates}
+                    acknowledged={entry.acknowledged}
+                    onAcknowledge={() => {
+                      update(entry.key, { acknowledged: true });
+                    }}
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {unscanned.length > 0 && (
+          // Stored, and not attachable. Saying so here is the difference between a refusal somebody
+          // understands and one that looks arbitrary two clicks later.
+          <Alert tone="warning">{translate('documents.upload.unscanned')}</Alert>
+        )}
+        {blocked.length > 0 && (
+          <Alert tone="warning">{translate('documents.upload.blockedByDuplicates')}</Alert>
+        )}
+      </FormSection>
+
+      <FormSection
+        title={translate('documents.upload.sectionClassification')}
+        description={translate('documents.upload.sectionClassificationHint')}
+      >
+        <SelectField
+          name="documentTypeId"
+          label={translate('documents.field.documentType')}
+          required
+          value={documentTypeId}
+          onValueChange={(value) => {
+            // The type decides which fields exist, so values entered against the previous one are not
+            // values on this one. Re-rendering the field set from the new type is what clears them.
+            setDocumentTypeId(value);
+          }}
+          choices={documentTypes}
+        />
+        <PickerField
+          name="categoryId"
+          label={translate('documents.field.category')}
+          options={categories}
+          clearable
+        />
+        <PickerField
+          name="confidentialityId"
+          label={translate('documents.field.confidentiality')}
+          hint={translate('documents.field.confidentialityHint')}
+          options={confidentialityLevels}
+          clearable
+        />
+      </FormSection>
+
+      <FormSection title={translate('documents.upload.sectionDetails')}>
+        <TextAreaField name="description" label={translate('documents.field.description')} />
+
+        {selectedType !== undefined && (
+          <MetadataFields
+            key={selectedType.value}
+            fields={selectedType.fields}
+            userChoices={users}
+            departmentChoices={departments}
+          />
+        )}
+      </FormSection>
     </FormDialog>
   );
 }

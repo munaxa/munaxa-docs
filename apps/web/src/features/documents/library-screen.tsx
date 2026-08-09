@@ -4,7 +4,15 @@ import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Badge, Button, Switch, formatFileSize, useToast } from '@munaxa/ui';
+import {
+  Badge,
+  Button,
+  type ColumnDef,
+  Switch,
+  formatFileSize,
+  useMediaQuery,
+  useToast,
+} from '@munaxa/ui';
 
 import type { BulkOperationResult, DocumentSummary, Folder, Library } from '@edms/contracts';
 import { formatFor } from '@edms/domain';
@@ -95,6 +103,28 @@ export function LibraryScreen({
   const [bulkEditing, setBulkEditing] = useState<readonly string[] | null>(null);
 
   const includeSubfolders = state.filters.underFolderId !== undefined;
+
+  /**
+   * How many columns this viewport can actually carry — Phase 7.1.
+   *
+   * A baseline at 390px is what found this, and what it found was not cosmetic: the grid shares its
+   * width evenly between eight columns, so on a phone every one of them was about forty pixels. The
+   * headers overlapped into an unreadable smear and **the row rendered empty** — no title, no
+   * number, no status. The one screen an EDMS is most likely to be opened on away from a desk
+   * showed nothing about the document it was listing.
+   *
+   * `DataGrid` has no responsive strategy of its own: no stacked mode, no per-column priority, no
+   * proportional widths. That is a platform gap and it is written up as one rather than worked
+   * around — this is not a second grid, not a card list beside the table, and not a fork. It is the
+   * same `ResourceList` and the same `DataGrid`, handed **fewer columns**, chosen with the
+   * platform's own `useMediaQuery`. Nothing is lost: the title cell already carries the number on
+   * its second line, and every hidden column is one the reader can bring back from the column menu.
+   *
+   * The two breakpoints match Tailwind's `sm` and `lg`, which is what the rest of this screen is
+   * laid out on, so the column set changes at the same width as the folder aside.
+   */
+  const roomForAll = useMediaQuery('(min-width: 1024px)');
+  const roomForSome = useMediaQuery('(min-width: 640px)');
 
   const download = (row: DocumentSummary): void => {
     // Requested at the moment of clicking rather than rendered with the row: issuing a link is an
@@ -310,15 +340,23 @@ export function LibraryScreen({
                 multiline: true,
                 value: (row) => row.title,
               },
-              {
-                id: 'documentNumber',
-                header: translate('documents.column.number'),
-                // Null until approval, and shown as a dash rather than blank so the column reads as
-                // "not yet" instead of "missing".
-                cell: (row) => row.documentNumber ?? '—',
-                sortable: true,
-                value: (row) => row.documentNumber,
-              },
+              // Everything below the title is optional, in the order a reader gives it up. The
+              // number goes first because the title cell already carries it; size and the record's
+              // own state go next; type and confidentiality survive to tablet because they are how
+              // somebody scans a folder for the right *kind* of document.
+              ...(roomForAll
+                ? ([
+                    {
+                      id: 'documentNumber',
+                      header: translate('documents.column.number'),
+                      // Null until approval, and shown as a dash rather than blank so the column reads as
+                      // "not yet" instead of "missing".
+                      cell: (row) => row.documentNumber ?? '—',
+                      sortable: true,
+                      value: (row) => row.documentNumber,
+                    },
+                  ] as ColumnDef<DocumentSummary>[])
+                : []),
               {
                 id: 'status',
                 header: translate('documents.column.status'),
@@ -329,35 +367,47 @@ export function LibraryScreen({
                 sortable: true,
                 value: (row) => row.status,
               },
-              {
-                id: 'documentType',
-                header: translate('documents.column.type'),
-                cell: (row) => row.documentTypeName,
-              },
-              {
-                id: 'confidentiality',
-                header: translate('documents.column.confidentiality'),
-                cell: (row) => row.confidentialityName,
-              },
-              {
-                id: 'size',
-                header: translate('documents.column.size'),
-                cell: (row) => (row.file === null ? '—' : formatFileSize(row.file.sizeBytes)),
-                // End-aligned: a size is a figure, and figures read down a column when their last
-                // digits line up.
-                align: 'end',
-                value: (row) => row.file?.sizeBytes ?? null,
-              },
-              /*
-               * Two columns headed "Status" is what the browser showed once the lifecycle badge grew
-               * a mark — and it was there before Phase 7, unread because both were the same grey.
-               * They answer different questions: the one above is the document's *lifecycle* state,
-               * this one is whether the **row** is deleted, inactive or system-owned. The shared
-               * column keeps its own header everywhere else in Administration, where there is no
-               * second status to confuse it with; here it is renamed in place.
-               */
-              { ...column.state(), header: translate('admin.fields.record') },
-              column.updated(),
+              ...(roomForSome
+                ? ([
+                    {
+                      id: 'documentType',
+                      header: translate('documents.column.type'),
+                      cell: (row) => row.documentTypeName,
+                    },
+                    {
+                      id: 'confidentiality',
+                      header: translate('documents.column.confidentiality'),
+                      cell: (row) => row.confidentialityName,
+                    },
+                    {
+                      id: 'size',
+                      header: translate('documents.column.size'),
+                      cell: (row) => (row.file === null ? '—' : formatFileSize(row.file.sizeBytes)),
+                      // End-aligned: a size is a figure, and figures read down a column when their last
+                      // digits line up.
+                      align: 'end',
+                      value: (row) => row.file?.sizeBytes ?? null,
+                    },
+                  ] as ColumnDef<DocumentSummary>[])
+                : []),
+              ...(roomForAll
+                ? ([
+                    /*
+                     * Two columns headed "Status" is what the browser showed once the lifecycle badge grew
+                     * a mark — and it was there before Phase 7, unread because both were the same grey.
+                     * They answer different questions: the one above is the document's *lifecycle* state,
+                     * this one is whether the **row** is deleted, inactive or system-owned. The shared
+                     * column keeps its own header everywhere else in Administration, where there is no
+                     * second status to confuse it with; here it is renamed in place.
+                     */
+                    { ...column.state(), header: translate('admin.fields.record') },
+                    // The date joins the tablet set rather than the phone one. At 390px, with a
+                    // selection checkbox and a row menu already taking their share, "Last changed"
+                    // cost the title about half its width — and a list where the title reads "Qu…"
+                    // is a list that has stopped naming documents. Measured, not guessed.
+                    column.updated(),
+                  ] as ColumnDef<DocumentSummary>[])
+                : []),
             ]}
           />
         </section>

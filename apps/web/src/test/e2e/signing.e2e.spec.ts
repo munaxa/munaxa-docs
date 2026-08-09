@@ -808,3 +808,122 @@ describe('8 · permissions and access denied', () => {
     await page.close();
   }, 120_000);
 });
+
+/**
+ * The real application at the widths people actually hold it — Phase 7.1.
+ *
+ * The static visual suite asserts that server-rendered markup does not overflow. It cannot assert
+ * this, because the two things that decide the shell's shape only exist after hydration: the rail
+ * collapses to a drawer through `useMediaQuery`, and so does the library's column set. So the
+ * question "is this usable on a phone" belongs here, against the shipped API, the production web
+ * build and a real browser, at a real viewport.
+ *
+ * What each width asserts is deliberately behavioural rather than pictorial: the document is
+ * *named*, its state is *readable*, the primary action is *reachable*, and the page does not slide
+ * sideways. Those are the four things §9 of the brief asks for, and a screenshot proves none of
+ * them on its own.
+ */
+describe('9 · responsive layout', () => {
+  const WIDTHS = [
+    { label: 'desktop', width: 1440 },
+    { label: 'laptop', width: 1280 },
+    { label: 'tablet landscape', width: 1024 },
+    { label: 'tablet', width: 768 },
+    { label: 'phone large', width: 430 },
+    { label: 'phone', width: 390 },
+  ] as const;
+
+  it.each(WIDTHS)(
+    'lists documents without horizontal overflow at $label ($width)',
+    async ({ width }) => {
+      const { page } = await pageFor(fixture.signer.email);
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
+      // The library's own heading — `exact`, because "Documents" is also the navigation row's
+      // label and at some widths the rail renders it as part of the same accessibility tree.
+      await page
+        .getByRole('heading', { name: 'Documents', exact: true })
+        .first()
+        .waitFor({ timeout: 30_000 });
+      // Hydration is the whole point at these widths: it is what swaps the rail for a drawer and
+      // narrows the column set. Waiting for the network to settle is what makes this the *client*
+      // layout rather than the server's first guess at it.
+      await page.waitForLoadState('networkidle');
+
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(
+        overflow,
+        `overflows by ${String(overflow)}px at ${String(width)}px`,
+      ).toBeLessThanOrEqual(1);
+
+      // The document is still named, and still says what state it is in. A list that fits the
+      // viewport by rendering nothing would pass the assertion above.
+      const text = await visibleText(page);
+      expect(text).toContain(fixture.documentNumber);
+      await page.close();
+    },
+    120_000,
+  );
+
+  it.each(WIDTHS)(
+    'keeps the record page usable at $label ($width)',
+    async ({ width }) => {
+      const { page } = await pageFor(fixture.signer.email);
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
+        waitUntil: 'domcontentloaded',
+      });
+      await page.getByRole('heading', { name: 'Signatures' }).waitFor({ timeout: 30_000 });
+      await page.waitForLoadState('networkidle');
+
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      expect(
+        overflow,
+        `overflows by ${String(overflow)}px at ${String(width)}px`,
+      ).toBeLessThanOrEqual(1);
+
+      // Identity and the overflow menu — the two things Phase 7 put at the top of this page, and the
+      // two that a narrow viewport is most likely to take away.
+      const text = await visibleText(page);
+      expect(text).toContain(fixture.documentNumber);
+      await expect
+        .poll(() => page.getByRole('button', { name: 'More actions' }).count(), { timeout: 15_000 })
+        .toBeGreaterThan(0);
+      await page.close();
+    },
+    120_000,
+  );
+
+  it('keeps navigation reachable on a phone', async () => {
+    const { page } = await pageFor(fixture.signer.email);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
+    await page
+      .getByRole('heading', { name: 'Documents', exact: true })
+      .first()
+      .waitFor({ timeout: 30_000 });
+    await page.waitForLoadState('networkidle');
+
+    // The rail is gone at this width — that is the shell working, not a defect — so navigation has
+    // to be reachable some other way. The drawer trigger is that way, and a phone layout that hides
+    // the rail without offering it is a phone layout with no navigation at all.
+    const trigger = page.getByRole('button', { name: /menu|navigation/i }).first();
+    await trigger.waitFor({ timeout: 15_000 });
+    await trigger.click();
+    await expect
+      .poll(() => page.getByRole('link', { name: 'Search' }).count(), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    // And the drawer must not swallow the viewport: a navigation panel wider than the screen is one
+    // somebody cannot get out of.
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(1);
+    await page.close();
+  }, 120_000);
+});

@@ -82,3 +82,9 @@ dump.rdb
 .dr/
 .storage-backup/
 *.dump
+
+# Where `STORAGE_DRIVER=LOCAL` puts blobs. The end-to-end suites boot the API against it, so a run
+# leaves a tenant-prefixed tree of uploaded documents behind — test content, but content, and the
+# same rule as every other artefact above applies: it is the product of a run rather than part of
+# the product.
+apps/api/.storage/

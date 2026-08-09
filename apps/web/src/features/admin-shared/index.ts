@@ -9,6 +9,7 @@
 export { AdminForbidden, AdminScreen, Prerequisite } from './screen';
 export { ResourceList, StateBadges, type RowAction } from './resource-list';
 export { FormDialog } from './form-dialog';
+export { FormSection } from './form-section';
 export { useAdminColumns } from './columns';
 export { changedFields, isEmptyPatch, unchanged } from './patch';
 export { useListNavigation, type ListNavigation } from './list-url';

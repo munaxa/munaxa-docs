@@ -8,10 +8,12 @@ import { AppShellProvider, SidebarNav } from '@munaxa/ui';
 
 import { en } from '@edms/i18n';
 
-import { iconFor } from '../components/workspace-shell';
+import RouteLoading from '../app/loading';
+import { WorkspaceRail, iconFor } from '../components/workspace-shell';
 import { Providers } from '../app/providers';
 import { ApprovalInboxScreen } from '../features/approvals/inbox-screen';
 import { DashboardScreen } from '../features/dashboard/dashboard-screen';
+import { DocumentScreen } from '../features/documents/document-screen';
 import { FolderTree } from '../features/documents/folder-tree';
 import { LibraryScreen } from '../features/documents/library-screen';
 import { SearchScreen } from '../features/search/search-screen';
@@ -221,6 +223,58 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
       />
     ),
   },
+  /**
+   * The document record — Phase 7.1, and the screen Phase 7 changed most while covering least.
+   *
+   * Its identity block is the piece that has to survive: title, number, revision and lifecycle
+   * state read together, with one primary action beside them. A baseline is what stops that
+   * collapsing back into a properties row somebody moves in a later phase.
+   */
+  {
+    name: 'document-record',
+    ui: () => (
+      <DocumentScreen
+        document={documentFixture()}
+        folders={[folder()]}
+        categories={[]}
+        confidentialityLevels={[]}
+        users={[]}
+        departments={[]}
+        fields={[]}
+        canEdit
+        canMove
+        canDownload
+        canArchive
+      />
+    ),
+  },
+  /**
+   * The rail as this product composes it — Phase 7.1.
+   *
+   * `sidebar-nav` above renders the platform's component with fixture groups, which covers the
+   * *component*. What it does not cover is the product's own arrangement: four named sections in a
+   * particular order, built from the destinations a caller with every permission actually gets. A
+   * section renamed, reordered or dropped is a visible change to every screen and was, until now,
+   * a change no baseline would notice.
+   */
+  {
+    name: 'workspace-rail',
+    ui: () => (
+      <AppShellProvider>
+        <div className="w-64 p-3">
+          <WorkspaceRail destinations={destinationsFor(ALL_PERMISSIONS)} />
+        </div>
+      </AppShellProvider>
+    ),
+  },
+  /**
+   * The route-level loading state — Phase 7.1.
+   *
+   * Every navigation in the application passes through this, which makes it one of the most-seen
+   * surfaces in the product and, until this phase, a centred spinner. A baseline holds it to the
+   * shape it now approximates: a header, a toolbar and a list.
+   */
+  { name: 'route-loading', ui: () => <RouteLoading /> },
   {
     name: 'search',
     ui: () => (
@@ -242,6 +296,59 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
 
 afterAll(async () => {
   await closeBrowser();
+});
+
+/**
+ * The layouts a narrow viewport produces — Phase 7.1.
+ *
+ * The eighteen baselines above are all 1280px, which made every one of them a desktop assertion and
+ * left tablet and phone covered by nothing. These are the two screens an EDMS is actually used on
+ * away from a desk, at the two widths the brief names, in light only: a phone layout that regresses
+ * does so in both themes at once, and doubling the count here would buy repetition rather than
+ * coverage.
+ *
+ * `responsive.spec.tsx` asserts these widths do not *overflow*; these assert they still look like
+ * the product.
+ */
+const NARROW: readonly {
+  readonly name: string;
+  readonly width: number;
+  readonly ui: () => ReactElement;
+}[] = [
+  {
+    name: 'document-list-tablet',
+    width: 768,
+    ui: () => SURFACES.find((surface) => surface.name === 'document-list')!.ui(),
+  },
+  {
+    name: 'document-list-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'document-list')!.ui(),
+  },
+  {
+    name: 'document-record-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'document-record')!.ui(),
+  },
+];
+
+describe('narrow viewports', () => {
+  describe.each(NARROW)('$name', ({ name, width, ui }) => {
+    it('matches its visual baseline', async () => {
+      const page = await renderPage(markup(ui()), { theme: 'light', width, height: 900 });
+      const result = await matchesBaseline(page, name);
+      await page.close();
+
+      expect(
+        result.changedPixels,
+        result.diffPath === undefined
+          ? ''
+          : `${name} changed by ${String(result.changedPixels)} pixels. ` +
+              `Diff written to ${result.diffPath}. If the change is intended, delete the baseline ` +
+              `and re-run to accept it.`,
+      ).toBeLessThanOrEqual(120);
+    });
+  });
 });
 
 describe.each(THEMES)('%s theme', (theme) => {

@@ -826,6 +826,12 @@ export const ar: Catalogue = {
       reasonHint: 'يُسجَّل في سجل التدقيق. مثال: سُحبت عن طريق الخطأ.',
     },
     upload: {
+      sectionFiles: 'الملفات',
+      sectionFilesHint: 'كل ملف يصبح وثيقة مستقلة في هذا المجلد.',
+      sectionClassification: 'التصنيف',
+      sectionClassificationHint: 'كيف تُحفظ هذه الوثيقة وتُرقَّم ومن يمكنه الاطلاع عليها.',
+      sectionDetails: 'التفاصيل',
+
       title: 'إضافة وثائق',
       scanTitle: 'مسح وثائق ضوئيًا',
       into: 'إلى {folder}',

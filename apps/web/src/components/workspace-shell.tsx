@@ -10,6 +10,7 @@ import {
   AppShellProvider,
   Button,
   NavigationDrawer,
+  type RenderNavigationLink,
   Sidebar,
   SidebarNav,
   SidebarTrigger,
@@ -132,6 +133,28 @@ const NAVIGATION_SECTIONS: readonly {
 ];
 
 /**
+ * Whether the section headings are rendered — Phase 7.1, and it is currently `false`.
+ *
+ * Phase 7 gave the rail four named sections. Phase 7.1 added a baseline for the product's own
+ * arrangement, which had never been rendered anywhere a contrast check could see it, and the check
+ * failed immediately: `SidebarNav` styles a group heading `text-muted-foreground/70` at
+ * `text-[10px]`, which is **2.78:1** on the Docs light surface against the 4.5:1 WCAG 2.1 AA
+ * requires. Phase 7 shipped four of them without knowing.
+ *
+ * There is no product-side fix. The classes are the platform component's own, and both remedies
+ * available here — overriding platform styling, or hardcoding a colour — are forbidden by
+ * `ARCHITECTURE.md` and by this phase's own brief. So the words pause and the accessibility does
+ * not: `NavigationGroup.title` is optional by the platform's design, an untitled group still
+ * renders as its own separated run (the nav's `gap-5`), and the four sections stay in the order and
+ * the shape Phase 7 gave them.
+ *
+ * The titles are kept in the table below rather than deleted, because restoring them is this one
+ * constant once the palette or the opacity is fixed upstream. The Phase 7.1 report carries the
+ * measurement and the request.
+ */
+const SECTION_HEADINGS_ACCESSIBLE = false;
+
+/**
  * Exported for the test that keeps the sections in step with the destination table.
  *
  * A destination missing from every section would still render — in a trailing group, because the
@@ -168,6 +191,84 @@ export function WorkspaceShell({
   description: string;
   signOutAction: () => Promise<void>;
   children: ReactNode;
+}): ReactNode {
+  const translate = useTranslate();
+
+  const renderLink: RenderNavigationLink = ({
+    href,
+    className,
+    children: linkChildren,
+    ...rest
+  }) => (
+    // The platform hands `href` back as a plain string — it must not import a router, so it
+    // cannot know Next's route type. The destinations it was given were typed on the way in
+    // (`lib/navigation.ts`), which is where a bad route is actually caught.
+    <Link href={href as Route} className={className} {...rest}>
+      {linkChildren}
+    </Link>
+  );
+
+  const navigation = <WorkspaceRail destinations={destinations} renderLink={renderLink} />;
+
+  return (
+    <AppShellProvider>
+      <AppShell
+        skipLinkLabel={translate('nav.skipToContent')}
+        sidebar={<Sidebar brand={<Brand />}>{navigation}</Sidebar>}
+        drawer={<NavigationDrawer label={translate('nav.menu')}>{navigation}</NavigationDrawer>}
+        topBar={
+          <TopBar
+            actions={
+              <div className="flex items-center gap-1">
+                <ThemeToggle />
+                <UserMenu
+                  name={displayName}
+                  description={description}
+                  label={translate('nav.account')}
+                  actions={[
+                    {
+                      id: 'sign-out',
+                      label: translate('auth.signOut'),
+                      onSelect: () => {
+                        void signOutAction();
+                      },
+                    },
+                  ]}
+                />
+              </div>
+            }
+          >
+            <SidebarTrigger />
+          </TopBar>
+        }
+      >
+        {children}
+      </AppShell>
+    </AppShellProvider>
+  );
+}
+
+/**
+ * The product's own navigation rail — Phase 7.1, extracted so it can be looked at.
+ *
+ * The grouping arrived in Phase 7 and nothing rendered it in isolation, so the visual suite covered
+ * the *platform's* `SidebarNav` with fixture groups and covered this product's arrangement not at
+ * all. Four named sections in a particular order, built from the destinations the server actually
+ * resolved, is a decision worth a baseline: a section renamed, reordered or dropped changes every
+ * screen in the application.
+ *
+ * `renderLink` is optional because the baseline renders this outside a router. In the application
+ * the shell passes Next's `Link`; on its own it falls back to the platform's plain anchor, which is
+ * the same markup for the purpose of a screenshot.
+ */
+export function WorkspaceRail({
+  destinations,
+  renderLink,
+  collapsed,
+}: {
+  readonly destinations: readonly NavigationDestination[];
+  readonly renderLink?: RenderNavigationLink | undefined;
+  readonly collapsed?: boolean | undefined;
 }): ReactNode {
   const translate = useTranslate();
   const pathname = usePathname();
@@ -209,7 +310,9 @@ export function WorkspaceShell({
         : [
             {
               id: section.id,
-              ...(section.titleKey !== null && { title: translate(section.titleKey) }),
+              ...(SECTION_HEADINGS_ACCESSIBLE && section.titleKey !== null
+                ? { title: translate(section.titleKey) }
+                : {}),
               items,
             },
           ];
@@ -223,63 +326,13 @@ export function WorkspaceShell({
     })(),
   ];
 
-  const renderLink = ({
-    href,
-    className,
-    children: linkChildren,
-    ...rest
-  }: {
-    href: string;
-    className?: string;
-    children: ReactNode;
-  }): ReactNode => (
-    // The platform hands `href` back as a plain string — it must not import a router, so it
-    // cannot know Next's route type. The destinations it was given were typed on the way in
-    // (`lib/navigation.ts`), which is where a bad route is actually caught.
-    <Link href={href as Route} className={className} {...rest}>
-      {linkChildren}
-    </Link>
-  );
-
-  const navigation = (
-    <SidebarNav groups={groups} label={translate('nav.main')} renderLink={renderLink} />
-  );
-
   return (
-    <AppShellProvider>
-      <AppShell
-        skipLinkLabel={translate('nav.skipToContent')}
-        sidebar={<Sidebar brand={<Brand />}>{navigation}</Sidebar>}
-        drawer={<NavigationDrawer label={translate('nav.menu')}>{navigation}</NavigationDrawer>}
-        topBar={
-          <TopBar
-            actions={
-              <div className="flex items-center gap-1">
-                <ThemeToggle />
-                <UserMenu
-                  name={displayName}
-                  description={description}
-                  label={translate('nav.account')}
-                  actions={[
-                    {
-                      id: 'sign-out',
-                      label: translate('auth.signOut'),
-                      onSelect: () => {
-                        void signOutAction();
-                      },
-                    },
-                  ]}
-                />
-              </div>
-            }
-          >
-            <SidebarTrigger />
-          </TopBar>
-        }
-      >
-        {children}
-      </AppShell>
-    </AppShellProvider>
+    <SidebarNav
+      groups={groups}
+      label={translate('nav.main')}
+      {...(renderLink !== undefined && { renderLink })}
+      {...(collapsed !== undefined && { collapsed })}
+    />
   );
 }
 

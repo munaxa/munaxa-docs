@@ -51,7 +51,10 @@ export default defineConfig({
           name: 'a11y',
           environment: 'jsdom',
           include: ['src/**/*.spec.tsx'],
-          exclude: ['src/test/visual.spec.tsx'],
+          // Both browser-project suites read the *built* stylesheet and drive Chromium, so they
+          // belong to `browser` alone — collected here they would run a second time, in jsdom,
+          // against an artefact `pnpm test` does not build.
+          exclude: ['src/test/visual.spec.tsx', 'src/test/responsive.spec.tsx'],
           setupFiles: ['src/test/setup.tsx'],
         },
       },
@@ -64,7 +67,7 @@ export default defineConfig({
         test: {
           name: 'browser',
           environment: 'node',
-          include: ['src/test/visual.spec.tsx'],
+          include: ['src/test/visual.spec.tsx', 'src/test/responsive.spec.tsx'],
           setupFiles: ['src/test/setup-ssr.tsx'],
           testTimeout: 60_000,
           hookTimeout: 60_000,

@@ -133,19 +133,28 @@ export function SearchScreen({
 
   return (
     <WorkspacePage title={translate('search.title')} description={translate('search.promptHint')}>
-      <form onSubmit={submit} className="flex items-center gap-2">
+      {/*
+        `flex-wrap`, and the sort control gets a width only once there is room for one — Phase 7.1.
+        The row was a single unwrapping line, so at 390px the "Save search" button hung 24px past
+        the viewport and took the whole page's horizontal scrollbar with it. Measured in Chromium at
+        the six widths the brief names; it is the only overflow the content screens had.
+
+        The query field keeps `flex-1` and a full-width basis, so on a phone it takes its own line
+        and the three controls sit under it rather than being squeezed to nothing.
+      */}
+      <form onSubmit={submit} className="flex flex-wrap items-center gap-2">
         <Input
           type="search"
           name="q"
           defaultValue={queryText}
           placeholder={translate('search.placeholder')}
           aria-label={translate('search.placeholder')}
-          className="min-w-0 flex-1"
+          className="min-w-0 flex-1 basis-full sm:basis-auto"
         />
         <Select
           value={sort}
           aria-label={translate('search.sort')}
-          className="w-44"
+          className="w-full sm:w-44"
           onChange={(event) => {
             navigate({ sort: event.currentTarget.value });
           }}
