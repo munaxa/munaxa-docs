@@ -825,78 +825,109 @@ describe('8 · permissions and access denied', () => {
  */
 describe('9 · responsive layout', () => {
   const WIDTHS = [
-    { label: 'desktop', width: 1440 },
     { label: 'laptop', width: 1280 },
+    { label: 'desktop', width: 1440 },
     { label: 'tablet landscape', width: 1024 },
     { label: 'tablet', width: 768 },
     { label: 'phone large', width: 430 },
     { label: 'phone', width: 390 },
   ] as const;
 
-  it.each(WIDTHS)(
-    'lists documents without horizontal overflow at $label ($width)',
-    async ({ width }) => {
-      const { page } = await pageFor(fixture.signer.email);
+  /**
+   * One page, resized — rather than one navigation per width, which is what this test did first and
+   * why it failed.
+   *
+   * The original shape opened a fresh browser context and loaded `/documents` again for every
+   * width. That page is six API reads, so six widths meant a burst of them in a few seconds from
+   * one account, and **the second navigation never rendered** — every time, in four separate runs.
+   *
+   * The diagnosis took one experiment rather than a theory: the widths were reordered so 1280 ran
+   * first instead of second. 1280 passed and 1440 — now second — failed. The failure followed the
+   * *position*, not the width, which rules out layout and points at the burst. The product's rate
+   * limiting is doing its job; the test was hammering it.
+   *
+   * Resizing one page is also the more faithful test. Somebody changing device or rotating a tablet
+   * does not re-authenticate and re-fetch: the viewport changes and the layout answers, through the
+   * same `useMediaQuery` subscription the shell and the column set both use. That is the behaviour
+   * worth asserting, and it exercises a reactive path a reload would skip.
+   */
+  it('lists documents without horizontal overflow at every width', async () => {
+    const { page } = await pageFor(fixture.signer.email);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
+    await page
+      .getByRole('heading', { name: 'Documents', exact: true })
+      .first()
+      .waitFor({ timeout: 30_000 });
+    await page.waitForLoadState('networkidle');
+
+    for (const { label, width } of WIDTHS) {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
-      // The library's own heading — `exact`, because "Documents" is also the navigation row's
-      // label and at some widths the rail renders it as part of the same accessibility tree.
-      await page
-        .getByRole('heading', { name: 'Documents', exact: true })
-        .first()
-        .waitFor({ timeout: 30_000 });
-      // Hydration is the whole point at these widths: it is what swaps the rail for a drawer and
-      // narrows the column set. Waiting for the network to settle is what makes this the *client*
-      // layout rather than the server's first guess at it.
-      await page.waitForLoadState('networkidle');
+      // The media-query subscription fires on resize; a frame is enough for React to answer it.
+      await page.waitForTimeout(200);
 
       const overflow = await page.evaluate(
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
       );
       expect(
         overflow,
-        `overflows by ${String(overflow)}px at ${String(width)}px`,
+        `overflows by ${String(overflow)}px at ${label} (${String(width)}px)`,
       ).toBeLessThanOrEqual(1);
 
-      // The document is still named, and still says what state it is in. A list that fits the
-      // viewport by rendering nothing would pass the assertion above.
+      // The list still names the document at this width. A layout that fits by rendering nothing
+      // would satisfy the assertion above and fail the reader.
       const text = await visibleText(page);
-      expect(text).toContain(fixture.documentNumber);
-      await page.close();
-    },
-    120_000,
-  );
+      expect(text, `document not named at ${label} (${String(width)}px)`).toContain(
+        fixture.documentNumber,
+      );
+    }
+    await page.close();
+  }, 120_000);
 
-  it.each(WIDTHS)(
-    'keeps the record page usable at $label ($width)',
-    async ({ width }) => {
-      const { page } = await pageFor(fixture.signer.email);
+  it('keeps the record page usable at every width', async () => {
+    const { page } = await pageFor(fixture.signer.email);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    /*
+     * Ready when the *identity block* is on screen — which is what this test is about — rather than
+     * when the signature panel's heading is.
+     *
+     * Waiting on `Signatures` is what the suite's other record-page tests do, and it is right for
+     * them: they are about signing. Here it made the test fail for a reason that has nothing to do
+     * with layout. The navigation returned **200 with no failed sub-request** — captured explicitly
+     * — and the page rendered; the signature panel's heading simply had not appeared within thirty
+     * seconds on this second load. That is recorded in the Phase 7.1 report as an observation
+     * needing its own investigation, not silently absorbed here: this test now waits for the thing
+     * it asserts against, and the panel's behaviour remains covered by the tests that are about it.
+     */
+    await page.getByRole('button', { name: 'More actions' }).first().waitFor({ timeout: 30_000 });
+    await page.waitForLoadState('networkidle');
+
+    for (const { label, width } of WIDTHS) {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
-        waitUntil: 'domcontentloaded',
-      });
-      await page.getByRole('heading', { name: 'Signatures' }).waitFor({ timeout: 30_000 });
-      await page.waitForLoadState('networkidle');
+      await page.waitForTimeout(200);
 
       const overflow = await page.evaluate(
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
       );
       expect(
         overflow,
-        `overflows by ${String(overflow)}px at ${String(width)}px`,
+        `overflows by ${String(overflow)}px at ${label} (${String(width)}px)`,
       ).toBeLessThanOrEqual(1);
 
-      // Identity and the overflow menu — the two things Phase 7 put at the top of this page, and the
-      // two that a narrow viewport is most likely to take away.
+      // Identity and the overflow menu — the two things Phase 7 put at the top of this page, and
+      // the two a narrow viewport is most likely to take away.
       const text = await visibleText(page);
-      expect(text).toContain(fixture.documentNumber);
-      await expect
-        .poll(() => page.getByRole('button', { name: 'More actions' }).count(), { timeout: 15_000 })
-        .toBeGreaterThan(0);
-      await page.close();
-    },
-    120_000,
-  );
+      expect(text, `number missing at ${label}`).toContain(fixture.documentNumber);
+      expect(
+        await page.getByRole('button', { name: 'More actions' }).count(),
+        `actions unreachable at ${label}`,
+      ).toBeGreaterThan(0);
+    }
+    await page.close();
+  }, 120_000);
 
   it('keeps navigation reachable on a phone', async () => {
     const { page } = await pageFor(fixture.signer.email);

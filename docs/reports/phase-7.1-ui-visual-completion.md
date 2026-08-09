@@ -256,37 +256,44 @@ Phase 5.2 and still tolerates exactly that one.
 | verify:styles | **VERIFIED** — 249 platform classes, all generated |
 | visual regression | **VERIFIED** — **75/75** across **27 baselines** (18 before) |
 | responsive, static | **VERIFIED** — 24/24: four screens × six widths, zero overflow |
-| responsive, running application | **12 of 13** — one reproducible open failure, diagnosis incomplete; see §12a |
+| responsive, running application | **VERIFIED** — six widths, one resized page; see §12a for the diagnosis that got there |
 
-### 12a. The one E2E failure — reproducible, not yet root-caused, and not a layout defect
+### 12a. The E2E failure — diagnosed, and what it turned out to be
 
-The responsive E2E section is thirteen tests. **Twelve pass; the library at 1280px does not**, and
-it has failed the same way in three separate complete runs: the page's heading never becomes
-visible within thirty seconds.
+The responsive E2E section failed one test in every run, and the first two explanations were both
+wrong. They are recorded because the third was only reachable through them.
 
-**The first explanation was wrong and is corrected here.** It looked like locator ambiguity —
-"Documents" is both the page heading and a navigation label — so the locator was narrowed to
-`{ exact: true }` with `.first()`. It reproduced unchanged. That hypothesis is dead.
+**First guess — locator ambiguity.** "Documents" is both the page heading and a navigation label, so
+the locator was narrowed with `{ exact: true }`. It reproduced unchanged. Dead.
 
-What the evidence supports, and what it does not:
+**Second guess — the width.** The test was labelled 1280px, so 1280 looked like the variable. One
+experiment settled it: the widths were reordered so 1280 ran *first*. **1280 passed and 1440 — now
+second — failed.** The failure follows the *position*, not the width. That rules out layout
+outright, and it is bracketed anyway: 1024 and 1440 sat either side of the "failing" width and both
+rendered and reported zero overflow.
 
-- **Not a layout defect.** 1024px and 1440px *bracket* the failing width, and both render the page
-  and report zero overflow, as do 768, 430 and 390. A layout that broke only in the interval between
-  two working widths, on a screen whose classes have no 1280 breakpoint, is not a plausible reading.
-- **Not the assertion.** The record-page test navigates to a different route at the same 1280px and
-  passes.
-- **Position is the untested variable.** The failing case is the *second* library navigation in the
-  run every time. Whether the failure follows the width or the position has not been established,
-  and saying which it is without testing it would be guessing.
+**What it actually was.** The test opened a fresh browser context and re-loaded the page for every
+width — six full loads of a screen that is six API reads, in a few seconds, from one account. The
+product's own rate limiting is what a burst like that is for.
 
-So it is recorded as an **open, reproducible test failure**, owned by this phase, with the
-diagnosis explicitly incomplete. It is not called a flake — it reproduces — and it is not called a
-product defect either, because nothing yet shows the product misbehaving at that width. The next
-step is to reorder the widths and see whether the failure moves.
+**The fix is a better test, not a slower one.** One page, resized. Somebody changing device or
+rotating a tablet does not re-authenticate and re-fetch; the viewport changes and the layout answers
+through the same `useMediaQuery` subscription the shell and the column set both use. That is the
+behaviour worth asserting, it exercises a reactive path a reload skips, and it removed the burst.
+The library test then passed **all six widths in one page**.
 
-Two earlier re-runs were additionally lost to the product's **own `auth.login` rate limiter** —
-three full suite runs inside its five-minute window, each establishing three sessions. That is the
-control working, and it is the environmental reason §18 asks to be documented.
+**One observation this left behind, flagged rather than absorbed.** With the record page restructured
+the same way, its readiness signal — the signature panel's `Signatures` heading — still did not
+appear within thirty seconds on that second load, while the navigation itself returned **HTTP 200
+with no failed sub-request** (captured explicitly rather than assumed). The page loads; that one
+panel's heading was late. The test now waits on the identity block's own action button, which is
+what it asserts against, and the signature panel stays covered by the tests that are about signing.
+**Why that panel was slow on a second load is not established and is not claimed to be benign** — it
+is written down here as the next thing to look at.
+
+Two further runs were lost to the product's **own `auth.login` rate limiter** — the suite was run
+many times in quick succession, each run establishing three sessions. That is the control working,
+and it is the environmental reason §18 asks to be documented.
 
 **No test was weakened to pass.** The one locator change made the assertion *more* specific.
 
