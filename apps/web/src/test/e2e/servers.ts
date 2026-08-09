@@ -65,6 +65,16 @@ export interface Fixture {
   /** A second document, so a bulk selection has something to select. */
   readonly secondDocumentId: string;
   /**
+   * The document Phase 6.10 submits and approves — its own, so an approval cannot disturb the
+   * revision the signing ceremony signs. The type it carries points at a **published** workflow
+   * version whose single stage names the reader, so the approver and the person notified are two
+   * different people.
+   */
+  readonly approvalDocumentId: string;
+  readonly approvalRevisionId: string;
+  readonly approvalDocumentNumber: string;
+  readonly approvalDocumentTitle: string;
+  /**
    * The neighbouring tenant — Phase 6.9.
    *
    * A second *database*, not a second row: ADR-0015 is database-per-tenant, so an isolation claim
@@ -112,7 +122,18 @@ export interface Servers {
   readonly web: ChildProcess;
 }
 
-export async function startServers(fixture: Fixture): Promise<Servers> {
+/**
+ * Extra environment for the API process — Phase 6.10, and additive on purpose.
+ *
+ * The recovery rehearsal needs two things the signing suite must not have: an object store, so the
+ * audit checkpoint store is `available` at all, and a checkpoint key to sign with. Both change
+ * product behaviour — `STORAGE_DRIVER=LOCAL` puts the preview pipeline on a different path, and
+ * Phase 6.9's bounded-issuance assertion is measured against `NONE` — so they are passed by the
+ * suite that wants them rather than turned on for every suite.
+ */
+export type ExtraEnv = Readonly<Record<string, string>>;
+
+export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): Promise<Servers> {
   const main = join(API, 'dist', 'main.js');
   if (!existsSync(main)) {
     throw new Error(
@@ -191,6 +212,7 @@ export async function startServers(fixture: Fixture): Promise<Servers> {
       ...tenancy,
       SIGNATURE_WITNESS_SECRET: WITNESS_SECRET,
       CORS_ORIGINS: WEB_URL,
+      ...extraEnv,
     },
     // Its own process group, so `stopServers` can take the whole tree down. `next start` is a
     // launcher that forks `next-server`; killing only the launcher leaves the server holding the

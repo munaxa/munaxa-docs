@@ -84,7 +84,22 @@ export default defineConfig({
           include: ['src/test/e2e/**/*.e2e.spec.ts'],
           testTimeout: 180_000,
           hookTimeout: 240_000,
+          // **Strictly one at a time, in one process** — Phase 6.10, and the second time this
+          // repository has learned it.
+          //
+          // `fileParallelism: false` alone was not enough. Two files still ran in two forks, and
+          // the damage was not the obvious one: the second suite's `beforeAll` calls
+          // `cleanUpFixtures()`, which deletes **every** tenant whose slug begins `e2e` in the
+          // shared databases — so it wiped the first suite's rows between its source checkpoint and
+          // its backup, and the restore rehearsal reported that a perfect restore had lost
+          // everything. The port collision on 3210 was the same race announcing itself more
+          // politely.
+          //
+          // `singleFork` is what actually serialises them: one fork, one file at a time, so a
+          // suite's teardown can never overlap another suite's run. Phase 6.9 solved the same race
+          // by merging two files into one; this is the version that survives a third file.
           fileParallelism: false,
+          poolOptions: { forks: { singleFork: true } },
         },
       },
     ],

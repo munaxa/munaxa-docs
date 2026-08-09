@@ -619,11 +619,19 @@ describe('3 · bulk operations', () => {
   it('runs a bulk export over a real selection and records the operation', async () => {
     const page = await pageOf(fixture.signer.email);
     await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
-    await page.getByText('Batch release procedure').first().waitFor({ timeout: 30_000 });
-
+    // Waits for **the checkbox**, which is what this test actually needs, rather than for a title
+    // to become visible.
+    //
+    // The old wait was `getByText(title).first().waitFor()`, and the first test in this file
+    // already records why that is unsound: the list renders a **responsive pair** and one of the
+    // two is hidden at any viewport, so `.first()` resolves to whichever copy leads in document
+    // order. Phase 6.10 flipped that coin the other way by adding a third document to the fixture.
+    // Waiting for presence instead was no better — it resolves before the table is interactive, and
+    // the selection then finds no checkboxes at all. The control the test operates is the honest
+    // thing to wait for.
     const boxes = page.getByRole('checkbox');
-    const count = await boxes.count();
-    expect(count).toBeGreaterThan(0);
+    await expect.poll(() => boxes.count(), { timeout: 30_000 }).toBeGreaterThan(0);
+    expect(await page.getByText('Batch release procedure').count()).toBeGreaterThan(0);
     // The first checkbox on a table is the select-all, which is exactly the selection a bulk
     // action is for.
     await boxes.first().check();

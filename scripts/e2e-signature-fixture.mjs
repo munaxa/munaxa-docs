@@ -369,12 +369,117 @@ async function seed() {
     data: { latestRevisionId: secondRevisionId },
   });
 
+  // --- Phase 6.10: a real, published workflow, so an approval can be *performed* --------------
+  //
+  // The notification production path needs an originating business action, and the only browser
+  // route to `document.approved` is the engine: submit a document, have somebody decide its task.
+  // That needs a definition, a **published** version and a document type pointing at it — three
+  // configuration rows, written here for the same reason the library and the folder are written
+  // here (§"Rows rather than requests"). None of them is what the notification test is about.
+  //
+  // What is deliberately **not** faked is the approval itself: no instance, no stage and no task is
+  // seeded. Those are created by the engine when the browser submits, and the decision that ends
+  // them is a real `POST /approval-tasks/:id/decision` from a real session.
+  //
+  // The stage names the *reader* as its single participant, so the person who approves is not the
+  // person who is told about it — `documentEvent` notifies the owner and the creator, and a
+  // fixture where those were the same person would prove nothing about recipients.
+  const workflowDefinitionId = randomUUID();
+  const workflowVersionId = randomUUID();
+  await client.workflowDefinition.create({
+    data: {
+      id: workflowDefinitionId,
+      tenantId,
+      key: 'e2e-approval',
+      name: 'E2E approval',
+      isActive: true,
+    },
+  });
+  await client.workflowVersion.create({
+    data: {
+      id: workflowVersionId,
+      tenantId,
+      definitionId: workflowDefinitionId,
+      version: 1,
+      // PUBLISHED, and it has to be: `workflow_instance_binds_published` is a trigger, so a draft
+      // here would make submission fail at the database rather than in the test.
+      state: 'PUBLISHED',
+      publishedAt: new Date(),
+      definition: {
+        appliesTo: { documentTypes: [], condition: null },
+        stages: [
+          {
+            name: 'Review',
+            participants: [{ kind: 'USER', userId: readerId }],
+            completionRule: 'ALL',
+            ordered: false,
+            condition: null,
+            deadline: null,
+            reminders: [],
+            onOverdue: { action: 'NOTIFY_ONLY' },
+            onReject: 'TERMINATE',
+            maxEscalations: 2,
+          },
+        ],
+        // Neither number nor publish on completion. The document is pre-numbered below, so
+        // `documentNumber` renders in the notification without this fixture depending on a
+        // numbering rule with no segments drawing a number — which is a different phase's claim.
+        onComplete: { assignNumber: false, publish: 'MANUALLY' },
+      },
+    },
+  });
+  await client.documentType.update({
+    where: { id: documentTypeId },
+    data: { workflowDefinitionId },
+  });
+
+  // The document the approval runs on: its own, so submitting it cannot disturb the signing
+  // ceremony's revision. DRAFT and numbered — APPROVED does not require a number, but having one
+  // makes `{{documentNumber}}` a value rather than the `—` placeholder.
+  const approvalDocumentId = randomUUID();
+  const approvalRevisionId = randomUUID();
+  await client.document.create({
+    data: {
+      id: approvalDocumentId,
+      tenantId,
+      folderId,
+      documentTypeId,
+      confidentialityId,
+      title: 'Cleaning validation protocol',
+      status: 'DRAFT',
+      origin: 'UPLOAD',
+      documentNumber: 'SOP-E2E-0003',
+      numberedAt: new Date(),
+      ownerUserId: signerId,
+    },
+  });
+  await client.documentRevision.create({
+    data: {
+      id: approvalRevisionId,
+      tenantId,
+      documentId: approvalDocumentId,
+      ordinal: 0,
+      label: 'Rev 0',
+      status: 'DRAFT',
+      fileObjectId,
+      filename: 'cleaning.pdf',
+    },
+  });
+  await client.document.update({
+    where: { id: approvalDocumentId },
+    data: { latestRevisionId: approvalRevisionId },
+  });
+
   return {
     tenantId,
     slug,
     libraryId,
     folderId,
     secondDocumentId,
+    approvalDocumentId,
+    approvalRevisionId,
+    approvalDocumentNumber: 'SOP-E2E-0003',
+    approvalDocumentTitle: 'Cleaning validation protocol',
     password,
     signer: { id: signerId, email: 'signer@e2e.test', name: 'Ada Lovelace' },
     reader: { id: readerId, email: 'reader@e2e.test' },
@@ -395,6 +500,18 @@ async function cleanup(client) {
   for (const { id } of tenants) {
     for (const table of [
       'audit_event',
+      // Phase 6.10, and in this order: an approval's rows reference the document, and the
+      // notification and outbox rows reference nothing but the tenant. Deleting the document
+      // first would fail on `onDelete: Restrict`.
+      'notification_message',
+      'notification_batch',
+      'outbox_message',
+      'workflow_comment',
+      'workflow_timer',
+      'approval_task',
+      'workflow_stage',
+      'number_reservation',
+      'workflow_instance',
       'document_signature',
       'document_revision',
       'document',
@@ -409,6 +526,9 @@ async function cleanup(client) {
       'session',
       '"user"',
       'role',
+      'workflow_version',
+      'workflow_definition',
+      'tenant_setting',
     ]) {
       await client
         .$executeRawUnsafe(`DELETE FROM ${table} WHERE tenant_id = $1::uuid`, id)

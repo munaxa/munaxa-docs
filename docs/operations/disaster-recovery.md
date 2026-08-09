@@ -75,8 +75,12 @@ promotion or a regional cutover is a piece of platform engineering with its own 
 split brain, a flapping promotion — and building half of one would produce a system that fails over
 when it should not and does not when it should.
 
-**No tested RTO.** 20 §6's table states 2 hours for a database and 4 for object storage, and those
-are targets taken from the architecture rather than measurements: no restore of this product has
-been performed, because no deployment of it exists. The first quarterly restore test is what turns
-them into numbers, and until then they are what the design was built to allow rather than what it
-has been shown to achieve. Recorded here rather than discovered during an incident.
+**No tested RTO — still, and for a narrower reason than before.** 20 §6's table states 2 hours for a
+database and 4 for object storage. Phase 6.10 performed the first restore this product has ever had
+([backup-and-restore.md §4](./backup-and-restore.md#4-what-has-and-has-not-been-performed)), so the
+database procedure is no longer a hypothesis — but two small tenant databases restoring in 20.5
+seconds is evidence that the *sequence* works, not that a customer's corpus fits inside two hours.
+The object-storage figure has no measurement at all: nothing in that rehearsal restored a bucket.
+
+Both remain targets. What changed is that the procedure behind them has been executed once, by
+somebody who was not in an incident at the time.

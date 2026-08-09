@@ -144,7 +144,7 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
     const lane = this.producer(queue);
     const definition = queueDefinition(queue as QueueNameKey);
     const jobOptions: JobsOptions = {
-      jobId: options.jobId,
+      jobId: brokerSafeJobId(options.jobId),
       delay: options.delayMs ?? 0,
       attempts: options.attempts ?? definition.retry.attempts,
       backoff: {
@@ -258,7 +258,7 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
           // is not a failure. The delay is deliberately short: the cap exists to interleave
           // tenants, not to throttle any of them.
           await this.producer(queue).add(queue, job.data as object, {
-            jobId: `${job.id ?? ''}:requeued:${String(job.attemptsMade)}`,
+            jobId: brokerSafeJobId(`${job.id ?? ''}:requeued:${String(job.attemptsMade)}`),
             delay: TENANT_SLOT_RETRY_MS,
             attempts: job.opts.attempts ?? definition.retry.attempts,
           });
@@ -375,6 +375,41 @@ const TENANT_SLOT_TTL_SECONDS = 1_800;
 
 /** How long a job over its tenant's cap waits before trying again. */
 const TENANT_SLOT_RETRY_MS = 2_000;
+
+/**
+ * A job identifier the broker will actually accept — Phase 6.10, and the defect it was not looking
+ * for.
+ *
+ * BullMQ refuses a custom job id containing `:` unless it happens to split into **exactly three**
+ * parts, which is a compatibility carve-out for its own older repeatable-job ids rather than a rule
+ * anybody would design (`bullmq/dist/cjs/classes/job.js`: *"TODO: replace this check in next
+ * breaking check with include(':')"*). Eight of this product's twelve derived job ids fall outside
+ * that accident, and every one of them was refused at runtime:
+ *
+ * - every **scheduled fan-out** — `notifications.deliver`, the three digests, `release-batches`,
+ *   `retention.sweep`, `storage.verify-integrity`, `documents.expire-effective`,
+ *   `identity.expire-delegations`, `audit.verify-chain`, `webhooks.retry-due`, `audit.stream-sinks`
+ *   — because the id embeds the firing's own `repeat:<name>:<ms>` job id and therefore its colons;
+ * - `search:project:<document>:<bucket>` and `search:reproject:<scope>:<cursor>`;
+ * - `ocr:<revision>` and `wf-timer:<id>`, which have *too few* colons rather than too many;
+ * - the at-cap requeue above.
+ *
+ * The consequence was total and silent: a fan-out that throws fails its scheduled job, so **no
+ * tenant job was ever enqueued** and no email had ever been sent by this product. The outbox
+ * dispatcher was unaffected — `outbox:<row>:<lane>` is three parts by coincidence — which is
+ * precisely why the failure was invisible: in-app notifications arrived, so the pipeline looked
+ * alive.
+ *
+ * Sanitised here rather than at the eight call sites, for two reasons. It is one place that cannot
+ * be missed by a ninth site written later, and the derivations stay exactly as they were: the same
+ * inputs still produce the same identifier, so the deduplication each site depends on — a
+ * redelivered fan-out coalescing, a re-dispatched outbox row replacing rather than duplicating — is
+ * unchanged in meaning. `~` because it appears in none of the inputs (uuids, lane names, cursors),
+ * so the mapping is injective and two different derivations cannot collide into one id.
+ */
+function brokerSafeJobId(jobId: string | undefined): string | undefined {
+  return jobId?.replaceAll(':', '~');
+}
 
 /**
  * The tenant a job belongs to.
