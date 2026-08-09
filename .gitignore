@@ -80,4 +80,5 @@ dump.rdb
 # is a copy of a customer's entire record — every document, every user, every audit row — and the
 # one artefact in this repository that must never be committed by accident.
 .dr/
+.storage-backup/
 *.dump
