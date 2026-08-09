@@ -93,6 +93,17 @@ export function PreviewPanel({
   }, [manifest.state, pollExpired, document.id]);
 
   // The content URL, once ready — one audited issuance per viewer open, not per render.
+  //
+  // `translate` and `toast` are deliberately **not** dependencies, and that is a defect fix rather
+  // than a lint exception — Phase 6.8 measured it. `useTranslate()` calls `translatorFor`, which
+  // returns a new closure on every call, so listing it made `openContent` a new function on every
+  // render; the effect below depends on `openContent` and *calls* it, the call sets `content`,
+  // setting `content` re-renders, and the loop closes. A single mounted panel issued **6,987
+  // content URLs in 1.5 seconds** — each one a presigned URL and an audited issuance, against the
+  // tenant's own API and its own compliance trail.
+  //
+  // Both values are only read inside the callback to phrase a failure, and neither changes what is
+  // requested. Capturing the render's copies is correct and is what makes the callback stable.
   const openContent = useCallback(() => {
     void requestPreviewContent(document.id).then((result) => {
       if (result.ok) {
@@ -101,7 +112,7 @@ export function PreviewPanel({
         toast.error(result.detail ?? translate(`error.${result.code}`));
       }
     });
-  }, [document.id, toast, translate]);
+  }, [document.id]);
 
   useEffect(() => {
     if (manifest.state === 'READY' && (manifest.mode === 'PDF' || manifest.mode === 'IMAGE')) {
