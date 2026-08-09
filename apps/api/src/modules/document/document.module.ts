@@ -100,14 +100,25 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     RetentionModule,
   ],
   controllers: [
+    // **`BulkDocumentsController` first, and the order is load-bearing.**
+    //
+    // Nest registers routes in the order controllers are listed and matches them in that order, so
+    // `POST /documents/:id/restore` declared before `POST /documents/bulk/restore` swallows the
+    // second: `bulk` binds to `:id`, `AclGuard` resolves a `DOCUMENT` scope whose identifier is the
+    // literal string `bulk`, and the request fails with a 500 rather than restoring anything. The
+    // same shadowing took `GET /documents/bulk` under `GET /documents/:id`. Both were reachable
+    // only as errors from Phase 16 until this line moved — see `document-route-order.spec.ts`,
+    // which asserts the ordering rather than trusting a comment to preserve it.
+    //
+    // Phase 16's own reason for three controllers rather than three more methods on
+    // `DocumentsController` still stands: each carries a different permission story — bulk resolves
+    // reach per object with no `@ScopedTo` to bind, templates split `template:manage` from
+    // `document:create` on one class, and signatures are `document:sign`, a grant seeded to no role
+    // at all.
+    BulkDocumentsController,
     DocumentsController,
     RevisionControlController,
     DocumentPreviewController,
-    // Phase 16. Three controllers rather than three more methods on `DocumentsController`, because
-    // each carries a different permission story: bulk resolves reach per object with no
-    // `@ScopedTo` to bind, templates split `template:manage` from `document:create` on one class,
-    // and signatures are `document:sign` — a grant seeded to no role at all.
-    BulkDocumentsController,
     DocumentTemplatesController,
     DocumentSignaturesController,
   ],
