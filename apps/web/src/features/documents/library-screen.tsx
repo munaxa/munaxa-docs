@@ -24,28 +24,6 @@ import { BulkMetadataDialog, BulkResultDialog } from './bulk-panel';
 import { FolderTree } from './folder-tree';
 import { type DocumentTypeChoice, UploadDialog } from './upload-dialog';
 
-export const DOCUMENT_SORT_FIELDS = ['createdAt', 'updatedAt', 'title', 'status'] as const;
-export const DOCUMENT_FILTER_KEYS = [
-  'libraryId',
-  'folderId',
-  'underFolderId',
-  'documentTypeId',
-  'categoryId',
-  'confidentialityId',
-  'status',
-  'favorite',
-  /**
-   * Phase 13's two dashboard links, so the tile and the list it points at describe the same rows.
-   *
-   * A count nobody can open is a count nobody can check, and the dashboard's whole claim is that
-   * its numbers *are* the lists. Adding them here rather than only to the API is what makes
-   * `/documents?ownerUserId=…&status=DRAFT` render the four drafts the "Drafts" tile counted
-   * instead of silently ignoring the filter and showing the library.
-   */
-  'ownerUserId',
-  'lockedByMe',
-] as const;
-
 /**
  * The document library.
  *

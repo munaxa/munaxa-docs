@@ -3,13 +3,11 @@ import type { ReactNode } from 'react';
 import type { Category } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  CATEGORY_SORT_FIELDS,
-  CategoriesScreen,
-} from '../../../../features/admin-configuration/categories-screen';
+import { CategoriesScreen } from '../../../../features/admin-configuration/categories-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { CATEGORY_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /** Categories, ordered by path so the nesting reads as a tree. */
 export default async function CategoriesPage({

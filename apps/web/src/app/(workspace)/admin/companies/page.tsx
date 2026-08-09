@@ -4,13 +4,11 @@ import type { Company } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
-import {
-  COMPANY_SORT_FIELDS,
-  CompaniesScreen,
-} from '../../../../features/admin-organization/companies-screen';
+import { CompaniesScreen } from '../../../../features/admin-organization/companies-screen';
 import { adminAccess, adminList } from '../../../../lib/admin/api';
 import { readListState } from '../../../../lib/admin/list-state';
 import type { RawSearchParams } from '../../../../lib/admin/list-state';
+import { COMPANY_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * The companies list.

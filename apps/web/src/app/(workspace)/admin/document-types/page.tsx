@@ -10,14 +10,14 @@ import type {
 } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  DOCUMENT_TYPE_FILTER_KEYS,
-  DOCUMENT_TYPE_SORT_FIELDS,
-  DocumentTypesScreen,
-} from '../../../../features/admin-configuration/document-types-screen';
+import { DocumentTypesScreen } from '../../../../features/admin-configuration/document-types-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import {
+  DOCUMENT_TYPE_FILTER_KEYS,
+  DOCUMENT_TYPE_SORT_FIELDS,
+} from '../../../../lib/admin/list-keys';
 
 /**
  * Document types, with every list the form draws from.

@@ -32,9 +32,6 @@ import {
 import { createWorkflow, deleteWorkflow, restoreWorkflow, updateWorkflow } from './actions';
 import { DefinitionEditor, STARTING_DEFINITION } from './definition-editor';
 
-export const WORKFLOW_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'key'] as const;
-export const WORKFLOW_FILTER_KEYS = ['isActive', 'state'] as const;
-
 export const VERSION_STATE_LABELS: Readonly<Record<WorkflowVersionStateKey, MessageKey>> = {
   DRAFT: 'admin.workflows.stateDRAFT',
   PUBLISHED: 'admin.workflows.statePUBLISHED',

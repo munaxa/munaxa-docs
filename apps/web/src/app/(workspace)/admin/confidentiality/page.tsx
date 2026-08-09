@@ -3,13 +3,11 @@ import type { ReactNode } from 'react';
 import type { ConfidentialityLevel } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  CONFIDENTIALITY_SORT_FIELDS,
-  ConfidentialityScreen,
-} from '../../../../features/admin-configuration/confidentiality-screen';
+import { ConfidentialityScreen } from '../../../../features/admin-configuration/confidentiality-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { CONFIDENTIALITY_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /** Confidentiality levels, ordered by rank unless the reader asks otherwise. */
 export default async function ConfidentialityPage({

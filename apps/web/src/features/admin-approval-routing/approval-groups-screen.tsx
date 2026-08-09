@@ -34,9 +34,6 @@ import {
   updateApprovalGroup,
 } from './actions';
 
-export const GROUP_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'key'] as const;
-export const GROUP_FILTER_KEYS = ['isActive'] as const;
-
 /**
  * Approval groups.
  *

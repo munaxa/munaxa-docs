@@ -24,8 +24,6 @@ import {
 import { createApiClient, revokeApiClient } from './actions';
 import { SecretOnce } from './secret-once';
 
-export const API_CLIENT_SORT_FIELDS = ['createdAt'] as const;
-
 /**
  * API clients — the credentials a machine caller presents.
  *

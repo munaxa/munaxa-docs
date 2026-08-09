@@ -30,8 +30,6 @@ import {
   updateCategory,
 } from './actions';
 
-export const CATEGORY_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code', 'path'] as const;
-
 /**
  * Categories — business classification, independent of where a document is filed.
  *

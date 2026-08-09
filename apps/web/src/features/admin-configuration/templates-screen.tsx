@@ -32,8 +32,6 @@ import {
   updateDocumentTemplate,
 } from './actions';
 
-export const TEMPLATE_SORT_FIELDS = ['createdAt', 'updatedAt', 'name'] as const;
-
 /**
  * Document templates — the controlled starting point a new document is filed from.
  *

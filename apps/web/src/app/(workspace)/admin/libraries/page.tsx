@@ -3,14 +3,11 @@ import type { ReactNode } from 'react';
 import type { Company, Department, Entity, Library } from '@edms/contracts';
 import { Permission, ScopeType } from '@edms/domain';
 
-import {
-  LIBRARY_FILTER_KEYS,
-  LIBRARY_SORT_FIELDS,
-  LibrariesScreen,
-} from '../../../../features/admin-libraries/libraries-screen';
+import { LibrariesScreen } from '../../../../features/admin-libraries/libraries-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { LIBRARY_FILTER_KEYS, LIBRARY_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * Libraries, with the candidate owner nodes for each kind a library may belong to.

@@ -3,14 +3,11 @@ import type { ReactNode } from 'react';
 import type { Branch, Department, Entity } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  DEPARTMENT_FILTER_KEYS,
-  DEPARTMENT_SORT_FIELDS,
-  DepartmentsScreen,
-} from '../../../../features/admin-organization/departments-screen';
+import { DepartmentsScreen } from '../../../../features/admin-organization/departments-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { DEPARTMENT_FILTER_KEYS, DEPARTMENT_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * The departments list.

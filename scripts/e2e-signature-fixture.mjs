@@ -38,17 +38,137 @@ if (!url) {
   throw new Error('DATABASE_MIGRATION_URL must be set.');
 }
 
+/**
+ * The neighbouring tenant's database — Phase 6.9.
+ *
+ * ADR-0015 is database-per-tenant, so an isolation claim made inside one database would be a claim
+ * about a `WHERE` clause rather than about the architecture. When the second URL is absent the
+ * fixture seeds one tenant and the suite skips the isolation assertions rather than pretending.
+ */
+const secondUrl = process.env.SECOND_DATABASE_MIGRATION_URL ?? '';
+
 const client = new PrismaClient({ datasources: { db: { url } } });
+const second = secondUrl === '' ? null : new PrismaClient({ datasources: { db: { url: secondUrl } } });
 
 if (process.argv.includes('--cleanup')) {
-  await cleanup();
+  await cleanup(client);
+  if (second !== null) {
+    await cleanup(second);
+    await second.$disconnect();
+  }
   await client.$disconnect();
   process.exit(0);
 }
 
 const fixture = await seed();
+if (second !== null) {
+  fixture.neighbour = await seedNeighbour();
+  await second.$disconnect();
+} else {
+  fixture.neighbour = null;
+}
 await client.$disconnect();
 process.stdout.write(`${JSON.stringify(fixture)}\n`);
+
+/**
+ * A whole second tenant in its own database, with one document nobody in the first may reach.
+ *
+ * Deliberately minimal: the isolation assertions ask whether an identifier from over here finds
+ * anything over there, and that question needs a document and a person, not a library of them.
+ */
+async function seedNeighbour() {
+  const tenantId = randomUUID();
+  const slug = `e2e${tenantId.replaceAll('-', '').slice(-10)}`;
+  const userId = randomUUID();
+  const roleId = randomUUID();
+  const documentId = randomUUID();
+  const passwordHash = await scrypt('correct horse battery staple');
+
+  await second.tenant.create({
+    data: { id: tenantId, slug, name: 'Neighbour E2E', status: 'ACTIVE' },
+  });
+  await second.role.create({
+    data: {
+      id: roleId,
+      tenantId,
+      key: 'E2E_NEIGHBOUR',
+      name: 'E2E_NEIGHBOUR',
+      isSystem: false,
+      permissions: { create: [...ALL_PERMISSIONS].map((permission) => ({ tenantId, permission })) },
+    },
+  });
+  await second.user.create({
+    data: {
+      id: userId,
+      tenantId,
+      email: 'neighbour@e2e.test',
+      emailNormalized: 'neighbour@e2e.test',
+      displayName: 'Carol Neighbour',
+      status: 'ACTIVE',
+      passwordHash,
+      passwordAlgorithm: 'SCRYPT',
+      roles: { create: [{ tenantId, roleId }] },
+    },
+  });
+
+  const confidentialityId = randomUUID();
+  const numberingRuleId = randomUUID();
+  const documentTypeId = randomUUID();
+  const libraryId = randomUUID();
+  const folderId = randomUUID();
+  const fileObjectId = randomUUID();
+  await second.confidentialityLevel.create({
+    data: { id: confidentialityId, tenantId, code: 'INTERNAL', name: 'Internal', rank: 2 },
+  });
+  await second.numberingRule.create({
+    data: { id: numberingRuleId, tenantId, key: 'sop', name: 'SOP numbering', segments: [] },
+  });
+  await second.documentType.create({
+    data: {
+      id: documentTypeId,
+      tenantId,
+      code: 'SOP',
+      name: 'Standard operating procedure',
+      numberingRuleId,
+      defaultConfidentialityId: confidentialityId,
+    },
+  });
+  await second.library.create({
+    data: { id: libraryId, tenantId, code: 'QMS', name: 'Quality', ownerScopeType: 'TENANT' },
+  });
+  await second.folder.create({
+    data: { id: folderId, tenantId, libraryId, name: 'Root', path: folderId, depth: 1, isRoot: true },
+  });
+  await second.library.update({ where: { id: libraryId }, data: { rootFolderId: folderId } });
+  await second.fileObject.create({
+    data: {
+      id: fileObjectId,
+      tenantId,
+      checksumSha256: 'c'.repeat(64),
+      sizeBytes: BigInt(1024),
+      mimeType: 'application/pdf',
+      storageKey: `documents/${fileObjectId}.pdf`,
+      storageDriver: 'LOCAL',
+      scanStatus: 'CLEAN',
+      refCount: 1,
+    },
+  });
+  await second.document.create({
+    data: {
+      id: documentId,
+      tenantId,
+      folderId,
+      documentTypeId,
+      confidentialityId,
+      title: 'Neighbour confidential procedure',
+      status: 'DRAFT',
+      origin: 'UPLOAD',
+      ownerUserId: userId,
+    },
+  });
+
+  return { tenantId, slug, email: 'neighbour@e2e.test', documentId };
+}
 
 async function seed() {
   const tenantId = randomUUID();
@@ -202,9 +322,59 @@ async function seed() {
     data: { latestRevisionId: revisionId },
   });
 
+  // A second document, so a library list has more than one row and a bulk selection has something
+  // to select. Unnumbered — a draft has no number until approval — but it *does* get a revision,
+  // because a document without one is a state this product never creates: Phase 3 writes the
+  // document and its first revision in one transaction, and `GET /documents/:id/revisions`
+  // answers `404` without one, which the document screen does not guard. A fixture in a state the
+  // product cannot reach would be testing a page against data it will never see.
+  const secondDocumentId = randomUUID();
+  const secondRevisionId = randomUUID();
+  await client.document.create({
+    data: {
+      id: secondDocumentId,
+      tenantId,
+      folderId,
+      documentTypeId,
+      confidentialityId,
+      title: 'Deviation handling procedure',
+      // PUBLISHED, because the lifecycle only offers archival from PUBLISHED, EXPIRED or
+      // SUPERSEDED — `IMPLEMENTED_TRANSITIONS` says so and the screen honours it. A DRAFT fixture
+      // would make the archive workflow untestable and would have looked like a missing button.
+      //
+      // Numbered, because it has to be: `ck_document_numbered_when_published` refused the first
+      // attempt at this row. A number is assigned at approval (ADR-0004), so a published document
+      // without one is a state the database will not hold — which is the constraint working.
+      status: 'PUBLISHED',
+      documentNumber: 'SOP-E2E-0002',
+      numberedAt: new Date(),
+      origin: 'UPLOAD',
+      ownerUserId: signerId,
+    },
+  });
+  await client.documentRevision.create({
+    data: {
+      id: secondRevisionId,
+      tenantId,
+      documentId: secondDocumentId,
+      ordinal: 0,
+      label: 'Rev 0',
+      status: 'DRAFT',
+      fileObjectId,
+      filename: 'deviation.pdf',
+    },
+  });
+  await client.document.update({
+    where: { id: secondDocumentId },
+    data: { latestRevisionId: secondRevisionId },
+  });
+
   return {
     tenantId,
     slug,
+    libraryId,
+    folderId,
+    secondDocumentId,
     password,
     signer: { id: signerId, email: 'signer@e2e.test', name: 'Ada Lovelace' },
     reader: { id: readerId, email: 'reader@e2e.test' },
@@ -216,8 +386,8 @@ async function seed() {
   };
 }
 
-/** Every tenant this script has ever created in this database, gone. */
-async function cleanup() {
+/** Every tenant this script has ever created in the given database, gone. */
+async function cleanup(client) {
   const tenants = await client.tenant.findMany({
     where: { slug: { startsWith: 'e2e' } },
     select: { id: true },

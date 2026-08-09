@@ -14,13 +14,10 @@ import type {
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../features/admin-shared';
-import {
-  DOCUMENT_FILTER_KEYS,
-  DOCUMENT_SORT_FIELDS,
-  LibraryScreen,
-} from '../../../features/documents/library-screen';
+import { LibraryScreen } from '../../../features/documents/library-screen';
 import { adminAccess, adminList, adminOptions } from '../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../lib/admin/list-state';
+import { DOCUMENT_FILTER_KEYS, DOCUMENT_SORT_FIELDS } from '../../../lib/admin/list-keys';
 
 /**
  * The document library.

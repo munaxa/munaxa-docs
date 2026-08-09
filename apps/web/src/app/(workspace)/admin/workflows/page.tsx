@@ -4,13 +4,10 @@ import type { DocumentType, WorkflowDefinition } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
-import {
-  WORKFLOW_FILTER_KEYS,
-  WORKFLOW_SORT_FIELDS,
-  WorkflowsScreen,
-} from '../../../../features/admin-workflows/workflows-screen';
+import { WorkflowsScreen } from '../../../../features/admin-workflows/workflows-screen';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { WORKFLOW_FILTER_KEYS, WORKFLOW_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * Approval workflows.

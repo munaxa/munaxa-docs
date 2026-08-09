@@ -43,6 +43,12 @@ export const API_PORT = 3001;
 export const WEB_PORT = Number(process.env.E2E_WEB_PORT ?? 3210);
 export const WEB_URL = `http://127.0.0.1:${String(WEB_PORT)}`;
 
+export interface Person {
+  readonly id: string;
+  readonly email: string;
+  readonly name?: string;
+}
+
 export interface Fixture {
   readonly tenantId: string;
   readonly slug: string;
@@ -54,6 +60,23 @@ export interface Fixture {
   readonly revisionLabel: string;
   readonly documentNumber: string;
   readonly contentSha256: string;
+  readonly libraryId: string;
+  readonly folderId: string;
+  /** A second document, so a bulk selection has something to select. */
+  readonly secondDocumentId: string;
+  /**
+   * The neighbouring tenant — Phase 6.9.
+   *
+   * A second *database*, not a second row: ADR-0015 is database-per-tenant, so an isolation claim
+   * made inside one database would be a claim about a `WHERE` clause rather than about the
+   * architecture. Present only when `SECOND_DATABASE_MIGRATION_URL` is configured.
+   */
+  readonly neighbour: {
+    readonly tenantId: string;
+    readonly slug: string;
+    readonly email: string;
+    readonly documentId: string;
+  } | null;
 }
 
 /**
@@ -110,8 +133,8 @@ export async function startServers(fixture: Fixture): Promise<Servers> {
   // tenant, so every assertion below fails as an authorization problem and the real cause — a
   // process that outlived an earlier run — is nowhere in the output. Two hours were spent on
   // exactly that; checking first turns it into one sentence.
-  await refuseIfTaken(`http://127.0.0.1:${String(API_PORT)}`, 'API');
-  await refuseIfTaken(WEB_URL, 'web');
+  await waitUntilFree(`http://127.0.0.1:${String(API_PORT)}`, 'API');
+  await waitUntilFree(WEB_URL, 'web');
 
   // `NODE_ENV` is deliberately **not** forced to `production` here. The API's configuration
   // hardens in production — it refuses `STORAGE_DRIVER=NONE`, demands a TOTP sealing key and an
@@ -122,15 +145,50 @@ export async function startServers(fixture: Fixture): Promise<Servers> {
   delete apiEnv.TENANT_CATALOGUE;
   delete apiEnv.TENANT_CATALOGUE_PATH;
 
+  // One tenant or two, and the shape is chosen by what the fixture actually seeded rather than by a
+  // flag: a catalogue naming a neighbour whose database was never migrated would refuse to boot.
+  // The two forms are mutually exclusive by configuration validation, so exactly one is set.
+  const tenancy =
+    fixture.neighbour === null
+      ? { TENANT_ID: fixture.tenantId, TENANT_SLUG: fixture.slug }
+      : {
+          TENANT_CATALOGUE: JSON.stringify({
+            tenants: [
+              {
+                id: fixture.tenantId,
+                slug: fixture.slug,
+                database: {
+                  url: process.env.DATABASE_URL ?? '',
+                  migrationUrl: process.env.DATABASE_MIGRATION_URL ?? '',
+                },
+                storage: { driver: 'LOCAL', container: 'munaxa-docs', prefix: fixture.slug },
+                search: { index: `docs-${fixture.slug}` },
+              },
+              {
+                id: fixture.neighbour.tenantId,
+                slug: fixture.neighbour.slug,
+                database: {
+                  url: process.env.SECOND_DATABASE_URL ?? '',
+                  migrationUrl: process.env.SECOND_DATABASE_MIGRATION_URL ?? '',
+                },
+                storage: {
+                  driver: 'LOCAL',
+                  container: 'munaxa-docs',
+                  prefix: fixture.neighbour.slug,
+                },
+                search: { index: `docs-${fixture.neighbour.slug}` },
+              },
+            ],
+          }),
+        };
+
   const api = spawn('node', [main], {
     cwd: API,
     env: {
       ...apiEnv,
       PORT: String(API_PORT),
       LOG_LEVEL: 'fatal',
-      // One tenant, named by the fixture — the on-premise shape, and the only one this suite needs.
-      TENANT_ID: fixture.tenantId,
-      TENANT_SLUG: fixture.slug,
+      ...tenancy,
       SIGNATURE_WITNESS_SECRET: WITNESS_SECRET,
       CORS_ORIGINS: WEB_URL,
     },
@@ -160,9 +218,19 @@ export async function startServers(fixture: Fixture): Promise<Servers> {
   return { api, web };
 }
 
+/**
+ * Stops both servers, and then makes sure the ports are actually free.
+ *
+ * The group kill alone is not enough, which took a while to establish. `next start` forks
+ * `next-server`, and killing the launcher's process group left the fork alive and holding 3210 —
+ * so the *next* e2e file failed to bind and reported "something is already listening", blaming a
+ * stranger for its own sibling. Killing whatever still holds the port is the check that closes it.
+ */
 export function stopServers(servers: Servers | null): void {
   killGroup(servers?.api.pid);
   killGroup(servers?.web.pid);
+  freePort(API_PORT);
+  freePort(WEB_PORT);
 }
 
 /** The whole group, because `next start` forks a server that outlives its launcher. */
@@ -177,16 +245,77 @@ function killGroup(pid: number | undefined): void {
   }
 }
 
-async function refuseIfTaken(base: string, name: string): Promise<void> {
+/** Whoever is still listening on this port, gone. */
+function freePort(port: number): void {
   try {
-    await fetch(base, { signal: AbortSignal.timeout(2_000) });
+    const owners = execFileSync('fuser', ['-n', 'tcp', String(port)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    for (const pid of owners.trim().split(/\s+/).filter(Boolean)) {
+      try {
+        process.kill(Number(pid), 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
+    }
   } catch {
-    return;
+    // `fuser` answers non-zero when nothing holds the port, which is the desired state.
+  }
+}
+
+/**
+ * A page already holding somebody's session, from cookies captured once.
+ *
+ * Signing in per test spends `auth.login`'s ten-per-five-minutes budget and turns later tests into
+ * `429`s that surface as "the page never navigated". Capturing the state once is also closer to
+ * what a person does: sign in, then work.
+ */
+export type StorageState = Awaited<ReturnType<import('playwright').BrowserContext['storageState']>>;
+
+export async function signInAndCapture(
+  browser: import('playwright').Browser,
+  webUrl: string,
+  email: string,
+  password: string,
+  tenant: string,
+): Promise<StorageState> {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto(`${webUrl}/login`, { waitUntil: 'domcontentloaded' });
+  await page.getByLabel('Email address').fill(email);
+  await page.getByLabel('Password').fill(password);
+  await page.getByLabel('Organisation').fill(tenant);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 });
+  const state = await context.storageState();
+  await context.close();
+  return state;
+}
+
+/**
+ * Waits for a port to be free, and refuses if it stays taken.
+ *
+ * Two things at once, and both are needed. A leftover process answers health checks perfectly well
+ * while serving a *different* tenant, so every assertion fails as authorization and the real cause
+ * is nowhere in the output — hence the refusal. But two e2e files run one after another and the
+ * departing suite's server takes a moment to release the socket, so failing on the first look
+ * turns an ordinary handover into a red build. Waiting first, then refusing, keeps both.
+ */
+async function waitUntilFree(base: string, name: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(base, { signal: AbortSignal.timeout(2_000) });
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(
-    `Something is already listening on ${base}. This suite boots its own ${name} and would ` +
-      'otherwise run against a stranger — with a different tenant, and every assertion failing ' +
-      'as authorization. Stop it and run again.',
+    `Something is still listening on ${base} after 30s. This suite boots its own ${name} and ` +
+      'would otherwise run against a stranger — with a different tenant, and every assertion ' +
+      'failing as authorization. Stop it and run again.',
   );
 }
 

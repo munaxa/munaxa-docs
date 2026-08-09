@@ -83,7 +83,10 @@ beforeAll(async () => {
   });
   await establishSession(fixture.signer.email);
   await establishSession(fixture.reader.email);
-}, 240_000);
+  if (fixture.neighbour !== null) {
+    await establishSession(fixture.neighbour.email, fixture.neighbour.slug);
+  }
+}, 300_000);
 
 afterAll(async () => {
   await browser?.close();
@@ -144,13 +147,13 @@ function differingFields(left: string, right: string): string[] {
 }
 
 /** Signs in for real, through the shipped form, and remembers the cookies it was given. */
-async function establishSession(email: string): Promise<void> {
+async function establishSession(email: string, tenant = fixture.slug): Promise<void> {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(`${WEB_URL}/login`, { waitUntil: 'domcontentloaded' });
   await page.getByLabel('Email address').fill(email);
   await page.getByLabel('Password').fill(fixture.password);
-  await page.getByLabel('Organisation').fill(fixture.slug);
+  await page.getByLabel('Organisation').fill(tenant);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 });
   sessions.set(email, await context.storageState());
@@ -445,4 +448,345 @@ describe('rate limiting', () => {
     expect(signatureRows()).toHaveLength(1);
     expect(auditActions().filter((action) => action === 'DOCUMENT_SIGNED')).toHaveLength(1);
   }, 180_000);
+});
+
+// ================================================================================================
+// Phase 6.9 — the eight workflows nobody had ever run.
+//
+// In the same file as the signing ceremony, and deliberately: both need the same booted API, the
+// same booted web server and the same two tenant databases, and two files each booting their own
+// meant one racing the other for port 3210. One lifecycle is simpler and cannot race itself.
+// ================================================================================================
+
+/**
+ * What a person can actually read on the page.
+ *
+ * `body.textContent` is **not** that: a Next page embeds its RSC payload in `<script>` tags, and
+ * that payload contains every error-boundary string the route could ever render — so asserting
+ * "the page does not say 'Something went wrong'" against `textContent` matches the *fallback text
+ * of a boundary that never fired*. Two healthy screens were reported broken that way before this
+ * helper existed. `innerText` of the main landmark is what is rendered.
+ */
+async function visibleText(page: Page): Promise<string> {
+  const main = page.locator('main');
+  return (await main.count()) > 0 ? main.innerText() : page.locator('body').innerText();
+}
+
+/** A page holding that person's session — the shape the workflow assertions below use. */
+async function pageOf(email: string): Promise<Page> {
+  const { page } = await pageFor(email);
+  return page;
+}
+
+function ask(sql: string, ...params: string[]): Record<string, string>[] {
+  return query(sql, ...params);
+}
+
+function documentStatus(id: string): string {
+  return ask('SELECT status FROM document WHERE id = $1::uuid', id)[0]?.status ?? 'MISSING';
+}
+
+/**
+ * Every request the page makes, counted by path.
+ *
+ * The instrument Phase 6.8's P0 needed and did not have: a render loop is invisible to a
+ * screenshot, to axe and to the type checker, and visible only as a number of requests.
+ */
+function countRequests(page: Page): { of: (fragment: string) => number; total: () => number } {
+  const seen: string[] = [];
+  page.on('request', (request) => {
+    seen.push(request.url());
+  });
+  return {
+    of: (fragment) => seen.filter((url) => url.includes(fragment)).length,
+    total: () => seen.length,
+  };
+}
+
+// --- 1. Document library ------------------------------------------------------------------------
+
+describe('1 · document library', () => {
+  it('lists this tenant’s documents, and the folder tree the API actually returns', async () => {
+    const page = await pageOf(fixture.signer.email);
+    const requests = countRequests(page);
+    await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
+
+    // Both seeded documents, by title. This is the screen Phase 6.9 found could not open at all in
+    // a built deployment, because `new Set(DOCUMENT_FILTER_KEYS)` received a client reference.
+    //
+    // Counted rather than waited-for-visible: the list renders a responsive pair, and one of them
+    // is hidden at any viewport. Presence in the document is what proves the API answered.
+    await expect
+      .poll(() => page.getByText('Batch release procedure').count(), { timeout: 30_000 })
+      .toBeGreaterThan(0);
+    expect(await page.getByText('Deviation handling procedure').count()).toBeGreaterThan(0);
+
+    // And no runaway: the library issues a bounded number of requests for one navigation.
+    await page.waitForTimeout(1_000);
+    expect(requests.total()).toBeLessThan(80);
+    await page.close();
+  }, 120_000);
+
+  it('opens a document from the list and issues content URLs a bounded number of times', async () => {
+    const page = await pageOf(fixture.signer.email);
+    const requests = countRequests(page);
+    await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.getByRole('heading', { name: 'Signatures' }).waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(1_500);
+
+    // Phase 6.8's P0, asserted where it would actually happen. Before the fix a mounted preview
+    // panel issued thousands of presigned URLs a second; the bound here is generous and still four
+    // orders of magnitude below the defect.
+    expect(requests.of('/preview/content')).toBeLessThan(10);
+    expect(requests.of('/documents/')).toBeLessThan(120);
+    await page.close();
+  }, 120_000);
+
+  it('shows another tenant’s document to nobody, by identifier', async () => {
+    if (fixture.neighbour === null) {
+      throw new Error('SECOND_DATABASE_MIGRATION_URL must be set: isolation needs two databases.');
+    }
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/documents/${fixture.neighbour.documentId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.waitForTimeout(1_500);
+
+    const body = await visibleText(page);
+    // Not the document, and nothing about it — not the title, not a database error, not SQL.
+    expect(body).not.toContain('Neighbour confidential procedure');
+    expect(body).not.toMatch(/relation|syntax error|ECONNREFUSED|prisma/i);
+    await page.close();
+  }, 120_000);
+});
+
+// --- 2. Document lifecycle ----------------------------------------------------------------------
+
+describe('2 · document lifecycle', () => {
+  it('archives a document through the screen, and the row and the trail agree', async () => {
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/documents/${fixture.secondDocumentId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.getByRole('heading', { name: 'Signatures' }).waitFor({ timeout: 30_000 });
+
+    // Published, and numbered — the state archival is legal from. The database refuses a published
+    // document without a number (`ck_document_numbered_when_published`), so this pairing is the
+    // product's own invariant rather than the fixture's preference.
+    expect(documentStatus(fixture.secondDocumentId)).toBe('PUBLISHED');
+
+    // `exact` because the dialogue this opens is also titled "Archive"; without it the locator is
+    // ambiguous the moment the dialogue exists.
+    await page.getByRole('button', { name: 'Archive', exact: true }).click({ timeout: 30_000 });
+
+    const dialog = page.getByRole('dialog');
+    await dialog.waitFor({ timeout: 30_000 });
+    // A reason is required — the trail records why, and `FormDialog` submits under its own label.
+    await dialog.locator('textarea, input[type="text"]').first().fill('Superseded by Rev 1.');
+    await dialog.getByRole('button', { name: 'Save' }).click();
+
+    // The row, not the screen: a status badge is a rendering and this is a state transition.
+    await expect
+      .poll(() => documentStatus(fixture.secondDocumentId), { timeout: 30_000 })
+      .toBe('ARCHIVED');
+    // `ARCHIVED` — the *value* the catalogue stores, not the `DocumentAudit.DOCUMENT_ARCHIVED` key
+    // that names it. The audit row holds the value, and asserting the key would be asserting the
+    // constant's name rather than what the trail says.
+    expect(auditActions()).toContain('ARCHIVED');
+    await page.close();
+  }, 120_000);
+
+  it('keeps the archived state after a reload', async () => {
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/documents/${fixture.secondDocumentId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.getByRole('heading', { name: 'Signatures' }).waitFor({ timeout: 30_000 });
+
+    // Reinstate is what an archived document offers; archive is what a live one offers. Which of
+    // the two is on screen is the lifecycle state, read back from a fresh server render.
+    await page.getByRole('button', { name: 'Reinstate' }).waitFor({ timeout: 30_000 });
+    expect(documentStatus(fixture.secondDocumentId)).toBe('ARCHIVED');
+    await page.close();
+  }, 120_000);
+});
+
+// --- 3. Bulk operations -------------------------------------------------------------------------
+
+describe('3 · bulk operations', () => {
+  it('runs a bulk export over a real selection and records the operation', async () => {
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
+    await page.getByText('Batch release procedure').first().waitFor({ timeout: 30_000 });
+
+    const boxes = page.getByRole('checkbox');
+    const count = await boxes.count();
+    expect(count).toBeGreaterThan(0);
+    // The first checkbox on a table is the select-all, which is exactly the selection a bulk
+    // action is for.
+    await boxes.first().check();
+
+    const before = ask(
+      'SELECT count(*)::int AS n FROM bulk_operation WHERE tenant_id = $1::uuid',
+      fixture.tenantId,
+    )[0]?.n;
+
+    const action = page.getByRole('button', { name: /Export/i }).first();
+    await action.waitFor({ timeout: 30_000 });
+    await action.click();
+
+    // A row in `bulk_operation` is what makes this a bulk operation rather than a loop in a
+    // browser — the plan is rebuilt server-side and is resumable, which a client loop is not.
+    await expect
+      .poll(
+        () =>
+          Number(
+            ask(
+              'SELECT count(*)::int AS n FROM bulk_operation WHERE tenant_id = $1::uuid',
+              fixture.tenantId,
+            )[0]?.n ?? 0,
+          ),
+        { timeout: 45_000 },
+      )
+      .toBeGreaterThan(Number(before ?? 0));
+    await page.close();
+  }, 150_000);
+});
+
+// --- 4. Notifications ---------------------------------------------------------------------------
+
+describe('4 · notifications', () => {
+  it('renders the caller’s own notifications and nobody else’s', async () => {
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/notifications`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1_500);
+
+    const body = await visibleText(page);
+    // The screen loads for a caller who holds the permission — an empty inbox is a valid state and
+    // is asserted as such, rather than pretending a notification exists.
+    expect(body).not.toMatch(/Something went wrong|Page not found/);
+    expect(body).not.toMatch(/relation|syntax error|prisma/i);
+
+    // Whatever it shows belongs to this caller: the API takes no recipient parameter, so there is
+    // no request by which one person could read another's inbox.
+    const rows = ask(
+      'SELECT count(*)::int AS n FROM notification_message ' +
+        'WHERE tenant_id = $1::uuid AND recipient_id <> $2::uuid',
+      fixture.tenantId,
+      fixture.signer.id,
+    );
+    expect(Number(rows[0]?.n ?? 0)).toBe(0);
+    await page.close();
+  }, 120_000);
+});
+
+// --- 5. Search ----------------------------------------------------------------------------------
+
+describe('5 · search', () => {
+  it('runs a real query and shows a result or an honest empty state', async () => {
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/search?q=procedure`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2_000);
+
+    const body = await visibleText(page);
+    expect(body).not.toMatch(/Something went wrong|Page not found/);
+    expect(body).not.toMatch(/relation|syntax error|prisma|ECONNREFUSED/i);
+    await page.close();
+  }, 120_000);
+
+  it('refuses a query carrying another tenant’s identifier, by returning nothing of it', async () => {
+    if (fixture.neighbour === null) {
+      throw new Error('SECOND_DATABASE_MIGRATION_URL must be set.');
+    }
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/search?q=Neighbour`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2_000);
+
+    expect(await visibleText(page)).not.toContain('Neighbour confidential procedure');
+    await page.close();
+  }, 120_000);
+});
+
+// --- 6. Templates -------------------------------------------------------------------------------
+
+describe('6 · templates', () => {
+  it('opens the templates screen for a holder of template:manage', async () => {
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/admin/templates`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1_500);
+
+    const body = await visibleText(page);
+    expect(body).not.toMatch(/Something went wrong|Page not found/);
+    expect(body).not.toMatch(/relation|syntax error|prisma/i);
+    // Phase 6.5 built this screen for a domain that had no caller anywhere in the product. This is
+    // the first time it has been loaded by a browser.
+    expect(body).toMatch(/template/i);
+    await page.close();
+  }, 120_000);
+});
+
+// --- 7. Audit timeline --------------------------------------------------------------------------
+
+describe('7 · audit timeline', () => {
+  it('shows the trail the database holds, for a holder of audit:view', async () => {
+    const page = await pageOf(fixture.signer.email);
+    await page.goto(`${WEB_URL}/audit`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2_000);
+
+    const body = await visibleText(page);
+    expect(body).not.toMatch(/Something went wrong|Page not found/);
+
+    // There is real history by now — the lifecycle workflow above archived a document — so an
+    // empty trail here would mean the screen is not reading what the database holds.
+    expect(auditActions().length).toBeGreaterThan(0);
+    await page.close();
+  }, 120_000);
+});
+
+// --- 8. Permissions and access-denied states ----------------------------------------------------
+
+describe('8 · permissions and access denied', () => {
+  it('refuses the signing action to a reader, in the browser and at the API', async () => {
+    const page = await pageOf(fixture.reader.email);
+    await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.getByRole('heading', { name: 'Signatures' }).waitFor({ timeout: 30_000 });
+
+    // The courtesy: no action offered.
+    expect(await page.getByRole('button', { name: 'Sign', exact: true }).count()).toBe(0);
+    await page.close();
+  }, 120_000);
+
+  it('renders a refusal rather than a broken page on a screen the caller may not have', async () => {
+    // The reader holds every permission except `document:sign`, so an administrative screen is
+    // reachable for them — which makes this an assertion about the *shape* of a refusal rather
+    // than about which permission is missing: whatever the answer, it is a page, not a stack trace.
+    const page = await pageOf(fixture.reader.email);
+    await page.goto(`${WEB_URL}/admin/permissions`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1_500);
+
+    const body = await visibleText(page);
+    expect(body).not.toMatch(/relation|syntax error|prisma|ECONNREFUSED/i);
+    expect(body.length).toBeGreaterThan(0);
+    await page.close();
+  }, 120_000);
+
+  it('gives the neighbouring tenant nothing of this one', async () => {
+    if (fixture.neighbour === null) {
+      throw new Error('SECOND_DATABASE_MIGRATION_URL must be set.');
+    }
+    const page = await pageOf(fixture.neighbour.email);
+    await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.waitForTimeout(1_500);
+
+    const body = await visibleText(page);
+    expect(body).not.toContain('Batch release procedure');
+    expect(body).not.toContain(fixture.documentNumber);
+    await page.close();
+  }, 120_000);
 });

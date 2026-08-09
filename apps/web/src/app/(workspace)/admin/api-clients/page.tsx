@@ -4,12 +4,10 @@ import type { ApiClient, User } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
-import {
-  API_CLIENT_SORT_FIELDS,
-  ApiClientsScreen,
-} from '../../../../features/admin-integration/api-clients-screen';
+import { ApiClientsScreen } from '../../../../features/admin-integration/api-clients-screen';
 import { adminAccess, adminList } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { API_CLIENT_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * API clients, with the people a key may be bound to.

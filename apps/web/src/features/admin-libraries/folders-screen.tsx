@@ -28,8 +28,6 @@ import {
 } from '../admin-shared';
 import { createFolder, deleteFolder, moveFolder, restoreFolder, updateFolder } from './actions';
 
-export const FOLDER_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'path'] as const;
-
 /**
  * The folder tree inside one library.
  *

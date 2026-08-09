@@ -4,13 +4,11 @@ import type { ReactNode } from 'react';
 import type { Folder, Library } from '@edms/contracts';
 import { DomainError, ErrorCode, Permission } from '@edms/domain';
 
-import {
-  FOLDER_SORT_FIELDS,
-  FoldersScreen,
-} from '../../../../../../features/admin-libraries/folders-screen';
+import { FoldersScreen } from '../../../../../../features/admin-libraries/folders-screen';
 import { AdminForbidden } from '../../../../../../features/admin-shared';
 import { adminAccess, adminGet, adminList, adminOptions } from '../../../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../../../lib/admin/list-state';
+import { FOLDER_SORT_FIELDS } from '../../../../../../lib/admin/list-keys';
 
 /**
  * The folder tree of one library.

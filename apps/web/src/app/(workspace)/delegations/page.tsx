@@ -52,7 +52,10 @@ export default async function DelegationsPage({
     adminGet<Collection<Delegation>>(`/delegations?${query.toString()}`),
     // Who this person could delegate to. Read from the same administered list the workflow
     // screens use, rather than a directory endpoint of its own.
-    adminGet<Collection<User>>('/admin/users?page=1&pageSize=200&status=ACTIVE'),
+    // 100, the API's maximum. This asked for 200, which the pagination schema *rejects*, so the
+    // request 422'd and the page threw before rendering — the third screen with this defect, after
+    // the two Phase 6.6 found. Nothing caught it because nothing had opened the built application.
+    adminGet<Collection<User>>('/admin/users?page=1&pageSize=100&status=ACTIVE'),
   ]);
 
   return (

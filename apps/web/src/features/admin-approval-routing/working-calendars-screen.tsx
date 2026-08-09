@@ -35,9 +35,6 @@ import {
   updateWorkingCalendar,
 } from './actions';
 
-export const CALENDAR_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code'] as const;
-export const CALENDAR_FILTER_KEYS = ['isActive', 'entityId'] as const;
-
 /**
  * Working calendars — the week and the holidays a deadline is counted against.
  *

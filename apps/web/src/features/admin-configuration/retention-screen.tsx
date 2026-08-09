@@ -41,9 +41,6 @@ import {
   updateRetentionPolicy,
 } from './actions';
 
-export const RETENTION_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code'] as const;
-export const RETENTION_FILTER_KEYS = ['trigger', 'disposition'] as const;
-
 const TRIGGER_LABELS: Readonly<Record<RetentionTriggerKey, MessageKey>> = {
   ON_PUBLISH: 'admin.retention.triggerOnPublish',
   ON_SUPERSEDE: 'admin.retention.triggerOnSupersede',
