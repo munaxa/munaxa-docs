@@ -2,6 +2,7 @@ import type {
   AdministratorDashboard,
   ApprovalInboxItem,
   Document,
+  DocumentSignature,
   DocumentSummary,
   Folder,
   Library,
@@ -112,6 +113,31 @@ export function document(overrides: Partial<Document> = {}): Document {
     liveLock: null,
     metadata: [],
     isFavorite: false,
+    ...overrides,
+  };
+}
+
+/**
+ * One electronic signature, as the API returns it — Phase 6.6.
+ *
+ * `statementBody` is deliberately absent, because the list response deliberately omits it:
+ * `toSignature` on the controller does not map it, and only verification returns the signed bytes.
+ * A fixture that invented the field would let a screen render something the API never sends.
+ */
+export function signature(overrides: Partial<DocumentSignature> = {}): DocumentSignature {
+  return {
+    id: '019489f0-0000-7000-8000-000000000801',
+    documentId: '019489f0-0000-7000-8000-000000000101',
+    revisionId: '019489f0-0000-7000-8000-000000000401',
+    revisionLabel: 'Rev 0',
+    signerUserId: 'test-user',
+    signerName: 'Ada Lovelace',
+    purpose: 'APPROVAL',
+    statement: null,
+    signedAt: '2026-02-01T09:30:00.000Z',
+    reauthenticated: true,
+    withdrawnAt: null,
+    withdrawnReason: null,
     ...overrides,
   };
 }

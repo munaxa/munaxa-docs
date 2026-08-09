@@ -39,6 +39,9 @@ export default defineConfig({
           name: 'logic',
           environment: 'node',
           include: ['src/**/*.spec.ts', 'scripts/**/*.spec.ts'],
+          // The end-to-end suite is `.spec.ts` too and would otherwise be collected here, where it
+          // has no database, no servers and no browser. It is its own project below.
+          exclude: ['src/test/e2e/**'],
         },
       },
       {
@@ -65,6 +68,23 @@ export default defineConfig({
           setupFiles: ['src/test/setup-ssr.tsx'],
           testTimeout: 60_000,
           hookTimeout: 60_000,
+        },
+      },
+      {
+        // The whole product, running — Phase 6.6. A booted API, a booted web server, a real
+        // database and real Chromium. Its own project because it needs infrastructure none of the
+        // others do: `browser` above deliberately renders static markup precisely so it can stay
+        // free of a database, and folding this into it would take that property away from both.
+        //
+        // No setup file: this one does not render React at all, it drives a browser.
+        extends: true,
+        test: {
+          name: 'e2e',
+          environment: 'node',
+          include: ['src/test/e2e/**/*.e2e.spec.ts'],
+          testTimeout: 180_000,
+          hookTimeout: 240_000,
+          fileParallelism: false,
         },
       },
     ],

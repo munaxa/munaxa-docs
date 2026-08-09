@@ -1448,6 +1448,15 @@ export const en = {
   signatures: {
     title: 'Signatures',
     empty: 'Nobody has signed this revision.',
+    /**
+     * Two different acts, two different names — and the difference is deliberate.
+     *
+     * `open` starts a *review*: it shows the statement and signs nothing. `ceremony.submit`
+     * completes the attestation. Giving both the same label would put two buttons with one
+     * accessible name on screen at once, which a screen-reader user could not tell apart — and
+     * would also blur the one distinction the ceremony exists to make.
+     */
+    open: 'Sign',
     sign: 'Sign this revision',
     field: {
       purpose: 'I am signing as',
@@ -1465,7 +1474,14 @@ export const en = {
     },
     signedBy: '{name} — {purpose}',
     withdrawn: 'Withdrawn',
-    withdraw: { action: 'Withdraw', reason: 'Why are you withdrawing this?', submit: 'Withdraw' },
+    withdraw: {
+      action: 'Withdraw',
+      reason: 'Why are you withdrawing this?',
+      submit: 'Withdraw',
+      title: 'Withdraw your signature',
+      description:
+        'Your signature stays on the record, marked withdrawn with your reason. Nothing is deleted, and the trail keeps both acts.',
+    },
     verify: {
       action: 'Verify',
       title: 'Signature verification',
@@ -1475,6 +1491,56 @@ export const en = {
       withdrawn: 'This signature was withdrawn by its signer.',
       witnessedBy: 'Witnessed by {witness}',
       statement: 'What was signed',
+      checking: 'Verifying\u2026',
+      contentIntact: 'The revision still holds the content that was signed.',
+      standing: 'This signature stands.',
+      algorithm: 'Algorithm {algorithm}',
+      failed: 'Verification could not be completed.',
+    },
+    /**
+     * The signing ceremony — Phase 6.6.
+     *
+     * The wording is part of the control rather than decoration. §11.50 requires the *meaning*
+     * of a signature to be manifested, so every string naming an act says what the act is: `sign`
+     * above opens a review, `ceremony.submit` completes an attestation, and `ceremony.confirmCheckbox`
+     * says out loud that a legally significant record is about to exist. Buttons reading “OK”
+     * would satisfy the API and not the regulation.
+     *
+     * `statementBody` is deliberately **not** in this catalogue and never will be. The attested text
+     * comes from the server and is rendered verbatim; translating it would mean displaying one
+     * artefact and signing another.
+     */
+    ceremony: {
+      title: 'Sign this revision',
+      revisionLabel: 'Revision',
+      purposeHint: 'Recorded with your signature, and not changeable afterwards.',
+      commentHint: 'Recorded alongside the meaning above. Never a substitute for it.',
+      loadingStatement: 'Preparing the statement\u2026',
+      statementHeading: 'The statement you are about to sign',
+      statementHint:
+        'This exact text is what your signature attests. It comes from the server and is shown unchanged.',
+      preparedAt:
+        'Prepared {date}. Your signature carries the moment you confirm it, not this one.',
+      continue: 'Continue',
+      back: 'Back to the statement',
+      confirmHeading: 'Confirm and sign',
+      confirmIntro:
+        'You are about to create an electronic signature on {document}, revision {revision}, meaning: {purpose}.',
+      confirmCheckbox:
+        'I am signing this record electronically, and I understand this is a legally significant act.',
+      credentialsHint:
+        'Your credentials are proved again as you sign, because a signature needs a second identification component.',
+      submit: 'Sign this revision',
+      signing: 'Signing\u2026',
+      cancel: 'Cancel',
+      successTitle: 'Signed',
+      successBody: 'Your signature on revision {revision} is recorded.',
+      done: 'Close',
+    },
+    errors: {
+      conflict: 'You already hold a signature on this revision for that meaning.',
+      changed: 'The signatures on this revision changed. Review them below.',
+      rateLimited: 'Too many signing attempts. Wait a few minutes and try again.',
     },
   },
   recycleBin: {

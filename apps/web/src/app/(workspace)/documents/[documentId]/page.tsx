@@ -6,6 +6,7 @@ import type {
   ConfidentialityLevel,
   Department,
   Document,
+  DocumentSignature,
   DocumentType,
   DocumentWorkflow,
   Folder,
@@ -22,6 +23,7 @@ import { AuditTimeline } from '../../../../features/audit/audit-timeline';
 import { DocumentScreen } from '../../../../features/documents/document-screen';
 import { PreviewPanel } from '../../../../features/preview/preview-panel';
 import { RevisionPanel } from '../../../../features/revisions/revision-panel';
+import { SignaturePanel } from '../../../../features/signatures/signature-panel';
 import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/admin/api';
 
 /**
@@ -75,6 +77,8 @@ export default async function DocumentPage({
     workflow,
     history,
     preview,
+    signatures,
+    mfa,
     folders,
     categories,
     levels,
@@ -90,9 +94,21 @@ export default async function DocumentPage({
     // The viewer's manifest. Absent — a document with no content yet, or an API refusal — the
     // panel is simply not rendered, which is the same posture as the history above.
     adminGet<PreviewManifest>(`/documents/${documentId}/preview`).catch(() => null),
+    // Signatures are part of the record and are read with `document:view`, like the timeline
+    // above. A refusal or an outage leaves the panel with an empty list rather than taking the
+    // whole page down — the same posture the preview manifest takes.
+    adminGet<readonly DocumentSignature[]>(`/documents/${documentId}/signatures`).catch(() => []),
+    // Whether *this* caller owes a second factor when they sign. Their own status and nobody
+    // else's: there is no request in this product by which one person could ask about another's,
+    // which is what keeps the ceremony from becoming an enrolment oracle.
+    adminGet<{ readonly enrolled: boolean }>('/auth/mfa').catch(() => ({ enrolled: false })),
     adminList<Folder>('/admin/folders', {
       page: 1,
-      pageSize: 200,
+      // The API's maximum, and it has to be: `MAX_PAGE_SIZE` is 100 and the pagination schema
+      // *rejects* anything above it. This asked for 200 from the day it was written, so every
+      // request 422'd and the screen threw before rendering — a page nobody could open. Found by
+      // Phase 6.6's browser suite, which is the first thing in this repository to load it.
+      pageSize: 100,
       sortBy: 'path',
       sortDirection: 'asc',
       search: '',
@@ -171,6 +187,14 @@ export default async function DocumentPage({
           canApprove={access.permissions.includes(Permission.DOCUMENT_APPROVE)}
           canReject={access.permissions.includes(Permission.DOCUMENT_REJECT)}
           canManage={access.permissions.includes(Permission.WORKFLOW_MANAGE)}
+        />
+      }
+      signatures={
+        <SignaturePanel
+          document={document}
+          signatures={signatures}
+          canSign={access.permissions.includes(Permission.DOCUMENT_SIGN)}
+          mfaEnrolled={mfa.enrolled}
         />
       }
       audit={

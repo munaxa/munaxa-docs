@@ -60,6 +60,7 @@ export function DocumentScreen({
   preview,
   approvals,
   revisions,
+  signatures,
   audit,
 }: {
   readonly document: Document;
@@ -113,6 +114,15 @@ export function DocumentScreen({
    * and, as with Phase 4 and Phase 6, nothing else this screen knows had to change.
    */
   readonly preview?: ReactNode;
+  /**
+   * Electronic signatures — Signature's own feature, passed in like the other four.
+   *
+   * A slot for the same reason approvals and revisions are slots: this screen knows nothing about
+   * what a §11.50 attestation is, and a screen that reached for the signature list would be a
+   * second place deciding what signing looks like. Phase 6.6 added it and nothing else here
+   * changed except this line and the one that renders it.
+   */
+  readonly signatures?: ReactNode;
   /**
    * The document's own audit timeline — Audit's feature, passed in like the other three.
    *
@@ -499,6 +509,8 @@ export function DocumentScreen({
       {approvals}
 
       {revisions}
+
+      {signatures}
 
       {audit}
 

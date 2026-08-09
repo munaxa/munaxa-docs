@@ -45,6 +45,16 @@
       // there is no hash for an undeclared variable to invalidate.
       "passThroughEnv": ["*"]
     },
+    // The product running end to end: a booted API, a booted web server, a real database and real
+    // Chromium. `dependsOn: ["build"]` because it runs the artefacts that ship rather than a
+    // recompilation of them, and `passThroughEnv: ["*"]` for the same reason `test:integration`
+    // has it — the suite is configured entirely by environment, and nothing here is cached, so
+    // there is no hash for an undeclared variable to invalidate.
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": ["*"]
+    },
     "build-storybook": {
       "dependsOn": ["^build"],
       "outputs": ["storybook-static/**"]

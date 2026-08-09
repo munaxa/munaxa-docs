@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project=logic --project=a11y",
-    "test:visual": "vitest run --project=browser"
+    "test:visual": "vitest run --project=browser",
+    "test:e2e": "vitest run --project=e2e"
   },
   "dependencies": {
     "@edms/contracts": "workspace:*",

@@ -1319,6 +1319,7 @@ export const ar: Catalogue = {
   signatures: {
     title: 'التوقيعات',
     empty: 'لم يوقّع أحد على هذه المراجعة.',
+    open: 'توقيع',
     sign: 'وقّع هذه المراجعة',
     field: {
       purpose: 'أوقّع بصفتي',
@@ -1336,7 +1337,14 @@ export const ar: Catalogue = {
     },
     signedBy: '{name} — {purpose}',
     withdrawn: 'مسحوب',
-    withdraw: { action: 'سحب', reason: 'لماذا تسحب هذا التوقيع؟', submit: 'سحب' },
+    withdraw: {
+      action: 'سحب',
+      reason: 'لماذا تسحب هذا التوقيع؟',
+      submit: 'سحب',
+      title: 'سحب توقيعك',
+      description:
+        'يبقى توقيعك في السجل موسومًا بأنه مسحوب مع سببك. لا يُحذف شيء، ويحتفظ سجل التدقيق بالفعلين معًا.',
+    },
     verify: {
       action: 'تحقّق',
       title: 'التحقّق من التوقيع',
@@ -1346,6 +1354,40 @@ export const ar: Catalogue = {
       withdrawn: 'سحب الموقِّع هذا التوقيع.',
       witnessedBy: 'شاهد عليه {witness}',
       statement: 'ما جرى توقيعه',
+      checking: 'جارٍ التحقق\u2026',
+      contentIntact: 'ما زالت المراجعة تحمل المحتوى الذي وُقّع عليه.',
+      standing: 'هذا التوقيع قائم.',
+      algorithm: 'الخوارزمية {algorithm}',
+      failed: 'تعذّر إتمام التحقق.',
+    },
+    ceremony: {
+      title: 'توقيع هذه المراجعة',
+      revisionLabel: 'المراجعة',
+      purposeHint: 'يُسجَّل مع توقيعك ولا يمكن تغييره لاحقًا.',
+      commentHint: 'يُسجَّل إلى جانب المعنى أعلاه، ولا يحلّ محلّه أبدًا.',
+      loadingStatement: 'جارٍ تجهيز نص الإقرار\u2026',
+      statementHeading: 'نص الإقرار الذي أنت على وشك توقيعه',
+      statementHint: 'هذا النص بالضبط هو ما يُقرّ به توقيعك. يأتي من الخادم ويُعرض دون تغيير.',
+      preparedAt: 'أُعدّ في {date}. يحمل توقيعك لحظة تأكيدك له، لا هذه اللحظة.',
+      continue: 'متابعة',
+      back: 'العودة إلى نص الإقرار',
+      confirmHeading: 'التأكيد والتوقيع',
+      confirmIntro:
+        'أنت على وشك إنشاء توقيع إلكتروني على {document}، المراجعة {revision}، بمعنى: {purpose}.',
+      confirmCheckbox: 'أوقّع هذا السجل إلكترونيًا، وأدرك أنّ هذا فعل ذو أثر قانوني.',
+      credentialsHint:
+        'يُعاد إثبات بيانات اعتمادك أثناء التوقيع، لأنّ التوقيع يحتاج مكوّن تعريف ثانيًا.',
+      submit: 'توقيع هذه المراجعة',
+      signing: 'جارٍ التوقيع\u2026',
+      cancel: 'إلغاء',
+      successTitle: 'تم التوقيع',
+      successBody: 'سُجّل توقيعك على المراجعة {revision}.',
+      done: 'إغلاق',
+    },
+    errors: {
+      conflict: 'لديك توقيع قائم على هذه المراجعة بهذا المعنى.',
+      changed: 'تغيّرت التواقيع على هذه المراجعة. راجعها أدناه.',
+      rateLimited: 'محاولات توقيع كثيرة. انتظر بضع دقائق ثم حاول مرة أخرى.',
     },
   },
   recycleBin: {

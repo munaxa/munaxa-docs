@@ -76,7 +76,11 @@ export default async function DocumentsPage({
       ? { data: [] as Folder[] }
       : await adminList<Folder>('/admin/folders', {
           page: 1,
-          pageSize: 200,
+          // The API's maximum, and it has to be: `MAX_PAGE_SIZE` is 100 and the pagination schema
+          // *rejects* anything above it. This asked for 200 from the day it was written, so every
+          // request 422'd and the screen threw before rendering — a page nobody could open. Found by
+          // Phase 6.6's browser suite, which is the first thing in this repository to load it.
+          pageSize: 100,
           sortBy: 'path',
           sortDirection: 'asc',
           search: '',

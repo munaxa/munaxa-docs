@@ -15,15 +15,18 @@ import { DashboardScreen } from '../features/dashboard/dashboard-screen';
 import { FolderTree } from '../features/documents/folder-tree';
 import { LibraryScreen } from '../features/documents/library-screen';
 import { SearchScreen } from '../features/search/search-screen';
+import { SignaturePanel } from '../features/signatures/signature-panel';
 import { destinationsFor } from '../lib/navigation';
 import {
   administratorDashboard,
   approvalInboxItem,
+  document as documentFixture,
   documentSummary,
   folder,
   library,
   listState,
   searchResults,
+  signature,
   userDashboard,
 } from './fixtures';
 import {
@@ -182,6 +185,41 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
   {
     name: 'workflow-inbox',
     ui: () => <ApprovalInboxScreen rows={[approvalInboxItem()]} decided={false} />,
+  },
+  /**
+   * The signature panel, in both of the states the backend actually has — Phase 6.6.
+   *
+   * The **ceremony itself is deliberately absent**, and the harness's own docstring says why: this
+   * renders static markup, so no dialogue is opened, no portal mounts and no effect runs. A
+   * screenshot of `SigningCeremony` here would be a screenshot of nothing. The ceremony's stages
+   * are covered where they can be — by axe in `signing-ceremony.spec.tsx`, which hydrates, and by
+   * real Chromium in `e2e/signing.e2e.spec.ts`, which drives the whole thing.
+   */
+  {
+    name: 'signatures-empty',
+    ui: () => (
+      <SignaturePanel document={documentFixture()} signatures={[]} canSign mfaEnrolled={false} />
+    ),
+  },
+  {
+    name: 'signatures-signed',
+    ui: () => (
+      <SignaturePanel
+        document={documentFixture()}
+        signatures={[
+          signature(),
+          signature({
+            id: '019489f0-0000-7000-8000-000000000802',
+            signerName: 'Grace Hopper',
+            purpose: 'WITNESS',
+            withdrawnAt: '2026-03-01T00:00:00.000Z',
+            withdrawnReason: 'Signed against the wrong revision.',
+          }),
+        ]}
+        canSign
+        mfaEnrolled={false}
+      />
+    ),
   },
   {
     name: 'search',

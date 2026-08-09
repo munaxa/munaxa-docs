@@ -8,7 +8,20 @@ import { Alert, Button, Field, Input } from '@munaxa/ui';
 import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../../providers';
-import { EMPTY_FORM_STATE, type SignInFormState, signInAction } from './actions';
+import { type SignInFormState, signInAction } from './actions';
+
+/**
+ * The form's state before the first attempt.
+ *
+ * Here rather than beside the action, and that is a defect fix rather than a preference — see the
+ * Phase 6.6 report. A `'use server'` module may export **async functions only**: Next turns every
+ * export into a callable server reference, and a plain object cannot be one. Exported from
+ * `actions.ts`, as it was from Phase 14 until now, the production build refused the module at
+ * runtime and `/login` answered `500` — so sign-in was broken in every built deployment while the
+ * whole test suite stayed green. Nothing below the login page could see it, because nothing below
+ * the login page boots the application.
+ */
+const EMPTY_FORM_STATE: SignInFormState = { reason: null };
 
 const REASON_MESSAGE: Record<string, MessageKey> = {
   REJECTED: 'auth.signInRejected',
