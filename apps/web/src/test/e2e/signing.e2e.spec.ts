@@ -902,7 +902,26 @@ describe('9 · responsive layout', () => {
      * needing its own investigation, not silently absorbed here: this test now waits for the thing
      * it asserts against, and the panel's behaviour remains covered by the tests that are about it.
      */
-    await page.getByRole('button', { name: 'More actions' }).first().waitFor({ timeout: 30_000 });
+    try {
+      await page.getByRole('button', { name: 'More actions' }).first().waitFor({ timeout: 30_000 });
+    } catch (error) {
+      // PHASE 7.1A DIAGNOSTIC — removed once the cause is known.
+      const state = await page.evaluate(() => ({
+        url: location.href,
+        title: document.title,
+        headings: Array.from(document.querySelectorAll('h1,h2,h3')).map((h) =>
+          (h.textContent ?? '').trim().slice(0, 60),
+        ),
+        buttons: Array.from(document.querySelectorAll('button')).map((b) =>
+          (b.getAttribute('aria-label') ?? b.textContent ?? '').trim().slice(0, 40),
+        ),
+        busy: document.querySelectorAll('[aria-busy="true"], .animate-pulse').length,
+        body: (document.body.innerText ?? '').slice(0, 800),
+      }));
+      // eslint-disable-next-line no-console
+      console.log(`\n===== RECORD TIMEOUT =====\n${JSON.stringify(state, null, 1)}\n`);
+      throw error;
+    }
     await page.waitForLoadState('networkidle');
 
     for (const { label, width } of WIDTHS) {

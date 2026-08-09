@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -232,6 +232,19 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
+
+  /*
+   * PHASE 7.1A — both servers' output to files, so a failure that only reproduces inside a full run
+   * can be read afterwards rather than guessed at. The record-page timeout showed the route error
+   * boundary with a correlation id and nothing else; the exception behind that id is in the API's
+   * log and nowhere else.
+   */
+  const apiLog = createWriteStream('/tmp/e2e-api.log', { flags: 'w' });
+  const webLog = createWriteStream('/tmp/e2e-web.log', { flags: 'w' });
+  api.stdout?.pipe(apiLog);
+  api.stderr?.pipe(apiLog);
+  web.stdout?.pipe(webLog);
+  web.stderr?.pipe(webLog);
 
   await Promise.all([
     waitForPort(`http://127.0.0.1:${String(API_PORT)}/api/v1/health`, api, 'API'),
