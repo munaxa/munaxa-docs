@@ -4,7 +4,8 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import type { ReactNode } from 'react';
 
-import { Card, CardContent, CardHeader, CardTitle, StatCard } from '@munaxa/ui';
+import { Card, CardContent, CardHeader, CardTitle, EmptyState, StatCard } from '@munaxa/ui';
+import type { Icon } from '@munaxa/icons';
 
 import type { BreakdownTile, CountTile, TileState } from '@edms/contracts';
 import type { MessageKey } from '@edms/i18n';
@@ -45,12 +46,23 @@ export function CountStat({
   tile,
   href,
   tone,
+  icon: TileIcon,
 }: {
   readonly labelKey: MessageKey;
   readonly hintKey?: MessageKey | undefined;
   readonly tile: CountTile;
   readonly href?: Route | undefined;
   readonly tone?: 'default' | 'warning' | 'danger' | 'muted' | undefined;
+  /**
+   * The mark for what this figure counts — Phase 7.
+   *
+   * `StatCard` has had an `icon` slot since the platform shipped it and this product had never
+   * passed one, so seven tiles arrived as seven identical rectangles of text and a reader had to
+   * read every label to find the one they came for. An icon is what makes a tile recognisable
+   * before it is read — and it is also what stops "Overdue" and "Drafts" being distinguishable only
+   * by colour, which is the accessibility half of the same argument.
+   */
+  readonly icon?: Icon | undefined;
 }): ReactNode {
   const translate = useTranslate();
   const note = tileNote(tile.state, translate);
@@ -63,6 +75,7 @@ export function CountStat({
       value={tile.count === null ? '—' : tile.count.toLocaleString()}
       hint={note ?? (hintKey === undefined ? undefined : translate(hintKey))}
       tone={tile.count === null ? 'muted' : (tone ?? 'default')}
+      {...(TileIcon !== undefined && { icon: <TileIcon className="size-4" aria-hidden /> })}
       className="h-full"
     />
   );
@@ -71,9 +84,12 @@ export function CountStat({
     return card;
   }
   return (
+    // `transition-shadow` and a lifted shadow on hover, from the platform's own scale — the one
+    // affordance that says a tile is a link before the pointer reaches it. Nothing moves, because a
+    // grid of seven tiles that all shift on hover is noise rather than feedback.
     <Link
       href={href}
-      className="focus-visible:ring-ring rounded-xl focus-visible:ring-2 focus-visible:outline-none"
+      className="focus-visible:ring-ring rounded-xl transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:outline-none motion-reduce:transition-none"
     >
       {card}
     </Link>
@@ -168,11 +184,15 @@ export function ListCard({
         {action === undefined ? null : <div className="shrink-0">{action}</div>}
       </CardHeader>
       <CardContent className="flex-1 p-4 pt-0">
-        {isEmpty ? (
-          <p className="text-muted-foreground text-sm">{translate(emptyKey)}</p>
-        ) : (
-          children
-        )}
+        {/*
+          The platform's empty state rather than a muted sentence — Phase 7. `EmptyState` was used
+          fourteen times across the product and never here, so five of the dashboard's cards said
+          "nothing yet" in body text that read as a value rather than as an absence. The pattern
+          gives it the centring and the muted weight that make emptiness legible at a glance, which
+          on a screen whose whole job is "what is waiting for me" is the answer somebody is looking
+          for as often as the list is.
+        */}
+        {isEmpty ? <EmptyState title={translate(emptyKey)} className="py-6" /> : children}
       </CardContent>
     </Card>
   );

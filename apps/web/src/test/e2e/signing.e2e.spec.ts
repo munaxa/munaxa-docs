@@ -577,9 +577,17 @@ describe('2 · document lifecycle', () => {
     // product's own invariant rather than the fixture's preference.
     expect(documentStatus(fixture.secondDocumentId)).toBe('PUBLISHED');
 
-    // `exact` because the dialogue this opens is also titled "Archive"; without it the locator is
-    // ambiguous the moment the dialogue exists.
-    await page.getByRole('button', { name: 'Archive', exact: true }).click({ timeout: 30_000 });
+    /*
+     * Through the overflow menu, because that is where the record page's secondary actions live
+     * since Phase 7 — and clicking it here rather than reaching past it is the point: what this
+     * test proves is that a person can archive a controlled document *through the product*, so the
+     * path has to be the one a person takes.
+     *
+     * `exact` because the dialogue this opens is also titled "Archive"; without it the locator is
+     * ambiguous the moment the dialogue exists.
+     */
+    await page.getByRole('button', { name: 'More actions' }).click({ timeout: 30_000 });
+    await page.getByRole('menuitem', { name: 'Archive', exact: true }).click({ timeout: 30_000 });
 
     const dialog = page.getByRole('dialog');
     await dialog.waitFor({ timeout: 30_000 });
@@ -606,8 +614,10 @@ describe('2 · document lifecycle', () => {
     await page.getByRole('heading', { name: 'Signatures' }).waitFor({ timeout: 30_000 });
 
     // Reinstate is what an archived document offers; archive is what a live one offers. Which of
-    // the two is on screen is the lifecycle state, read back from a fresh server render.
-    await page.getByRole('button', { name: 'Reinstate' }).waitFor({ timeout: 30_000 });
+    // the two is on screen is the lifecycle state, read back from a fresh server render — and it is
+    // read from inside the actions menu, which is where both of them are offered.
+    await page.getByRole('button', { name: 'More actions' }).click({ timeout: 30_000 });
+    await page.getByRole('menuitem', { name: 'Reinstate' }).waitFor({ timeout: 30_000 });
     expect(documentStatus(fixture.secondDocumentId)).toBe('ARCHIVED');
     await page.close();
   }, 120_000);

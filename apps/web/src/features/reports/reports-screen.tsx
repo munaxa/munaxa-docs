@@ -29,6 +29,7 @@ import type {
 import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
 import { ReportChart } from './report-chart';
 import {
   deleteReportDefinition,
@@ -185,12 +186,7 @@ export function ReportsScreen({
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold">{translate('reports.title')}</h1>
-        <p className="text-muted-foreground text-sm">{translate('reports.subtitle')}</p>
-      </header>
-
+    <WorkspacePage title={translate('reports.title')} description={translate('reports.subtitle')}>
       <Card className="flex flex-col gap-3 p-4">
         <h2 className="text-sm font-medium">{translate('reports.available')}</h2>
         <div className="flex flex-wrap gap-2">
@@ -402,7 +398,7 @@ export function ReportsScreen({
           </ul>
         </Card>
       ) : null}
-    </div>
+    </WorkspacePage>
   );
 }
 

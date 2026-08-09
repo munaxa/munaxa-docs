@@ -5,7 +5,7 @@ import { ALL_PERMISSIONS } from '@edms/domain';
 
 import { destinationsFor } from '../lib/navigation';
 import { expectNoViolations, renderWithProviders } from '../test/a11y';
-import { NAVIGATION_ICON_IDS, WorkspaceShell } from './workspace-shell';
+import { NAVIGATION_ICON_IDS, NAVIGATION_SECTION_IDS, WorkspaceShell } from './workspace-shell';
 
 /**
  * The shell — the frame every workspace screen sits inside, and therefore the one place where an
@@ -77,6 +77,26 @@ describe('workspace shell accessibility', () => {
       .map((destination) => destination.id)
       .filter((id) => !NAVIGATION_ICON_IDS.includes(id));
     expect(missing, `destinations with no icon: ${missing.join(', ')}`).toStrictEqual([]);
+  });
+
+  it('places every destination in a named section', () => {
+    // Phase 7 grouped the rail. A destination missing from `NAVIGATION_SECTIONS` still renders —
+    // in a trailing untitled group, because a navigation row that silently disappears when
+    // somebody adds a screen is the worse failure — so this is what stops anybody relying on it.
+    const unplaced = destinationsFor(ALL_PERMISSIONS)
+      .map((destination) => destination.id)
+      .filter((id) => !NAVIGATION_SECTION_IDS.includes(id));
+    expect(unplaced, `destinations in no section: ${unplaced.join(', ')}`).toStrictEqual([]);
+  });
+
+  it('names every section heading it renders', () => {
+    shell();
+    // `SidebarNav` renders a group title as a heading. An unnamed run of links is the flat list
+    // this grouping exists to replace.
+    const headings = screen
+      .getAllByRole('navigation')[0]
+      ?.querySelectorAll('h2, h3, [role="presentation"]');
+    expect(headings).toBeDefined();
   });
 
   it('hides the navigation icons from assistive technology', () => {

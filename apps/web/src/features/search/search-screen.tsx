@@ -28,6 +28,8 @@ import type {
 import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
+import { DocumentStatusBadge } from '../documents/status-badge';
 import { FormDialog } from '../admin-shared';
 import { continueSearch, createSavedSearch, deleteSavedSearch } from './actions';
 
@@ -130,9 +132,7 @@ export function SearchScreen({
   const searched = initialResults !== null;
 
   return (
-    <section className="flex flex-col gap-4">
-      <h1 className="text-2xl font-semibold">{translate('search.title')}</h1>
-
+    <WorkspacePage title={translate('search.title')} description={translate('search.promptHint')}>
       <form onSubmit={submit} className="flex items-center gap-2">
         <Input
           type="search"
@@ -292,7 +292,7 @@ export function SearchScreen({
           <Input name="name" required maxLength={120} />
         </label>
       </FormDialog>
-    </section>
+    </WorkspacePage>
   );
 }
 
@@ -454,7 +454,7 @@ function ResultCard({ hit }: { readonly hit: SearchHit }): ReactNode {
             {title === undefined ? hit.title : <Spans spans={title} />}
           </span>
           {hit.documentNumber !== null && <Badge tone="muted">{hit.documentNumber}</Badge>}
-          <Badge tone="muted">{translate(`documents.status.${hit.status}` as MessageKey)}</Badge>
+          <DocumentStatusBadge status={hit.status} />
           {hit.revisionLabel !== null && (
             <span className="text-sm opacity-70">
               {translate('search.revisionLabel', { label: hit.revisionLabel })}

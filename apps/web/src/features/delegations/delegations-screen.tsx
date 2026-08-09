@@ -11,6 +11,7 @@ import type { MessageKey } from '@edms/i18n';
 import { DelegationKind, DelegationStatus, Permission } from '@edms/domain';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
 import {
   CheckboxGroupField,
   FormDialog,
@@ -100,12 +101,10 @@ export function DelegationsScreen({
   };
 
   return (
-    <section className="flex flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold">{translate('delegations.title')}</h1>
-        <p className="text-muted-foreground text-sm">{translate('delegations.subtitle')}</p>
-      </header>
-
+    <WorkspacePage
+      title={translate('delegations.title')}
+      description={translate('delegations.subtitle')}
+    >
       <div className="flex flex-wrap items-center gap-3">
         <Select
           aria-label={translate('delegations.filter.direction')}
@@ -429,7 +428,7 @@ export function DelegationsScreen({
           maxLength={500}
         />
       </FormDialog>
-    </section>
+    </WorkspacePage>
   );
 }
 

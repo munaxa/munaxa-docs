@@ -15,6 +15,7 @@ import type {
 import { DigestFrequency, NotificationChannel } from '@edms/domain';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
 import {
   clearNotificationPreference,
   clearQuietHours,
@@ -99,12 +100,10 @@ export function NotificationsScreen({
   };
 
   return (
-    <section className="flex flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold">{translate('notifications.title')}</h1>
-        <p className="text-muted-foreground text-sm">{translate('notifications.subtitle')}</p>
-      </header>
-
+    <WorkspacePage
+      title={translate('notifications.title')}
+      description={translate('notifications.subtitle')}
+    >
       <div className="flex flex-wrap items-center gap-3">
         <Select
           aria-label={translate('notifications.filter.label')}
@@ -192,7 +191,7 @@ export function NotificationsScreen({
           ))}
         </ul>
       )}
-    </section>
+    </WorkspacePage>
   );
 }
 

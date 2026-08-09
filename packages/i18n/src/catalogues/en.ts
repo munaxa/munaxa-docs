@@ -86,6 +86,12 @@ export const en = {
     notifications: 'Notifications',
     recycleBin: 'Recycle bin',
     reports: 'Reports',
+    /** The rail's own grouping — Phase 7. Ten destinations in one list said nothing about them. */
+    breadcrumb: 'Breadcrumb',
+    groupWork: 'Work',
+    groupLibrary: 'Library',
+    groupOversight: 'Oversight',
+    groupSystem: 'System',
   },
   /**
    * Administration.
@@ -190,6 +196,8 @@ export const en = {
       name: 'Name',
       description: 'Description',
       status: 'Status',
+      /** The row's own state — deleted, inactive, system — where a lifecycle status sits beside it. */
+      record: 'Record',
       createdAt: 'Created',
       updatedAt: 'Last changed',
       deletedAt: 'Deleted',
@@ -868,6 +876,8 @@ export const en = {
       unfavorite: 'Remove from favourites',
       scan: 'Scan documents',
       backToFolder: 'Back to the folder',
+      /** The record page's overflow trigger — Phase 7. */
+      more: 'More actions',
       notReachable: 'This file has not cleared the malware check.',
       assignNumber: 'Assign a number',
       permissions: 'Permissions',
@@ -876,6 +886,8 @@ export const en = {
     },
     number: {
       pending: 'Pending',
+      /** Under the title in the library, where a blank line would read as a missing value. */
+      none: 'Not numbered yet',
     },
     assignNumber: {
       warning:

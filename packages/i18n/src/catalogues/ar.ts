@@ -74,6 +74,11 @@ export const ar: Catalogue = {
     notifications: 'الإشعارات',
     recycleBin: 'سلة المحذوفات',
     reports: 'التقارير',
+    breadcrumb: 'مسار التنقل',
+    groupWork: 'العمل',
+    groupLibrary: 'المكتبة',
+    groupOversight: 'الرقابة',
+    groupSystem: 'النظام',
   },
   admin: {
     title: 'الإدارة',
@@ -152,6 +157,7 @@ export const ar: Catalogue = {
       name: 'الاسم',
       description: 'الوصف',
       status: 'الحالة',
+      record: 'السجل',
       createdAt: 'تاريخ الإنشاء',
       updatedAt: 'آخر تعديل',
       deletedAt: 'تاريخ الحذف',
@@ -788,6 +794,7 @@ export const ar: Catalogue = {
       unfavorite: 'إزالة من المفضلة',
       scan: 'مسح وثائق ضوئيًا',
       backToFolder: 'العودة إلى المجلد',
+      more: 'إجراءات أخرى',
       notReachable: 'لم يجتز هذا الملف فحص البرمجيات الخبيثة.',
       assignNumber: 'إسناد رقم',
       permissions: 'الصلاحيات',
@@ -796,6 +803,7 @@ export const ar: Catalogue = {
     },
     number: {
       pending: 'معلّق',
+      none: 'لم يُرقَّم بعد',
     },
     assignNumber: {
       warning:
