@@ -91,6 +91,18 @@ jobs:
       - name: Accessibility contrast and visual regression
         run: pnpm test:visual
 
+      # A failing screenshot is otherwise invisible: the harness writes `<name>.diff.png` and
+      # `<name>.actual.png` next to the baseline, and both die with the runner. Without them the
+      # only evidence of a visual regression is a pixel count, which cannot distinguish "the button
+      # moved" from "this machine has a different font".
+      - name: Upload the screenshots when they disagree
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: apps/web/src/test/__screenshots__/
+          retention-days: 7
+
   integration:
     name: Integration · real PostgreSQL, two tenants
     runs-on: ubuntu-latest
@@ -142,30 +154,8 @@ jobs:
       # itself, and because nothing in CI had ever spoken to an object store. The regression guard
       # asserts that the *store* refuses bytes that disagree with their digest, which is a property
       # only a real store has.
-      # `edge-cicd` rather than `latest`, and the difference is not cosmetic: it is the only
-      # published tag that starts the server unattended.
       #
-      #   minio/minio:latest     Cmd = ["minio"]
-      #   minio/minio:edge-cicd  Cmd = ["minio", "server", "/data"]
-      #
-      # A bare `minio` prints its usage text and exits, and a `services:` block has nowhere to put
-      # the missing `server /data` — the runner composes `docker create <options> <image>` with no
-      # argument slot. So the container died on startup, the health check never went healthy, and
-      # the job failed at "Initialize containers" before checkout. Every run since Phase 6.12 added
-      # this service failed that way; it was invisible because the account could not assign runners
-      # over the same period, so the failure looked like the outage rather than a defect.
-      storage:
-        image: minio/minio:edge-cicd
-        env:
-          MINIO_ROOT_USER: edms-local
-          MINIO_ROOT_PASSWORD: ci-only-not-a-secret
-        ports:
-          - 9000:9000
-        options: >-
-          --health-cmd "mc ready local"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+      # The object store is NOT a service container — see "Start the object store" below for why.
 
     env:
       NODE_ENV: test
@@ -227,14 +217,56 @@ jobs:
         env:
           ADMIN_URL: postgresql://edms_owner@127.0.0.1:5432/postgres
 
+      # An ordinary container rather than a `services:` entry, because the image needs an argument a
+      # service entry cannot give it.
+      #
+      #   minio/minio:RELEASE.…  Cmd = ["minio"]        → prints its usage text and exits
+      #   the server needs        minio server /data
+      #
+      # The runner composes service containers as `docker create <options> <image>` with no argument
+      # slot, so a bare `minio` was all it could ever run: the container died on startup, the health
+      # check never went healthy, and the job failed at "Initialize containers" before checkout.
+      # Every run since Phase 6.12 added the service failed exactly that way, which went unnoticed
+      # because the account could not assign runners over the same period — the red X already had an
+      # unrelated explanation.
+      #
+      # `minio/minio:edge-cicd` does default to `server /data` and was tried first, but it is a
+      # four-year-old build whose bundled `mc` predates the `mc ready` subcommand, so the health
+      # check could never pass and the storage guard would have been asserting against a MinIO far
+      # older than anything this product would run against.
+      #
+      # Pinned to a release rather than `latest`: an unpinned object store is a dependency that can
+      # change the meaning of a passing build without a commit.
+      - name: Start the object store
+        run: |
+          set -euo pipefail
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=edms-local \
+            -e MINIO_ROOT_PASSWORD=ci-only-not-a-secret \
+            minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+
       # The bucket, for the same reason the databases are created here: an object store has no
       # bucket until somebody makes one, and the storage guard has nothing to write into without it.
+      #
+      # This step is also where readiness is established, now that no health check does it. `mc` is
+      # downloaded fresh rather than taken from the image, so the client is current even though the
+      # server is pinned.
       - name: Create the object storage bucket
         run: |
           set -euo pipefail
           curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$RUNNER_TEMP/mc"
           chmod +x "$RUNNER_TEMP/mc"
-          "$RUNNER_TEMP/mc" alias set ci http://127.0.0.1:9000 edms-local ci-only-not-a-secret
+          for attempt in $(seq 1 40); do
+            if "$RUNNER_TEMP/mc" alias set ci http://127.0.0.1:9000 edms-local ci-only-not-a-secret; then
+              break
+            fi
+            if [ "$attempt" -eq 40 ]; then
+              echo "::error::the object store never accepted a connection"
+              docker logs minio
+              exit 1
+            fi
+            sleep 2
+          done
           "$RUNNER_TEMP/mc" mb --ignore-existing ci/munaxa-docs
 
       # The same runner an operator uses, reading the same catalogue the API reads. It applies the
