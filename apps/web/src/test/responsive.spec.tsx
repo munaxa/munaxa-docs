@@ -101,19 +101,7 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
   {
     name: 'document-record',
     ui: () => (
-      <DocumentScreen
-        document={documentFixture()}
-        folders={[folder()]}
-        categories={[]}
-        confidentialityLevels={[]}
-        users={[]}
-        departments={[]}
-        fields={[]}
-        canEdit
-        canMove
-        canDownload
-        canArchive
-      />
+      <DocumentScreen document={documentFixture()} canEdit canMove canDownload canArchive />
     ),
   },
   {

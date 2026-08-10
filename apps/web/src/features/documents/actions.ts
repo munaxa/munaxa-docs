@@ -1,10 +1,17 @@
 'use server';
 
 import {
+  type Category,
   type CompletedUpload,
+  type ConfidentialityLevel,
+  type Department,
   type Document,
+  type DocumentType,
   type DuplicateReport,
+  type Folder,
+  type MetadataField,
   type UploadTarget,
+  type User,
   assignDocumentNumberSchema,
   completeUploadSchema,
   createDocumentSchema,
@@ -15,9 +22,10 @@ import {
   updateDocumentSchema,
 } from '@edms/contracts';
 
-import type { ActionResult } from '../../lib/admin/action-result';
-import { adminGet, adminWrite } from '../../lib/admin/api';
+import { type ActionResult, succeeded, toActionResult } from '../../lib/admin/action-result';
+import { adminGet, adminList, adminOptions, adminWrite } from '../../lib/admin/api';
 import { validated } from '../../lib/admin/validated';
+import type { DocumentEditOptions, DocumentMoveOptions } from './options';
 
 /**
  * Writes to the document library.
@@ -66,6 +74,109 @@ export async function abandonUpload(uploadSessionId: string): Promise<ActionResu
  */
 export async function findDuplicates(fileObjectId: string): Promise<DuplicateReport> {
   return adminGet<DuplicateReport>(`/documents/duplicates/${fileObjectId}`);
+}
+
+/**
+ * The pickers the properties dialogue needs, fetched when it opens — Phase 7.1C.
+ *
+ * These six reads used to happen in the record page's server render, on every document anybody
+ * opened, for a form most readers never open. Phase 7.1B measured what that cost: fifteen API
+ * requests for one page view, seven of them for two closed dialogues, all of them against the one
+ * rate-limit bucket the caller's identity owns.
+ *
+ * Deferred rather than removed, and deferred to a *server action* rather than to a browser fetch,
+ * because the access token lives in an `httpOnly` cookie and a script cannot carry it. That is the
+ * same reason `loadShippedTemplate` exists on the notification templates screen, and this follows
+ * its shape exactly: awaited before the dialogue opens, so there is no half-rendered form, and a
+ * refusal becomes a message rather than a discarded screen.
+ *
+ * Nothing about authorization changes. The endpoints are the same, the token is the same, and each
+ * one still enforces its own permission — a caller who could not read the tenant's departments
+ * before still cannot, they simply learn it when they ask to edit rather than when they open the
+ * record.
+ */
+export async function loadEditOptions(
+  documentTypeId: string | null,
+  confidentialityRank: number,
+): Promise<ActionResult<DocumentEditOptions>> {
+  try {
+    const [categories, levels, users, departments, fields, types] = await Promise.all([
+      adminOptions<Category>('/admin/categories', 'name'),
+      adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
+      adminOptions<User>('/admin/users', 'displayName'),
+      adminOptions<Department>('/admin/departments', 'path'),
+      adminOptions<MetadataField>('/admin/fields', 'name'),
+      adminOptions<DocumentType>('/admin/document-types', 'name'),
+    ]);
+    const fieldsById = new Map(fields.data.map((field) => [field.id, field]));
+    const type = types.data.find((candidate) => candidate.id === documentTypeId);
+    return succeeded({
+      categories: categories.data.map((category) => ({
+        value: category.id,
+        label: category.name,
+      })),
+      confidentialityLevels: levels.data
+        .filter((level) => level.rank >= confidentialityRank)
+        .map((level) => ({ value: level.id, label: level.name })),
+      users: users.data.map((user) => ({ value: user.id, label: user.displayName })),
+      departments: departments.data.map((department) => ({
+        value: department.id,
+        label: department.name,
+      })),
+      fields: (type?.fields ?? []).flatMap((entry) => {
+        const definition = fieldsById.get(entry.metadataFieldId);
+        return definition === undefined
+          ? []
+          : [
+              {
+                id: definition.id,
+                key: definition.key,
+                name: definition.name,
+                dataType: definition.dataType,
+                isRequired: entry.isRequired,
+                options: definition.options.map((option) => ({
+                  value: option.value,
+                  label: option.label,
+                })),
+                description: definition.description,
+                defaultValue: entry.defaultValue,
+              },
+            ];
+      }),
+    });
+  } catch (error) {
+    return toActionResult<DocumentEditOptions>(error);
+  }
+}
+
+/**
+ * The folders a move may choose between, fetched when that dialogue opens.
+ *
+ * Bounded to the document's own library, as it always was: a document does not cross libraries —
+ * its contents would move into a different permission chain, and there is no confirmation dialogue
+ * that can honestly summarise that.
+ */
+export async function loadMoveOptions(
+  libraryId: string,
+): Promise<ActionResult<DocumentMoveOptions>> {
+  try {
+    const folders = await adminList<Folder>('/admin/folders', {
+      page: 1,
+      // The API's maximum, and it has to be: `MAX_PAGE_SIZE` is 100 and the pagination schema
+      // rejects anything above it.
+      pageSize: 100,
+      sortBy: 'path',
+      sortDirection: 'asc',
+      search: '',
+      deleted: 'live',
+      filters: { libraryId },
+    });
+    return succeeded({
+      folders: folders.data.map((folder) => ({ value: folder.id, label: folder.name })),
+    });
+  } catch (error) {
+    return toActionResult<DocumentMoveOptions>(error);
+  }
 }
 
 export async function createDocument(input: unknown): Promise<ActionResult<Document>> {

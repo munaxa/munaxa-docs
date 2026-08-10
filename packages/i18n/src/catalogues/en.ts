@@ -21,6 +21,10 @@ export const en = {
     notFound: 'Page not found',
     notFoundHint: 'The page you asked for does not exist, or you do not have access to it.',
     offline: 'You are offline',
+    // A rate limit is not a fault, and saying "something went wrong" about one is untrue: the
+    // request was refused on purpose, it will succeed again shortly, and the reader can act on
+    // that. The sentence that says how to act is `error.RATE_LIMITED`, which is the API's own.
+    rateLimited: 'Too many requests',
   },
   auth: {
     signIn: 'Sign in',

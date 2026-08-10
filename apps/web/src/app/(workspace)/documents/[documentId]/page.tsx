@@ -2,29 +2,22 @@ import { notFound } from 'next/navigation';
 import { Suspense, type ReactNode } from 'react';
 
 import type {
-  Category,
-  ConfidentialityLevel,
-  Department,
   Document,
   DocumentSignature,
-  DocumentType,
   DocumentWorkflow,
-  Folder,
-  MetadataField,
   PreviewManifest,
   RevisionHistory,
-  User,
 } from '@edms/contracts';
 import { DomainError, ErrorCode, Permission } from '@edms/domain';
 
-import { AdminForbidden } from '../../../../features/admin-shared';
+import { AdminForbidden, RateLimited } from '../../../../features/admin-shared';
 import { ApprovalPanel } from '../../../../features/approvals/approval-panel';
 import { AuditTimeline } from '../../../../features/audit/audit-timeline';
 import { DocumentScreen } from '../../../../features/documents/document-screen';
 import { PreviewPanel } from '../../../../features/preview/preview-panel';
 import { RevisionPanel } from '../../../../features/revisions/revision-panel';
 import { SignaturePanel } from '../../../../features/signatures/signature-panel';
-import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/admin/api';
+import { adminAccess, adminGet } from '../../../../lib/admin/api';
 
 /**
  * One document.
@@ -33,10 +26,6 @@ import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/
  * audit event that confidentiality levels demanding audit-on-read require. That is why opening a
  * document is a page navigation rather than a panel that expands — a compliance record that
  * depended on a client remembering to call something would not be a compliance record.
- *
- * The candidate folders for a move are limited to the document's own library. A document does not
- * cross libraries: its contents would move into a different permission chain, and there is no
- * confirmation dialogue that can honestly summarise that.
  *
  * The approval area is fetched alongside, in the same round of requests. Phase 4 added it, and it is
  * on this page rather than a page of its own for one reason: "who must agree before this becomes
@@ -47,18 +36,53 @@ import { adminAccess, adminGet, adminList, adminOptions } from '../../../../lib/
  * it inside a `Suspense` boundary, fetching its own data, which is what `16 §7`'s "shell first,
  * preview and audit stream in" actually requires: awaited beside the document, a slow trail query
  * would delay the number, the title and every action on the page. Suspended, it delays nothing.
+ *
+ * ## What this page no longer fetches — Phase 7.1C
+ *
+ * Everything the *dialogues* need. The tenant's categories, confidentiality levels, users,
+ * departments, metadata fields and document types filled the properties form; the candidate folders
+ * filled the move picker. All seven were awaited on first paint, on every document anybody opened,
+ * for two dialogues that are closed — and a reader who only wanted to read a controlled document
+ * paid for a form they never saw. They are loaded now when the dialogue opens, through
+ * `loadEditOptions` and `loadMoveOptions`. The endpoints, the token and the permissions behind them
+ * are unchanged; only the moment changed.
+ *
+ * Phase 7.1B is why the moment mattered: fifteen API requests for one page view, measured against
+ * a rate-limit bucket keyed by tenant and identity, and the record page was the page holding the
+ * budget when it ran out.
  */
 export default async function DocumentPage({
   params,
 }: {
   params: Promise<{ documentId: string }>;
 }): Promise<ReactNode> {
+  const { documentId } = await params;
+  try {
+    return await documentPage(documentId);
+  } catch (error) {
+    /**
+     * The one API refusal this page can answer honestly rather than crash on.
+     *
+     * `429` is neither a fault nor a permission decision: the request was well formed, the caller is
+     * who they say they are, and the same request succeeds again within the window. Rethrown, it
+     * reaches the route error boundary, which can only say "Something went wrong. The problem has
+     * been recorded" — untrue twice, and unactionable. Everything else still throws, because a page
+     * that cannot load its document has nothing to render and the error boundary *is* the honest
+     * answer for that.
+     */
+    if (error instanceof DomainError && error.code === ErrorCode.RATE_LIMITED) {
+      return <RateLimited />;
+    }
+    throw error;
+  }
+}
+
+async function documentPage(documentId: string): Promise<ReactNode> {
   const access = await adminAccess(Permission.DOCUMENT_VIEW);
   if (!access.granted) {
     return <AdminForbidden />;
   }
 
-  const { documentId } = await params;
   let document: Document;
   try {
     document = await adminGet<Document>(`/documents/${documentId}`);
@@ -73,20 +97,7 @@ export default async function DocumentPage({
   // holds `document:history:view`, and the panel simply omits it otherwise.
   const canViewHistory = access.permissions.includes(Permission.DOCUMENT_HISTORY_VIEW);
 
-  const [
-    workflow,
-    history,
-    preview,
-    signatures,
-    mfa,
-    folders,
-    categories,
-    levels,
-    users,
-    departments,
-    fields,
-    types,
-  ] = await Promise.all([
+  const [workflow, history, preview, signatures, mfa] = await Promise.all([
     adminGet<DocumentWorkflow>(`/documents/${documentId}/workflow`),
     canViewHistory
       ? adminGet<RevisionHistory>(`/documents/${documentId}/revisions`)
@@ -102,68 +113,11 @@ export default async function DocumentPage({
     // else's: there is no request in this product by which one person could ask about another's,
     // which is what keeps the ceremony from becoming an enrolment oracle.
     adminGet<{ readonly enrolled: boolean }>('/auth/mfa').catch(() => ({ enrolled: false })),
-    adminList<Folder>('/admin/folders', {
-      page: 1,
-      // The API's maximum, and it has to be: `MAX_PAGE_SIZE` is 100 and the pagination schema
-      // *rejects* anything above it. This asked for 200 from the day it was written, so every
-      // request 422'd and the screen threw before rendering — a page nobody could open. Found by
-      // Phase 6.6's browser suite, which is the first thing in this repository to load it.
-      pageSize: 100,
-      sortBy: 'path',
-      sortDirection: 'asc',
-      search: '',
-      deleted: 'live',
-      filters: { libraryId: document.libraryId },
-    }),
-    adminOptions<Category>('/admin/categories', 'path'),
-    adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
-    adminOptions<User>('/admin/users', 'displayName'),
-    adminOptions<Department>('/admin/departments', 'path'),
-    adminOptions<MetadataField>('/admin/fields', 'name'),
-    adminOptions<DocumentType>('/admin/document-types', 'name'),
   ]);
-
-  const fieldsById = new Map(fields.data.map((field) => [field.id, field]));
-  const type = types.data.find((candidate) => candidate.id === document.documentTypeId);
 
   return (
     <DocumentScreen
       document={document}
-      folders={folders.data}
-      categories={categories.data.map((category) => ({
-        value: category.id,
-        label: category.name,
-      }))}
-      // Only levels at or above the document's own rank: a document's confidentiality may be raised
-      // and never lowered, and offering the lower ones would be offering an action the API refuses.
-      confidentialityLevels={levels.data
-        .filter((level) => level.rank >= document.confidentialityRank)
-        .map((level) => ({ value: level.id, label: level.name }))}
-      users={users.data.map((user) => ({ value: user.id, label: user.displayName }))}
-      departments={departments.data.map((department) => ({
-        value: department.id,
-        label: department.name,
-      }))}
-      fields={(type?.fields ?? []).flatMap((entry) => {
-        const definition = fieldsById.get(entry.metadataFieldId);
-        return definition === undefined
-          ? []
-          : [
-              {
-                id: definition.id,
-                key: definition.key,
-                name: definition.name,
-                dataType: definition.dataType,
-                isRequired: entry.isRequired,
-                options: definition.options.map((option) => ({
-                  value: option.value,
-                  label: option.label,
-                })),
-                description: definition.description,
-                defaultValue: entry.defaultValue,
-              },
-            ];
-      })}
       canEdit={access.permissions.includes(Permission.DOCUMENT_EDIT)}
       canMove={access.permissions.includes(Permission.DOCUMENT_MOVE)}
       canDownload={access.permissions.includes(Permission.DOCUMENT_DOWNLOAD)}

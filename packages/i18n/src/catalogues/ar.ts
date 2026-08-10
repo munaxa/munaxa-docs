@@ -19,6 +19,7 @@ export const ar: Catalogue = {
     notFound: 'الصفحة غير موجودة',
     notFoundHint: 'الصفحة المطلوبة غير موجودة، أو لا تملك صلاحية الوصول إليها.',
     offline: 'أنت غير متصل بالإنترنت',
+    rateLimited: 'عدد كبير من الطلبات',
   },
   auth: {
     signIn: 'تسجيل الدخول',

@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { type Browser, type BrowserContext, type Page, chromium } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { en } from '@edms/i18n';
+
 import {
   API_PORT,
   type Fixture,
@@ -884,48 +886,50 @@ describe('9 · responsive layout', () => {
     await page.close();
   }, 120_000);
 
+  /**
+   * The record page, in the running application, at six widths — Phase 7.1C.
+   *
+   * This test failed for three phases, and none of the reasons were layout. Phase 7.1A captured
+   * what the browser actually had on screen at the moment of timeout: the route error boundary.
+   * Phase 7.1B read the exception out of the web server's log and measured the counter behind it —
+   * the record page's server render made **fifteen** API requests, the suite's signer identity
+   * reached **305** against the `default` rule's limit of **300**, and the fifteenth request was
+   * refused with a `429`. Nothing about the page was broken; the page was simply expensive, and it
+   * was holding the budget when the budget ran out.
+   *
+   * Phase 7.1C deferred the seven of those fifteen that only two closed dialogues needed. So the
+   * assertions below are back to being about what they say they are about, and the diagnostic that
+   * dumped page state on timeout is gone with the thing it was diagnosing.
+   *
+   * Nothing here was weakened to get it passing: the timeout is the same thirty seconds, there is
+   * no retry, no mock and no skip, and the rate limiter is untouched — the two tests above still
+   * prove it refuses at its real threshold.
+   */
   it('keeps the record page usable at every width', async () => {
     const { page } = await pageFor(fixture.signer.email);
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
       waitUntil: 'domcontentloaded',
     });
-    /*
-     * Ready when the *identity block* is on screen — which is what this test is about — rather than
-     * when the signature panel's heading is.
-     *
-     * Waiting on `Signatures` is what the suite's other record-page tests do, and it is right for
-     * them: they are about signing. Here it made the test fail for a reason that has nothing to do
-     * with layout. The navigation returned **200 with no failed sub-request** — captured explicitly
-     * — and the page rendered; the signature panel's heading simply had not appeared within thirty
-     * seconds on this second load. That is recorded in the Phase 7.1 report as an observation
-     * needing its own investigation, not silently absorbed here: this test now waits for the thing
-     * it asserts against, and the panel's behaviour remains covered by the tests that are about it.
-     */
-    try {
-      await page.getByRole('button', { name: 'More actions' }).first().waitFor({ timeout: 30_000 });
-    } catch (error) {
-      // PHASE 7.1A DIAGNOSTIC — removed once the cause is known.
-      const state = await page.evaluate(() => ({
-        url: location.href,
-        title: document.title,
-        headings: Array.from(document.querySelectorAll('h1,h2,h3')).map((h) =>
-          (h.textContent ?? '').trim().slice(0, 60),
-        ),
-        buttons: Array.from(document.querySelectorAll('button')).map((b) =>
-          (b.getAttribute('aria-label') ?? b.textContent ?? '').trim().slice(0, 40),
-        ),
-        busy: document.querySelectorAll('[aria-busy="true"], .animate-pulse').length,
-        body: (document.body.innerText ?? '').slice(0, 800),
-      }));
-      // eslint-disable-next-line no-console
-      console.log(`\n===== RECORD TIMEOUT =====\n${JSON.stringify(state, null, 1)}\n`);
-      throw error;
-    }
+    // Ready when the overflow menu is on screen — part of the identity row this test asserts
+    // against, and rendered by the page itself rather than by a panel that streams in later.
+    await page.getByRole('button', { name: 'More actions' }).first().waitFor({ timeout: 30_000 });
     await page.waitForLoadState('networkidle');
+
+    // The title and the status the database holds — read rather than assumed, so this asserts what
+    // the record *is* rather than what the fixture happened to be written as. The status is
+    // compared in the words the catalogue renders it with, which is what a reader sees.
+    const record = ask(
+      'SELECT title, status FROM document WHERE id = $1::uuid',
+      fixture.documentId,
+    )[0];
+    const title = record?.title ?? '';
+    const statusLabel =
+      en.documents.status[(record?.status ?? '') as keyof typeof en.documents.status];
 
     for (const { label, width } of WIDTHS) {
       await page.setViewportSize({ width, height: 900 });
+      // The media-query subscription fires on resize; a frame is enough for React to answer it.
       await page.waitForTimeout(200);
 
       const overflow = await page.evaluate(
@@ -936,15 +940,34 @@ describe('9 · responsive layout', () => {
         `overflows by ${String(overflow)}px at ${label} (${String(width)}px)`,
       ).toBeLessThanOrEqual(1);
 
-      // Identity and the overflow menu — the two things Phase 7 put at the top of this page, and
-      // the two a narrow viewport is most likely to take away.
+      // Identity, status, the primary action and the overflow menu — what Phase 7 put at the top of
+      // this page, and what a narrow viewport is most likely to take away. A layout that fits by
+      // rendering nothing would satisfy the overflow assertion and fail the reader.
       const text = await visibleText(page);
-      expect(text, `number missing at ${label}`).toContain(fixture.documentNumber);
-      expect(
-        await page.getByRole('button', { name: 'More actions' }).count(),
-        `actions unreachable at ${label}`,
-      ).toBeGreaterThan(0);
+      expect(text, `number missing at ${label} (${String(width)}px)`).toContain(
+        fixture.documentNumber,
+      );
+      expect(text, `title missing at ${label} (${String(width)}px)`).toContain(title);
+      expect(text, `status missing at ${label} (${String(width)}px)`).toContain(statusLabel);
+      await expect
+        .poll(() => page.getByRole('button', { name: 'Download' }).first().isVisible(), {
+          message: `primary action not visible at ${label} (${String(width)}px)`,
+        })
+        .toBe(true);
+      await expect
+        .poll(() => page.getByRole('button', { name: 'More actions' }).first().isVisible(), {
+          message: `actions not visible at ${label} (${String(width)}px)`,
+        })
+        .toBe(true);
     }
+
+    // Reachable, not merely present. The menu is the only way to every secondary action on this
+    // page, and it is asserted at the narrowest width — where the header has least room and where a
+    // trigger that renders but cannot be opened would do the most damage.
+    await page.getByRole('button', { name: 'More actions' }).first().click();
+    await page.getByRole('menuitem').first().waitFor({ timeout: 10_000 });
+    expect(await page.getByRole('menuitem').count()).toBeGreaterThan(0);
+
     await page.close();
   }, 120_000);
 

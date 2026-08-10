@@ -18,14 +18,13 @@ import {
 } from '@munaxa/ui';
 import { EllipsisVertical } from '@munaxa/icons';
 
-import type { Document, Folder } from '@edms/contracts';
+import type { Document } from '@edms/contracts';
 import { formatFor } from '@edms/domain';
 
 import { WorkspacePage } from '../../components/workspace-page';
 import { useTranslate } from '../../app/providers';
 import type { ActionResult } from '../../lib/admin/action-result';
 import {
-  type Choice,
   FormDialog,
   PickerField,
   TextAreaField,
@@ -38,6 +37,8 @@ import { DocumentStatusBadge } from './status-badge';
 import {
   archiveDocument,
   assignDocumentNumber,
+  loadEditOptions,
+  loadMoveOptions,
   moveDocument,
   reinstateDocument,
   requestDownload,
@@ -45,6 +46,7 @@ import {
   updateDocument,
 } from './actions';
 import { MetadataFields, type MetadataFieldDefinition, readMetadata } from './metadata-fields';
+import type { DocumentEditOptions, DocumentMoveOptions } from './options';
 
 /**
  * One document: its properties, its business metadata, and what its content is.
@@ -59,12 +61,6 @@ import { MetadataFields, type MetadataFieldDefinition, readMetadata } from './me
  */
 export function DocumentScreen({
   document,
-  folders,
-  categories,
-  confidentialityLevels,
-  users,
-  departments,
-  fields,
   canEdit,
   canMove,
   canDownload,
@@ -78,14 +74,6 @@ export function DocumentScreen({
   audit,
 }: {
   readonly document: Document;
-  /** Candidate destinations for a move. Within the document's own library. */
-  readonly folders: readonly Folder[];
-  readonly categories: readonly Choice[];
-  readonly confidentialityLevels: readonly Choice[];
-  readonly users: readonly Choice[];
-  readonly departments: readonly Choice[];
-  /** The document type's fields, which decide what the properties form renders. */
-  readonly fields: readonly MetadataFieldDefinition[];
   readonly canEdit: boolean;
   readonly canMove: boolean;
   readonly canDownload: boolean;
@@ -149,8 +137,16 @@ export function DocumentScreen({
   const translate = useTranslate();
   const router = useRouter();
   const toast = useToast();
-  const [editing, setEditing] = useState(false);
-  const [moving, setMoving] = useState(false);
+  /**
+   * The two dialogues that need data, and the data itself — Phase 7.1C.
+   *
+   * `null` is closed. The options *are* the open state, so the dialogue cannot render before its
+   * pickers exist and there is no half-populated form to design a loading state for. The shape is
+   * `loadShippedTemplate`'s on the notification templates screen: await the server action, then
+   * open; a refusal becomes a message and the dialogue simply does not open.
+   */
+  const [editing, setEditing] = useState<DocumentEditOptions | null>(null);
+  const [moving, setMoving] = useState<DocumentMoveOptions | null>(null);
   const [numbering, setNumbering] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [reinstating, setReinstating] = useState(false);
@@ -199,16 +195,39 @@ export function DocumentScreen({
     });
   };
 
-  const saveProperties = async (data: FormData): Promise<ActionResult<unknown>> =>
-    updateDocument(document.id, document.version, {
-      title: text(data, 'title'),
-      description: nullableText(data, 'description'),
-      categoryId: nullableText(data, 'categoryId'),
-      ...(optionalText(data, 'confidentialityId') !== undefined && {
-        confidentialityId: text(data, 'confidentialityId'),
-      }),
-      metadata: readMetadata(data, fields),
+  const saveProperties =
+    (fields: readonly MetadataFieldDefinition[]) =>
+    async (data: FormData): Promise<ActionResult<unknown>> =>
+      updateDocument(document.id, document.version, {
+        title: text(data, 'title'),
+        description: nullableText(data, 'description'),
+        categoryId: nullableText(data, 'categoryId'),
+        ...(optionalText(data, 'confidentialityId') !== undefined && {
+          confidentialityId: text(data, 'confidentialityId'),
+        }),
+        metadata: readMetadata(data, fields),
+      });
+
+  /**
+   * Opens a dialogue once the data behind it has arrived.
+   *
+   * The failure path matters as much as the success one: these reads carry the caller's own token
+   * and enforce their own permissions, so a refusal is a real answer and gets the same toast every
+   * other refused action on this screen gets — including `RATE_LIMITED`, whose catalogue sentence
+   * says to wait a moment and try again.
+   */
+  const openWith = <TOptions,>(
+    load: () => Promise<ActionResult<TOptions>>,
+    show: (options: TOptions) => void,
+  ): void => {
+    void load().then((result) => {
+      if (!result.ok) {
+        toast.error(result.detail ?? translate(`error.${result.code}`));
+        return;
+      }
+      show(result.value);
     });
+  };
 
   /**
    * The record's secondary actions — Phase 7.
@@ -239,7 +258,9 @@ export function DocumentScreen({
           {
             id: 'move',
             label: translate('documents.actions.move'),
-            onSelect: () => setMoving(true),
+            onSelect: () => {
+              openWith(() => loadMoveOptions(document.libraryId), setMoving);
+            },
           },
         ]
       : []),
@@ -257,7 +278,12 @@ export function DocumentScreen({
           {
             id: 'edit',
             label: translate('documents.actions.edit'),
-            onSelect: () => setEditing(true),
+            onSelect: () => {
+              openWith(
+                () => loadEditOptions(document.documentTypeId, document.confidentialityRank),
+                setEditing,
+              );
+            },
           },
         ]
       : []),
@@ -470,12 +496,12 @@ export function DocumentScreen({
         </Card>
       </div>
 
-      {editing && (
+      {editing !== null && (
         <FormDialog
           open
           title={translate('documents.actions.edit')}
-          onClose={() => setEditing(false)}
-          onSubmit={saveProperties}
+          onClose={() => setEditing(null)}
+          onSubmit={saveProperties(editing.fields)}
           onSaved={refresh}
         >
           <TextField
@@ -492,7 +518,7 @@ export function DocumentScreen({
           <PickerField
             name="categoryId"
             label={translate('documents.field.category')}
-            options={categories}
+            options={editing.categories}
             defaultValue={document.categoryId ?? ''}
             clearable
           />
@@ -500,26 +526,26 @@ export function DocumentScreen({
             name="confidentialityId"
             label={translate('documents.field.confidentiality')}
             hint={translate('documents.field.confidentialityRaiseOnly')}
-            options={confidentialityLevels}
+            options={editing.confidentialityLevels}
             defaultValue={document.confidentialityId}
           />
           <MetadataFields
-            fields={fields}
+            fields={editing.fields}
             values={values}
-            userChoices={users}
-            departmentChoices={departments}
+            userChoices={editing.users}
+            departmentChoices={editing.departments}
           />
         </FormDialog>
       )}
 
-      {moving && (
+      {moving !== null && (
         <FormDialog
           open
           title={translate('documents.actions.move')}
           // A move changes the folder, and the folder is the chain permissions are inherited along.
           // Saying so in the dialogue is the only warning anybody gets.
           description={translate('documents.move.warning')}
-          onClose={() => setMoving(false)}
+          onClose={() => setMoving(null)}
           onSubmit={(data) =>
             moveDocument(document.id, document.version, { folderId: text(data, 'folderId') })
           }
@@ -529,10 +555,7 @@ export function DocumentScreen({
             name="folderId"
             label={translate('documents.field.folder')}
             required
-            options={folders.map((folder) => ({
-              value: folder.id,
-              label: folder.path === folder.id ? folder.name : `${folder.name}`,
-            }))}
+            options={moving.folders}
             defaultValue={document.folderId}
           />
         </FormDialog>

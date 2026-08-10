@@ -71,12 +71,6 @@ function screenFor(options: { canArchive?: boolean; status?: string } = {}): Rea
       document={document({
         ...(options.status !== undefined && { status: options.status as never }),
       })}
-      folders={[]}
-      categories={[]}
-      confidentialityLevels={[]}
-      users={[]}
-      departments={[]}
-      fields={[]}
       canEdit={false}
       canMove={false}
       canDownload={false}
