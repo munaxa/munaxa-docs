@@ -253,3 +253,78 @@ describe('the Arabic category boundaries a reviewer has to write against', () =>
     }
   });
 });
+
+describe('the Arabic plural review, as a tripwire', () => {
+  /**
+   * §13's regression guard — Phase 7.4B.
+   *
+   * Two failure modes are worth catching, and they point in opposite directions.
+   *
+   * The first is **reversion**: one of the 23 quietly going back to a plain string. That is already
+   * covered above by "every message interpolating {count} is a plural message".
+   *
+   * The second is **silent progress**: somebody completing an Arabic message without adding the
+   * wording assertions that make it trustworthy. This list is the tripwire for that. When a message
+   * gains its `zero`/`one`/`two`/`few`/`many` forms, this test fails — deliberately — and the fix is
+   * to remove that key from the list *and add six wording assertions for it*, not to widen the
+   * expectation.
+   *
+   * It is not a generalised Arabic grammar engine, and deliberately so: it asserts only which
+   * messages are still answering every category from a single `other` form.
+   */
+  const AWAITING_ARABIC_REVIEW = 23;
+
+  it(`${String(AWAITING_ARABIC_REVIEW)} Arabic messages still carry only their 'other' form`, () => {
+    const singleForm: string[] = [];
+    const walkPlurals = (node: unknown, path: string): void => {
+      if (typeof node !== 'object' || node === null) {
+        return;
+      }
+      if (isPluralMessage(node)) {
+        const forms = Object.entries(node)
+          .filter(([, value]) => typeof value === 'string')
+          .map(([key]) => key);
+        if (forms.length === 1 && forms[0] === 'other') {
+          singleForm.push(path);
+        }
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        walkPlurals(value, path === '' ? key : `${path}.${key}`);
+      }
+    };
+    walkPlurals(ar, '');
+
+    expect(
+      singleForm.length,
+      `Arabic messages awaiting review changed from ${String(AWAITING_ARABIC_REVIEW)} to ` +
+        `${String(singleForm.length)}. If a message was completed, remove it from the count here ` +
+        `and add six wording assertions for it. See docs/reports/phase-7.4b-arabic-pluralization-completion.md.`,
+    ).toBe(AWAITING_ARABIC_REVIEW);
+  });
+
+  it('English has no message left answering every category from one form', () => {
+    // The mirror assertion, and the reason the Arabic number above is meaningful: English is done,
+    // so a single-form English plural would be a migration that was never finished.
+    const singleForm: string[] = [];
+    const walkPlurals = (node: unknown, path: string): void => {
+      if (typeof node !== 'object' || node === null) {
+        return;
+      }
+      if (isPluralMessage(node)) {
+        const forms = Object.entries(node)
+          .filter(([, value]) => typeof value === 'string')
+          .map(([key]) => key);
+        if (forms.length === 1) {
+          singleForm.push(path);
+        }
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        walkPlurals(value, path === '' ? key : `${path}.${key}`);
+      }
+    };
+    walkPlurals(en, '');
+    expect(singleForm).toStrictEqual([]);
+  });
+});
