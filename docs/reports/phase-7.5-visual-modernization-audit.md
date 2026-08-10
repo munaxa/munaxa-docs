@@ -120,23 +120,41 @@ The reference shows exactly this: Workflows 12, Tasks 8, Approvals 5. And the pr
 fetches the numbers** — `UserDashboard` returns `pending`, `overdue` and `unreadNotifications`, all
 rendered as dashboard tiles today.
 
-Impact: high. Risk: low — one optional prop, no new request, no new permission.
+**Measured during implementation, and the conclusion changed.** The counts are fetched by the
+dashboard page, not the layout. Putting them in the rail means the layout needs them, and the only
+endpoint that carries them is `GET /dashboard` — which costs **~13 database round-trips across eight
+modules** (`document` 4, `workflow` 3, `retention` 2, `storage` 2, `identity` 1, `organization` 1).
 
-Caveat to resolve at implementation: the counts are currently fetched by the dashboard page, not the
-workspace layout. Surfacing them in the rail means the layout needs them. Whether that is one extra
-call per navigation or a shared fetch is a real design question, and it must not become a per-request
-fan-out regression of the kind Phase 7.1C spent a phase fixing.
+Calling that from the workspace layout would add thirteen queries to *every navigation in the
+product* to render three small numbers. That is precisely the per-request fan-out regression Phase
+7.1C spent a phase removing, and no visual gain justifies it.
 
-### 4.2 Document library — file-type recognition
+`GET /notifications/unread-count` is the **only** count-shaped endpoint in the entire API — its own
+adapter comment says it "exists precisely so a badge has something to call". One query.
 
-The reference distinguishes PDF / Word / Excel / PowerPoint / DWG with coloured type marks. The
-product renders a uniform row.
+So the finding splits:
 
-`documentFileSchema` supplies `filename`, `mimeType` and `sizeBytes`. So this is real data, mapped to
-platform icons and semantic tones — not decoration and not fabrication.
+- **Sidebar badges for Approvals / Tasks / Workflows: blocked.** Affordable data does not exist, and
+  the smallest fix is a backend addition (§7.6), which §14 forbids here.
+- **A header bell with the unread count: buildable, and it is what the reference actually shows** —
+  the reference's bell badge is in the top bar, not the rail. The product has no bell at all. One
+  cheap purpose-built call.
 
-The library also already composes `DataGrid` correctly, so this is a cell renderer, not a table
-change.
+### 4.2 Document library — file-type recognition (finding corrected)
+
+**This was written up as missing and that was wrong.** The library already renders a `FormatBadge` in
+the title cell: `formatFor(row.file.mimeType)` producing the format family as a `Badge`, toned
+`warning` when the content is unreachable. Reading the column definitions rather than the imports is
+what corrected it.
+
+So the difference from the reference is narrower than stated: the reference uses a coloured
+per-type mark, the product uses a legible text label. The existing comment defends the label over a
+*thumbnail*, which is a different argument from label-versus-icon — but the cell is already tight
+(the same comment records that `width: 320` and `width: 240` were both tried in a real browser and
+both crushed the neighbouring columns), so replacing a compact label with an icon buys little and
+risks the legibility the column was tuned for.
+
+**Downgraded from rank 2 to "leave alone."** A text badge that names the format is not a defect.
 
 ### 4.3 Document library — the contextual right panel
 
@@ -260,24 +278,39 @@ Expiry exists in the domain — Phase 6.1 added the expiry sweep — so the figu
 is not exposed and exposing it is an API change. **Refused for this phase**, recorded as the one
 backend addition that would most improve the dashboard's usefulness.
 
+### 7.6 Backend gap — no cheap count endpoint for approval work
+
+The rail badges the reference shows need `pending` / `overdue` without paying for the whole
+dashboard. The precedent already exists and is one line of prior art:
+`GET /notifications/unread-count`, built for exactly this purpose.
+
+Smallest addition that would unblock it: a sibling count route on `approval-tasks`, returning the two
+figures the inbox already computes. Not implemented here — §14.
+
 ---
 
 ## 8. Ranked plan
 
 Scored on visual impact × consistency × user value × accessibility ÷ risk.
 
+Re-ranked after measurement. Two entries moved: rail badges dropped on cost (§4.1), file-type dropped
+because it already exists (§4.2).
+
 | # | Change | Impact | Risk | Verdict |
 | --- | --- | --- | --- | --- |
-| 1 | Navigation badges from existing counts | high | low | **do** |
-| 2 | File-type recognition in the library | high | low | **do** |
-| 3 | Replace hand-written link classes with platform variants | low | very low | **do** |
-| 4 | Upload modal proportion + field grouping | medium | low | **do** |
-| 5 | Search: platform `Tabs` + count hierarchy | medium | medium | **verify data first** |
-| 6 | Folder identity panel (identity only, no invented stats) | medium | medium | **verify first** |
-| 7 | Status donut replacing the definition list | medium | medium | **defer — replaces reasoned work** |
-| 8 | Section headings in the rail | medium | blocked | **blocked on 7.1** |
-| 9 | Storage quota bar | high | — | **refused — no data** |
-| 10 | KPI deltas | high | — | **refused — no data** |
+| 1 | Header notification bell + unread badge | high | low | **do** |
+| 2 | Replace hand-written link classes with platform variants | low | very low | **do** |
+| 3 | Upload modal proportion + field grouping | medium | low | **do** |
+| 4 | Search: platform `Tabs` + count hierarchy | medium | medium | **verify data first** |
+| 5 | Folder identity panel (identity only, no invented stats) | medium | medium | **verify first** |
+| 6 | Status donut replacing the definition list | medium | medium | **defer — replaces reasoned work** |
+| 7 | File-type icon marks in the library | low | medium | **dropped — already a text badge** |
+| 8 | Sidebar badges for approvals/tasks | high | — | **blocked — 13 queries/navigation (§4.1, §7.6)** |
+| 9 | Section headings in the rail | medium | blocked | **blocked on 7.1** |
+| 10 | Storage quota bar | high | — | **refused — no data** |
+| 11 | KPI deltas | high | — | **refused — no data** |
+| 12 | Entity / Branch switcher | high | — | **refused — product capability** |
+| 13 | "Expiring Soon" tile | medium | — | **refused — not exposed** |
 
 ---
 

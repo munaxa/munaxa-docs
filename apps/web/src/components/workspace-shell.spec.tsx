@@ -16,12 +16,13 @@ import { NAVIGATION_ICON_IDS, NAVIGATION_SECTION_IDS, WorkspaceShell } from './w
  * because the shell passes `skipLinkLabel` and `AppShell` renders the component. A symbol search
  * cannot see that. This test can, and it will also notice if the prop is ever dropped.
  */
-function shell(children = <h1>Content</h1>): HTMLElement {
+function shell(children = <h1>Content</h1>, unreadNotifications?: number | null): HTMLElement {
   return renderWithProviders(
     <WorkspaceShell
       destinations={destinationsFor(ALL_PERMISSIONS)}
       displayName="Test Person"
       description="Test Tenant"
+      {...(unreadNotifications !== undefined && { unreadNotifications })}
       signOutAction={() => Promise.resolve()}
     >
       {children}
@@ -115,5 +116,34 @@ describe('workspace shell accessibility', () => {
     for (const link of screen.getAllByRole('link')) {
       expect(link.textContent?.trim().length ?? 0).toBeGreaterThan(0);
     }
+  });
+
+  it('speaks the unread count rather than only drawing it', () => {
+    shell(undefined, 3);
+    // The pill is `aria-hidden`; the accessible name is what has to carry the number, because a
+    // screen reader announcing "Notifications" beside a silent "3" says there is a figure without
+    // saying what it counts.
+    const bell = screen.getByRole('link', { name: /Notifications, 3 unread/ });
+    expect(bell.getAttribute('href')).toBe('/notifications');
+  });
+
+  it('draws no badge when there is nothing unread', () => {
+    // Queried by *absence of a count*, not by the bare name: the rail carries a "Notifications"
+    // destination too, so the name alone matches two links. What distinguishes the badged state is
+    // that the accessible name gains the unread clause.
+    shell(undefined, 0);
+    expect(screen.queryByRole('link', { name: /unread/ })).toBeNull();
+  });
+
+  it('draws no badge when the count could not be established', () => {
+    // `null` is not zero. Zero asserts "you are up to date"; a failed request knows nothing, and
+    // claiming the reassuring answer is the one mistake this state exists to avoid.
+    shell(undefined, null);
+    expect(screen.queryByRole('link', { name: /unread/ })).toBeNull();
+  });
+
+  it('caps the badge rather than widening the top bar', () => {
+    const root = shell(undefined, 1284);
+    expect(root.textContent).toContain('99+');
   });
 });

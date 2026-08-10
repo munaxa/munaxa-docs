@@ -9,7 +9,7 @@ import { AppShellProvider, SidebarNav } from '@munaxa/ui';
 import { en } from '@edms/i18n';
 
 import RouteLoading from '../app/loading';
-import { WorkspaceRail, iconFor } from '../components/workspace-shell';
+import { WorkspaceRail, WorkspaceShell, iconFor } from '../components/workspace-shell';
 import { Providers } from '../app/providers';
 import { ApprovalInboxScreen } from '../features/approvals/inbox-screen';
 import { DashboardScreen } from '../features/dashboard/dashboard-screen';
@@ -320,6 +320,28 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
           <WorkspaceRail destinations={destinationsFor(ALL_PERMISSIONS)} />
         </div>
       </AppShellProvider>
+    ),
+  },
+  /**
+   * The top bar's notification bell, badged — Phase 7.5.
+   *
+   * The whole shell rather than the bell alone, because what this baseline is for is the *placement*
+   * of a pill over a glyph inside a row of icon buttons: whether it collides with the theme toggle,
+   * whether it clips at the bar's edge, and whether it sits on the correct side once the document
+   * direction flips. A screenshot of the bell in isolation would show none of those.
+   */
+  {
+    name: 'top-bar-bell',
+    ui: () => (
+      <WorkspaceShell
+        destinations={destinationsFor(ALL_PERMISSIONS)}
+        displayName="Test Person"
+        description="Test Tenant"
+        unreadNotifications={7}
+        signOutAction={() => Promise.resolve()}
+      >
+        <p className="p-4">Content</p>
+      </WorkspaceShell>
     ),
   },
   /**
