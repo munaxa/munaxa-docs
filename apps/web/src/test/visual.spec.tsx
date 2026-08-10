@@ -439,6 +439,24 @@ function arabicMarkup(ui: ReactElement): string {
   );
 }
 
+/**
+ * These ten baselines are generated on CI, not locally, and that is deliberate.
+ *
+ * Nothing in this repository pins a font: the built stylesheet has no `@font-face`, so every glyph
+ * comes from whatever the host machine offers. Latin survives that because every environment here
+ * resolves to the same face. Arabic does not — Chromium picks a different Arabic fallback on a
+ * GitHub runner than in the container these were first written in, and different metrics mean
+ * different advance widths, so text wraps and truncates at different points. The rendering is
+ * correct in both; it is simply not the *same* rendering, and a screenshot gate cannot average two.
+ *
+ * So the baseline is the one from the environment that gates: CI. The cost is that these ten fail
+ * on a developer machine whose Arabic fallback differs, and the failure looks like a regression
+ * when it is a font. Regenerating them locally is the wrong repair — it moves the failure to CI.
+ *
+ * The real fix is font determinism (vendor the face, point fontconfig at it for the visual run),
+ * which would also close the same latent gap for Latin. That is a change to the harness rather
+ * than to these tests, and it is not yet made.
+ */
 describe('Arabic, right to left', () => {
   describe.each(ARABIC)('$name', ({ name, width, ui }) => {
     it.each(THEMES)('matches its %s baseline', async (theme) => {
