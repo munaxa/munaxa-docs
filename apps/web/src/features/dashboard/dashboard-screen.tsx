@@ -83,12 +83,35 @@ export function DashboardScreen({
   const mine = (status: string): Route | undefined =>
     userId === null ? undefined : (`/documents?ownerUserId=${userId}&status=${status}` as Route);
 
+  /**
+   * A server enum, turned into a word — and what happens when it cannot be.
+   *
+   * These three are the only place in the product where a *value* becomes a translation key.
+   * Everywhere else a key is a literal the compiler checks; here the key is built from whatever the
+   * API returned, so `MessageKey` is a cast rather than a guarantee and the type system cannot help.
+   *
+   * `translate` returns the key itself when it finds nothing (`translate.ts`, "return key"), which
+   * is the right default for a literal — a developer sees the missing string immediately. It is the
+   * wrong one here: a status the catalogue has not learned yet reaches the reader as
+   * `dashboard.admin.userState.SUSPENDED`, an internal path printed on a dashboard.
+   *
+   * Phase 7.6A found exactly that rendered in the dashboard baseline. So a miss falls back to the
+   * enum value itself. `SUSPENDED` is not English and is not pretending to be; it is the word the
+   * API used, which is at least a name for the thing being counted rather than a description of how
+   * the product failed to name it. The catalogue is still the fix — this is what the screen does
+   * while it waits for one.
+   */
+  const labelled = (key: MessageKey, fallback: string): string => {
+    const text = translate(key);
+    return text === key ? fallback : text;
+  };
+
   const documentStatus = (key: string): string =>
-    translate(`documents.status.${key}` as MessageKey);
+    labelled(`documents.status.${key}` as MessageKey, key);
   const instanceState = (key: string): string =>
-    translate(`approvals.instance${key}` as MessageKey);
+    labelled(`approvals.instance${key}` as MessageKey, key);
   const userState = (key: string): string =>
-    translate(`dashboard.admin.userState.${key}` as MessageKey);
+    labelled(`dashboard.admin.userState.${key}` as MessageKey, key);
 
   return (
     <Page gap={6}>
@@ -98,9 +121,31 @@ export function DashboardScreen({
       />
 
       <Section title={translate('dashboard.myWork')}>
-        {/* Two columns on a phone rather than one: a count tile is short, and a single column
-            turns seven of them into a scroll before anything else is on screen. */}
-        <Grid cols={{ base: 2, md: 3, xl: 4 }} gap={3}>
+        {/*
+          Two rows rather than one — Phase 7.6A, and the reason is what the single row actually
+          looked like.
+
+          Seven tiles in a four-column grid is 4 + 3, so the row ended in a gap the width of a card
+          and the screen opened on something that read as unfinished. Worse, the arrangement said
+          nothing: "Awaiting my decision" and "Favourites" sat at identical weight, in one
+          undifferentiated run, so the two figures somebody must *act* on were found by reading all
+          seven.
+
+          The split is by whether the number is a claim on the reader's time. Three that are —
+          decisions waiting, decisions late, work sent back — then four that describe what they
+          hold. Both rows divide evenly at every breakpoint (3 and 4 against `md`'s 3 and `xl`'s 4),
+          so the ragged gap is gone as a consequence of the grouping rather than by padding the row
+          out with a tile that had no reason to be there.
+
+          Deliberately **one** `Section` and no second heading: a heading needs a translated string,
+          and inventing Arabic for it is what Phase 7.4C spent three phases establishing must not
+          happen. The grouping is carried by the gap between the rows, which is what `Section`'s own
+          rhythm already provides.
+
+          Two columns on a phone rather than one: a count tile is short, and a single column turns
+          seven of them into a scroll before anything else is on screen.
+        */}
+        <Grid cols={{ base: 2, md: 3, xl: 3 }} gap={3}>
           <CountStat
             labelKey="dashboard.user.pending"
             icon={FileCheck}
@@ -119,18 +164,22 @@ export function DashboardScreen({
             tone={(user.overdue.count ?? 0) > 0 ? 'danger' : 'muted'}
           />
           <CountStat
-            labelKey="dashboard.user.drafts"
-            icon={PencilLine}
-            hintKey="dashboard.user.draftsHint"
-            tile={user.drafts}
-            href={mine('DRAFT')}
-          />
-          <CountStat
             labelKey="dashboard.user.rejected"
             icon={CircleX}
             hintKey="dashboard.user.rejectedHint"
             tile={user.rejected}
             href={mine('REJECTED')}
+          />
+        </Grid>
+
+        {/* What the reader holds, rather than what is waiting on them. Four, so the row completes. */}
+        <Grid cols={{ base: 2, md: 4, xl: 4 }} gap={3}>
+          <CountStat
+            labelKey="dashboard.user.drafts"
+            icon={PencilLine}
+            hintKey="dashboard.user.draftsHint"
+            tile={user.drafts}
+            href={mine('DRAFT')}
           />
           <CountStat
             labelKey="dashboard.user.checkedOut"
@@ -288,7 +337,15 @@ export function DashboardScreen({
             <StorageCard tile={administrator.storage} />
           </Grid>
 
-          <Grid cols={{ base: 2, md: 4 }} gap={3}>
+          {/*
+            Five columns for five tiles — Phase 7.6A, the same repair as the two rows above.
+
+            At `md: 4` these five wrapped to 4 + 1 and the section ended with a single tile alone on
+            a row, which reads as a card that failed to load rather than as the last of five.
+            `Columns` includes `5`, so the row simply fits; nothing is padded and no tile was
+            invented to square it off.
+          */}
+          <Grid cols={{ base: 2, md: 3, xl: 5 }} gap={3}>
             <CountStat
               labelKey="dashboard.admin.approvalsPending"
               tile={{
