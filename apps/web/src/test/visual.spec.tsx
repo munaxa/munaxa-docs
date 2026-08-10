@@ -17,6 +17,7 @@ import { DocumentScreen } from '../features/documents/document-screen';
 import { FolderTree } from '../features/documents/folder-tree';
 import { LibraryScreen } from '../features/documents/library-screen';
 import { SearchScreen } from '../features/search/search-screen';
+import { PermissionsScreen } from '../features/permissions/permissions-screen';
 import { SignaturePanel } from '../features/signatures/signature-panel';
 import { destinationsFor } from '../lib/navigation';
 import {
@@ -265,6 +266,40 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
             mfaEnrolled={false}
           />
         }
+      />
+    ),
+  },
+  /**
+   * The document permissions screen — Phase 7.3, and the surface with the most severe of that
+   * phase's findings.
+   *
+   * It opened with an `<h1>` at `text-lg`: eighteen pixels, where every other page in the product
+   * titles itself at twenty-four through `PageHeader`, and smaller than the section headings on the
+   * same screen. No baseline existed to notice, which is why it survived two visual phases. This one
+   * exists so the page header, the breadcrumb back to the document and the three section panels are
+   * all pinned.
+   */
+  {
+    name: 'document-permissions',
+    ui: () => (
+      <PermissionsScreen
+        scopeType="document"
+        scopeId="11111111-1111-4111-8111-111111111111"
+        documentTitle="Quality Manual"
+        explicit={[]}
+        chain={[
+          { type: 'LIBRARY', id: 'lib-1', name: 'Quality', breaksInheritance: false },
+          { type: 'FOLDER', id: 'fol-1', name: 'Procedures', breaksInheritance: false },
+        ]}
+        inheritanceBroken={false}
+        effective={null}
+        subjectUserId={null}
+        people={[]}
+        roles={[{ id: 'role-1', name: 'Document controller' }]}
+        departments={[]}
+        canManage
+        folderId="fol-1"
+        folderInherits
       />
     ),
   },

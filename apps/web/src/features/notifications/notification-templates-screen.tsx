@@ -2,7 +2,8 @@
 
 import { type ReactNode, useState } from 'react';
 
-import { Badge, Button, Card, useToast } from '@munaxa/ui';
+import { Badge, Button, Card, Panel, Stack, useToast } from '@munaxa/ui';
+import { MailX } from '@munaxa/icons';
 
 import type {
   NotificationTemplateOverride,
@@ -167,54 +168,60 @@ export function NotificationTemplatesScreen({
         ))}
       </ul>
 
-      <Card className="flex flex-col gap-3">
-        <h2 className="text-lg font-semibold">
-          {translate('admin.notificationTemplates.suppressions')}
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          {translate('admin.notificationTemplates.suppressionsHint')}
-        </p>
-        {suppressions.length === 0 ? (
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <MailX className="size-4 opacity-70" aria-hidden />
+            {translate('admin.notificationTemplates.suppressions')}
+          </span>
+        }
+      >
+        <Stack gap={3}>
           <p className="text-muted-foreground text-sm">
-            {translate('admin.notificationTemplates.noSuppressions')}
+            {translate('admin.notificationTemplates.suppressionsHint')}
           </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {suppressions.map((entry) => (
-              <li key={entry.address} className="flex flex-wrap items-center gap-3">
-                {/* Masked, as the API serves it: a list of whole addresses is a copy of the
+          {suppressions.length === 0 ? (
+            <p className="text-muted-foreground text-sm">
+              {translate('admin.notificationTemplates.noSuppressions')}
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {suppressions.map((entry) => (
+                <li key={entry.address} className="flex flex-wrap items-center gap-3">
+                  {/* Masked, as the API serves it: a list of whole addresses is a copy of the
                     directory with an easier query. */}
-                <span className="font-mono text-sm">{entry.address}</span>
-                <Badge tone="warning">
-                  {translate('admin.notificationTemplates.bounces', { count: entry.bounceCount })}
-                </Badge>
-                <span className="text-muted-foreground text-sm">{entry.lastReason}</span>
-              </li>
-            ))}
-          </ul>
-        )}
+                  <span className="font-mono text-sm">{entry.address}</span>
+                  <Badge tone="warning">
+                    {translate('admin.notificationTemplates.bounces', { count: entry.bounceCount })}
+                  </Badge>
+                  <span className="text-muted-foreground text-sm">{entry.lastReason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
 
-        <form
-          className="flex flex-wrap items-end gap-3"
-          action={(formData) => {
-            const address = formData.get('address');
-            void release(typeof address === 'string' ? address : '');
-          }}
-        >
-          {/* The whole address, typed. The list above deliberately cannot supply it, so lifting a
+          <form
+            className="flex flex-wrap items-end gap-3"
+            action={(formData) => {
+              const address = formData.get('address');
+              void release(typeof address === 'string' ? address : '');
+            }}
+          >
+            {/* The whole address, typed. The list above deliberately cannot supply it, so lifting a
               suppression is an act somebody performs knowingly rather than by clicking a row. */}
-          <TextField
-            name="address"
-            type="email"
-            label={translate('admin.notificationTemplates.releaseLabel')}
-            hint={translate('admin.notificationTemplates.releaseHint')}
-            required
-          />
-          <Button type="submit" variant="outline" disabled={releasing}>
-            {translate('admin.notificationTemplates.release')}
-          </Button>
-        </form>
-      </Card>
+            <TextField
+              name="address"
+              type="email"
+              label={translate('admin.notificationTemplates.releaseLabel')}
+              hint={translate('admin.notificationTemplates.releaseHint')}
+              required
+            />
+            <Button type="submit" variant="outline" disabled={releasing}>
+              {translate('admin.notificationTemplates.release')}
+            </Button>
+          </form>
+        </Stack>
+      </Panel>
 
       {editing !== null && (
         <FormDialog

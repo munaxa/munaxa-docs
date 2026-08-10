@@ -9,6 +9,7 @@ import {
   Button,
   Card,
   Input,
+  Panel,
   Select,
   TBody,
   TD,
@@ -29,6 +30,8 @@ import type {
 import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../../app/providers';
+import { Bookmark, ChartColumn, Download, SlidersHorizontal } from '@munaxa/icons';
+
 import { WorkspacePage } from '../../components/workspace-page';
 import { ReportChart } from './report-chart';
 import {
@@ -187,8 +190,21 @@ export function ReportsScreen({
 
   return (
     <WorkspacePage title={translate('reports.title')} description={translate('reports.subtitle')}>
-      <Card className="flex flex-col gap-3 p-4">
-        <h2 className="text-sm font-medium">{translate('reports.available')}</h2>
+      {/*
+        Four `Panel`s where there were four `Card`s with hand-written `text-sm font-medium`
+        headings — Phase 7.3, and the same substitution the record page made in Phase 7.2. Each of
+        these genuinely *is* a region: pick a report, pick a saved definition, set its parameters,
+        collect what has already been exported. They now carry the product's one section header and
+        each is a landmark.
+      */}
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <ChartColumn className="size-4 opacity-70" aria-hidden />
+            {translate('reports.available')}
+          </span>
+        }
+      >
         <div className="flex flex-wrap gap-2">
           {reports.map((report) => (
             <Button
@@ -206,11 +222,17 @@ export function ReportsScreen({
         {reports.length === 0 ? (
           <p className="text-muted-foreground text-sm">{translate('reports.noneAvailable')}</p>
         ) : null}
-      </Card>
+      </Panel>
 
       {definitions.length > 0 ? (
-        <Card className="flex flex-col gap-3 p-4">
-          <h2 className="text-sm font-medium">{translate('reports.definitions.title')}</h2>
+        <Panel
+          title={
+            <span className="flex items-center gap-2">
+              <Bookmark className="size-4 opacity-70" aria-hidden />
+              {translate('reports.definitions.title')}
+            </span>
+          }
+        >
           <ul className="flex flex-col gap-2">
             {definitions.map((definition) => (
               <li key={definition.id} className="flex items-center justify-between gap-3">
@@ -235,7 +257,7 @@ export function ReportsScreen({
               </li>
             ))}
           </ul>
-        </Card>
+        </Panel>
       ) : null}
 
       {selected === null ? (
@@ -244,9 +266,15 @@ export function ReportsScreen({
         </Card>
       ) : (
         <>
-          <Card className="flex flex-col gap-4 p-4">
+          <Panel
+            title={
+              <span className="flex items-center gap-2">
+                <SlidersHorizontal className="size-4 opacity-70" aria-hidden />
+                {translate('reports.parameters')}
+              </span>
+            }
+          >
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-medium">{translate('reports.parameters')}</h2>
               {/*
                 Why two people running the same report see different totals, said once on the
                 screen rather than left to be discovered. It is the most alarming thing a report
@@ -296,7 +324,7 @@ export function ReportsScreen({
                 {translate('reports.definitions.save')}
               </Button>
             </form>
-          </Card>
+          </Panel>
 
           {page === null ? (
             <Card className="p-6">
@@ -360,8 +388,14 @@ export function ReportsScreen({
       )}
 
       {exports.length > 0 ? (
-        <Card className="flex flex-col gap-3 p-4">
-          <h2 className="text-sm font-medium">{translate('reports.exports.title')}</h2>
+        <Panel
+          title={
+            <span className="flex items-center gap-2">
+              <Download className="size-4 opacity-70" aria-hidden />
+              {translate('reports.exports.title')}
+            </span>
+          }
+        >
           <ul className="flex flex-col gap-2">
             {exports.map((record) => (
               <li key={record.id} className="flex flex-wrap items-center justify-between gap-3">
@@ -396,7 +430,7 @@ export function ReportsScreen({
               </li>
             ))}
           </ul>
-        </Card>
+        </Panel>
       ) : null}
     </WorkspacePage>
   );

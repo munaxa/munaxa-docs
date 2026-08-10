@@ -1,13 +1,14 @@
 'use client';
 
+import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
 import {
   Badge,
   Button,
-  Card,
   EmptyState,
+  Panel,
   Select,
   TBody,
   TD,
@@ -17,10 +18,12 @@ import {
   Table,
   useToast,
 } from '@munaxa/ui';
+import { KeyRound, ShieldCheck, Waypoints } from '@munaxa/icons';
 
 import type { EffectivePermissions, ScopeChainNode, StoredAclEntry } from '@edms/contracts';
 import { AclEffect, AclSubjectType, ALL_PERMISSIONS, Permission } from '@edms/domain';
 
+import { WorkspacePage } from '../../components/workspace-page';
 import { useTranslate } from '../../app/providers';
 import { replaceScopeAcl, setFolderInheritance } from './actions';
 
@@ -200,20 +203,38 @@ export function PermissionsScreen({
   };
 
   return (
-    <section className="flex flex-col gap-4">
-      <header>
-        <h1 className="text-lg font-semibold">{translate('permissions.title')}</h1>
-        <p className="text-sm">{translate('permissions.subtitle', { name: documentTitle })}</p>
-      </header>
+    /*
+      `WorkspacePage`, not a hand-written header — Phase 7.3.
 
+      This screen is reached from the record page's overflow menu and it opened with an `<h1>` at
+      `text-lg`: **eighteen pixels, where every other page in the product titles itself at
+      twenty-four through `PageHeader`.** A page title rendered smaller than the section headings
+      beneath it on the *same* screen is the clearest form of the "no visual language" defect Phase
+      7.2 named, and it also meant there was no way back to the document except the browser's own
+      button. Both come free from the composition every other workspace screen already uses.
+    */
+    <WorkspacePage
+      title={translate('permissions.title')}
+      description={translate('permissions.subtitle', { name: documentTitle })}
+      breadcrumb={[
+        { label: translate('documents.title'), href: '/documents' },
+        { label: documentTitle, href: `/documents/${scopeId}` as Route },
+      ]}
+    >
       {/*
         The chain, always — not only when something is broken. An administrator investigating "why
         can this person not see it" has to know what the walk crossed before they can know what to
         edit, and a chain that appears only on failure is one nobody learns to read.
       */}
-      <Card className="p-4">
-        <h2 className="text-base font-semibold">{translate('permissions.chain')}</h2>
-        <ol className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <Waypoints className="size-4 opacity-70" aria-hidden />
+            {translate('permissions.chain')}
+          </span>
+        }
+      >
+        <ol className="flex flex-wrap items-center gap-2 text-sm">
           {chain.map((node) => (
             <li key={`${node.type}:${node.id}`} className="flex items-center gap-2">
               <Badge tone={node.breaksInheritance ? 'warning' : 'default'}>{node.name}</Badge>
@@ -245,10 +266,16 @@ export function PermissionsScreen({
             </Button>
           </div>
         ) : null}
-      </Card>
+      </Panel>
 
-      <Card className="p-4">
-        <h2 className="text-base font-semibold">{translate('permissions.explicit')}</h2>
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <KeyRound className="size-4 opacity-70" aria-hidden />
+            {translate('permissions.explicit')}
+          </span>
+        }
+      >
         <p className="text-sm">{translate('permissions.explicitHint')}</p>
         {entries.length === 0 ? (
           <EmptyState title={translate('permissions.noEntries')} />
@@ -295,8 +322,19 @@ export function PermissionsScreen({
         )}
 
         {canManage ? (
+          /*
+            Four sized controls in one wrapping row, not four full-bleed dropdowns — Phase 7.3.
+
+            `Select` inherits `fieldBase`, which is `w-full`, so inside a `flex-wrap` row with no
+            width each control claimed the whole line: choosing a role and a permission meant four
+            stacked 1180px dropdowns. The widths are the convention this codebase already uses for a
+            toolbar select — `w-40` in `resource-list`, `w-44` in the numbering screen — with more
+            room for the two identifier pickers than for the two closed vocabularies beside them.
+            Read out of `fieldBase`, not guessed from the rendering.
+          */
           <div className="mt-4 flex flex-wrap items-end gap-2">
             <Select
+              className="w-40"
               aria-label={translate('permissions.subjectType')}
               value={subjectType}
               onChange={(event) => {
@@ -311,6 +349,7 @@ export function PermissionsScreen({
               </option>
             </Select>
             <Select
+              className="w-56"
               aria-label={translate('permissions.subject')}
               value={subjectId}
               onChange={(event) => {
@@ -325,6 +364,7 @@ export function PermissionsScreen({
               ))}
             </Select>
             <Select
+              className="w-56"
               aria-label={translate('permissions.permission')}
               value={permission}
               onChange={(event) => {
@@ -343,6 +383,7 @@ export function PermissionsScreen({
               ))}
             </Select>
             <Select
+              className="w-32"
               aria-label={translate('permissions.effect')}
               value={effect}
               onChange={(event) => {
@@ -363,14 +404,21 @@ export function PermissionsScreen({
             </Button>
           </div>
         ) : null}
-      </Card>
+      </Panel>
 
-      <Card className="p-4">
-        <h2 className="text-base font-semibold">{translate('permissions.effective')}</h2>
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <ShieldCheck className="size-4 opacity-70" aria-hidden />
+            {translate('permissions.effective')}
+          </span>
+        }
+      >
         <p className="text-sm">{translate('permissions.effectiveHint')}</p>
         <form className="mt-3 flex flex-wrap items-end gap-2" method="get">
           <Select
             name="userId"
+            className="w-56"
             aria-label={translate('permissions.forPerson')}
             defaultValue={subjectUserId ?? ''}
           >
@@ -416,8 +464,8 @@ export function PermissionsScreen({
             </TBody>
           </Table>
         )}
-      </Card>
-    </section>
+      </Panel>
+    </WorkspacePage>
   );
 }
 
