@@ -393,6 +393,14 @@ const NARROW: readonly {
   readonly ui: () => ReactElement;
 }[] = [
   {
+    // Phase 7.6B. The dashboard had exactly one baseline, at 1280, so every claim about it on a
+    // phone was an argument about `Grid` rather than a look at the screen. Three column counts,
+    // two stacked list columns and a seven-tile KPI region all collapse here at once.
+    name: 'dashboard-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'dashboard')!.ui(),
+  },
+  {
     name: 'document-list-tablet',
     width: 768,
     ui: () => SURFACES.find((surface) => surface.name === 'document-list')!.ui(),
@@ -428,6 +436,18 @@ const ARABIC: readonly {
   { name: 'ar-document-list-few', width: 1280, ui: () => libraryWith(3) },
   { name: 'ar-document-list-many', width: 1280, ui: () => libraryWith(11) },
   { name: 'ar-document-list-mobile', width: 390, ui: () => libraryWith(11) },
+  // Phase 7.6B. The dashboard's recent-document row now carries a document number and a date beside
+  // Arabic text, which is the mixed-direction case a screenshot is the only way to check.
+  {
+    name: 'ar-dashboard',
+    width: 1280,
+    ui: () => SURFACES.find((surface) => surface.name === 'dashboard')!.ui(),
+  },
+  {
+    name: 'ar-dashboard-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'dashboard')!.ui(),
+  },
 ];
 
 function libraryWith(rowCount: number): ReactElement {

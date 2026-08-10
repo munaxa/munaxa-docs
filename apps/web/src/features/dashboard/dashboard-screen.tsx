@@ -5,7 +5,6 @@ import type { Route } from 'next';
 import type { ReactNode } from 'react';
 
 import {
-  Badge,
   Card,
   CardContent,
   CardHeader,
@@ -18,11 +17,13 @@ import {
 } from '@munaxa/ui';
 
 import type { AdministratorDashboard, DocumentSummary, UserDashboard } from '@edms/contracts';
+import { formatFor } from '@edms/domain';
 import type { MessageKey } from '@edms/i18n';
 
 import { Bell, CircleX, FileCheck, Lock, PencilLine, Star, TriangleAlert } from '@munaxa/icons';
 
 import { useSession, useTranslate } from '../../app/providers';
+import { DocumentStatusBadge } from '../documents/status-badge';
 import { BreakdownCard, CountStat, ListCard } from './tiles';
 
 /**
@@ -214,7 +215,7 @@ export function DashboardScreen({
             </Link>
           }
         >
-          <DocumentLines documents={recent} />
+          <DocumentLines documents={recent} locale={locale} />
         </ListCard>
 
         <ListCard
@@ -227,7 +228,7 @@ export function DashboardScreen({
             </Link>
           }
         >
-          <DocumentLines documents={favorites} />
+          <DocumentLines documents={favorites} locale={locale} />
         </ListCard>
 
         {/*
@@ -468,28 +469,50 @@ function bytes(value: number | null, locale: string): string {
 /** A short list of documents, each a link to its record. */
 function DocumentLines({
   documents,
+  locale,
 }: {
   readonly documents: readonly DocumentSummary[];
+  readonly locale: string;
 }): ReactNode {
   return (
-    <ul className="flex flex-col gap-2 text-sm">
-      {documents.map((document) => (
-        <li key={document.id}>
-          <Stack direction="horizontal" gap={2} align="baseline" justify="between">
+    <ul className="flex flex-col gap-3 text-sm">
+      {documents.map((document) => {
+        const format = document.file === null ? null : formatFor(document.file.mimeType);
+        return (
+          <li key={document.id}>
             <Link
               href={`/documents/${document.id}` as Route}
-              className="hover:text-primary-strong min-w-0 truncate"
+              className="focus-visible:ring-ring hover:bg-muted/50 -mx-2 flex flex-col gap-1 rounded-md px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
             >
-              {document.title}
+              {/* Line one: what it is, and what state it is in. */}
+              <Stack direction="horizontal" gap={2} align="center" justify="between">
+                <span className="min-w-0 truncate font-medium">{document.title}</span>
+                <DocumentStatusBadge status={document.status} />
+              </Stack>
+
+              {/* Line two: where it lives, what it is, what it is called, when it moved. */}
+              <Stack
+                direction="horizontal"
+                gap={2}
+                align="center"
+                wrap
+                className="text-muted-foreground text-xs"
+              >
+                {format === null ? null : (
+                  <span className="shrink-0 font-medium">{format.family}</span>
+                )}
+                <span className="min-w-0 truncate">{document.folderName}</span>
+                {document.documentNumber === null ? null : (
+                  <span className="shrink-0 tabular-nums">{document.documentNumber}</span>
+                )}
+                <time dateTime={document.updatedAt} className="shrink-0 tabular-nums">
+                  {new Date(document.updatedAt).toLocaleDateString(locale)}
+                </time>
+              </Stack>
             </Link>
-            {document.documentNumber === null ? null : (
-              <Badge tone="muted" className="shrink-0 text-xs tabular-nums">
-                {document.documentNumber}
-              </Badge>
-            )}
-          </Stack>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }
