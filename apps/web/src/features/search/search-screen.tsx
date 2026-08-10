@@ -139,8 +139,24 @@ export function SearchScreen({
         the viewport and took the whole page's horizontal scrollbar with it. Measured in Chromium at
         the six widths the brief names; it is the only overflow the content screens had.
 
-        The query field keeps `flex-1` and a full-width basis, so on a phone it takes its own line
-        and the three controls sit under it rather than being squeezed to nothing.
+        The query field keeps `flex-1` and a full-width basis below `sm`, so on a phone it takes its
+        own line and the three controls sit under it rather than being squeezed to nothing.
+
+        **`sm:basis-0`, not `sm:basis-auto` — Phase 7.7A, and the reason is measured rather than
+        reasoned.** Above `sm` the field was still taking a line of its own, so the query sat apart
+        from the button that submits it at every desktop width. `sm:basis-auto` was applying
+        correctly — computed `flex-basis` really was `auto` at 1440, 1280, 1024, 768 and 640 — so
+        the cause was not the specificity fight it looked like from the source.
+
+        It is the platform's own `Input`, which carries `w-full`. `flex-basis: auto` resolves the
+        base size from the `width` property, so the field's flex base size *was* 100% of the form; it
+        filled the line by itself and everything else wrapped beneath it. Measured: field width
+        equalled form width exactly at every one of those widths — 1120/1120, 960/960, 704/704.
+
+        `basis-0` gives the field a base size of zero, so the sort control and the two buttons are
+        laid out at their natural widths and the field grows into whatever is left. That is the
+        ordinary flex idiom for "fill the rest of the row", and it is one class rather than a width:
+        no pixel value, no new breakpoint, no override of the platform's `w-full`.
       */}
       <form onSubmit={submit} className="flex flex-wrap items-center gap-2">
         <Input
@@ -149,7 +165,7 @@ export function SearchScreen({
           defaultValue={queryText}
           placeholder={translate('search.placeholder')}
           aria-label={translate('search.placeholder')}
-          className="min-w-0 flex-1 basis-full sm:basis-auto"
+          className="min-w-0 flex-1 basis-full sm:basis-0"
         />
         <Select
           value={sort}
