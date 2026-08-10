@@ -6,6 +6,7 @@
  */
 export * from './locale';
 export * from './translate';
+export * from './plural';
 export type { Catalogue } from './catalogues/en';
 export { en } from './catalogues/en';
 export { ar } from './catalogues/ar';

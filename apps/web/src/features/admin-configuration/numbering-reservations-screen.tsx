@@ -195,7 +195,7 @@ export function NumberingReservationsScreen({
               if (result.ok) {
                 toast.success(
                   translate('admin.numbering.reservations.held', {
-                    count: String(result.value.values.length),
+                    count: result.value.values.length,
                   }),
                 );
               }

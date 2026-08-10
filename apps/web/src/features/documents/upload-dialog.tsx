@@ -210,7 +210,7 @@ export function UploadDialog({
       onClose={onClose}
       onSubmit={submit}
       onSaved={onSaved}
-      submitLabel={translate('documents.upload.fileCount', { count: String(ready.length) })}
+      submitLabel={translate('documents.upload.fileCount', { count: ready.length })}
     >
       <FormSection
         first
@@ -365,9 +365,7 @@ function DuplicateWarning({
   return (
     <Alert tone="warning">
       <div className="flex flex-col gap-2">
-        <span>
-          {translate('documents.upload.duplicateWarning', { count: String(matches.length) })}
-        </span>
+        <span>{translate('documents.upload.duplicateWarning', { count: matches.length })}</span>
         <ul className="text-sm">
           {matches.map((match) => (
             <li key={match.documentId}>

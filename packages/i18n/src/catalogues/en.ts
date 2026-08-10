@@ -1,3 +1,5 @@
+import { type PluralMessage, plural } from '../plural';
+
 /**
  * The English catalogue. It is the reference: every other catalogue is typed against its
  * shape, so a missing or invented Arabic key fails the build rather than rendering a key
@@ -55,7 +57,10 @@ export const en = {
     mfaTitle: 'Two-step verification',
     mfaNotEnrolledHint:
       'Add an authenticator app so a stolen password is not enough to reach your documents.',
-    mfaEnrolledHint: 'An authenticator app is set up. You have {count} unused recovery codes left.',
+    mfaEnrolledHint: plural({
+      one: 'An authenticator app is set up. You have {count} unused recovery code left.',
+      other: 'An authenticator app is set up. You have {count} unused recovery codes left.',
+    }),
     mfaStart: 'Set up an authenticator',
     mfaStartAgain: 'Start setting up again',
     mfaRemove: 'Remove the authenticator',
@@ -155,7 +160,10 @@ export const en = {
       resizeColumn: 'Resize {name}',
       selectAll: 'Select all rows',
       selectRow: 'Select {name}',
-      rowCount: '{count} rows',
+      rowCount: plural({
+        one: '{count} row',
+        other: '{count} rows',
+      }),
       pagination: 'Pages',
       previousPage: 'Previous',
       nextPage: 'Next',
@@ -183,8 +191,14 @@ export const en = {
       recycleBin: 'Recycle bin',
       filterAny: 'Any',
       /** Why a row's delete action is unavailable, rather than an action that fails when used. */
-      inUseByTypes: 'Used by {count} document type(s). Change those first.',
-      inUseByChildren: 'It has {count} item(s) inside it.',
+      inUseByTypes: plural({
+        one: 'Used by {count} document type. Change it first.',
+        other: 'Used by {count} document types. Change those first.',
+      }),
+      inUseByChildren: plural({
+        one: 'It has {count} item inside it.',
+        other: 'It has {count} items inside it.',
+      }),
       /**
        * Shown where a resource cannot exist until another one does — an entity needs a company, a
        * document type needs a numbering rule and a confidentiality level. Stated up front, rather
@@ -292,7 +306,10 @@ export const en = {
       grantAll: 'Grant all',
       revokeAll: 'Revoke all',
       cannotDeleteSystem: 'A built-in role cannot be removed.',
-      inUseByMembers: '{count} person/people hold this role. Remove it from them first.',
+      inUseByMembers: plural({
+        one: '{count} person holds this role. Remove it from them first.',
+        other: '{count} people hold this role. Remove it from them first.',
+      }),
     },
     permissions: {
       title: 'Permissions',
@@ -474,7 +491,10 @@ export const en = {
         entityCode: 'Entity code',
         departmentCode: 'Department code',
         documentTypeCode: 'Document type code',
-        held: '{count} number(s) reserved.',
+        held: plural({
+          one: '{count} number reserved.',
+          other: '{count} numbers reserved.',
+        }),
         void: 'Void',
         voidWarning:
           '{value} will be voided. The value is kept forever and can never be issued to a document.',
@@ -607,7 +627,10 @@ export const en = {
       description: 'Named sets of people a workflow stage can address.',
       one: 'approval group',
       members: 'Members',
-      memberCount: '{count} people',
+      memberCount: plural({
+        one: '{count} person',
+        other: '{count} people',
+      }),
       notAPermission:
         'A group is a routing list, not a permission. Adding somebody makes them a candidate for a stage that names the group; it grants them nothing.',
       inUse: 'A workflow still routes to this group. Deactivate it instead of removing it.',
@@ -626,7 +649,10 @@ export const en = {
       addHoliday: 'Add a holiday',
       holidayDate: 'Date',
       holidayName: 'Name',
-      holidayCount: '{count} holidays',
+      holidayCount: plural({
+        one: '{count} holiday',
+        other: '{count} holidays',
+      }),
       timeZone: 'Counted in {zone}',
       preview: 'Preview a deadline',
       previewResult: '{duration} starting now is due {date}, stepping over {skipped} days.',
@@ -713,7 +739,10 @@ export const en = {
       suppressionsHint:
         'Mail to these addresses was refused permanently and is no longer attempted. In-app notifications are unaffected.',
       noSuppressions: 'No address has been suppressed.',
-      bounces: '{count} refusals',
+      bounces: plural({
+        one: '{count} refusal',
+        other: '{count} refusals',
+      }),
       releaseLabel: 'Resume mail to',
       releaseHint: 'Type the whole address. The list above shows masked ones deliberately.',
       release: 'Resume',
@@ -726,7 +755,10 @@ export const en = {
       rebuildSearchIndex: 'Rebuild the search index',
       searchRebuildRequested: 'A rebuild has been queued.',
       searchNeverRebuilt: 'This organisation has never rebuilt its index.',
-      searchRebuildSummary: '{count} documents indexed, started {startedAt}.',
+      searchRebuildSummary: plural({
+        one: '{count} document indexed, started {startedAt}.',
+        other: '{count} documents indexed, started {startedAt}.',
+      }),
       searchRebuildRunning: 'Running',
       searchRebuildCompleted: 'Completed',
       searchRebuildFailed: 'Failed',
@@ -928,9 +960,15 @@ export const en = {
       scanPrompt: 'Drop scanned pages here, or choose them',
       browse: 'Choose files',
       hint: 'PDF, Word, Excel, PowerPoint, images, DWG, ZIP and text.',
-      fileCount: 'File {count} document(s)',
+      fileCount: plural({
+        one: 'File {count} document',
+        other: 'File {count} documents',
+      }),
       fileAnyway: 'File it anyway',
-      duplicateWarning: 'This exact file is already filed {count} time(s) in this organisation:',
+      duplicateWarning: plural({
+        one: 'This exact file is already filed {count} time in this organisation:',
+        other: 'This exact file is already filed {count} times in this organisation:',
+      }),
       blockedByDuplicates: 'Confirm the duplicates above before filing.',
       unscanned:
         'Some of these files have not cleared the malware check yet and cannot be filed until they do.',
@@ -1078,7 +1116,10 @@ export const en = {
     failed: 'The preview could not be produced.',
     downloadInstead: 'You can download the file instead.',
     searchPlaceholder: 'Search in document',
-    matches: '{count} matches',
+    matches: plural({
+      one: '{count} match',
+      other: '{count} matches',
+    }),
     nextMatch: 'Next match',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
@@ -1185,7 +1226,10 @@ export const en = {
       failed: 'The export could not be requested.',
       none: 'No exports yet',
       download: 'Download',
-      events: '{count} events',
+      events: plural({
+        one: '{count} event',
+        other: '{count} events',
+      }),
       chainBroken: 'Chain broken in this range',
       state: {
         requested: 'Requested',
@@ -1234,7 +1278,10 @@ export const en = {
     declineReason: 'Why it was declined',
     period: 'Period',
     used: 'Used',
-    useCount: '{count} decisions',
+    useCount: plural({
+      one: '{count} decision',
+      other: '{count} decisions',
+    }),
     approvedBy: 'Approved by',
     pair: '{delegator} → {delegate}',
     filter: {
@@ -1273,7 +1320,10 @@ export const en = {
     emptyUnread: 'Nothing unread',
     emptyHint: 'Approvals, publications and anything else that needs you will appear here.',
     unread: 'Unread',
-    unreadCount: '{count} unread',
+    unreadCount: plural({
+      one: '{count} unread',
+      other: '{count} unread',
+    }),
     markRead: 'Mark read',
     markAllRead: 'Mark all read',
     allRead: 'Everything marked read',
@@ -1406,7 +1456,10 @@ export const en = {
   bulk: {
     bar: {
       label: 'Selected documents',
-      selected: '{count} selected',
+      selected: plural({
+        one: '{count} selected',
+        other: '{count} selected',
+      }),
       clear: 'Clear selection',
     },
     action: {
@@ -1418,9 +1471,18 @@ export const en = {
     result: {
       title: 'What happened to each item',
       summary: '{applied} of {requested} applied.',
-      refusedHint: '{count} were refused: you do not have access to them.',
-      blockedHint: '{count} were blocked by a rule, such as a legal hold.',
-      failedHint: '{count} failed unexpectedly. This has been recorded.',
+      refusedHint: plural({
+        one: '{count} was refused: you do not have access to it.',
+        other: '{count} were refused: you do not have access to them.',
+      }),
+      blockedHint: plural({
+        one: '{count} was blocked by a rule, such as a legal hold.',
+        other: '{count} were blocked by a rule, such as a legal hold.',
+      }),
+      failedHint: plural({
+        one: '{count} failed unexpectedly. This has been recorded.',
+        other: '{count} failed unexpectedly. This has been recorded.',
+      }),
       close: 'Close',
       links: 'Download links',
     },
@@ -1641,8 +1703,14 @@ export const en = {
       stored: 'Stored',
       referenced: 'Before deduplication',
       saved: 'Saved by deduplication',
-      blobs: '{count} files',
-      unreferenced: '{count} unreferenced',
+      blobs: plural({
+        one: '{count} file',
+        other: '{count} files',
+      }),
+      unreferenced: plural({
+        one: '{count} unreferenced',
+        other: '{count} unreferenced',
+      }),
       users: 'Users',
       userState: {
         ACTIVE: 'Active',
@@ -1721,7 +1789,10 @@ export const en = {
     run: 'Run report',
     any: 'Any',
     empty: 'No rows matched those filters.',
-    rowCount: '{count} row(s)',
+    rowCount: plural({
+      one: '{count} row',
+      other: '{count} rows',
+    }),
     scoping: {
       /** Said out loud, because otherwise two colleagues compare totals and one of them panics. */
       reach: 'Scoped to what you can see',
@@ -1857,5 +1928,12 @@ export const en = {
 export type Catalogue = Widen<typeof en>;
 
 type Widen<T> = {
-  [K in keyof T]: T[K] extends string ? string : Widen<T[K]>;
+  [K in keyof T]: T[K] extends string
+    ? string
+    : // A plural message is a leaf, not a group — Phase 7.4. Widening *into* one would strip the
+      // brand that keeps `MessageKey` free of `…rowCount.one`, and would let the Arabic catalogue
+      // satisfy the type with a plain string where a set of forms is required.
+      T[K] extends PluralMessage
+      ? PluralMessage
+      : Widen<T[K]>;
 };
