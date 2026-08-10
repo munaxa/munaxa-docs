@@ -3,7 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Alert, Badge, Button, Card, useToast } from '@munaxa/ui';
+import { Alert, Badge, Button, Panel, useToast } from '@munaxa/ui';
+import { PenLine } from '@munaxa/icons';
 
 import type { Document, DocumentSignature, SignatureVerification } from '@edms/contracts';
 
@@ -78,25 +79,37 @@ export function SignaturePanel({
   };
 
   return (
-    <Card>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-medium">{translate('signatures.title')}</h2>
-        {canSign && revision !== null && (
+    // `Panel` rather than a `Card` with a hand-written heading and a hand-built header row — Phase
+    // 7.2. The panel's own header puts the title and the action on one rule-separated line and
+    // exposes the section as a labelled region, which is what the four sections beside it now do
+    // too. `size="sm"` on the action: this is a section's action, not the page's, and it was
+    // competing with `Download` in the record header for the same visual weight.
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          <PenLine className="size-4 opacity-70" aria-hidden />
+          {translate('signatures.title')}
+        </span>
+      }
+      actions={
+        canSign &&
+        revision !== null && (
           <Button
             type="button"
+            size="sm"
             onClick={() => {
               setSigning(true);
             }}
           >
             {translate('signatures.open')}
           </Button>
-        )}
-      </div>
-
+        )
+      }
+    >
       {signatures.length === 0 ? (
-        <p className="mt-3 text-sm opacity-70">{translate('signatures.empty')}</p>
+        <p className="text-muted-foreground text-sm">{translate('signatures.empty')}</p>
       ) : (
-        <ol className="mt-4 flex flex-col gap-3">
+        <ol className="flex flex-col gap-3">
           {signatures.map((signature) => (
             <SignatureEntry
               key={signature.id}
@@ -146,7 +159,7 @@ export function SignaturePanel({
           <TextAreaField name="reason" label={translate('signatures.withdraw.reason')} required />
         </FormDialog>
       )}
-    </Card>
+    </Panel>
   );
 }
 

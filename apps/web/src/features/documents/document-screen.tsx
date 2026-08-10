@@ -8,15 +8,15 @@ import {
   Alert,
   Badge,
   Button,
-  Card,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Panel,
   formatFileSize,
   useToast,
 } from '@munaxa/ui';
-import { EllipsisVertical } from '@munaxa/icons';
+import { EllipsisVertical, FileText, ListTree } from '@munaxa/icons';
 
 import type { Document } from '@edms/contracts';
 import { formatFor } from '@edms/domain';
@@ -421,10 +421,23 @@ export function DocumentScreen({
 
       {preview}
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <h2 className="text-lg font-medium">{translate('documents.section.properties')}</h2>
-          <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+      {/*
+        `gap-4`, not `gap-6` — Phase 7.2. Every section on this page is now a `Panel` with its own
+        border and its own rule under its title, so the structure is drawn by the panels rather than
+        by the space between them. Twenty-four pixels between bordered regions read as four
+        disconnected objects; sixteen reads as one record with four parts.
+      */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Panel
+          className="lg:col-span-2"
+          title={
+            <span className="flex items-center gap-2">
+              <ListTree className="size-4 opacity-70" aria-hidden />
+              {translate('documents.section.properties')}
+            </span>
+          }
+        >
+          <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
             {/*
               The number, the revision and the pending marker moved to the identity block at the top
               of the page — Phase 7. They are what identifies a controlled record, and restating them
@@ -445,7 +458,7 @@ export function DocumentScreen({
 
           {document.metadata.length > 0 && (
             <>
-              <h3 className="mt-6 text-sm font-medium opacity-70">
+              <h3 className="text-muted-foreground mt-6 text-xs font-semibold tracking-wide uppercase">
                 {translate('documents.section.metadata')}
               </h3>
               <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
@@ -459,14 +472,20 @@ export function DocumentScreen({
               </dl>
             </>
           )}
-        </Card>
+        </Panel>
 
-        <Card>
-          <h2 className="text-lg font-medium">{translate('documents.section.file')}</h2>
+        <Panel
+          title={
+            <span className="flex items-center gap-2">
+              <FileText className="size-4 opacity-70" aria-hidden />
+              {translate('documents.section.file')}
+            </span>
+          }
+        >
           {file === null ? (
-            <p className="mt-2 opacity-70">{translate('documents.file.none')}</p>
+            <p className="text-muted-foreground text-sm">{translate('documents.file.none')}</p>
           ) : (
-            <dl className="mt-3 flex flex-col gap-2">
+            <dl className="flex flex-col gap-2">
               <Property label={translate('documents.file.name')} value={file.filename} />
               <Property
                 label={translate('documents.file.format')}
@@ -493,7 +512,7 @@ export function DocumentScreen({
               />
             </dl>
           )}
-        </Card>
+        </Panel>
       </div>
 
       {editing !== null && (

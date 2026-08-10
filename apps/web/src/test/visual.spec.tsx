@@ -237,6 +237,38 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
     ),
   },
   /**
+   * The record page **with its sections in it** — Phase 7.2, and a gap this baseline closes.
+   *
+   * `document-record` above renders the screen with all four slots empty, so it has never covered
+   * the thing a reader actually opens: five sections stacked down one page. That is precisely where
+   * Phase 7.2's problem lived — the sections carried five different heading treatments, and no
+   * image would have shown it because no image ever put them together.
+   *
+   * The signature panel is the one slot filled with a real feature component rather than a stand-in,
+   * because it is the section whose header carries an action and therefore the one most likely to
+   * drift out of alignment with the others.
+   */
+  {
+    name: 'document-record-sections',
+    ui: () => (
+      <DocumentScreen
+        document={documentFixture()}
+        canEdit
+        canMove
+        canDownload
+        canArchive
+        signatures={
+          <SignaturePanel
+            document={documentFixture()}
+            signatures={[signature()]}
+            canSign
+            mfaEnrolled={false}
+          />
+        }
+      />
+    ),
+  },
+  /**
    * The rail as this product composes it — Phase 7.1.
    *
    * `sidebar-nav` above renders the platform's component with fixture groups, which covers the

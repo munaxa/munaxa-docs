@@ -5,17 +5,21 @@ import { ApprovalInboxScreen } from './approvals/inbox-screen';
 import { DashboardScreen } from './dashboard/dashboard-screen';
 import { LibraryScreen } from './documents/library-screen';
 import { FolderTree } from './documents/folder-tree';
+import { DocumentScreen } from './documents/document-screen';
 import { SearchScreen } from './search/search-screen';
+import { SignaturePanel } from './signatures/signature-panel';
 import { expectAccessible } from '../test/a11y';
 import {
   administratorDashboard,
   approvalInboxItem,
   bareDocumentSummary,
+  document as documentFixture,
   documentSummary,
   folder,
   library,
   listState,
   searchResults,
+  signature,
   userDashboard,
 } from '../test/fixtures';
 
@@ -179,6 +183,51 @@ describe('dashboard', () => {
         administrator={administratorDashboard({ anyGranted: false })}
         recent={[]}
         favorites={[]}
+      />,
+    );
+  });
+});
+
+/**
+ * The record page and its sections — Phase 7.2, and a screen this suite had never rendered.
+ *
+ * It is here now because Phase 7.2 changed what those sections *are*. Each was a `Card` with a
+ * hand-written heading; each is now a platform `Panel`, which claims a `role="region"` labelled by
+ * its own title. That is a landmark change on the product's most important screen, and a landmark
+ * change is precisely the kind axe can settle and a reading of the source cannot: an unlabelled
+ * region, a duplicated accessible name or a heading level skipped between the page title and a
+ * section title would all pass review and fail here.
+ */
+describe('document record', () => {
+  it('is accessible with its sections rendered', async () => {
+    await expectAccessible(
+      <DocumentScreen
+        document={documentFixture()}
+        canEdit
+        canMove
+        canDownload
+        canArchive
+        signatures={
+          <SignaturePanel
+            document={documentFixture()}
+            signatures={[signature()]}
+            canSign
+            mfaEnrolled={false}
+          />
+        }
+      />,
+    );
+  });
+
+  it('is accessible with no file and no sections', async () => {
+    // The branch a reader gets on a record whose content has not been uploaded yet: the File panel
+    // renders a sentence instead of a description list, and every slot is empty.
+    await expectAccessible(
+      <DocumentScreen
+        document={documentFixture({ currentRevision: null, latestRevision: null })}
+        canEdit={false}
+        canMove={false}
+        canDownload={false}
       />,
     );
   });

@@ -1539,6 +1539,11 @@ export const en = {
       purposeHint: 'Recorded with your signature, and not changeable afterwards.',
       commentHint: 'Recorded alongside the meaning above. Never a substitute for it.',
       loadingStatement: 'Preparing the statement\u2026',
+      steps: {
+        review: 'Review',
+        confirm: 'Confirm',
+        signed: 'Signed',
+      },
       statementHeading: 'The statement you are about to sign',
       statementHint:
         'This exact text is what your signature attests. It comes from the server and is shown unchanged.',

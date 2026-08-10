@@ -2,7 +2,7 @@
 
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from 'react';
 
-import { Alert, Button, Dialog, Field, Input, Select, Textarea } from '@munaxa/ui';
+import { Alert, Button, Dialog, Field, Input, Select, Stepper, Textarea } from '@munaxa/ui';
 
 import type { SignatureStatementPreview } from '@edms/contracts';
 import { ALL_SIGNATURE_PURPOSES, ErrorCode, type SignaturePurposeKey } from '@edms/domain';
@@ -82,6 +82,23 @@ function fieldValue(data: FormData, name: string): string {
 
 export type CeremonyStage =
   'loadingStatement' | 'statementReady' | 'confirming' | 'signing' | 'success' | 'error';
+
+/**
+ * Which of the three steps the signer is on.
+ *
+ * `error` is deliberately absent: a refused attempt does not move anybody backwards or forwards,
+ * and the alert above the indicator is what says something failed. Returning `1` for it would be a
+ * guess, and this dialogue does not guess about signing.
+ */
+export function stepIndexFor(stage: CeremonyStage): number {
+  if (stage === 'success') {
+    return 2;
+  }
+  if (stage === 'confirming' || stage === 'signing') {
+    return 1;
+  }
+  return 0;
+}
 
 export function SigningCeremony({
   documentId,
@@ -213,6 +230,28 @@ export function SigningCeremony({
       })}
     >
       <div className="flex flex-col gap-4">
+        {/*
+          Where the signer is in the ceremony — Phase 7.2, and the one thing this dialogue never
+          said. Signing a controlled revision is three deliberate acts: read the statement the
+          server composed, confirm it with credentials, and be told it was recorded. The dialogue
+          performed all three and showed none of them, so somebody reading a statement had no way to
+          know that a credential prompt was coming or that anything else was.
+
+          `Stepper` is the platform's pattern for exactly this and it is used as intended — a linear
+          flow with a current index. Nothing here is *derived* into the indicator that is not
+          already true of the stage: `error` deliberately does not move it, because a refused
+          attempt leaves the signer on the step they were on and the `Alert` above carries what went
+          wrong. Nothing is signed by moving an indicator.
+        */}
+        <Stepper
+          current={stepIndexFor(stage)}
+          steps={[
+            { key: 'review', title: translate('signatures.ceremony.steps.review') },
+            { key: 'confirm', title: translate('signatures.ceremony.steps.confirm') },
+            { key: 'signed', title: translate('signatures.ceremony.steps.signed') },
+          ]}
+        />
+
         {problem === null ? null : (
           <Alert tone="danger" live="alert">
             {messageFor(problem, translate)}
