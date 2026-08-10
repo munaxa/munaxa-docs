@@ -142,8 +142,20 @@ jobs:
       # itself, and because nothing in CI had ever spoken to an object store. The regression guard
       # asserts that the *store* refuses bytes that disagree with their digest, which is a property
       # only a real store has.
+      # `edge-cicd` rather than `latest`, and the difference is not cosmetic: it is the only
+      # published tag that starts the server unattended.
+      #
+      #   minio/minio:latest     Cmd = ["minio"]
+      #   minio/minio:edge-cicd  Cmd = ["minio", "server", "/data"]
+      #
+      # A bare `minio` prints its usage text and exits, and a `services:` block has nowhere to put
+      # the missing `server /data` — the runner composes `docker create <options> <image>` with no
+      # argument slot. So the container died on startup, the health check never went healthy, and
+      # the job failed at "Initialize containers" before checkout. Every run since Phase 6.12 added
+      # this service failed that way; it was invisible because the account could not assign runners
+      # over the same period, so the failure looked like the outage rather than a defect.
       storage:
-        image: minio/minio:latest
+        image: minio/minio:edge-cicd
         env:
           MINIO_ROOT_USER: edms-local
           MINIO_ROOT_PASSWORD: ci-only-not-a-secret
