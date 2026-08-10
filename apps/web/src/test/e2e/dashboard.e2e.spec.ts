@@ -32,6 +32,8 @@ import {
  * logins and six full page loads to look at a layout would be spending the same budget for the same
  * reason. The layout is CSS; it does not need a new request to be re-measured.
  */
+const AXE_PATH = require.resolve('axe-core/axe.min.js');
+
 const CHROMIUM_PATH =
   process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 
@@ -243,5 +245,124 @@ describe('dashboard in the running application', () => {
         fullPage: true,
       });
     }
+  });
+
+  /**
+   * Clicking the row — Phase 7.6E.
+   *
+   * 7.6D proved the row *was* a link. A link with an href is not a link that works: the router can
+   * fail, the destination can 404, an overlay can swallow the click. So this clicks it and follows
+   * where it actually goes. No `page.goto`, no location assignment.
+   */
+  it('navigates to the real document when the row is clicked', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(WEB_URL, { waitUntil: 'networkidle' });
+
+    await page
+      .getByRole('link', { name: new RegExp(fixture.documentNumber, 'i') })
+      .first()
+      .click();
+
+    await page.waitForURL((url) => url.pathname === `/documents/${fixture.documentId}`, {
+      timeout: 30_000,
+    });
+
+    // Arriving is not enough — the destination has to be the document, not an error boundary.
+    const body = await page.locator('body').innerText();
+    expect(body).toContain(fixture.documentNumber);
+    expect(body.toLowerCase()).not.toContain('something went wrong');
+
+    await page.goto(WEB_URL, { waitUntil: 'networkidle' });
+  });
+
+  /**
+   * axe against the live page, with the row populated — Phase 7.6E.
+   *
+   * The jsdom suites already run axe over these components, but jsdom has no cascade, so
+   * `color-contrast` cannot reach a verdict there and is switched off. Here it can. axe-core is
+   * already a dependency of this repository; it is injected into the page rather than added as a
+   * new package.
+   */
+  it('has no critical or serious axe violations with the row populated', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    await page.addScriptTag({ path: AXE_PATH });
+    const violations = await page.evaluate(async () => {
+      const results = await (
+        window as unknown as { axe: { run: (ctx: Document) => Promise<{ violations: unknown[] }> } }
+      ).axe.run(document);
+      return (results.violations as { id: string; impact: string; nodes: unknown[] }[])
+        .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
+        .map(
+          (violation) => `${violation.impact}: ${violation.id} (${String(violation.nodes.length)})`,
+        );
+    });
+
+    expect(violations).toStrictEqual([]);
+  });
+
+  /**
+   * Dark, through the product's own switch — Phase 7.6E.
+   *
+   * The theme is toggled by clicking the top bar's button, not by setting a class: the button is
+   * what a person uses, and it is also what writes the `edms.theme` preference the platform reads.
+   */
+  it('renders the populated row in dark, through the real toggle', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    await page.getByRole('button', { name: en.nav.darkMode, exact: true }).click();
+    await page.waitForFunction(() => document.documentElement.classList.contains('dark'));
+
+    // The row must still be there, and still carry its metadata — a theme switch that loses the
+    // content is the failure this guards.
+    const body = await page.locator('body').innerText();
+    expect(body).toContain(fixture.documentNumber);
+    expect(body).not.toContain(en.dashboard.recent.empty);
+
+    await page.screenshot({
+      path: 'src/test/__e2e_screenshots__/recent-populated-dark.png',
+      fullPage: true,
+    });
+
+    // Back to light, so the locale run below is not also a theme run.
+    await page.getByRole('button', { name: en.nav.lightMode, exact: true }).click();
+    await page.waitForFunction(() => !document.documentElement.classList.contains('dark'));
+  });
+
+  /**
+   * Arabic, through the real locale cookie — Phase 7.6E.
+   *
+   * `edms_locale` is the application's own mechanism (`lib/session.ts`), read on the server, so
+   * setting it and reloading is the same thing the product does. Nothing is faked with CSS and no
+   * test-only attribute is introduced.
+   *
+   * The assertion that matters is the mixed-direction one: a document number and a date are LTR
+   * runs inside an RTL line, and that is where RTL breaks in practice.
+   */
+  it.each([1280, 390])('renders the populated row in Arabic at %ipx', async (width) => {
+    await context.addCookies([{ name: 'edms_locale', value: 'ar', url: WEB_URL }]);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(WEB_URL, { waitUntil: 'networkidle' });
+
+    expect(await page.locator('html').getAttribute('dir')).toBe('rtl');
+    expect(await page.locator('html').getAttribute('lang')).toBe('ar');
+
+    // The row survived the locale change, and its LTR runs are intact.
+    const body = await page.locator('body').innerText();
+    expect(body).toContain(fixture.documentNumber);
+
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(
+      overflow.scrollWidth,
+      `Arabic dashboard overflows at ${String(width)}px`,
+    ).toBeLessThanOrEqual(overflow.clientWidth);
+
+    await page.screenshot({
+      path: `src/test/__e2e_screenshots__/recent-populated-ar-${String(width)}.png`,
+      fullPage: true,
+    });
   });
 });
