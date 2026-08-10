@@ -4,6 +4,19 @@ import { plural } from '../plural';
 /**
  * The Arabic catalogue, typed against the English one: a key that English has and Arabic
  * lacks is a compile error, which is the only reliable way to keep two catalogues honest.
+ *
+ * ## The 23 plural messages are awaiting review — `docs/reports/phase-7.4a-arabic-pluralization-review.md`
+ *
+ * Each `plural({ … })` below carries only `other`, holding the single form this catalogue shipped
+ * before plural messages existed. Arabic output is therefore identical to what it always was: no
+ * regression, and no invented wording either.
+ *
+ * Phase 7.4A reviewed all 23 against the repository's own Arabic and **completed none**, for one
+ * reason that applies to every message: the catalogue writes duals correctly (`المراجعتان`,
+ * `اللقطتين`, `بخطوتين`) but has **never written a digit beside one**, and a `two` form is exactly
+ * that construction. Whether `{count}` should render as `2 صفان`, as `صفان` alone, or another way is
+ * a house convention nobody has set. The report carries the per-message question, the attested
+ * terminology for each counted noun, and the decision a reviewer has to take first.
  */
 export const ar: Catalogue = {
   app: {

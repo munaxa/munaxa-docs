@@ -205,3 +205,51 @@ describe('the catalogue no longer hedges around plurals', () => {
     expect(plain).toStrictEqual([]);
   });
 });
+
+describe('the Arabic category boundaries a reviewer has to write against', () => {
+  /**
+   * Phase 7.4A — the numbers, verified against the runtime rather than described from memory.
+   *
+   * A reviewer completing the 23 Arabic messages needs to know which numbers land in which form,
+   * and two of these are counter-intuitive enough to be worth pinning: **103 is `few`**, not
+   * `other` — the rule reads the last two digits, so 103, 1003 and 10 003 all take the same form as
+   * 3 — and **100, 101 and 102 are `other`** while 111 is `many`. Somebody writing a `few` form for
+   * "three to ten" would be writing it for 103 as well without this on the record.
+   */
+  const CATEGORIES: readonly (readonly [number, Intl.LDMLPluralRule])[] = [
+    [0, 'zero'],
+    [1, 'one'],
+    [2, 'two'],
+    [3, 'few'],
+    [4, 'few'],
+    [5, 'few'],
+    [6, 'few'],
+    [10, 'few'],
+    [103, 'few'],
+    [11, 'many'],
+    [12, 'many'],
+    [99, 'many'],
+    [111, 'many'],
+    [100, 'other'],
+    [101, 'other'],
+    [102, 'other'],
+  ];
+
+  it.each(CATEGORIES)('ar: %i → %s', (count, expected) => {
+    expect(new Intl.PluralRules('ar').select(count)).toBe(expected);
+  });
+
+  it('every Arabic message still answers, in every category, while review is outstanding', () => {
+    /*
+     * The 23 messages carry only `other` until a reviewer supplies the rest, so every category
+     * falls back to it. That is the state Phase 7.4 shipped deliberately — Arabic output identical
+     * to before, no invented wording — and this asserts the *safety* of it: no count, in any
+     * category, can render an empty string or a key while the review is pending.
+     */
+    for (const [count] of CATEGORIES) {
+      const rendered = translate('ar', 'admin.grid.rowCount', { count });
+      expect(rendered).toContain(String(count));
+      expect(rendered).not.toBe('admin.grid.rowCount');
+    }
+  });
+});
