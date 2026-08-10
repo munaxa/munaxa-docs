@@ -4,7 +4,19 @@ import type { Route } from 'next';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Badge, Button, Card, Checkbox, EmptyState, Input, Select, useToast } from '@munaxa/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  EmptyState,
+  Input,
+  Panel,
+  Select,
+  Stack,
+  useToast,
+} from '@munaxa/ui';
+import { SlidersHorizontal } from '@munaxa/icons';
 
 import type {
   InboxNotification,
@@ -15,6 +27,7 @@ import type {
 import { DigestFrequency, NotificationChannel } from '@edms/domain';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
 import {
   clearNotificationPreference,
   clearQuietHours,
@@ -99,12 +112,10 @@ export function NotificationsScreen({
   };
 
   return (
-    <section className="flex flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold">{translate('notifications.title')}</h1>
-        <p className="text-muted-foreground text-sm">{translate('notifications.subtitle')}</p>
-      </header>
-
+    <WorkspacePage
+      title={translate('notifications.title')}
+      description={translate('notifications.subtitle')}
+    >
       <div className="flex flex-wrap items-center gap-3">
         <Select
           aria-label={translate('notifications.filter.label')}
@@ -192,7 +203,7 @@ export function NotificationsScreen({
           ))}
         </ul>
       )}
-    </section>
+    </WorkspacePage>
   );
 }
 
@@ -252,91 +263,101 @@ function PreferencesPanel({
   };
 
   return (
-    <Card className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold">{translate('notifications.preferences.title')}</h2>
-      <p className="text-muted-foreground text-sm">{translate('notifications.preferences.hint')}</p>
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          <SlidersHorizontal className="size-4 opacity-70" aria-hidden />
+          {translate('notifications.preferences.title')}
+        </span>
+      }
+    >
+      <Stack gap={4}>
+        <p className="text-muted-foreground text-sm">
+          {translate('notifications.preferences.hint')}
+        </p>
 
-      <QuietHoursForm quietHours={quietHours} />
+        <QuietHoursForm quietHours={quietHours} />
 
-      <ul className="flex flex-col gap-3">
-        {types.map((type) => {
-          const preference = stored.get(type.key);
-          const chosen = preference?.channels ?? type.defaultChannels;
-          const digest = preference?.digest ?? DigestFrequency.IMMEDIATE;
+        <ul className="flex flex-col gap-3">
+          {types.map((type) => {
+            const preference = stored.get(type.key);
+            const chosen = preference?.channels ?? type.defaultChannels;
+            const digest = preference?.digest ?? DigestFrequency.IMMEDIATE;
 
-          return (
-            <li key={type.key} className="flex flex-wrap items-center gap-3 border-t pt-3">
-              <span className="min-w-0 flex-1">
-                <span className="block font-medium">{translate(labelKeyFor(type.key))}</span>
-                {type.mandatory && (
-                  <Badge tone="warning">{translate('notifications.mandatory')}</Badge>
-                )}
-              </span>
-
-              {type.availableChannels.map((channel) => (
-                <Checkbox
-                  key={channel}
-                  checked={chosen.includes(channel)}
-                  disabled={working !== null}
-                  label={translate(
-                    channel === NotificationChannel.EMAIL
-                      ? 'notifications.channel.email'
-                      : 'notifications.channel.inApp',
+            return (
+              <li key={type.key} className="flex flex-wrap items-center gap-3 border-t pt-3">
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{translate(labelKeyFor(type.key))}</span>
+                  {type.mandatory && (
+                    <Badge tone="warning">{translate('notifications.mandatory')}</Badge>
                   )}
-                  onChange={(event) => {
-                    const updated = event.currentTarget.checked
-                      ? [...new Set([...chosen, channel])]
-                      : chosen.filter((entry) => entry !== channel);
-                    void apply(type.key, updated, digest);
-                  }}
-                />
-              ))}
+                </span>
 
-              {/*
+                {type.availableChannels.map((channel) => (
+                  <Checkbox
+                    key={channel}
+                    checked={chosen.includes(channel)}
+                    disabled={working !== null}
+                    label={translate(
+                      channel === NotificationChannel.EMAIL
+                        ? 'notifications.channel.email'
+                        : 'notifications.channel.inApp',
+                    )}
+                    onChange={(event) => {
+                      const updated = event.currentTarget.checked
+                        ? [...new Set([...chosen, channel])]
+                        : chosen.filter((entry) => entry !== channel);
+                      void apply(type.key, updated, digest);
+                    }}
+                  />
+                ))}
+
+                {/*
                 Offered only where a digest is allowed. An urgent type going into a daily rollup
                 would be an approval deadline somebody hears about the morning after it passed.
               */}
-              {type.digestible && (
-                <Select
-                  aria-label={translate('notifications.digest.label')}
-                  value={digest}
-                  disabled={working !== null}
-                  onChange={(event) => {
-                    void apply(type.key, chosen, event.currentTarget.value);
-                  }}
-                >
-                  <option value={DigestFrequency.IMMEDIATE}>
-                    {translate('notifications.digest.immediate')}
-                  </option>
-                  <option value={DigestFrequency.HOURLY}>
-                    {translate('notifications.digest.hourly')}
-                  </option>
-                  <option value={DigestFrequency.DAILY}>
-                    {translate('notifications.digest.daily')}
-                  </option>
-                  <option value={DigestFrequency.WEEKLY}>
-                    {translate('notifications.digest.weekly')}
-                  </option>
-                </Select>
-              )}
+                {type.digestible && (
+                  <Select
+                    aria-label={translate('notifications.digest.label')}
+                    value={digest}
+                    disabled={working !== null}
+                    onChange={(event) => {
+                      void apply(type.key, chosen, event.currentTarget.value);
+                    }}
+                  >
+                    <option value={DigestFrequency.IMMEDIATE}>
+                      {translate('notifications.digest.immediate')}
+                    </option>
+                    <option value={DigestFrequency.HOURLY}>
+                      {translate('notifications.digest.hourly')}
+                    </option>
+                    <option value={DigestFrequency.DAILY}>
+                      {translate('notifications.digest.daily')}
+                    </option>
+                    <option value={DigestFrequency.WEEKLY}>
+                      {translate('notifications.digest.weekly')}
+                    </option>
+                  </Select>
+                )}
 
-              {preference !== undefined && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={working !== null}
-                  onClick={() => {
-                    void reset(type.key);
-                  }}
-                >
-                  {translate('notifications.preferences.reset')}
-                </Button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </Card>
+                {preference !== undefined && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={working !== null}
+                    onClick={() => {
+                      void reset(type.key);
+                    }}
+                  >
+                    {translate('notifications.preferences.reset')}
+                  </Button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </Stack>
+    </Panel>
   );
 }
 

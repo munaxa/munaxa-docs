@@ -31,9 +31,6 @@ import {
   updateDepartment,
 } from './actions';
 
-export const DEPARTMENT_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code', 'path'] as const;
-export const DEPARTMENT_FILTER_KEYS = ['entityId', 'branchId'] as const;
-
 /**
  * Departments — the nesting tree permission is actually granted on.
  *

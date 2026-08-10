@@ -2,7 +2,9 @@
 
 import type { ReactNode } from 'react';
 
-import { Alert, ErrorState, Page, PageHeader, Stack } from '@munaxa/ui';
+import { useRouter } from 'next/navigation';
+
+import { Alert, Button, ErrorState, Page, PageHeader, Stack } from '@munaxa/ui';
 
 import type { MessageKey } from '@edms/i18n';
 
@@ -52,6 +54,49 @@ export function AdminForbidden(): ReactNode {
   return (
     <Page gap={6}>
       <ErrorState title={translate('auth.forbidden')} description={translate('admin.subtitle')} />
+    </Page>
+  );
+}
+
+/**
+ * What a page renders when the API refused one of its reads with `429 RATE_LIMITED` — Phase 7.1C.
+ *
+ * A rate limit is the one API refusal that is *neither* a fault nor a permission decision: the
+ * request was correct, the caller is who they say they are, and the same request succeeds again in
+ * under a minute. Left to escape, it reaches the route error boundary, and the reader is told
+ * "Something went wrong. The problem has been recorded." — which is untrue twice over. Nothing went
+ * wrong, and there is nothing for anybody to record.
+ *
+ * The product already draws this distinction on the client: `RATE_LIMITED` is in the API's
+ * `RETRYABLE_ERROR_CODES`, and the signing ceremony renders it as a wait-and-retry state rather than
+ * a failure. This is the same answer for a server render, and the same shape `AdminForbidden` uses
+ * for the other refusal a page can honestly draw.
+ *
+ * `router.refresh()` rather than an automatic retry: retrying on the reader's behalf would spend
+ * more of the budget that is already spent, and hiding a limit is how a limit stops working. The
+ * button is there for when they choose to.
+ */
+export function RateLimited(): ReactNode {
+  const translate = useTranslate();
+  const router = useRouter();
+  return (
+    <Page gap={6}>
+      <ErrorState
+        title={translate('state.rateLimited')}
+        // The API's own sentence, from the catalogue the problem detail is translated with, so the
+        // browser says exactly what the server said.
+        description={translate('error.RATE_LIMITED')}
+        action={
+          <Button
+            onClick={() => {
+              router.refresh();
+            }}
+            variant="secondary"
+          >
+            {translate('state.retry')}
+          </Button>
+        }
+      />
     </Page>
   );
 }

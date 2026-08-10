@@ -39,6 +39,9 @@ export default defineConfig({
           name: 'logic',
           environment: 'node',
           include: ['src/**/*.spec.ts', 'scripts/**/*.spec.ts'],
+          // The end-to-end suite is `.spec.ts` too and would otherwise be collected here, where it
+          // has no database, no servers and no browser. It is its own project below.
+          exclude: ['src/test/e2e/**'],
         },
       },
       {
@@ -48,7 +51,10 @@ export default defineConfig({
           name: 'a11y',
           environment: 'jsdom',
           include: ['src/**/*.spec.tsx'],
-          exclude: ['src/test/visual.spec.tsx'],
+          // Both browser-project suites read the *built* stylesheet and drive Chromium, so they
+          // belong to `browser` alone — collected here they would run a second time, in jsdom,
+          // against an artefact `pnpm test` does not build.
+          exclude: ['src/test/visual.spec.tsx', 'src/test/responsive.spec.tsx'],
           setupFiles: ['src/test/setup.tsx'],
         },
       },
@@ -61,10 +67,42 @@ export default defineConfig({
         test: {
           name: 'browser',
           environment: 'node',
-          include: ['src/test/visual.spec.tsx'],
+          include: ['src/test/visual.spec.tsx', 'src/test/responsive.spec.tsx'],
           setupFiles: ['src/test/setup-ssr.tsx'],
           testTimeout: 60_000,
           hookTimeout: 60_000,
+        },
+      },
+      {
+        // The whole product, running — Phase 6.6. A booted API, a booted web server, a real
+        // database and real Chromium. Its own project because it needs infrastructure none of the
+        // others do: `browser` above deliberately renders static markup precisely so it can stay
+        // free of a database, and folding this into it would take that property away from both.
+        //
+        // No setup file: this one does not render React at all, it drives a browser.
+        extends: true,
+        test: {
+          name: 'e2e',
+          environment: 'node',
+          include: ['src/test/e2e/**/*.e2e.spec.ts'],
+          testTimeout: 180_000,
+          hookTimeout: 240_000,
+          // **Strictly one at a time, in one process** — Phase 6.10, and the second time this
+          // repository has learned it.
+          //
+          // `fileParallelism: false` alone was not enough. Two files still ran in two forks, and
+          // the damage was not the obvious one: the second suite's `beforeAll` calls
+          // `cleanUpFixtures()`, which deletes **every** tenant whose slug begins `e2e` in the
+          // shared databases — so it wiped the first suite's rows between its source checkpoint and
+          // its backup, and the restore rehearsal reported that a perfect restore had lost
+          // everything. The port collision on 3210 was the same race announcing itself more
+          // politely.
+          //
+          // `singleFork` is what actually serialises them: one fork, one file at a time, so a
+          // suite's teardown can never overlap another suite's run. Phase 6.9 solved the same race
+          // by merging two files into one; this is the version that survives a third file.
+          fileParallelism: false,
+          poolOptions: { forks: { singleFork: true } },
         },
       },
     ],

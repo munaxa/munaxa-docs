@@ -3,14 +3,11 @@ import type { ReactNode } from 'react';
 import type { Company, Entity } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  ENTITY_FILTER_KEYS,
-  ENTITY_SORT_FIELDS,
-  EntitiesScreen,
-} from '../../../../features/admin-organization/entities-screen';
+import { EntitiesScreen } from '../../../../features/admin-organization/entities-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminList, adminOptions, adminAccess } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { ENTITY_FILTER_KEYS, ENTITY_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * The entities list, with the companies its form needs.

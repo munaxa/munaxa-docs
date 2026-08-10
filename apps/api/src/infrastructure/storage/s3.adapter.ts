@@ -95,6 +95,30 @@ export class S3StorageAdapter implements StoragePort {
     const signedHeaders: Record<string, string> = {
       'content-type': input.contentType,
       'content-length': String(input.sizeBytes),
+      // **The digest, signed** — Phase 6.12, and the field this adapter had been handed since Phase
+      // 3 and never read.
+      //
+      // `UploadTargetInput.checksumSha256` has always carried the digest the product approved, and
+      // `StorageService.createUploadSession` has always passed it. This adapter dropped it, so the
+      // object was written with no checksum, `head()` read `x-amz-checksum-sha256` back as absent,
+      // and `completeUploadSession` refused every upload with *"Storage could not confirm the
+      // file's digest."* — on **every S3 and R2 deployment**, since the adapter was written. The
+      // `LOCAL` adapter hashes the bytes itself, which is why a single-server install never saw it.
+      //
+      // Signing it does more than make `head()` answer. S3 and every compatible store **verify**
+      // `x-amz-checksum-sha256` against the bytes they receive and reject the PUT on a mismatch, so
+      // the digest stops being a claim the client made and becomes a condition of the write. And
+      // because it is in the *signature*, a client cannot substitute one: changing the header
+      // invalidates the URL.
+      //
+      // That is what keeps ADR-0007 intact rather than bent. Its §6 says bytes never pass through
+      // the API, so the product cannot hash the object itself; §2 makes the key the digest, so a
+      // wrong digest is a wrong key. The store enforcing the digest at write time is the only
+      // arrangement that satisfies both — and it attests the bytes rather than the store's opinion
+      // of them, which is the distinction `write()`'s own comment draws.
+      ...(input.checksumSha256 !== undefined && {
+        'x-amz-checksum-sha256': base64Digest(input.checksumSha256),
+      }),
     };
 
     if (input.multipart === true) {
@@ -133,7 +157,15 @@ export class S3StorageAdapter implements StoragePort {
       key: input.key,
       url: `${this.origin}${this.pathFor(input.key)}?${query}`,
       method: 'PUT',
-      headers: { 'Content-Type': input.contentType, 'Content-Length': String(input.sizeBytes) },
+      // Every signed header is returned, because the client has to send exactly these: a presigned
+      // URL is a signature *over* them, so one omitted or altered header is a `403` from the store.
+      headers: {
+        'Content-Type': input.contentType,
+        'Content-Length': String(input.sizeBytes),
+        ...(input.checksumSha256 !== undefined && {
+          'x-amz-checksum-sha256': base64Digest(input.checksumSha256),
+        }),
+      },
       expiresAt,
     };
   }
@@ -188,7 +220,14 @@ export class S3StorageAdapter implements StoragePort {
   }
 
   async head(key: StorageKey): Promise<BlobMetadata | null> {
-    const response = await this.send('HEAD', key);
+    // `x-amz-checksum-mode: ENABLED` — Phase 6.12, and the other half of the same defect.
+    //
+    // S3 stores a checksum when one is supplied and then **withholds it from HEAD and GET unless
+    // asked for**. Without this header the response carries no `x-amz-checksum-sha256` even for an
+    // object that has one, so `decodeChecksum` reads null and `completeUploadSession` refuses a
+    // perfectly good upload. Signing the digest into the presigned PUT was necessary and not
+    // sufficient: the write had to record it *and* the read had to request it.
+    const response = await this.send('HEAD', key, { 'x-amz-checksum-mode': 'ENABLED' });
     if (response.status === 404) {
       // A real answer — "no such object" — rather than a failure. The sweeper that looks for
       // orphaned upload sessions asks this question about keys it expects to be absent.
@@ -566,4 +605,21 @@ function decodeChecksum(header: string | null): string | null {
   }
   const decoded = Buffer.from(header, 'base64');
   return decoded.length === 32 ? decoded.toString('hex') : null;
+}
+
+/**
+ * The other direction — Phase 6.12, and the exact inverse of `decodeChecksum` above.
+ *
+ * Everything in this product holds a digest as hex; S3 expects `x-amz-checksum-sha256` base64. The
+ * two functions sit together so the pair cannot drift, and this one **throws** where its sibling
+ * returns null: a digest that is not 32 bytes of hex is a programming error on the way *out*, and
+ * signing a malformed one would produce a URL every client is refused with, which is a far worse
+ * failure than refusing to issue it.
+ */
+function base64Digest(hex: string): string {
+  const bytes = Buffer.from(hex, 'hex');
+  if (bytes.length !== 32 || bytes.toString('hex') !== hex.toLowerCase()) {
+    throw new Error('An upload digest must be 32 bytes of hex.');
+  }
+  return bytes.toString('base64');
 }

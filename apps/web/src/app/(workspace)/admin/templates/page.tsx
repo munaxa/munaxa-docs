@@ -9,13 +9,11 @@ import type {
 } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  TEMPLATE_SORT_FIELDS,
-  TemplatesScreen,
-} from '../../../../features/admin-configuration/templates-screen';
+import { TemplatesScreen } from '../../../../features/admin-configuration/templates-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { TEMPLATE_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * Document templates — Phase 6.5, the surface for a capability that has existed since Phase 16.

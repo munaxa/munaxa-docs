@@ -4,9 +4,10 @@ import type { PermissionCatalogue, Role } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
-import { ROLE_SORT_FIELDS, RolesScreen } from '../../../../features/admin-identity/roles-screen';
+import { RolesScreen } from '../../../../features/admin-identity/roles-screen';
 import { adminAccess, adminGet, adminList } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { ROLE_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * Roles, with the catalogue the matrix editor renders.

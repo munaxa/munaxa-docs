@@ -130,6 +130,27 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
+      # Object storage, added in Phase 6.12 — and it is a gate rather than a convenience.
+      #
+      # That phase found that **no upload could complete on S3 or R2**: the adapter never signed the
+      # digest into the presigned target and never asked for it back, so `head()` answered null and
+      # every upload was refused. It was invisible for eighteen phases because `LOCAL` hashes bytes
+      # itself, and because nothing in CI had ever spoken to an object store. The regression guard
+      # asserts that the *store* refuses bytes that disagree with their digest, which is a property
+      # only a real store has.
+      storage:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: edms-local
+          MINIO_ROOT_PASSWORD: ci-only-not-a-secret
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       NODE_ENV: test
       LOG_LEVEL: fatal
@@ -137,6 +158,13 @@ jobs:
       JWT_ACCESS_SECRET: ci-only-secret-at-least-thirty-two-characters
       CORS_ORIGINS: http://localhost:3000
       STORAGE_DRIVER: NONE
+      # Where the Phase 6.12 storage guard finds the object store. The suite's own adapter is
+      # constructed against these; `STORAGE_DRIVER` stays NONE because every other integration test
+      # is written against the driver-less profile and widening that is a different phase's job.
+      STORAGE_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_BUCKET: munaxa-docs
+      STORAGE_ACCESS_KEY_ID: edms-local
+      STORAGE_SECRET_ACCESS_KEY: ci-only-not-a-secret
       SEARCH_DRIVER: POSTGRES
       OCR_DRIVER: NONE
       MAIL_DRIVER: NONE
@@ -182,6 +210,16 @@ jobs:
           psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/sql/cluster/01-roles.sql
         env:
           ADMIN_URL: postgresql://edms_owner@127.0.0.1:5432/postgres
+
+      # The bucket, for the same reason the databases are created here: an object store has no
+      # bucket until somebody makes one, and the storage guard has nothing to write into without it.
+      - name: Create the object storage bucket
+        run: |
+          set -euo pipefail
+          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$RUNNER_TEMP/mc"
+          chmod +x "$RUNNER_TEMP/mc"
+          "$RUNNER_TEMP/mc" alias set ci http://127.0.0.1:9000 edms-local ci-only-not-a-secret
+          "$RUNNER_TEMP/mc" mb --ignore-existing ci/munaxa-docs
 
       # The same runner an operator uses, reading the same catalogue the API reads. It applies the
       # per-database SQL, the schema and the post-migration SQL to each tenant in turn — so a

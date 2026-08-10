@@ -2,7 +2,7 @@ import 'server-only';
 
 import { cache } from 'react';
 
-import { type MessageKey, translatorFor } from '@edms/i18n';
+import { type Translator, translatorFor } from '@edms/i18n';
 
 import { currentLocale } from './session';
 
@@ -18,8 +18,6 @@ import { currentLocale } from './session';
  * Memoised per request: the locale is a cookie read, and a page rendering three server components
  * should read it once.
  */
-export const getTranslator = cache(
-  async (): Promise<
-    (key: MessageKey, values?: Readonly<Record<string, string | number>>) => string
-  > => translatorFor(await currentLocale()),
+export const getTranslator = cache(async (): Promise<Translator> =>
+  translatorFor(await currentLocale()),
 );

@@ -37,15 +37,6 @@ import {
 } from './actions';
 import { DepartmentMemberships } from './department-memberships';
 
-export const USER_SORT_FIELDS = [
-  'createdAt',
-  'updatedAt',
-  'displayName',
-  'email',
-  'lastLoginAt',
-] as const;
-export const USER_FILTER_KEYS = ['status', 'roleId', 'departmentId'] as const;
-
 const STATUS_LABELS: Readonly<Record<UserStatusKey, MessageKey>> = {
   INVITED: 'admin.users.statusInvited',
   ACTIVE: 'admin.users.statusActive',

@@ -4,12 +4,10 @@ import type { WebhookEndpoint } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
-import {
-  WEBHOOK_SORT_FIELDS,
-  WebhooksScreen,
-} from '../../../../features/admin-integration/webhooks-screen';
+import { WebhooksScreen } from '../../../../features/admin-integration/webhooks-screen';
 import { adminAccess, adminList } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { WEBHOOK_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /** Outbound webhook endpoints, and why each one is or is not delivering. */
 export default async function WebhooksPage({

@@ -4,15 +4,27 @@ import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Alert, Badge, Button, Card, formatFileSize, useToast } from '@munaxa/ui';
+import {
+  Alert,
+  Badge,
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  Panel,
+  formatFileSize,
+  useToast,
+} from '@munaxa/ui';
+import { EllipsisVertical, FileText, ListTree } from '@munaxa/icons';
 
-import type { Document, Folder } from '@edms/contracts';
+import type { Document } from '@edms/contracts';
 import { formatFor } from '@edms/domain';
 
+import { WorkspacePage } from '../../components/workspace-page';
 import { useTranslate } from '../../app/providers';
 import type { ActionResult } from '../../lib/admin/action-result';
 import {
-  type Choice,
   FormDialog,
   PickerField,
   TextAreaField,
@@ -21,9 +33,12 @@ import {
   optionalText,
   text,
 } from '../admin-shared';
+import { DocumentStatusBadge } from './status-badge';
 import {
   archiveDocument,
   assignDocumentNumber,
+  loadEditOptions,
+  loadMoveOptions,
   moveDocument,
   reinstateDocument,
   requestDownload,
@@ -31,6 +46,7 @@ import {
   updateDocument,
 } from './actions';
 import { MetadataFields, type MetadataFieldDefinition, readMetadata } from './metadata-fields';
+import type { DocumentEditOptions, DocumentMoveOptions } from './options';
 
 /**
  * One document: its properties, its business metadata, and what its content is.
@@ -45,12 +61,6 @@ import { MetadataFields, type MetadataFieldDefinition, readMetadata } from './me
  */
 export function DocumentScreen({
   document,
-  folders,
-  categories,
-  confidentialityLevels,
-  users,
-  departments,
-  fields,
   canEdit,
   canMove,
   canDownload,
@@ -60,17 +70,10 @@ export function DocumentScreen({
   preview,
   approvals,
   revisions,
+  signatures,
   audit,
 }: {
   readonly document: Document;
-  /** Candidate destinations for a move. Within the document's own library. */
-  readonly folders: readonly Folder[];
-  readonly categories: readonly Choice[];
-  readonly confidentialityLevels: readonly Choice[];
-  readonly users: readonly Choice[];
-  readonly departments: readonly Choice[];
-  /** The document type's fields, which decide what the properties form renders. */
-  readonly fields: readonly MetadataFieldDefinition[];
   readonly canEdit: boolean;
   readonly canMove: boolean;
   readonly canDownload: boolean;
@@ -114,6 +117,15 @@ export function DocumentScreen({
    */
   readonly preview?: ReactNode;
   /**
+   * Electronic signatures — Signature's own feature, passed in like the other four.
+   *
+   * A slot for the same reason approvals and revisions are slots: this screen knows nothing about
+   * what a §11.50 attestation is, and a screen that reached for the signature list would be a
+   * second place deciding what signing looks like. Phase 6.6 added it and nothing else here
+   * changed except this line and the one that renders it.
+   */
+  readonly signatures?: ReactNode;
+  /**
    * The document's own audit timeline — Audit's feature, passed in like the other three.
    *
    * A slot rather than a fetch, and a *suspended* one at the page: this screen renders it wherever
@@ -125,8 +137,16 @@ export function DocumentScreen({
   const translate = useTranslate();
   const router = useRouter();
   const toast = useToast();
-  const [editing, setEditing] = useState(false);
-  const [moving, setMoving] = useState(false);
+  /**
+   * The two dialogues that need data, and the data itself — Phase 7.1C.
+   *
+   * `null` is closed. The options *are* the open state, so the dialogue cannot render before its
+   * pickers exist and there is no half-populated form to design a loading state for. The shape is
+   * `loadShippedTemplate`'s on the notification templates screen: await the server action, then
+   * open; a refusal becomes a message and the dialogue simply does not open.
+   */
+  const [editing, setEditing] = useState<DocumentEditOptions | null>(null);
+  const [moving, setMoving] = useState<DocumentMoveOptions | null>(null);
   const [numbering, setNumbering] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [reinstating, setReinstating] = useState(false);
@@ -175,46 +195,189 @@ export function DocumentScreen({
     });
   };
 
-  const saveProperties = async (data: FormData): Promise<ActionResult<unknown>> =>
-    updateDocument(document.id, document.version, {
-      title: text(data, 'title'),
-      description: nullableText(data, 'description'),
-      categoryId: nullableText(data, 'categoryId'),
-      ...(optionalText(data, 'confidentialityId') !== undefined && {
-        confidentialityId: text(data, 'confidentialityId'),
-      }),
-      metadata: readMetadata(data, fields),
+  const saveProperties =
+    (fields: readonly MetadataFieldDefinition[]) =>
+    async (data: FormData): Promise<ActionResult<unknown>> =>
+      updateDocument(document.id, document.version, {
+        title: text(data, 'title'),
+        description: nullableText(data, 'description'),
+        categoryId: nullableText(data, 'categoryId'),
+        ...(optionalText(data, 'confidentialityId') !== undefined && {
+          confidentialityId: text(data, 'confidentialityId'),
+        }),
+        metadata: readMetadata(data, fields),
+      });
+
+  /**
+   * Opens a dialogue once the data behind it has arrived.
+   *
+   * The failure path matters as much as the success one: these reads carry the caller's own token
+   * and enforce their own permissions, so a refusal is a real answer and gets the same toast every
+   * other refused action on this screen gets — including `RATE_LIMITED`, whose catalogue sentence
+   * says to wait a moment and try again.
+   */
+  const openWith = <TOptions,>(
+    load: () => Promise<ActionResult<TOptions>>,
+    show: (options: TOptions) => void,
+  ): void => {
+    void load().then((result) => {
+      if (!result.ok) {
+        toast.error(result.detail ?? translate(`error.${result.code}`));
+        return;
+      }
+      show(result.value);
     });
+  };
+
+  /**
+   * The record's secondary actions — Phase 7.
+   *
+   * They used to sit beside the primary one: up to eight buttons in a single wrapping row, seven of
+   * them `variant="outline"` and one solid, so "download this controlled document" had the same
+   * visual weight as "move it to another folder". On a laptop the row wrapped to two lines and the
+   * page opened with a wall of buttons above the document's own name.
+   *
+   * Now the primary action stays out here and the rest collapse into one menu. Nothing is removed
+   * and nothing is gated differently — every item is still built from the same `capabilities` the
+   * server resolved, and an action the caller may not take is still absent rather than disabled.
+   * What changed is that the screen now answers "what do I do with this" with one button instead of
+   * eight.
+   */
+  const secondaryActions: readonly { id: string; label: string; onSelect: () => void }[] = [
+    {
+      id: 'favorite',
+      label: translate(
+        document.isFavorite ? 'documents.actions.unfavorite' : 'documents.actions.favorite',
+      ),
+      onSelect: () => {
+        void setFavorite(document.id, !document.isFavorite).then(refresh);
+      },
+    },
+    ...(canMove
+      ? [
+          {
+            id: 'move',
+            label: translate('documents.actions.move'),
+            onSelect: () => {
+              openWith(() => loadMoveOptions(document.libraryId), setMoving);
+            },
+          },
+        ]
+      : []),
+    ...(offerAssignNumber
+      ? [
+          {
+            id: 'assignNumber',
+            label: translate('documents.actions.assignNumber'),
+            onSelect: () => setNumbering(true),
+          },
+        ]
+      : []),
+    ...(canEdit
+      ? [
+          {
+            id: 'edit',
+            label: translate('documents.actions.edit'),
+            onSelect: () => {
+              openWith(
+                () => loadEditOptions(document.documentTypeId, document.confidentialityRank),
+                setEditing,
+              );
+            },
+          },
+        ]
+      : []),
+    ...(canManagePermissions === true
+      ? [
+          {
+            id: 'permissions',
+            label: translate('documents.actions.permissions'),
+            onSelect: () => {
+              router.push(`/documents/${document.id}/permissions` as Route);
+            },
+          },
+        ]
+      : []),
+    ...(offerArchive
+      ? [
+          {
+            id: 'archive',
+            label: translate('documents.actions.archive'),
+            onSelect: () => setArchiving(true),
+          },
+        ]
+      : []),
+    ...(offerReinstate
+      ? [
+          {
+            id: 'reinstate',
+            label: translate('documents.actions.reinstate'),
+            onSelect: () => setReinstating(true),
+          },
+        ]
+      : []),
+  ];
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm opacity-70">
-            {document.libraryName} · {document.folderName}
-          </p>
-          <h1 className="truncate text-2xl font-semibold">{document.title}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Badge>{translate(`documents.status.${document.status}`)}</Badge>
-            <Badge tone="muted">{document.documentTypeName}</Badge>
-            <Badge tone="muted">{document.confidentialityName}</Badge>
-            {document.origin === 'SCAN' && (
-              <Badge tone="muted">{translate('documents.origin.SCAN')}</Badge>
+    <WorkspacePage
+      gap={6}
+      breadcrumb={[
+        { label: translate('documents.title'), href: '/documents' },
+        { label: document.libraryName },
+        { label: document.folderName },
+      ]}
+      /**
+       * The identity block — brief §7's PRIMARY tier, and the thing this screen did not have.
+       *
+       * A controlled record is identified by its *number* as much as by its name: "SOP-QA-0042 R3"
+       * is what an auditor writes down and what a procedure cites. It was buried in the properties
+       * card, four lines below the fold, in the same weight as the category. Now it sits under the
+       * title in a monospaced-figures line beside the revision it belongs to, which is how the two
+       * are read together (`09-numbering-architecture.md` §4 — the number is stable, the label is
+       * what changes).
+       */
+      title={
+        <span className="flex min-w-0 flex-col gap-1.5">
+          <span className="truncate">{document.title}</span>
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-normal">
+            <span className="text-muted-foreground tabular-nums">
+              {document.documentNumber ??
+                document.pendingNumber ??
+                translate('documents.number.none')}
+            </span>
+            {document.documentNumber === null && document.pendingNumber !== null && (
+              <Badge tone="warning">{translate('documents.number.pending')}</Badge>
             )}
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              void setFavorite(document.id, !document.isFavorite).then(refresh);
-            }}
-          >
-            {translate(
-              document.isFavorite ? 'documents.actions.unfavorite' : 'documents.actions.favorite',
+            {effectiveRevision !== null && (
+              /*
+                `muted`, not `success` — the same measurement Phase 7 made for the status badge, and
+                this one slipped through because no baseline rendered the record page. The platform's
+                success tone is **4.18:1** here against the 4.5:1 that 12px text needs. The revision
+                label does not need a colour to be read: it sits beside the number it belongs to, in
+                the identity block, which is the only place it appears.
+              */
+              <Badge tone="muted">{effectiveRevision.label}</Badge>
             )}
-          </Button>
+            {draftRevision !== null && (
+              <Badge tone="muted">
+                {translate('documents.revision.draftBadge', { label: draftRevision.label })}
+              </Badge>
+            )}
+          </span>
+        </span>
+      }
+      description={
+        <span className="flex flex-wrap items-center gap-2">
+          <DocumentStatusBadge status={document.status} />
+          <Badge tone="muted">{document.documentTypeName}</Badge>
+          <Badge tone="muted">{document.confidentialityName}</Badge>
+          {document.origin === 'SCAN' && (
+            <Badge tone="muted">{translate('documents.origin.SCAN')}</Badge>
+          )}
+        </span>
+      }
+      actions={
+        <div className="flex shrink-0 items-center gap-2">
           {canDownload && (
             <Button
               type="button"
@@ -226,45 +389,30 @@ export function DocumentScreen({
               {translate('documents.actions.download')}
             </Button>
           )}
-          {canMove && (
-            <Button type="button" variant="outline" onClick={() => setMoving(true)}>
-              {translate('documents.actions.move')}
-            </Button>
-          )}
-          {offerAssignNumber && (
-            <Button type="button" variant="outline" onClick={() => setNumbering(true)}>
-              {translate('documents.actions.assignNumber')}
-            </Button>
-          )}
-          {canEdit && (
-            <Button type="button" variant="outline" onClick={() => setEditing(true)}>
-              {translate('documents.actions.edit')}
-            </Button>
-          )}
-          {canManagePermissions === true && (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                router.push(`/documents/${document.id}/permissions` as Route);
-              }}
-            >
-              {translate('documents.actions.permissions')}
-            </Button>
-          )}
-          {offerArchive && (
-            <Button type="button" variant="outline" onClick={() => setArchiving(true)}>
-              {translate('documents.actions.archive')}
-            </Button>
-          )}
-          {offerReinstate && (
-            <Button type="button" variant="outline" onClick={() => setReinstating(true)}>
-              {translate('documents.actions.reinstate')}
-            </Button>
+          {secondaryActions.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={translate('documents.actions.more')}
+                >
+                  <EllipsisVertical className="size-4" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {secondaryActions.map((action) => (
+                  <DropdownMenuItem key={action.id} onSelect={action.onSelect}>
+                    {action.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
-      </header>
-
+      }
+    >
       {file !== null && !file.reachable && (
         // The document exists and its content is deliberately unreachable. Saying which of the two
         // is the case is the difference between a system that looks broken and one that is careful.
@@ -273,39 +421,30 @@ export function DocumentScreen({
 
       {preview}
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <h2 className="text-lg font-medium">{translate('documents.section.properties')}</h2>
-          <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
-            {document.documentNumber === null && document.pendingNumber !== null ? (
-              // The reserved number, clearly marked pending: reviewers refer to it, and it is not
-              // the document's number until approval assigns it (ADR-0004).
-              <div className="min-w-0">
-                <dt className="text-sm opacity-70">{translate('documents.field.number')}</dt>
-                <dd className="flex items-center gap-2">
-                  <span className="truncate">{document.pendingNumber}</span>
-                  <Badge tone="warning">{translate('documents.number.pending')}</Badge>
-                </dd>
-              </div>
-            ) : (
-              // The version badge sits beside the number, never inside it: QMS-…-0042 reads the
-              // same through Original → R1 → R2, and the label is what changes
-              // (`09-numbering-architecture.md` §4).
-              <div className="min-w-0">
-                <dt className="text-sm opacity-70">{translate('documents.field.number')}</dt>
-                <dd className="flex items-center gap-2">
-                  <span className="truncate">{document.documentNumber ?? '—'}</span>
-                  {effectiveRevision !== null && (
-                    <Badge tone="success">{effectiveRevision.label}</Badge>
-                  )}
-                  {draftRevision !== null && (
-                    <Badge tone="muted">
-                      {translate('documents.revision.draftBadge', { label: draftRevision.label })}
-                    </Badge>
-                  )}
-                </dd>
-              </div>
-            )}
+      {/*
+        `gap-4`, not `gap-6` — Phase 7.2. Every section on this page is now a `Panel` with its own
+        border and its own rule under its title, so the structure is drawn by the panels rather than
+        by the space between them. Twenty-four pixels between bordered regions read as four
+        disconnected objects; sixteen reads as one record with four parts.
+      */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Panel
+          className="lg:col-span-2"
+          title={
+            <span className="flex items-center gap-2">
+              <ListTree className="size-4 opacity-70" aria-hidden />
+              {translate('documents.section.properties')}
+            </span>
+          }
+        >
+          <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            {/*
+              The number, the revision and the pending marker moved to the identity block at the top
+              of the page — Phase 7. They are what identifies a controlled record, and restating them
+              here as the first of six equal properties was the clearest symptom of a page with no
+              primary tier. Everything below is genuinely secondary: it describes the record rather
+              than naming it.
+            */}
             <Property label={translate('documents.field.category')} value={document.categoryName} />
             <Property
               label={translate('documents.field.description')}
@@ -319,7 +458,7 @@ export function DocumentScreen({
 
           {document.metadata.length > 0 && (
             <>
-              <h3 className="mt-6 text-sm font-medium opacity-70">
+              <h3 className="text-muted-foreground mt-6 text-xs font-semibold tracking-wide uppercase">
                 {translate('documents.section.metadata')}
               </h3>
               <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
@@ -333,14 +472,20 @@ export function DocumentScreen({
               </dl>
             </>
           )}
-        </Card>
+        </Panel>
 
-        <Card>
-          <h2 className="text-lg font-medium">{translate('documents.section.file')}</h2>
+        <Panel
+          title={
+            <span className="flex items-center gap-2">
+              <FileText className="size-4 opacity-70" aria-hidden />
+              {translate('documents.section.file')}
+            </span>
+          }
+        >
           {file === null ? (
-            <p className="mt-2 opacity-70">{translate('documents.file.none')}</p>
+            <p className="text-muted-foreground text-sm">{translate('documents.file.none')}</p>
           ) : (
-            <dl className="mt-3 flex flex-col gap-2">
+            <dl className="flex flex-col gap-2">
               <Property label={translate('documents.file.name')} value={file.filename} />
               <Property
                 label={translate('documents.file.format')}
@@ -355,21 +500,27 @@ export function DocumentScreen({
                 value={translate(`documents.scanStatus.${file.scanStatus}`)}
               />
               {/*
-                The digest, in full. It is what makes "the bytes an approver approved are unchanged"
-                provable rather than promised, and truncating it would make it decorative.
+                The digest, in full — and since Phase 7.1 actually in full, wrapping across lines in
+                a monospaced face rather than being cut off by a `truncate` the original comment did
+                not know was there. A hexadecimal digest read in a fixed-width face is one somebody
+                can compare against another by eye, which is the only way this value is ever used.
               */}
-              <Property label={translate('documents.file.checksum')} value={file.checksumSha256} />
+              <Property
+                label={translate('documents.file.checksum')}
+                value={file.checksumSha256}
+                wrap
+              />
             </dl>
           )}
-        </Card>
+        </Panel>
       </div>
 
-      {editing && (
+      {editing !== null && (
         <FormDialog
           open
           title={translate('documents.actions.edit')}
-          onClose={() => setEditing(false)}
-          onSubmit={saveProperties}
+          onClose={() => setEditing(null)}
+          onSubmit={saveProperties(editing.fields)}
           onSaved={refresh}
         >
           <TextField
@@ -386,7 +537,7 @@ export function DocumentScreen({
           <PickerField
             name="categoryId"
             label={translate('documents.field.category')}
-            options={categories}
+            options={editing.categories}
             defaultValue={document.categoryId ?? ''}
             clearable
           />
@@ -394,26 +545,26 @@ export function DocumentScreen({
             name="confidentialityId"
             label={translate('documents.field.confidentiality')}
             hint={translate('documents.field.confidentialityRaiseOnly')}
-            options={confidentialityLevels}
+            options={editing.confidentialityLevels}
             defaultValue={document.confidentialityId}
           />
           <MetadataFields
-            fields={fields}
+            fields={editing.fields}
             values={values}
-            userChoices={users}
-            departmentChoices={departments}
+            userChoices={editing.users}
+            departmentChoices={editing.departments}
           />
         </FormDialog>
       )}
 
-      {moving && (
+      {moving !== null && (
         <FormDialog
           open
           title={translate('documents.actions.move')}
           // A move changes the folder, and the folder is the chain permissions are inherited along.
           // Saying so in the dialogue is the only warning anybody gets.
           description={translate('documents.move.warning')}
-          onClose={() => setMoving(false)}
+          onClose={() => setMoving(null)}
           onSubmit={(data) =>
             moveDocument(document.id, document.version, { folderId: text(data, 'folderId') })
           }
@@ -423,10 +574,7 @@ export function DocumentScreen({
             name="folderId"
             label={translate('documents.field.folder')}
             required
-            options={folders.map((folder) => ({
-              value: folder.id,
-              label: folder.path === folder.id ? folder.name : `${folder.name}`,
-            }))}
+            options={moving.folders}
             defaultValue={document.folderId}
           />
         </FormDialog>
@@ -500,6 +648,8 @@ export function DocumentScreen({
 
       {revisions}
 
+      {signatures}
+
       {audit}
 
       <p>
@@ -515,23 +665,42 @@ export function DocumentScreen({
           {translate('documents.actions.backToFolder')}
         </Button>
       </p>
-    </div>
+    </WorkspacePage>
   );
 }
 
 function Property({
   label,
   value,
+  wrap,
 }: {
   readonly label: string;
   readonly value: string | null;
+  /**
+   * Let the value break across lines instead of truncating it — Phase 7.1.
+   *
+   * One property needs it and the reason is worth stating: the content digest. Phase 3 shipped it
+   * *in full* on purpose — "it is what makes 'the bytes an approver approved are unchanged' provable
+   * rather than promised, and truncating it would make it decorative" — and then rendered it inside
+   * a `truncate`, so the screen showed about a third of it. That was a contradiction between the
+   * comment and the pixels for four phases.
+   *
+   * It was also a layout defect. A sixty-four character hexadecimal string has no break opportunity,
+   * so it set the automatic minimum size of its grid item, and the whole two-card row inherited a
+   * 588px floor. On a 390px phone the record page overflowed by 198px — measured, not inferred.
+   * `break-all` fixes both at once: the digest is fully readable, and the card can be as narrow as
+   * the viewport.
+   */
+  readonly wrap?: boolean | undefined;
 }): ReactNode {
   return (
     <div className="min-w-0">
       <dt className="text-sm opacity-70">{label}</dt>
       {/* A dash rather than an empty cell: "not set" and "the server did not say" look identical
           otherwise, and only the first is an ordinary state. */}
-      <dd className="truncate">{value === null || value === '' ? '—' : value}</dd>
+      <dd className={wrap === true ? 'font-mono text-xs break-all' : 'truncate'}>
+        {value === null || value === '' ? '—' : value}
+      </dd>
     </div>
   );
 }

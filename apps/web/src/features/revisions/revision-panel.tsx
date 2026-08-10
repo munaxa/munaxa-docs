@@ -3,7 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Alert, Badge, Button, Card, Dropzone, Progress, Select, useToast } from '@munaxa/ui';
+import { Alert, Badge, Button, Dropzone, Panel, Progress, Select, useToast } from '@munaxa/ui';
+import { GitBranch } from '@munaxa/icons';
 
 import type {
   Document,
@@ -111,23 +112,33 @@ export function RevisionPanel({
     canPublish && document.status === 'APPROVED' && availableTransitions.includes('PUBLISHED');
 
   return (
-    <Card>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-medium">{translate('revisions.title')}</h2>
-        <div className="flex flex-wrap gap-2">
+    // `Panel` — Phase 7.2, for the reason the four sections beside it use it: one heading treatment
+    // from the design system, one rule between a section's title and its contents, and a labelled
+    // region a screen-reader user can jump to. The actions move into the panel's own header slot,
+    // at `sm`, because a section's actions should not carry the weight of the page's.
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          <GitBranch className="size-4 opacity-70" aria-hidden />
+          {translate('revisions.title')}
+        </span>
+      }
+      actions={
+        <div className="flex flex-wrap gap-1">
           {offerCheckOut && (
-            <Button type="button" onClick={() => run(checkOutDocument(document.id))}>
+            <Button type="button" size="sm" onClick={() => run(checkOutDocument(document.id))}>
               {translate('revisions.actions.checkOut')}
             </Button>
           )}
           {offerCheckIn && (
-            <Button type="button" onClick={() => setCheckingIn(true)}>
+            <Button type="button" size="sm" onClick={() => setCheckingIn(true)}>
               {translate('revisions.actions.checkIn')}
             </Button>
           )}
           {offerCancel && (
             <Button
               type="button"
+              size="sm"
               variant="outline"
               onClick={() => run(cancelCheckOut(document.id))}
             >
@@ -135,20 +146,20 @@ export function RevisionPanel({
             </Button>
           )}
           {offerForce && (
-            <Button type="button" variant="destructive" onClick={() => setForcing(true)}>
+            <Button type="button" size="sm" variant="destructive" onClick={() => setForcing(true)}>
               {translate('revisions.actions.forceCheckIn')}
             </Button>
           )}
           {offerPublish && (
-            <Button type="button" onClick={() => setPublishing(true)}>
+            <Button type="button" size="sm" onClick={() => setPublishing(true)}>
               {translate('revisions.actions.publish')}
             </Button>
           )}
         </div>
-      </div>
-
+      }
+    >
       {lock !== null && (
-        <Alert tone={holdsLock ? 'info' : 'warning'} className="mt-3">
+        <Alert tone={holdsLock ? 'info' : 'warning'} className="mb-3">
           {translate(
             holdsLock
               ? 'revisions.lock.heldByYou'
@@ -269,7 +280,7 @@ export function RevisionPanel({
           <TextAreaField name="changeNote" label={translate('revisions.restore.changeNote')} />
         </FormDialog>
       )}
-    </Card>
+    </Panel>
   );
 }
 

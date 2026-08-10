@@ -1,8 +1,36 @@
 import type { Catalogue } from './en';
+import { plural } from '../plural';
 
 /**
  * The Arabic catalogue, typed against the English one: a key that English has and Arabic
  * lacks is a compile error, which is the only reliable way to keep two catalogues honest.
+ *
+ * ## Counting in Arabic — the approved policy, applied to all 23 plural messages
+ *
+ * Arabic agrees a counted noun with its number across six categories, and the product now does it
+ * the same way everywhere (Phase 7.4C; the decision and its evidence are in
+ * `docs/reports/phase-7.4c-arabic-pluralization-completion.md`):
+ *
+ * | category | construction | example |
+ * | --- | --- | --- |
+ * | `zero`  | digit + plural       | `0 صفوف`  |
+ * | `one`   | digit + singular     | `1 صف`    |
+ * | `two`   | **dual, no digit**   | `صفان`    |
+ * | `few`   | digit + plural       | `3 صفوف`  |
+ * | `many`  | digit + singular accusative (تمييز منصوب) | `11 صفًا` |
+ * | `other` | digit + singular genitive | `100 صف` |
+ *
+ * `two` carries no `{count}` on purpose: the dual already means two, so printing the digit beside it
+ * says it twice. That is the one place a form deliberately drops an interpolation variable.
+ *
+ * The vocabulary is the catalogue's own throughout — `صفوف`, `أحداث`, `مستندات`, `وثائق`, `أشخاص`,
+ * `عناصر`, `أرقام`, `عطلات`, `قرارات`, `نتائج`, `مرات`, `إشعارات` — and the document messages use
+ * `وثيقة`, which is what `documents.title` and `bulk.bar.label` already call a document.
+ *
+ * Sentence-embedded messages agree beyond the noun: `admin.roles.inUseByMembers` moves its pronoun
+ * (`عنه` → `عنهما` → `عنهم`), `admin.list.inUseByTypes` moves `عدّله` → `عدّلهما` → `عدّلها`, and the
+ * three `bulk.result.*` messages take feminine verb agreement (`رُفِضت`, `مُنِعت`, `أخفقت`) because
+ * what they count is `وثيقة`.
  */
 export const ar: Catalogue = {
   app: {
@@ -19,6 +47,7 @@ export const ar: Catalogue = {
     notFound: 'الصفحة غير موجودة',
     notFoundHint: 'الصفحة المطلوبة غير موجودة، أو لا تملك صلاحية الوصول إليها.',
     offline: 'أنت غير متصل بالإنترنت',
+    rateLimited: 'عدد كبير من الطلبات',
   },
   auth: {
     signIn: 'تسجيل الدخول',
@@ -40,7 +69,14 @@ export const ar: Catalogue = {
     mfaCodeHint: 'ستة أرقام من تطبيق المصادقة، أو أحد رموز الاسترداد.',
     mfaTitle: 'التحقق بخطوتين',
     mfaNotEnrolledHint: 'أضف تطبيق مصادقة حتى لا تكفي كلمة مرور مسروقة للوصول إلى وثائقك.',
-    mfaEnrolledHint: 'تطبيق المصادقة مُفعَّل. لديك {count} من رموز الاسترداد غير المستخدمة.',
+    mfaEnrolledHint: plural({
+      zero: 'تطبيق المصادقة مُفعَّل. لديك {count} رموز استرداد غير مستخدمة.',
+      one: 'تطبيق المصادقة مُفعَّل. لديك {count} رمز استرداد غير مستخدم.',
+      two: 'تطبيق المصادقة مُفعَّل. لديك رمزا استرداد غير مستخدمين.',
+      few: 'تطبيق المصادقة مُفعَّل. لديك {count} رموز استرداد غير مستخدمة.',
+      many: 'تطبيق المصادقة مُفعَّل. لديك {count} رمز استرداد غير مستخدم.',
+      other: 'تطبيق المصادقة مُفعَّل. لديك {count} رمز استرداد غير مستخدم.',
+    }),
     mfaStart: 'إعداد تطبيق مصادقة',
     mfaStartAgain: 'ابدأ الإعداد من جديد',
     mfaRemove: 'إزالة تطبيق المصادقة',
@@ -74,6 +110,11 @@ export const ar: Catalogue = {
     notifications: 'الإشعارات',
     recycleBin: 'سلة المحذوفات',
     reports: 'التقارير',
+    breadcrumb: 'مسار التنقل',
+    groupWork: 'العمل',
+    groupLibrary: 'المكتبة',
+    groupOversight: 'الرقابة',
+    groupSystem: 'النظام',
   },
   admin: {
     title: 'الإدارة',
@@ -115,7 +156,14 @@ export const ar: Catalogue = {
       resizeColumn: 'تغيير عرض {name}',
       selectAll: 'تحديد كل الصفوف',
       selectRow: 'تحديد {name}',
-      rowCount: '{count} صفًا',
+      rowCount: plural({
+        zero: '{count} صفوف',
+        one: '{count} صف',
+        two: 'صفان',
+        few: '{count} صفوف',
+        many: '{count} صفًا',
+        other: '{count} صف',
+      }),
       pagination: 'الصفحات',
       previousPage: 'السابق',
       nextPage: 'التالي',
@@ -140,8 +188,22 @@ export const ar: Catalogue = {
       loading: 'جارٍ التحميل…',
       recycleBin: 'سلة المحذوفات',
       filterAny: 'الكل',
-      inUseByTypes: 'مستخدم في {count} من أنواع المستندات. عدّلها أولًا.',
-      inUseByChildren: 'يحتوي على {count} من العناصر.',
+      inUseByTypes: plural({
+        zero: 'مستخدم في {count} أنواع مستندات. عدّلها أولًا.',
+        one: 'مستخدم في {count} نوع مستند. عدّله أولًا.',
+        two: 'مستخدم في نوعَي مستند. عدّلهما أولًا.',
+        few: 'مستخدم في {count} أنواع مستندات. عدّلها أولًا.',
+        many: 'مستخدم في {count} نوع مستند. عدّلها أولًا.',
+        other: 'مستخدم في {count} نوع مستند. عدّلها أولًا.',
+      }),
+      inUseByChildren: plural({
+        zero: 'يحتوي على {count} عناصر.',
+        one: 'يحتوي على {count} عنصر.',
+        two: 'يحتوي على عنصرين.',
+        few: 'يحتوي على {count} عناصر.',
+        many: 'يحتوي على {count} عنصرًا.',
+        other: 'يحتوي على {count} عنصر.',
+      }),
       needsPrerequisite: 'أضف {name} واحدًا على الأقل قبل ذلك.',
     },
     fields: {
@@ -152,6 +214,7 @@ export const ar: Catalogue = {
       name: 'الاسم',
       description: 'الوصف',
       status: 'الحالة',
+      record: 'السجل',
       createdAt: 'تاريخ الإنشاء',
       updatedAt: 'آخر تعديل',
       deletedAt: 'تاريخ الحذف',
@@ -238,7 +301,14 @@ export const ar: Catalogue = {
       grantAll: 'منح الكل',
       revokeAll: 'سحب الكل',
       cannotDeleteSystem: 'لا يمكن حذف دور مدمج.',
-      inUseByMembers: 'يحمل هذا الدور {count} من الأشخاص. أزِله عنهم أولًا.',
+      inUseByMembers: plural({
+        zero: 'يحمل هذا الدور {count} أشخاص. أزِله عنهم أولًا.',
+        one: 'يحمل هذا الدور {count} شخص. أزِله عنه أولًا.',
+        two: 'يحمل هذا الدور شخصان. أزِله عنهما أولًا.',
+        few: 'يحمل هذا الدور {count} أشخاص. أزِله عنهم أولًا.',
+        many: 'يحمل هذا الدور {count} شخصًا. أزِله عنهم أولًا.',
+        other: 'يحمل هذا الدور {count} شخص. أزِله عنهم أولًا.',
+      }),
     },
     permissions: {
       title: 'الصلاحيات',
@@ -412,7 +482,14 @@ export const ar: Catalogue = {
         entityCode: 'رمز الكيان',
         departmentCode: 'رمز القسم',
         documentTypeCode: 'رمز نوع الوثيقة',
-        held: 'تم حجز {count} من الأرقام.',
+        held: plural({
+          zero: 'تم حجز {count} أرقام.',
+          one: 'تم حجز {count} رقم.',
+          two: 'تم حجز رقمين.',
+          few: 'تم حجز {count} أرقام.',
+          many: 'تم حجز {count} رقمًا.',
+          other: 'تم حجز {count} رقم.',
+        }),
         void: 'إلغاء',
         voidWarning: 'سيُلغى {value}. تُحفظ القيمة للأبد ولا يمكن إسنادها إلى وثيقة أبدًا.',
         voidReason: 'سبب الاستغناء عنه',
@@ -541,7 +618,14 @@ export const ar: Catalogue = {
       description: 'مجموعات مُسمّاة من الأشخاص يمكن لمرحلة اعتماد مخاطبتها.',
       one: 'مجموعة اعتماد',
       members: 'الأعضاء',
-      memberCount: '{count} أشخاص',
+      memberCount: plural({
+        zero: '{count} أشخاص',
+        one: '{count} شخص',
+        two: 'شخصان',
+        few: '{count} أشخاص',
+        many: '{count} شخصًا',
+        other: '{count} شخص',
+      }),
       notAPermission:
         'المجموعة قائمة توجيه لا صلاحية. إضافة شخص تجعله مرشحًا لمرحلة تسمّي المجموعة، ولا تمنحه شيئًا.',
       inUse: 'ما زال مسار عمل يوجّه إلى هذه المجموعة. عطّلها بدل حذفها.',
@@ -559,7 +643,14 @@ export const ar: Catalogue = {
       addHoliday: 'أضف عطلة',
       holidayDate: 'التاريخ',
       holidayName: 'الاسم',
-      holidayCount: '{count} عطلات',
+      holidayCount: plural({
+        zero: '{count} عطلات',
+        one: '{count} عطلة',
+        two: 'عطلتان',
+        few: '{count} عطلات',
+        many: '{count} عطلةً',
+        other: '{count} عطلة',
+      }),
       timeZone: 'تُحتسب بتوقيت {zone}',
       preview: 'معاينة موعد',
       previewResult: '{duration} من الآن يستحق في {date}، بتخطي {skipped} أيام.',
@@ -635,7 +726,14 @@ export const ar: Catalogue = {
       suppressionsHint:
         'رُفض البريد إلى هذه العناوين رفضًا نهائيًا ولم تعد تُحاوَل. ولا تتأثر الإشعارات داخل التطبيق.',
       noSuppressions: 'لم يُعلَّق أي عنوان.',
-      bounces: '{count} حالات رفض',
+      bounces: plural({
+        zero: '{count} حالات رفض',
+        one: '{count} حالة رفض',
+        two: 'حالتا رفض',
+        few: '{count} حالات رفض',
+        many: '{count} حالة رفض',
+        other: '{count} حالة رفض',
+      }),
       releaseLabel: 'استئناف البريد إلى',
       releaseHint: 'اكتب العنوان كاملًا. تعرض القائمة أعلاه عناوين مقنّعة عن قصد.',
       release: 'استئناف',
@@ -648,7 +746,14 @@ export const ar: Catalogue = {
       rebuildSearchIndex: 'إعادة بناء فهرس البحث',
       searchRebuildRequested: 'تمت جدولة إعادة البناء.',
       searchNeverRebuilt: 'لم تُعِد هذه المؤسسة بناء فهرسها من قبل.',
-      searchRebuildSummary: 'تمت فهرسة {count} مستندًا، بدأت {startedAt}.',
+      searchRebuildSummary: plural({
+        zero: 'تمت فهرسة {count} مستندات، بدأت {startedAt}.',
+        one: 'تمت فهرسة {count} مستند، بدأت {startedAt}.',
+        two: 'تمت فهرسة مستندين، بدأت {startedAt}.',
+        few: 'تمت فهرسة {count} مستندات، بدأت {startedAt}.',
+        many: 'تمت فهرسة {count} مستندًا، بدأت {startedAt}.',
+        other: 'تمت فهرسة {count} مستند، بدأت {startedAt}.',
+      }),
       searchRebuildRunning: 'قيد التنفيذ',
       searchRebuildCompleted: 'اكتملت',
       searchRebuildFailed: 'فشلت',
@@ -788,6 +893,7 @@ export const ar: Catalogue = {
       unfavorite: 'إزالة من المفضلة',
       scan: 'مسح وثائق ضوئيًا',
       backToFolder: 'العودة إلى المجلد',
+      more: 'إجراءات أخرى',
       notReachable: 'لم يجتز هذا الملف فحص البرمجيات الخبيثة.',
       assignNumber: 'إسناد رقم',
       permissions: 'الصلاحيات',
@@ -796,6 +902,7 @@ export const ar: Catalogue = {
     },
     number: {
       pending: 'معلّق',
+      none: 'لم يُرقَّم بعد',
     },
     assignNumber: {
       warning:
@@ -818,6 +925,12 @@ export const ar: Catalogue = {
       reasonHint: 'يُسجَّل في سجل التدقيق. مثال: سُحبت عن طريق الخطأ.',
     },
     upload: {
+      sectionFiles: 'الملفات',
+      sectionFilesHint: 'كل ملف يصبح وثيقة مستقلة في هذا المجلد.',
+      sectionClassification: 'التصنيف',
+      sectionClassificationHint: 'كيف تُحفظ هذه الوثيقة وتُرقَّم ومن يمكنه الاطلاع عليها.',
+      sectionDetails: 'التفاصيل',
+
       title: 'إضافة وثائق',
       scanTitle: 'مسح وثائق ضوئيًا',
       into: 'إلى {folder}',
@@ -825,9 +938,23 @@ export const ar: Catalogue = {
       scanPrompt: 'أفلت الصفحات الممسوحة هنا، أو اخترها',
       browse: 'اختيار ملفات',
       hint: 'PDF وWord وExcel وPowerPoint والصور وDWG وZIP والنصوص.',
-      fileCount: 'حفظ {count} وثيقة',
+      fileCount: plural({
+        zero: 'حفظ {count} وثائق',
+        one: 'حفظ {count} وثيقة',
+        two: 'حفظ وثيقتين',
+        few: 'حفظ {count} وثائق',
+        many: 'حفظ {count} وثيقةً',
+        other: 'حفظ {count} وثيقة',
+      }),
       fileAnyway: 'احفظها على أي حال',
-      duplicateWarning: 'هذا الملف نفسه محفوظ بالفعل {count} مرة في هذه المؤسسة:',
+      duplicateWarning: plural({
+        zero: 'هذا الملف نفسه محفوظ بالفعل {count} مرات في هذه المؤسسة:',
+        one: 'هذا الملف نفسه محفوظ بالفعل {count} مرة في هذه المؤسسة:',
+        two: 'هذا الملف نفسه محفوظ بالفعل مرتين في هذه المؤسسة:',
+        few: 'هذا الملف نفسه محفوظ بالفعل {count} مرات في هذه المؤسسة:',
+        many: 'هذا الملف نفسه محفوظ بالفعل {count} مرةً في هذه المؤسسة:',
+        other: 'هذا الملف نفسه محفوظ بالفعل {count} مرة في هذه المؤسسة:',
+      }),
       blockedByDuplicates: 'أكّد التكرارات أعلاه قبل الحفظ.',
       unscanned: 'بعض هذه الملفات لم تجتز فحص البرمجيات الخبيثة بعد ولا يمكن حفظها حتى تجتازه.',
       rejected: {
@@ -971,7 +1098,14 @@ export const ar: Catalogue = {
     failed: 'تعذّر إنتاج المعاينة.',
     downloadInstead: 'يمكنك تنزيل الملف بدلًا من ذلك.',
     searchPlaceholder: 'ابحث في المستند',
-    matches: '{count} نتيجة',
+    matches: plural({
+      zero: '{count} نتائج',
+      one: '{count} نتيجة',
+      two: 'نتيجتان',
+      few: '{count} نتائج',
+      many: '{count} نتيجةً',
+      other: '{count} نتيجة',
+    }),
     nextMatch: 'النتيجة التالية',
     zoomIn: 'تكبير',
     zoomOut: 'تصغير',
@@ -1069,7 +1203,14 @@ export const ar: Catalogue = {
       failed: 'تعذّر طلب التصدير.',
       none: 'لا توجد عمليات تصدير بعد',
       download: 'تنزيل',
-      events: '{count} حدثاً',
+      events: plural({
+        zero: '{count} أحداث',
+        one: '{count} حدث',
+        two: 'حدثان',
+        few: '{count} أحداث',
+        many: '{count} حدثًا',
+        other: '{count} حدث',
+      }),
       chainBroken: 'السلسلة مكسورة في هذا النطاق',
       state: {
         requested: 'مطلوب',
@@ -1116,7 +1257,14 @@ export const ar: Catalogue = {
     declineReason: 'سبب الرفض',
     period: 'المدة',
     used: 'الاستخدام',
-    useCount: '{count} قرارات',
+    useCount: plural({
+      zero: '{count} قرارات',
+      one: '{count} قرار',
+      two: 'قراران',
+      few: '{count} قرارات',
+      many: '{count} قرارًا',
+      other: '{count} قرار',
+    }),
     approvedBy: 'وافق عليه',
     pair: '{delegator} ← {delegate}',
     filter: {
@@ -1148,7 +1296,14 @@ export const ar: Catalogue = {
     emptyUnread: 'لا يوجد غير مقروء',
     emptyHint: 'ستظهر هنا الاعتمادات وعمليات النشر وكل ما يحتاج إليك.',
     unread: 'غير مقروء',
-    unreadCount: '{count} غير مقروء',
+    unreadCount: plural({
+      zero: '{count} إشعارات غير مقروءة',
+      one: '{count} إشعار غير مقروء',
+      two: 'إشعاران غير مقروءين',
+      few: '{count} إشعارات غير مقروءة',
+      many: '{count} إشعارًا غير مقروء',
+      other: '{count} إشعار غير مقروء',
+    }),
     markRead: 'تعليم كمقروء',
     markAllRead: 'تعليم الكل كمقروء',
     allRead: 'تم تعليم الكل كمقروء',
@@ -1262,7 +1417,13 @@ export const ar: Catalogue = {
   bulk: {
     bar: {
       label: 'الوثائق المحدَّدة',
-      selected: 'المحدَّد: {count}',
+      selected: plural({
+        // Invariant by product decision — a label with a value, not a counted phrase. This
+        // message lives in `ResourceList`, shared across the document library and every
+        // administration screen, so it counts whatever that list holds and cannot agree with a
+        // noun it does not know. `المحدَّد: {count}` sidesteps agreement rather than guessing it.
+        other: 'المحدَّد: {count}',
+      }),
       clear: 'إلغاء التحديد',
     },
     action: {
@@ -1274,9 +1435,30 @@ export const ar: Catalogue = {
     result: {
       title: 'ما حدث لكل عنصر',
       summary: 'طُبِّق {applied} من {requested}.',
-      refusedHint: 'رُفِض {count} لعدم امتلاكك صلاحية الوصول إليها.',
-      blockedHint: 'مُنِع {count} بقاعدة، مثل حجز قانوني.',
-      failedHint: 'أخفق {count} بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+      refusedHint: plural({
+        zero: 'رُفِضت {count} وثائق لعدم امتلاكك صلاحية الوصول إليها.',
+        one: 'رُفِضت {count} وثيقة لعدم امتلاكك صلاحية الوصول إليها.',
+        two: 'رُفِضت وثيقتان لعدم امتلاكك صلاحية الوصول إليهما.',
+        few: 'رُفِضت {count} وثائق لعدم امتلاكك صلاحية الوصول إليها.',
+        many: 'رُفِضت {count} وثيقةً لعدم امتلاكك صلاحية الوصول إليها.',
+        other: 'رُفِضت {count} وثيقة لعدم امتلاكك صلاحية الوصول إليها.',
+      }),
+      blockedHint: plural({
+        zero: 'مُنِعت {count} وثائق بقاعدة، مثل حجز قانوني.',
+        one: 'مُنِعت {count} وثيقة بقاعدة، مثل حجز قانوني.',
+        two: 'مُنِعت وثيقتان بقاعدة، مثل حجز قانوني.',
+        few: 'مُنِعت {count} وثائق بقاعدة، مثل حجز قانوني.',
+        many: 'مُنِعت {count} وثيقةً بقاعدة، مثل حجز قانوني.',
+        other: 'مُنِعت {count} وثيقة بقاعدة، مثل حجز قانوني.',
+      }),
+      failedHint: plural({
+        zero: 'أخفقت {count} وثائق بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        one: 'أخفقت {count} وثيقة بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        two: 'أخفقت وثيقتان بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        few: 'أخفقت {count} وثائق بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        many: 'أخفقت {count} وثيقةً بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        other: 'أخفقت {count} وثيقة بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+      }),
       close: 'إغلاق',
       links: 'روابط التنزيل',
     },
@@ -1319,6 +1501,7 @@ export const ar: Catalogue = {
   signatures: {
     title: 'التوقيعات',
     empty: 'لم يوقّع أحد على هذه المراجعة.',
+    open: 'توقيع',
     sign: 'وقّع هذه المراجعة',
     field: {
       purpose: 'أوقّع بصفتي',
@@ -1336,7 +1519,14 @@ export const ar: Catalogue = {
     },
     signedBy: '{name} — {purpose}',
     withdrawn: 'مسحوب',
-    withdraw: { action: 'سحب', reason: 'لماذا تسحب هذا التوقيع؟', submit: 'سحب' },
+    withdraw: {
+      action: 'سحب',
+      reason: 'لماذا تسحب هذا التوقيع؟',
+      submit: 'سحب',
+      title: 'سحب توقيعك',
+      description:
+        'يبقى توقيعك في السجل موسومًا بأنه مسحوب مع سببك. لا يُحذف شيء، ويحتفظ سجل التدقيق بالفعلين معًا.',
+    },
     verify: {
       action: 'تحقّق',
       title: 'التحقّق من التوقيع',
@@ -1346,6 +1536,45 @@ export const ar: Catalogue = {
       withdrawn: 'سحب الموقِّع هذا التوقيع.',
       witnessedBy: 'شاهد عليه {witness}',
       statement: 'ما جرى توقيعه',
+      checking: 'جارٍ التحقق\u2026',
+      contentIntact: 'ما زالت المراجعة تحمل المحتوى الذي وُقّع عليه.',
+      standing: 'هذا التوقيع قائم.',
+      algorithm: 'الخوارزمية {algorithm}',
+      failed: 'تعذّر إتمام التحقق.',
+    },
+    ceremony: {
+      title: 'توقيع هذه المراجعة',
+      revisionLabel: 'المراجعة',
+      purposeHint: 'يُسجَّل مع توقيعك ولا يمكن تغييره لاحقًا.',
+      commentHint: 'يُسجَّل إلى جانب المعنى أعلاه، ولا يحلّ محلّه أبدًا.',
+      loadingStatement: 'جارٍ تجهيز نص الإقرار\u2026',
+      steps: {
+        review: 'مراجعة',
+        confirm: 'تأكيد',
+        signed: 'موقّع',
+      },
+      statementHeading: 'نص الإقرار الذي أنت على وشك توقيعه',
+      statementHint: 'هذا النص بالضبط هو ما يُقرّ به توقيعك. يأتي من الخادم ويُعرض دون تغيير.',
+      preparedAt: 'أُعدّ في {date}. يحمل توقيعك لحظة تأكيدك له، لا هذه اللحظة.',
+      continue: 'متابعة',
+      back: 'العودة إلى نص الإقرار',
+      confirmHeading: 'التأكيد والتوقيع',
+      confirmIntro:
+        'أنت على وشك إنشاء توقيع إلكتروني على {document}، المراجعة {revision}، بمعنى: {purpose}.',
+      confirmCheckbox: 'أوقّع هذا السجل إلكترونيًا، وأدرك أنّ هذا فعل ذو أثر قانوني.',
+      credentialsHint:
+        'يُعاد إثبات بيانات اعتمادك أثناء التوقيع، لأنّ التوقيع يحتاج مكوّن تعريف ثانيًا.',
+      submit: 'توقيع هذه المراجعة',
+      signing: 'جارٍ التوقيع\u2026',
+      cancel: 'إلغاء',
+      successTitle: 'تم التوقيع',
+      successBody: 'سُجّل توقيعك على المراجعة {revision}.',
+      done: 'إغلاق',
+    },
+    errors: {
+      conflict: 'لديك توقيع قائم على هذه المراجعة بهذا المعنى.',
+      changed: 'تغيّرت التواقيع على هذه المراجعة. راجعها أدناه.',
+      rateLimited: 'محاولات توقيع كثيرة. انتظر بضع دقائق ثم حاول مرة أخرى.',
     },
   },
   recycleBin: {
@@ -1411,8 +1640,22 @@ export const ar: Catalogue = {
       stored: 'المخزَّن',
       referenced: 'قبل إزالة التكرار',
       saved: 'الموفَّر بإزالة التكرار',
-      blobs: '{count} ملفًا',
-      unreferenced: '{count} بلا مرجع',
+      blobs: plural({
+        zero: '{count} ملفات',
+        one: '{count} ملف',
+        two: 'ملفان',
+        few: '{count} ملفات',
+        many: '{count} ملفًا',
+        other: '{count} ملف',
+      }),
+      unreferenced: plural({
+        zero: '{count} ملفات بلا مرجع',
+        one: '{count} ملف بلا مرجع',
+        two: 'ملفان بلا مرجع',
+        few: '{count} ملفات بلا مرجع',
+        many: '{count} ملفًا بلا مرجع',
+        other: '{count} ملف بلا مرجع',
+      }),
       users: 'المستخدمون',
       userState: {
         ACTIVE: 'نشِط',
@@ -1476,7 +1719,14 @@ export const ar: Catalogue = {
     run: 'تشغيل التقرير',
     any: 'الكل',
     empty: 'لا توجد صفوف مطابقة لعوامل التصفية هذه.',
-    rowCount: '{count} صف',
+    rowCount: plural({
+      zero: '{count} صفوف',
+      one: '{count} صف',
+      two: 'صفان',
+      few: '{count} صفوف',
+      many: '{count} صفًا',
+      other: '{count} صف',
+    }),
     scoping: {
       reach: 'مقصور على ما يمكنك الاطلاع عليه',
       tenant: 'المؤسسة بأكملها',

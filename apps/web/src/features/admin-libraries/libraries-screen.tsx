@@ -32,9 +32,6 @@ import {
 } from '../admin-shared';
 import { createLibrary, deleteLibrary, restoreLibrary, updateLibrary } from './actions';
 
-export const LIBRARY_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code'] as const;
-export const LIBRARY_FILTER_KEYS = ['ownerScopeType', 'ownerScopeId'] as const;
-
 const OWNER_SCOPE_LABELS: Readonly<Record<string, MessageKey>> = {
   TENANT: 'admin.libraries.ownerScopeTENANT',
   COMPANY: 'admin.libraries.ownerScopeCOMPANY',

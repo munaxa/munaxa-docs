@@ -25,8 +25,6 @@ import {
 import { createRole, deleteRole, restoreRole, updateRole } from './actions';
 import { PermissionMatrix } from './permission-matrix';
 
-export const ROLE_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'key'] as const;
-
 /**
  * Roles — named bundles of permissions.
  *

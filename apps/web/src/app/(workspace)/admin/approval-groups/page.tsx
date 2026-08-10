@@ -4,13 +4,10 @@ import type { ApprovalGroup, User } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
-import {
-  GROUP_FILTER_KEYS,
-  GROUP_SORT_FIELDS,
-  ApprovalGroupsScreen,
-} from '../../../../features/admin-approval-routing/approval-groups-screen';
+import { ApprovalGroupsScreen } from '../../../../features/admin-approval-routing/approval-groups-screen';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { GROUP_FILTER_KEYS, GROUP_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * Approval groups.

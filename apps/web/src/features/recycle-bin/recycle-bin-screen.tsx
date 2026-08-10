@@ -9,6 +9,7 @@ import { Badge, Button, Card, EmptyState, Select, useToast } from '@munaxa/ui';
 import type { RecycleBinItem } from '@edms/contracts';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
 import { restoreFromBin } from './actions';
 
 /**
@@ -79,12 +80,10 @@ export function RecycleBinScreen({
   };
 
   return (
-    <section className="flex flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold">{translate('recycleBin.title')}</h1>
-        <p className="text-muted-foreground text-sm">{translate('recycleBin.subtitle')}</p>
-      </header>
-
+    <WorkspacePage
+      title={translate('recycleBin.title')}
+      description={translate('recycleBin.subtitle')}
+    >
       <div className="flex items-center gap-3">
         <Select
           aria-label={translate('recycleBin.filter.kind')}
@@ -176,6 +175,6 @@ export function RecycleBinScreen({
           ))}
         </ul>
       )}
-    </section>
+    </WorkspacePage>
   );
 }

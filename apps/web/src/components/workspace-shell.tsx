@@ -10,6 +10,7 @@ import {
   AppShellProvider,
   Button,
   NavigationDrawer,
+  type RenderNavigationLink,
   Sidebar,
   SidebarNav,
   SidebarTrigger,
@@ -23,20 +24,33 @@ import {
   ChartColumn,
   FileCheck,
   FileText,
+  FileStack,
   Files,
   House,
+  Moon,
   type Icon,
   ScrollText,
   Search,
   Settings,
+  Sun,
+  SunMoon,
   Trash2,
   UserRoundCheck,
 } from '@munaxa/icons';
 
-import { en } from '@edms/i18n';
+import { type MessageKey, en } from '@edms/i18n';
 
 import { useTranslate } from '../app/providers';
 import type { NavigationDestination } from '../lib/navigation';
+
+/** One rendered rail row, in the shape `SidebarNav` takes. */
+interface NavigationRow {
+  readonly id: string;
+  readonly href: string;
+  readonly label: string;
+  readonly icon: ReactNode;
+  readonly active: boolean;
+}
 
 /**
  * One icon per destination.
@@ -81,6 +95,77 @@ export function iconFor(destinationId: string): Icon {
 export const NAVIGATION_ICON_IDS: readonly string[] = Object.keys(NAVIGATION_ICONS);
 
 /**
+ * The rail's sections — Phase 7.
+ *
+ * Ten destinations were handed to `SidebarNav` as **one group**, so Home, Documents, Approvals,
+ * Search, Audit, Recycle bin, Delegations, Notifications, Reports and Administration read as one
+ * undifferentiated list. A rail like that says nothing about what kind of product this is; a reader
+ * looking for the audit trail scans all ten every time.
+ *
+ * Four sections, in the order somebody works: what is in front of you, where the records live, what
+ * you oversee, and how the tenant is configured. The first has no heading — a lone dashboard link
+ * under the word "Overview" is a heading longer than the thing it heads, and `NavigationGroup`
+ * makes `title` optional for exactly this.
+ *
+ * Keyed by destination id, like `NAVIGATION_ICONS` above and for the same reason: which
+ * destinations exist is the server's decision, resolved from permissions in `lib/navigation.ts`;
+ * how the ones that exist are arranged on screen is this file's. A group whose destinations the
+ * caller does not hold is dropped rather than rendered empty — the platform's own rule.
+ */
+const NAVIGATION_SECTIONS: readonly {
+  readonly id: string;
+  readonly titleKey: MessageKey | null;
+  readonly destinations: readonly string[];
+}[] = [
+  { id: 'overview', titleKey: null, destinations: ['home'] },
+  { id: 'library', titleKey: 'nav.groupLibrary', destinations: ['documents', 'search'] },
+  {
+    id: 'work',
+    titleKey: 'nav.groupWork',
+    destinations: ['approvals', 'delegations', 'notifications'],
+  },
+  {
+    id: 'oversight',
+    titleKey: 'nav.groupOversight',
+    destinations: ['audit', 'reports', 'recycle-bin'],
+  },
+  { id: 'system', titleKey: 'nav.groupSystem', destinations: ['admin'] },
+];
+
+/**
+ * Whether the section headings are rendered — Phase 7.1, and it is currently `false`.
+ *
+ * Phase 7 gave the rail four named sections. Phase 7.1 added a baseline for the product's own
+ * arrangement, which had never been rendered anywhere a contrast check could see it, and the check
+ * failed immediately: `SidebarNav` styles a group heading `text-muted-foreground/70` at
+ * `text-[10px]`, which is **2.78:1** on the Docs light surface against the 4.5:1 WCAG 2.1 AA
+ * requires. Phase 7 shipped four of them without knowing.
+ *
+ * There is no product-side fix. The classes are the platform component's own, and both remedies
+ * available here — overriding platform styling, or hardcoding a colour — are forbidden by
+ * `ARCHITECTURE.md` and by this phase's own brief. So the words pause and the accessibility does
+ * not: `NavigationGroup.title` is optional by the platform's design, an untitled group still
+ * renders as its own separated run (the nav's `gap-5`), and the four sections stay in the order and
+ * the shape Phase 7 gave them.
+ *
+ * The titles are kept in the table below rather than deleted, because restoring them is this one
+ * constant once the palette or the opacity is fixed upstream. The Phase 7.1 report carries the
+ * measurement and the request.
+ */
+const SECTION_HEADINGS_ACCESSIBLE = false;
+
+/**
+ * Exported for the test that keeps the sections in step with the destination table.
+ *
+ * A destination missing from every section would still render — in a trailing group, because the
+ * alternative is a navigation row that silently disappears when somebody adds a screen. The test is
+ * what stops anybody relying on that.
+ */
+export const NAVIGATION_SECTION_IDS: readonly string[] = NAVIGATION_SECTIONS.flatMap(
+  (section) => section.destinations,
+);
+
+/**
  * The authenticated frame: rail, drawer, top bar, content.
  *
  * Every piece comes from `@munaxa/ui`. Nothing here re-implements a shell, a menu or a
@@ -108,44 +193,13 @@ export function WorkspaceShell({
   children: ReactNode;
 }): ReactNode {
   const translate = useTranslate();
-  const pathname = usePathname();
 
-  const groups = [
-    {
-      id: 'main',
-      items: destinations.map((destination) => {
-        const Icon = iconFor(destination.id);
-        return {
-          id: destination.id,
-          href: destination.href,
-          label: translate(destination.labelKey),
-          // `size-4` because that is the platform's own icon size — 38 uses across its
-          // components, against 2 of anything else. Picking a size here rather than matching
-          // theirs is how a design system stops being one.
-          //
-          // `aria-hidden` because the row already carries its label — visibly when the rail is
-          // open, as `sr-only` text when it is collapsed. An icon announced beside it would say
-          // the same thing twice.
-          icon: <Icon className="size-4" aria-hidden />,
-          // Exact match for the workspace root, prefix match for everything else, so a nested
-          // route still highlights the section it belongs to.
-          active:
-            destination.href === '/' ? pathname === '/' : pathname.startsWith(destination.href),
-        };
-      }),
-    },
-  ];
-
-  const renderLink = ({
+  const renderLink: RenderNavigationLink = ({
     href,
     className,
     children: linkChildren,
     ...rest
-  }: {
-    href: string;
-    className?: string;
-    children: ReactNode;
-  }): ReactNode => (
+  }) => (
     // The platform hands `href` back as a plain string — it must not import a router, so it
     // cannot know Next's route type. The destinations it was given were typed on the way in
     // (`lib/navigation.ts`), which is where a bad route is actually caught.
@@ -154,9 +208,7 @@ export function WorkspaceShell({
     </Link>
   );
 
-  const navigation = (
-    <SidebarNav groups={groups} label={translate('nav.main')} renderLink={renderLink} />
-  );
+  const navigation = <WorkspaceRail destinations={destinations} renderLink={renderLink} />;
 
   return (
     <AppShellProvider>
@@ -196,8 +248,122 @@ export function WorkspaceShell({
   );
 }
 
+/**
+ * The product's own navigation rail — Phase 7.1, extracted so it can be looked at.
+ *
+ * The grouping arrived in Phase 7 and nothing rendered it in isolation, so the visual suite covered
+ * the *platform's* `SidebarNav` with fixture groups and covered this product's arrangement not at
+ * all. Four named sections in a particular order, built from the destinations the server actually
+ * resolved, is a decision worth a baseline: a section renamed, reordered or dropped changes every
+ * screen in the application.
+ *
+ * `renderLink` is optional because the baseline renders this outside a router. In the application
+ * the shell passes Next's `Link`; on its own it falls back to the platform's plain anchor, which is
+ * the same markup for the purpose of a screenshot.
+ */
+export function WorkspaceRail({
+  destinations,
+  renderLink,
+  collapsed,
+}: {
+  readonly destinations: readonly NavigationDestination[];
+  readonly renderLink?: RenderNavigationLink | undefined;
+  readonly collapsed?: boolean | undefined;
+}): ReactNode {
+  const translate = useTranslate();
+  const pathname = usePathname();
+
+  const itemFor = (destination: NavigationDestination): NavigationRow => {
+    const Icon = iconFor(destination.id);
+    return {
+      id: destination.id,
+      href: destination.href,
+      label: translate(destination.labelKey),
+      // `size-4` because that is the platform's own icon size — 38 uses across its
+      // components, against 2 of anything else. Picking a size here rather than matching
+      // theirs is how a design system stops being one.
+      //
+      // `aria-hidden` because the row already carries its label — visibly when the rail is
+      // open, as `sr-only` text when it is collapsed. An icon announced beside it would say
+      // the same thing twice.
+      icon: <Icon className="size-4" aria-hidden />,
+      // Exact match for the workspace root, prefix match for everything else, so a nested
+      // route still highlights the section it belongs to.
+      active: destination.href === '/' ? pathname === '/' : pathname.startsWith(destination.href),
+    };
+  };
+
+  const byId = new Map(destinations.map((destination) => [destination.id, destination]));
+  const placed = new Set(NAVIGATION_SECTION_IDS);
+
+  const groups = [
+    ...NAVIGATION_SECTIONS.flatMap((section) => {
+      const items = section.destinations
+        .map((id) => byId.get(id))
+        .filter((destination): destination is NavigationDestination => destination !== undefined)
+        .map(itemFor);
+      // "A group with no visible items should not be passed in at all" — the platform's own
+      // instruction, and the reason a caller who holds no administration permission sees no
+      // "System" heading rather than an empty one.
+      return items.length === 0
+        ? []
+        : [
+            {
+              id: section.id,
+              ...(SECTION_HEADINGS_ACCESSIBLE && section.titleKey !== null
+                ? { title: translate(section.titleKey) }
+                : {}),
+              items,
+            },
+          ];
+    }),
+    // Anything the sections above do not name. Empty in practice — `workspace-shell.spec.tsx`
+    // asserts it — and present so that adding a destination without touching this file yields a
+    // navigation row in the wrong place rather than no navigation row at all.
+    ...(() => {
+      const rest = destinations.filter((destination) => !placed.has(destination.id)).map(itemFor);
+      return rest.length === 0 ? [] : [{ id: 'other', items: rest }];
+    })(),
+  ];
+
+  return (
+    <SidebarNav
+      groups={groups}
+      label={translate('nav.main')}
+      {...(renderLink !== undefined && { renderLink })}
+      {...(collapsed !== undefined && { collapsed })}
+    />
+  );
+}
+
+/**
+ * The workspace's identity anchor — Phase 7.
+ *
+ * It was a bare `<span>`: the top-left of the application, which is the first thing a reader's eye
+ * lands on, said the product's name in the same weight as a navigation row. A mark beside the name
+ * is what makes the rail read as a product rather than as a menu, and it is the one place a small
+ * amount of visual assertion is worth spending.
+ *
+ * Built from a token class and a platform icon rather than an asset: the brand is `bg-primary`, so
+ * it retunes with the palette in `munaxa-platform` and needs no image to ship, no dark-mode variant
+ * and no second file to keep in step. `ARCHITECTURE.md`'s rule — branding is configuration, not
+ * code — is satisfied by using the semantic colour rather than a picture of it.
+ *
+ * The mark is `aria-hidden`; the name beside it is the accessible one, and when the rail collapses
+ * the platform hides the whole brand rather than truncating it.
+ */
 function Brand(): ReactNode {
-  return <span className="text-sm font-semibold">{en.app.name}</span>;
+  return (
+    <span className="flex items-center gap-2">
+      <span
+        className="bg-primary text-primary-foreground flex size-6 shrink-0 items-center justify-center rounded-md"
+        aria-hidden
+      >
+        <FileStack className="size-3.5" />
+      </span>
+      <span className="truncate text-sm font-semibold tracking-tight">{en.app.name}</span>
+    </span>
+  );
 }
 
 /**
@@ -211,15 +377,32 @@ function Brand(): ReactNode {
 function ThemeToggle(): ReactNode {
   const translate = useTranslate();
   const { scheme, toggle } = useTheme({ storageKey: 'edms.theme' });
+  const label =
+    scheme === null
+      ? translate('nav.appearance')
+      : translate(scheme === 'dark' ? 'nav.lightMode' : 'nav.darkMode');
 
   return (
     // `ghost` is what the hand-written classes here were already imitating — the same height,
     // radius, padding and `hover:bg-accent`. Stating it once in the platform is the difference
     // between a button that matches the top bar and one that matches it until either changes.
-    <Button variant="ghost" onClick={toggle} aria-label={translate('nav.appearance')}>
-      {scheme === null
-        ? translate('nav.appearance')
-        : translate(scheme === 'dark' ? 'nav.lightMode' : 'nav.darkMode')}
+    //
+    // **An icon rather than the word** — Phase 7. The label used to be the button's content, and it
+    // is three different lengths: "Appearance" on the server and the first paint, then "Light" or
+    // "Dark" after hydration. The top bar reflowed on load and again on every toggle. The word is
+    // still the accessible name, which is the half that matters, and it now describes what the
+    // button *does* rather than only what it is.
+    //
+    // The sun and the moon are the two states, not one icon rotating: rendering neither until the
+    // effect has run is what keeps the server's markup and the first client render identical.
+    <Button variant="ghost" size="icon" onClick={toggle} aria-label={label}>
+      {scheme === null ? (
+        <SunMoon className="size-4" aria-hidden />
+      ) : scheme === 'dark' ? (
+        <Sun className="size-4" aria-hidden />
+      ) : (
+        <Moon className="size-4" aria-hidden />
+      )}
     </Button>
   );
 }

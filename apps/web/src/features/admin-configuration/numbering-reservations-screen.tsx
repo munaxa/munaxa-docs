@@ -4,7 +4,18 @@ import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Badge, Button, Card, EmptyState, Pagination, Select, Toolbar, useToast } from '@munaxa/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Page,
+  PageHeader,
+  Pagination,
+  Select,
+  Toolbar,
+  useToast,
+} from '@munaxa/ui';
 
 import type { NumberReservation, NumberingRule } from '@edms/contracts';
 import type { NumberReservationStateKey } from '@edms/domain';
@@ -70,20 +81,26 @@ export function NumberingReservationsScreen({
   };
 
   return (
-    <div className="flex flex-col gap-4">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold">
-            {translate('admin.numbering.reservations.title', { rule: rule.name })}
-          </h1>
-          <p className="mt-1 text-sm opacity-70">
-            {translate('admin.numbering.reservations.description')}
-          </p>
-        </div>
-        <Button type="button" onClick={() => setHolding(true)}>
-          {translate('admin.numbering.reservations.holdBlock')}
-        </Button>
-      </header>
+    /*
+      `Page` + `PageHeader` — Phase 7.3, and the last hand-written page header in the product.
+
+      It reproduced `PageHeader`'s markup by hand: a wrapping flex row, a `text-2xl font-semibold`
+      title, a dimmed description under it and an action pinned to the end. Every administration
+      screen beside it gets that from `AdminScreen`, which is `PageHeader` with the title and
+      description read from message keys. This one could not use `AdminScreen` because its title is
+      *interpolated* — it names the rule — so it composes the same two primitives directly rather
+      than hand-drawing what they already draw.
+    */
+    <Page gap={4}>
+      <PageHeader
+        title={translate('admin.numbering.reservations.title', { rule: rule.name })}
+        description={translate('admin.numbering.reservations.description')}
+        actions={
+          <Button type="button" onClick={() => setHolding(true)}>
+            {translate('admin.numbering.reservations.holdBlock')}
+          </Button>
+        }
+      />
 
       <Toolbar label={translate('admin.numbering.reservations.stateFilter')}>
         <Select
@@ -178,7 +195,7 @@ export function NumberingReservationsScreen({
               if (result.ok) {
                 toast.success(
                   translate('admin.numbering.reservations.held', {
-                    count: String(result.value.values.length),
+                    count: result.value.values.length,
                   }),
                 );
               }
@@ -238,6 +255,6 @@ export function NumberingReservationsScreen({
           />
         </FormDialog>
       )}
-    </div>
+    </Page>
   );
 }

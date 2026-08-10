@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
-import { Badge, Card, EmptyState, Timeline, TimelineItem } from '@munaxa/ui';
+import { Badge, EmptyState, Panel, Stack, Timeline, TimelineItem } from '@munaxa/ui';
+import { History } from '@munaxa/icons';
 
 import type { AuditEntry, AuditPage } from '@edms/contracts';
 import type { MessageKey } from '@edms/i18n';
@@ -47,31 +48,47 @@ export async function AuditTimeline({
   }
 
   return (
-    <Card className="flex flex-col gap-3 p-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-medium">{translate('audit.timelineTitle')}</h2>
+    /*
+      The section title, its landmark and its rule all come from `Panel` — Phase 7.2.
+
+      This used to be a `Card` with a hand-written `<h2 className="text-sm font-medium">`, and four
+      other panels on the same page each had their own. Five sections, five type treatments, and not
+      one of them a labelled region a screen-reader user could jump to. `Panel` answers all of that
+      with one prop: it renders the heading in the display face at one size, draws the rule that
+      separates a section's title from its contents, and exposes the whole thing as a labelled
+      `region`.
+    */
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          <History className="size-4 opacity-70" aria-hidden />
+          {translate('audit.timelineTitle')}
+        </span>
+      }
+    >
+      <Stack gap={3}>
         <p className="text-muted-foreground text-sm">{translate('audit.timelineHint')}</p>
-      </div>
 
-      {page.data.length === 0 ? (
-        <EmptyState title={translate('audit.empty')} />
-      ) : (
-        <Timeline>
-          {page.data.map((entry) => (
-            <AuditRow key={entry.id} entry={entry} translate={translate} />
-          ))}
-        </Timeline>
-      )}
+        {page.data.length === 0 ? (
+          <EmptyState title={translate('audit.empty')} />
+        ) : (
+          <Timeline>
+            {page.data.map((entry) => (
+              <AuditRow key={entry.id} entry={entry} translate={translate} />
+            ))}
+          </Timeline>
+        )}
 
-      {page.meta.hasMore && (
-        <p className="text-muted-foreground text-sm">
-          {translate('audit.showingRecent', {
-            count: page.data.length,
-            total: page.meta.total,
-          })}
-        </p>
-      )}
-    </Card>
+        {page.meta.hasMore && (
+          <p className="text-muted-foreground text-sm">
+            {translate('audit.showingRecent', {
+              count: page.data.length,
+              total: page.meta.total,
+            })}
+          </p>
+        )}
+      </Stack>
+    </Panel>
   );
 }
 

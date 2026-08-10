@@ -75,3 +75,16 @@ apps/web/src/test/__screenshots__/*.diff.png
 # Redis writes its snapshot into whatever directory it was started from, which during local
 # integration runs is the repository root. It is a runtime artefact of a test dependency.
 dump.rdb
+
+# Where `scripts/dr-rehearsal.mjs` writes its dumps when DR_BACKUP_DIR is not set. A database dump
+# is a copy of a customer's entire record — every document, every user, every audit row — and the
+# one artefact in this repository that must never be committed by accident.
+.dr/
+.storage-backup/
+*.dump
+
+# Where `STORAGE_DRIVER=LOCAL` puts blobs. The end-to-end suites boot the API against it, so a run
+# leaves a tenant-prefixed tree of uploaded documents behind — test content, but content, and the
+# same rule as every other artefact above applies: it is the product of a run rather than part of
+# the product.
+apps/api/.storage/

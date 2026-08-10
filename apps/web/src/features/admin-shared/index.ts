@@ -6,9 +6,10 @@
  * form dialogue and the field set are the three genuinely repeated shapes in Administration; the
  * screens themselves are not, and none of them lives here.
  */
-export { AdminForbidden, AdminScreen, Prerequisite } from './screen';
+export { AdminForbidden, AdminScreen, Prerequisite, RateLimited } from './screen';
 export { ResourceList, StateBadges, type RowAction } from './resource-list';
 export { FormDialog } from './form-dialog';
+export { FormSection } from './form-section';
 export { useAdminColumns } from './columns';
 export { changedFields, isEmptyPatch, unchanged } from './patch';
 export { useListNavigation, type ListNavigation } from './list-url';

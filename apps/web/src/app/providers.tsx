@@ -5,7 +5,7 @@ import { type ReactNode, createContext, useContext, useState } from 'react';
 
 import { LocaleProvider, ToastProvider } from '@munaxa/ui';
 
-import { DEFAULT_LOCALE, type LocaleKey, type MessageKey, translatorFor } from '@edms/i18n';
+import { DEFAULT_LOCALE, type LocaleKey, type Translator, translatorFor } from '@edms/i18n';
 
 import { createQueryClient } from '../lib/query-client';
 
@@ -41,10 +41,7 @@ export function useSession(): SessionValue {
  * in English and a different word order in Arabic, and concatenating a name onto a translated
  * fragment produces a sentence no translator ever saw.
  */
-export function useTranslate(): (
-  key: MessageKey,
-  values?: Readonly<Record<string, string | number>>,
-) => string {
+export function useTranslate(): Translator {
   return translatorFor(useSession().locale);
 }
 

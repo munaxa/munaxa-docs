@@ -27,9 +27,6 @@ import {
 } from '../admin-shared';
 import { createBranch, deleteBranch, restoreBranch, updateBranch } from './actions';
 
-export const BRANCH_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code'] as const;
-export const BRANCH_FILTER_KEYS = ['entityId'] as const;
-
 /**
  * Branches — locations.
  *

@@ -8,22 +8,28 @@ import { AppShellProvider, SidebarNav } from '@munaxa/ui';
 
 import { en } from '@edms/i18n';
 
-import { iconFor } from '../components/workspace-shell';
+import RouteLoading from '../app/loading';
+import { WorkspaceRail, iconFor } from '../components/workspace-shell';
 import { Providers } from '../app/providers';
 import { ApprovalInboxScreen } from '../features/approvals/inbox-screen';
 import { DashboardScreen } from '../features/dashboard/dashboard-screen';
+import { DocumentScreen } from '../features/documents/document-screen';
 import { FolderTree } from '../features/documents/folder-tree';
 import { LibraryScreen } from '../features/documents/library-screen';
 import { SearchScreen } from '../features/search/search-screen';
+import { PermissionsScreen } from '../features/permissions/permissions-screen';
+import { SignaturePanel } from '../features/signatures/signature-panel';
 import { destinationsFor } from '../lib/navigation';
 import {
   administratorDashboard,
   approvalInboxItem,
+  document as documentFixture,
   documentSummary,
   folder,
   library,
   listState,
   searchResults,
+  signature,
   userDashboard,
 } from './fixtures';
 import {
@@ -183,6 +189,147 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
     name: 'workflow-inbox',
     ui: () => <ApprovalInboxScreen rows={[approvalInboxItem()]} decided={false} />,
   },
+  /**
+   * The signature panel, in both of the states the backend actually has — Phase 6.6.
+   *
+   * The **ceremony itself is deliberately absent**, and the harness's own docstring says why: this
+   * renders static markup, so no dialogue is opened, no portal mounts and no effect runs. A
+   * screenshot of `SigningCeremony` here would be a screenshot of nothing. The ceremony's stages
+   * are covered where they can be — by axe in `signing-ceremony.spec.tsx`, which hydrates, and by
+   * real Chromium in `e2e/signing.e2e.spec.ts`, which drives the whole thing.
+   */
+  {
+    name: 'signatures-empty',
+    ui: () => (
+      <SignaturePanel document={documentFixture()} signatures={[]} canSign mfaEnrolled={false} />
+    ),
+  },
+  {
+    name: 'signatures-signed',
+    ui: () => (
+      <SignaturePanel
+        document={documentFixture()}
+        signatures={[
+          signature(),
+          signature({
+            id: '019489f0-0000-7000-8000-000000000802',
+            signerName: 'Grace Hopper',
+            purpose: 'WITNESS',
+            withdrawnAt: '2026-03-01T00:00:00.000Z',
+            withdrawnReason: 'Signed against the wrong revision.',
+          }),
+        ]}
+        canSign
+        mfaEnrolled={false}
+      />
+    ),
+  },
+  /**
+   * The document record — Phase 7.1, and the screen Phase 7 changed most while covering least.
+   *
+   * Its identity block is the piece that has to survive: title, number, revision and lifecycle
+   * state read together, with one primary action beside them. A baseline is what stops that
+   * collapsing back into a properties row somebody moves in a later phase.
+   */
+  {
+    name: 'document-record',
+    ui: () => (
+      <DocumentScreen document={documentFixture()} canEdit canMove canDownload canArchive />
+    ),
+  },
+  /**
+   * The record page **with its sections in it** — Phase 7.2, and a gap this baseline closes.
+   *
+   * `document-record` above renders the screen with all four slots empty, so it has never covered
+   * the thing a reader actually opens: five sections stacked down one page. That is precisely where
+   * Phase 7.2's problem lived — the sections carried five different heading treatments, and no
+   * image would have shown it because no image ever put them together.
+   *
+   * The signature panel is the one slot filled with a real feature component rather than a stand-in,
+   * because it is the section whose header carries an action and therefore the one most likely to
+   * drift out of alignment with the others.
+   */
+  {
+    name: 'document-record-sections',
+    ui: () => (
+      <DocumentScreen
+        document={documentFixture()}
+        canEdit
+        canMove
+        canDownload
+        canArchive
+        signatures={
+          <SignaturePanel
+            document={documentFixture()}
+            signatures={[signature()]}
+            canSign
+            mfaEnrolled={false}
+          />
+        }
+      />
+    ),
+  },
+  /**
+   * The document permissions screen — Phase 7.3, and the surface with the most severe of that
+   * phase's findings.
+   *
+   * It opened with an `<h1>` at `text-lg`: eighteen pixels, where every other page in the product
+   * titles itself at twenty-four through `PageHeader`, and smaller than the section headings on the
+   * same screen. No baseline existed to notice, which is why it survived two visual phases. This one
+   * exists so the page header, the breadcrumb back to the document and the three section panels are
+   * all pinned.
+   */
+  {
+    name: 'document-permissions',
+    ui: () => (
+      <PermissionsScreen
+        scopeType="document"
+        scopeId="11111111-1111-4111-8111-111111111111"
+        documentTitle="Quality Manual"
+        explicit={[]}
+        chain={[
+          { type: 'LIBRARY', id: 'lib-1', name: 'Quality', breaksInheritance: false },
+          { type: 'FOLDER', id: 'fol-1', name: 'Procedures', breaksInheritance: false },
+        ]}
+        inheritanceBroken={false}
+        effective={null}
+        subjectUserId={null}
+        people={[]}
+        roles={[{ id: 'role-1', name: 'Document controller' }]}
+        departments={[]}
+        canManage
+        folderId="fol-1"
+        folderInherits
+      />
+    ),
+  },
+  /**
+   * The rail as this product composes it — Phase 7.1.
+   *
+   * `sidebar-nav` above renders the platform's component with fixture groups, which covers the
+   * *component*. What it does not cover is the product's own arrangement: four named sections in a
+   * particular order, built from the destinations a caller with every permission actually gets. A
+   * section renamed, reordered or dropped is a visible change to every screen and was, until now,
+   * a change no baseline would notice.
+   */
+  {
+    name: 'workspace-rail',
+    ui: () => (
+      <AppShellProvider>
+        <div className="w-64 p-3">
+          <WorkspaceRail destinations={destinationsFor(ALL_PERMISSIONS)} />
+        </div>
+      </AppShellProvider>
+    ),
+  },
+  /**
+   * The route-level loading state — Phase 7.1.
+   *
+   * Every navigation in the application passes through this, which makes it one of the most-seen
+   * surfaces in the product and, until this phase, a centred spinner. A baseline holds it to the
+   * shape it now approximates: a header, a toolbar and a list.
+   */
+  { name: 'route-loading', ui: () => <RouteLoading /> },
   {
     name: 'search',
     ui: () => (
@@ -204,6 +351,137 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
 
 afterAll(async () => {
   await closeBrowser();
+});
+
+/**
+ * The layouts a narrow viewport produces — Phase 7.1.
+ *
+ * The eighteen baselines above are all 1280px, which made every one of them a desktop assertion and
+ * left tablet and phone covered by nothing. These are the two screens an EDMS is actually used on
+ * away from a desk, at the two widths the brief names, in light only: a phone layout that regresses
+ * does so in both themes at once, and doubling the count here would buy repetition rather than
+ * coverage.
+ *
+ * `responsive.spec.tsx` asserts these widths do not *overflow*; these assert they still look like
+ * the product.
+ */
+const NARROW: readonly {
+  readonly name: string;
+  readonly width: number;
+  readonly ui: () => ReactElement;
+}[] = [
+  {
+    name: 'document-list-tablet',
+    width: 768,
+    ui: () => SURFACES.find((surface) => surface.name === 'document-list')!.ui(),
+  },
+  {
+    name: 'document-list-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'document-list')!.ui(),
+  },
+  {
+    name: 'document-record-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'document-record')!.ui(),
+  },
+];
+
+/**
+ * Arabic, in RTL, with the counts that change the words — Phase 7.4C.
+ *
+ * Unit tests settle whether `admin.grid.rowCount` renders `صفان` at two. They cannot settle whether
+ * that string fits a badge, sits on the correct side of its label, or drags a Latin digit into the
+ * middle of an Arabic sentence in the wrong place. The counts below are chosen for the categories
+ * they land in — 1 `one`, 2 `two` (the form with no digit at all), 3 `few`, 11 `many` — so one
+ * screen shows four different Arabic constructions of the same noun.
+ */
+const ARABIC: readonly {
+  readonly name: string;
+  readonly width: number;
+  readonly ui: () => ReactElement;
+}[] = [
+  { name: 'ar-document-list-one', width: 1280, ui: () => libraryWith(1) },
+  { name: 'ar-document-list-two', width: 1280, ui: () => libraryWith(2) },
+  { name: 'ar-document-list-few', width: 1280, ui: () => libraryWith(3) },
+  { name: 'ar-document-list-many', width: 1280, ui: () => libraryWith(11) },
+  { name: 'ar-document-list-mobile', width: 390, ui: () => libraryWith(11) },
+];
+
+function libraryWith(rowCount: number): ReactElement {
+  const rows = Array.from({ length: rowCount }, (_, index) =>
+    documentSummary({ id: `doc-${String(index)}`, documentNumber: `QM-00${String(index)}` }),
+  );
+  return (
+    <LibraryScreen
+      rows={rows}
+      total={rowCount}
+      state={listState()}
+      libraries={[library()]}
+      folders={[folder()]}
+      selectedLibraryId={library().id}
+      selectedFolderId={folder().id}
+      selectedFolderName="Procedures"
+      documentTypes={[]}
+      categories={[]}
+      confidentialityLevels={[]}
+      users={[]}
+      departments={[]}
+      canCreate
+      canBulk={{ edit: true, restore: true, download: true }}
+    />
+  );
+}
+
+function arabicMarkup(ui: ReactElement): string {
+  return renderToStaticMarkup(
+    <Providers session={{ userId: 'u', tenantId: 't', locale: 'ar' }}>{ui}</Providers>,
+  );
+}
+
+describe('Arabic, right to left', () => {
+  describe.each(ARABIC)('$name', ({ name, width, ui }) => {
+    it.each(THEMES)('matches its %s baseline', async (theme) => {
+      const page = await renderPage(arabicMarkup(ui()), {
+        theme,
+        width,
+        height: 900,
+        locale: 'ar',
+      });
+      const result = await matchesBaseline(page, `${name}-${theme}`);
+      await page.close();
+      expect(result.changedPixels, result.diffPath ?? '').toBeLessThanOrEqual(0);
+    });
+  });
+
+  it('renders the counted noun in Arabic, not the key or English', async () => {
+    // The assertion a screenshot cannot make. Two is the interesting one: the dual, with no digit.
+    const page = await renderPage(arabicMarkup(libraryWith(2)), { locale: 'ar', width: 1280 });
+    const text = await page.locator('body').innerText();
+    await page.close();
+    expect(text).toContain('صفان');
+    expect(text).not.toContain('2 صفان');
+    expect(text).not.toContain('rows');
+  });
+});
+
+describe('narrow viewports', () => {
+  describe.each(NARROW)('$name', ({ name, width, ui }) => {
+    it('matches its visual baseline', async () => {
+      const page = await renderPage(markup(ui()), { theme: 'light', width, height: 900 });
+      const result = await matchesBaseline(page, name);
+      await page.close();
+
+      expect(
+        result.changedPixels,
+        result.diffPath === undefined
+          ? ''
+          : `${name} changed by ${String(result.changedPixels)} pixels. ` +
+              `Diff written to ${result.diffPath}. If the change is intended, delete the baseline ` +
+              `and re-run to accept it.`,
+      ).toBeLessThanOrEqual(120);
+    });
+  });
 });
 
 describe.each(THEMES)('%s theme', (theme) => {

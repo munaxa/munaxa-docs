@@ -33,9 +33,6 @@ import {
 } from './actions';
 import { DATA_TYPE_LABELS, MetadataFieldForm } from './metadata-field-form';
 
-export const FIELD_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'key'] as const;
-export const FIELD_FILTER_KEYS = ['dataType'] as const;
-
 /**
  * The tenant-defined fields document types are built from.
  *

@@ -20,6 +20,8 @@ import {
 import type { AdministratorDashboard, DocumentSummary, UserDashboard } from '@edms/contracts';
 import type { MessageKey } from '@edms/i18n';
 
+import { Bell, CircleX, FileCheck, Lock, PencilLine, Star, TriangleAlert } from '@munaxa/icons';
+
 import { useSession, useTranslate } from '../../app/providers';
 import { BreakdownCard, CountStat, ListCard } from './tiles';
 
@@ -101,12 +103,14 @@ export function DashboardScreen({
         <Grid cols={{ base: 2, md: 3, xl: 4 }} gap={3}>
           <CountStat
             labelKey="dashboard.user.pending"
+            icon={FileCheck}
             hintKey="dashboard.user.pendingHint"
             tile={user.pending}
             href={'/approvals'}
           />
           <CountStat
             labelKey="dashboard.user.overdue"
+            icon={TriangleAlert}
             hintKey="dashboard.user.overdueHint"
             tile={user.overdue}
             href={'/approvals?overdue=true'}
@@ -116,29 +120,34 @@ export function DashboardScreen({
           />
           <CountStat
             labelKey="dashboard.user.drafts"
+            icon={PencilLine}
             hintKey="dashboard.user.draftsHint"
             tile={user.drafts}
             href={mine('DRAFT')}
           />
           <CountStat
             labelKey="dashboard.user.rejected"
+            icon={CircleX}
             hintKey="dashboard.user.rejectedHint"
             tile={user.rejected}
             href={mine('REJECTED')}
           />
           <CountStat
             labelKey="dashboard.user.checkedOut"
+            icon={Lock}
             hintKey="dashboard.user.checkedOutHint"
             tile={user.checkedOut}
             href={'/documents?lockedByMe=true'}
           />
           <CountStat
             labelKey="dashboard.user.favorites"
+            icon={Star}
             tile={user.favorites}
             href={'/documents?favorite=true'}
           />
           <CountStat
             labelKey="dashboard.user.unread"
+            icon={Bell}
             tile={user.unreadNotifications}
             href={'/notifications?unread=true'}
           />

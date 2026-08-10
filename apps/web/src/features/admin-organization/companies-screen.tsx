@@ -20,9 +20,6 @@ import {
 } from '../admin-shared';
 import { createCompany, deleteCompany, restoreCompany, updateCompany } from './actions';
 
-/** Sorting is allow-listed by the endpoint; this is the same list, so the grid offers only those. */
-export const COMPANY_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code'] as const;
-
 /**
  * Companies — the top of the scope tree.
  *

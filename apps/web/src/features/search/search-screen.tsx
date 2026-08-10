@@ -28,6 +28,8 @@ import type {
 import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
+import { DocumentStatusBadge } from '../documents/status-badge';
 import { FormDialog } from '../admin-shared';
 import { continueSearch, createSavedSearch, deleteSavedSearch } from './actions';
 
@@ -130,22 +132,29 @@ export function SearchScreen({
   const searched = initialResults !== null;
 
   return (
-    <section className="flex flex-col gap-4">
-      <h1 className="text-2xl font-semibold">{translate('search.title')}</h1>
+    <WorkspacePage title={translate('search.title')} description={translate('search.promptHint')}>
+      {/*
+        `flex-wrap`, and the sort control gets a width only once there is room for one — Phase 7.1.
+        The row was a single unwrapping line, so at 390px the "Save search" button hung 24px past
+        the viewport and took the whole page's horizontal scrollbar with it. Measured in Chromium at
+        the six widths the brief names; it is the only overflow the content screens had.
 
-      <form onSubmit={submit} className="flex items-center gap-2">
+        The query field keeps `flex-1` and a full-width basis, so on a phone it takes its own line
+        and the three controls sit under it rather than being squeezed to nothing.
+      */}
+      <form onSubmit={submit} className="flex flex-wrap items-center gap-2">
         <Input
           type="search"
           name="q"
           defaultValue={queryText}
           placeholder={translate('search.placeholder')}
           aria-label={translate('search.placeholder')}
-          className="min-w-0 flex-1"
+          className="min-w-0 flex-1 basis-full sm:basis-auto"
         />
         <Select
           value={sort}
           aria-label={translate('search.sort')}
-          className="w-44"
+          className="w-full sm:w-44"
           onChange={(event) => {
             navigate({ sort: event.currentTarget.value });
           }}
@@ -292,7 +301,7 @@ export function SearchScreen({
           <Input name="name" required maxLength={120} />
         </label>
       </FormDialog>
-    </section>
+    </WorkspacePage>
   );
 }
 
@@ -454,7 +463,7 @@ function ResultCard({ hit }: { readonly hit: SearchHit }): ReactNode {
             {title === undefined ? hit.title : <Spans spans={title} />}
           </span>
           {hit.documentNumber !== null && <Badge tone="muted">{hit.documentNumber}</Badge>}
-          <Badge tone="muted">{translate(`documents.status.${hit.status}` as MessageKey)}</Badge>
+          <DocumentStatusBadge status={hit.status} />
           {hit.revisionLabel !== null && (
             <span className="text-sm opacity-70">
               {translate('search.revisionLabel', { label: hit.revisionLabel })}

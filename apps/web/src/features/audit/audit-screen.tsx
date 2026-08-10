@@ -12,11 +12,14 @@ import {
   Field,
   Input,
   PageHeader,
+  Panel,
   Select,
+  Stack,
   Timeline,
   TimelineItem,
   useToast,
 } from '@munaxa/ui';
+import { FileDown } from '@munaxa/icons';
 
 import type { AuditEntry, AuditExport, AuditPage } from '@edms/contracts';
 import type { MessageKey } from '@edms/i18n';
@@ -204,59 +207,67 @@ export function AuditScreen({
       )}
 
       {canExport && (
-        <Card className="flex flex-col gap-3 p-4">
-          <div className="flex flex-col gap-1">
-            <h2 className="text-sm font-medium">{translate('audit.export.title')}</h2>
+        <Panel
+          title={
+            <span className="flex items-center gap-2">
+              <FileDown className="size-4 opacity-70" aria-hidden />
+              {translate('audit.export.title')}
+            </span>
+          }
+        >
+          <Stack gap={3}>
             <p className="text-muted-foreground text-sm">{translate('audit.export.hint')}</p>
-          </div>
 
-          <div>
-            <Button
-              type="button"
-              disabled={exporting}
-              onClick={() => {
-                void startExport();
-              }}
-            >
-              {translate(exporting ? 'audit.export.requesting' : 'audit.export.request')}
-            </Button>
-          </div>
+            <div>
+              <Button
+                type="button"
+                disabled={exporting}
+                onClick={() => {
+                  void startExport();
+                }}
+              >
+                {translate(exporting ? 'audit.export.requesting' : 'audit.export.request')}
+              </Button>
+            </div>
 
-          {exports.length === 0 ? (
-            <EmptyState title={translate('audit.export.none')} />
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {exports.map((bundle) => (
-                <li key={bundle.id} className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="text-muted-foreground font-mono">
-                    {new Date(bundle.requestedAt).toISOString().slice(0, 19).replace('T', ' ')}
-                  </span>
-                  <Badge tone={toneFor(bundle.state)}>{translate(stateKey(bundle.state))}</Badge>
-                  {bundle.state === 'COMPLETED' && (
-                    <>
-                      <span>{translate('audit.export.events', { count: bundle.eventCount })}</span>
-                      {bundle.chainIntact === false && (
-                        <Badge tone="danger">{translate('audit.export.chainBroken')}</Badge>
-                      )}
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() => {
-                          void takeBundle(bundle.id);
-                        }}
-                      >
-                        {translate('audit.export.download')}
-                      </Button>
-                    </>
-                  )}
-                  {bundle.error !== null && (
-                    <em className="text-muted-foreground">— {bundle.error}</em>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
+            {exports.length === 0 ? (
+              <EmptyState title={translate('audit.export.none')} />
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {exports.map((bundle) => (
+                  <li key={bundle.id} className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-muted-foreground font-mono">
+                      {new Date(bundle.requestedAt).toISOString().slice(0, 19).replace('T', ' ')}
+                    </span>
+                    <Badge tone={toneFor(bundle.state)}>{translate(stateKey(bundle.state))}</Badge>
+                    {bundle.state === 'COMPLETED' && (
+                      <>
+                        <span>
+                          {translate('audit.export.events', { count: bundle.eventCount })}
+                        </span>
+                        {bundle.chainIntact === false && (
+                          <Badge tone="danger">{translate('audit.export.chainBroken')}</Badge>
+                        )}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={() => {
+                            void takeBundle(bundle.id);
+                          }}
+                        >
+                          {translate('audit.export.download')}
+                        </Button>
+                      </>
+                    )}
+                    {bundle.error !== null && (
+                      <em className="text-muted-foreground">— {bundle.error}</em>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Stack>
+        </Panel>
       )}
     </>
   );

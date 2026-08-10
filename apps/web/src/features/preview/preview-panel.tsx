@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { Document, PreviewContent, PreviewManifest, PreviewText } from '@edms/contracts';
-import { Alert, Button, Card, Input, Spinner, useToast } from '@munaxa/ui';
+import { Alert, Button, Input, Panel, Spinner, useToast } from '@munaxa/ui';
+import { Eye } from '@munaxa/icons';
 
 import { useTranslate } from '../../app/providers';
 import {
@@ -93,6 +94,17 @@ export function PreviewPanel({
   }, [manifest.state, pollExpired, document.id]);
 
   // The content URL, once ready — one audited issuance per viewer open, not per render.
+  //
+  // `translate` and `toast` are deliberately **not** dependencies, and that is a defect fix rather
+  // than a lint exception — Phase 6.8 measured it. `useTranslate()` calls `translatorFor`, which
+  // returns a new closure on every call, so listing it made `openContent` a new function on every
+  // render; the effect below depends on `openContent` and *calls* it, the call sets `content`,
+  // setting `content` re-renders, and the loop closes. A single mounted panel issued **6,987
+  // content URLs in 1.5 seconds** — each one a presigned URL and an audited issuance, against the
+  // tenant's own API and its own compliance trail.
+  //
+  // Both values are only read inside the callback to phrase a failure, and neither changes what is
+  // requested. Capturing the render's copies is correct and is what makes the callback stable.
   const openContent = useCallback(() => {
     void requestPreviewContent(document.id).then((result) => {
       if (result.ok) {
@@ -101,7 +113,7 @@ export function PreviewPanel({
         toast.error(result.detail ?? translate(`error.${result.code}`));
       }
     });
-  }, [document.id, toast, translate]);
+  }, [document.id]);
 
   useEffect(() => {
     if (manifest.state === 'READY' && (manifest.mode === 'PDF' || manifest.mode === 'IMAGE')) {
@@ -163,10 +175,28 @@ export function PreviewPanel({
     canPrint && manifest.confidentiality.printAllowed && manifest.state === 'READY';
 
   return (
-    <Card className="p-0">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
-        <h2 className="text-sm font-semibold">{translate('preview.title')}</h2>
-        {manifest.state === 'READY' ? (
+    /*
+      `Panel` — Phase 7.2, and this one was already a panel in everything but name: a `Card p-0`
+      with a hand-built `border-b` header row holding a title on one side and the viewer's controls
+      on the other. That is the component's exact shape, so twenty lines of chrome become one prop,
+      and the section gains the labelled region the other four just gained.
+
+      One thing `Panel` cannot do, recorded rather than worked around: its body's padding is fixed
+      at `p-4` and no prop reaches it — `padding` is a `Surface` prop and stops short of the body. A
+      document viewer is the one section whose contents would rather have the full width of the
+      surface, so the viewer is inset by sixteen pixels it does not need. That is a platform gap,
+      written up in the phase report; a `[&>div]:p-0` escape hatch here would be a product-specific
+      workaround around a design-system boundary, which this repository does not do.
+    */
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          <Eye className="size-4 opacity-70" aria-hidden />
+          {translate('preview.title')}
+        </span>
+      }
+      actions={
+        manifest.state === 'READY' ? (
           <div className="flex flex-wrap items-center gap-1">
             {manifest.hasText ? (
               <Input
@@ -268,9 +298,9 @@ export function PreviewPanel({
               {translate(fullscreen ? 'preview.exitFullscreen' : 'preview.fullscreen')}
             </Button>
           </div>
-        ) : null}
-      </div>
-
+        ) : null
+      }
+    >
       {manifest.ocr !== null && manifest.ocr.lowConfidence ? (
         <Alert tone="warning" className="m-3">
           {translate('preview.lowConfidenceOcr', { confidence: manifest.ocr.confidence })}
@@ -307,7 +337,7 @@ export function PreviewPanel({
           onContentExpired={openContent}
         />
       </div>
-    </Card>
+    </Panel>
   );
 }
 

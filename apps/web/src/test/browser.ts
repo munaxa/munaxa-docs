@@ -82,6 +82,10 @@ export type Theme = 'light' | 'dark';
  * `dir` and `lang` are set because several of the platform's rules are logical (`border-s`,
  * `padding-s`) and a page with no direction resolves them against a default that is not what
  * either locale gets.
+ *
+ * `locale` drives both — Phase 7.4C. Until Arabic plural forms existed there was nothing to look at
+ * in RTL that was not already covered by the LTR baselines; now the wording itself changes with the
+ * count, and a counter that reads correctly in a unit test can still land badly in a badge.
  */
 export async function renderPage(
   html: string,
@@ -89,11 +93,13 @@ export async function renderPage(
     theme = 'light',
     width = 1280,
     height = 900,
-  }: { theme?: Theme; width?: number; height?: number } = {},
+    locale = 'en',
+  }: { theme?: Theme; width?: number; height?: number; locale?: 'en' | 'ar' } = {},
 ): Promise<Page> {
   const page = await (await getBrowser()).newPage({ viewport: { width, height } });
   await page.setContent(
-    `<!doctype html><html lang="en" dir="ltr" class="${theme === 'dark' ? 'dark' : ''}">` +
+    `<!doctype html><html lang="${locale}" dir="${locale === 'ar' ? 'rtl' : 'ltr'}" ` +
+      `class="${theme === 'dark' ? 'dark' : ''}">` +
       `<head><meta charset="utf-8"><style>${builtStylesheet()}</style></head>` +
       `<body class="bg-background text-foreground">${html}</body></html>`,
     { waitUntil: 'load' },

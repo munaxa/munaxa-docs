@@ -9,6 +9,7 @@ import { Badge, Card, EmptyState } from '@munaxa/ui';
 import type { RecentDocument } from '@edms/contracts';
 
 import { useTranslate } from '../../app/providers';
+import { WorkspacePage } from '../../components/workspace-page';
 
 /**
  * What this person opened recently.
@@ -34,8 +35,13 @@ export function RecentScreen({ rows }: { readonly rows: readonly RecentDocument[
   }
 
   return (
-    <section className="flex flex-col gap-4">
-      <h1 className="text-2xl font-semibold">{translate('documents.nav.recent')}</h1>
+    <WorkspacePage
+      title={translate('documents.nav.recent')}
+      breadcrumb={[
+        { label: translate('nav.documents'), href: '/documents' },
+        { label: translate('documents.nav.recent') },
+      ]}
+    >
       <ul className="flex flex-col gap-2">
         {rows.map((row) => (
           <li key={row.id}>
@@ -56,6 +62,6 @@ export function RecentScreen({ rows }: { readonly rows: readonly RecentDocument[
           </li>
         ))}
       </ul>
-    </section>
+    </WorkspacePage>
   );
 }

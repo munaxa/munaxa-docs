@@ -1,3 +1,5 @@
+import { type PluralMessage, plural } from '../plural';
+
 /**
  * The English catalogue. It is the reference: every other catalogue is typed against its
  * shape, so a missing or invented Arabic key fails the build rather than rendering a key
@@ -21,6 +23,10 @@ export const en = {
     notFound: 'Page not found',
     notFoundHint: 'The page you asked for does not exist, or you do not have access to it.',
     offline: 'You are offline',
+    // A rate limit is not a fault, and saying "something went wrong" about one is untrue: the
+    // request was refused on purpose, it will succeed again shortly, and the reader can act on
+    // that. The sentence that says how to act is `error.RATE_LIMITED`, which is the API's own.
+    rateLimited: 'Too many requests',
   },
   auth: {
     signIn: 'Sign in',
@@ -51,7 +57,10 @@ export const en = {
     mfaTitle: 'Two-step verification',
     mfaNotEnrolledHint:
       'Add an authenticator app so a stolen password is not enough to reach your documents.',
-    mfaEnrolledHint: 'An authenticator app is set up. You have {count} unused recovery codes left.',
+    mfaEnrolledHint: plural({
+      one: 'An authenticator app is set up. You have {count} unused recovery code left.',
+      other: 'An authenticator app is set up. You have {count} unused recovery codes left.',
+    }),
     mfaStart: 'Set up an authenticator',
     mfaStartAgain: 'Start setting up again',
     mfaRemove: 'Remove the authenticator',
@@ -86,6 +95,12 @@ export const en = {
     notifications: 'Notifications',
     recycleBin: 'Recycle bin',
     reports: 'Reports',
+    /** The rail's own grouping — Phase 7. Ten destinations in one list said nothing about them. */
+    breadcrumb: 'Breadcrumb',
+    groupWork: 'Work',
+    groupLibrary: 'Library',
+    groupOversight: 'Oversight',
+    groupSystem: 'System',
   },
   /**
    * Administration.
@@ -145,7 +160,10 @@ export const en = {
       resizeColumn: 'Resize {name}',
       selectAll: 'Select all rows',
       selectRow: 'Select {name}',
-      rowCount: '{count} rows',
+      rowCount: plural({
+        one: '{count} row',
+        other: '{count} rows',
+      }),
       pagination: 'Pages',
       previousPage: 'Previous',
       nextPage: 'Next',
@@ -173,8 +191,14 @@ export const en = {
       recycleBin: 'Recycle bin',
       filterAny: 'Any',
       /** Why a row's delete action is unavailable, rather than an action that fails when used. */
-      inUseByTypes: 'Used by {count} document type(s). Change those first.',
-      inUseByChildren: 'It has {count} item(s) inside it.',
+      inUseByTypes: plural({
+        one: 'Used by {count} document type. Change it first.',
+        other: 'Used by {count} document types. Change those first.',
+      }),
+      inUseByChildren: plural({
+        one: 'It has {count} item inside it.',
+        other: 'It has {count} items inside it.',
+      }),
       /**
        * Shown where a resource cannot exist until another one does — an entity needs a company, a
        * document type needs a numbering rule and a confidentiality level. Stated up front, rather
@@ -190,6 +214,8 @@ export const en = {
       name: 'Name',
       description: 'Description',
       status: 'Status',
+      /** The row's own state — deleted, inactive, system — where a lifecycle status sits beside it. */
+      record: 'Record',
       createdAt: 'Created',
       updatedAt: 'Last changed',
       deletedAt: 'Deleted',
@@ -280,7 +306,10 @@ export const en = {
       grantAll: 'Grant all',
       revokeAll: 'Revoke all',
       cannotDeleteSystem: 'A built-in role cannot be removed.',
-      inUseByMembers: '{count} person/people hold this role. Remove it from them first.',
+      inUseByMembers: plural({
+        one: '{count} person holds this role. Remove it from them first.',
+        other: '{count} people hold this role. Remove it from them first.',
+      }),
     },
     permissions: {
       title: 'Permissions',
@@ -462,7 +491,10 @@ export const en = {
         entityCode: 'Entity code',
         departmentCode: 'Department code',
         documentTypeCode: 'Document type code',
-        held: '{count} number(s) reserved.',
+        held: plural({
+          one: '{count} number reserved.',
+          other: '{count} numbers reserved.',
+        }),
         void: 'Void',
         voidWarning:
           '{value} will be voided. The value is kept forever and can never be issued to a document.',
@@ -595,7 +627,10 @@ export const en = {
       description: 'Named sets of people a workflow stage can address.',
       one: 'approval group',
       members: 'Members',
-      memberCount: '{count} people',
+      memberCount: plural({
+        one: '{count} person',
+        other: '{count} people',
+      }),
       notAPermission:
         'A group is a routing list, not a permission. Adding somebody makes them a candidate for a stage that names the group; it grants them nothing.',
       inUse: 'A workflow still routes to this group. Deactivate it instead of removing it.',
@@ -614,7 +649,10 @@ export const en = {
       addHoliday: 'Add a holiday',
       holidayDate: 'Date',
       holidayName: 'Name',
-      holidayCount: '{count} holidays',
+      holidayCount: plural({
+        one: '{count} holiday',
+        other: '{count} holidays',
+      }),
       timeZone: 'Counted in {zone}',
       preview: 'Preview a deadline',
       previewResult: '{duration} starting now is due {date}, stepping over {skipped} days.',
@@ -701,7 +739,10 @@ export const en = {
       suppressionsHint:
         'Mail to these addresses was refused permanently and is no longer attempted. In-app notifications are unaffected.',
       noSuppressions: 'No address has been suppressed.',
-      bounces: '{count} refusals',
+      bounces: plural({
+        one: '{count} refusal',
+        other: '{count} refusals',
+      }),
       releaseLabel: 'Resume mail to',
       releaseHint: 'Type the whole address. The list above shows masked ones deliberately.',
       release: 'Resume',
@@ -714,7 +755,10 @@ export const en = {
       rebuildSearchIndex: 'Rebuild the search index',
       searchRebuildRequested: 'A rebuild has been queued.',
       searchNeverRebuilt: 'This organisation has never rebuilt its index.',
-      searchRebuildSummary: '{count} documents indexed, started {startedAt}.',
+      searchRebuildSummary: plural({
+        one: '{count} document indexed, started {startedAt}.',
+        other: '{count} documents indexed, started {startedAt}.',
+      }),
       searchRebuildRunning: 'Running',
       searchRebuildCompleted: 'Completed',
       searchRebuildFailed: 'Failed',
@@ -868,6 +912,8 @@ export const en = {
       unfavorite: 'Remove from favourites',
       scan: 'Scan documents',
       backToFolder: 'Back to the folder',
+      /** The record page's overflow trigger — Phase 7. */
+      more: 'More actions',
       notReachable: 'This file has not cleared the malware check.',
       assignNumber: 'Assign a number',
       permissions: 'Permissions',
@@ -876,6 +922,8 @@ export const en = {
     },
     number: {
       pending: 'Pending',
+      /** Under the title in the library, where a blank line would read as a missing value. */
+      none: 'Not numbered yet',
     },
     assignNumber: {
       warning:
@@ -898,6 +946,13 @@ export const en = {
       reasonHint: 'Recorded in the audit trail. For example: withdrawn in error.',
     },
     upload: {
+      /** Phase 7.1 — the upload dialogue's sections, so eleven controls read as three groups. */
+      sectionFiles: 'Files',
+      sectionFilesHint: 'Each file becomes its own document in this folder.',
+      sectionClassification: 'Classification',
+      sectionClassificationHint: 'How this document is filed, numbered and who may see it.',
+      sectionDetails: 'Details',
+
       title: 'Add documents',
       scanTitle: 'Scan documents',
       into: 'Into {folder}',
@@ -905,9 +960,15 @@ export const en = {
       scanPrompt: 'Drop scanned pages here, or choose them',
       browse: 'Choose files',
       hint: 'PDF, Word, Excel, PowerPoint, images, DWG, ZIP and text.',
-      fileCount: 'File {count} document(s)',
+      fileCount: plural({
+        one: 'File {count} document',
+        other: 'File {count} documents',
+      }),
       fileAnyway: 'File it anyway',
-      duplicateWarning: 'This exact file is already filed {count} time(s) in this organisation:',
+      duplicateWarning: plural({
+        one: 'This exact file is already filed {count} time in this organisation:',
+        other: 'This exact file is already filed {count} times in this organisation:',
+      }),
       blockedByDuplicates: 'Confirm the duplicates above before filing.',
       unscanned:
         'Some of these files have not cleared the malware check yet and cannot be filed until they do.',
@@ -1055,7 +1116,10 @@ export const en = {
     failed: 'The preview could not be produced.',
     downloadInstead: 'You can download the file instead.',
     searchPlaceholder: 'Search in document',
-    matches: '{count} matches',
+    matches: plural({
+      one: '{count} match',
+      other: '{count} matches',
+    }),
     nextMatch: 'Next match',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
@@ -1162,7 +1226,10 @@ export const en = {
       failed: 'The export could not be requested.',
       none: 'No exports yet',
       download: 'Download',
-      events: '{count} events',
+      events: plural({
+        one: '{count} event',
+        other: '{count} events',
+      }),
       chainBroken: 'Chain broken in this range',
       state: {
         requested: 'Requested',
@@ -1211,7 +1278,10 @@ export const en = {
     declineReason: 'Why it was declined',
     period: 'Period',
     used: 'Used',
-    useCount: '{count} decisions',
+    useCount: plural({
+      one: '{count} decision',
+      other: '{count} decisions',
+    }),
     approvedBy: 'Approved by',
     pair: '{delegator} → {delegate}',
     filter: {
@@ -1250,7 +1320,10 @@ export const en = {
     emptyUnread: 'Nothing unread',
     emptyHint: 'Approvals, publications and anything else that needs you will appear here.',
     unread: 'Unread',
-    unreadCount: '{count} unread',
+    unreadCount: plural({
+      one: '{count} unread',
+      other: '{count} unread',
+    }),
     markRead: 'Mark read',
     markAllRead: 'Mark all read',
     allRead: 'Everything marked read',
@@ -1383,7 +1456,10 @@ export const en = {
   bulk: {
     bar: {
       label: 'Selected documents',
-      selected: '{count} selected',
+      selected: plural({
+        one: '{count} selected',
+        other: '{count} selected',
+      }),
       clear: 'Clear selection',
     },
     action: {
@@ -1395,9 +1471,18 @@ export const en = {
     result: {
       title: 'What happened to each item',
       summary: '{applied} of {requested} applied.',
-      refusedHint: '{count} were refused: you do not have access to them.',
-      blockedHint: '{count} were blocked by a rule, such as a legal hold.',
-      failedHint: '{count} failed unexpectedly. This has been recorded.',
+      refusedHint: plural({
+        one: '{count} was refused: you do not have access to it.',
+        other: '{count} were refused: you do not have access to them.',
+      }),
+      blockedHint: plural({
+        one: '{count} was blocked by a rule, such as a legal hold.',
+        other: '{count} were blocked by a rule, such as a legal hold.',
+      }),
+      failedHint: plural({
+        one: '{count} failed unexpectedly. This has been recorded.',
+        other: '{count} failed unexpectedly. This has been recorded.',
+      }),
       close: 'Close',
       links: 'Download links',
     },
@@ -1448,6 +1533,15 @@ export const en = {
   signatures: {
     title: 'Signatures',
     empty: 'Nobody has signed this revision.',
+    /**
+     * Two different acts, two different names — and the difference is deliberate.
+     *
+     * `open` starts a *review*: it shows the statement and signs nothing. `ceremony.submit`
+     * completes the attestation. Giving both the same label would put two buttons with one
+     * accessible name on screen at once, which a screen-reader user could not tell apart — and
+     * would also blur the one distinction the ceremony exists to make.
+     */
+    open: 'Sign',
     sign: 'Sign this revision',
     field: {
       purpose: 'I am signing as',
@@ -1465,7 +1559,14 @@ export const en = {
     },
     signedBy: '{name} — {purpose}',
     withdrawn: 'Withdrawn',
-    withdraw: { action: 'Withdraw', reason: 'Why are you withdrawing this?', submit: 'Withdraw' },
+    withdraw: {
+      action: 'Withdraw',
+      reason: 'Why are you withdrawing this?',
+      submit: 'Withdraw',
+      title: 'Withdraw your signature',
+      description:
+        'Your signature stays on the record, marked withdrawn with your reason. Nothing is deleted, and the trail keeps both acts.',
+    },
     verify: {
       action: 'Verify',
       title: 'Signature verification',
@@ -1475,6 +1576,61 @@ export const en = {
       withdrawn: 'This signature was withdrawn by its signer.',
       witnessedBy: 'Witnessed by {witness}',
       statement: 'What was signed',
+      checking: 'Verifying\u2026',
+      contentIntact: 'The revision still holds the content that was signed.',
+      standing: 'This signature stands.',
+      algorithm: 'Algorithm {algorithm}',
+      failed: 'Verification could not be completed.',
+    },
+    /**
+     * The signing ceremony — Phase 6.6.
+     *
+     * The wording is part of the control rather than decoration. §11.50 requires the *meaning*
+     * of a signature to be manifested, so every string naming an act says what the act is: `sign`
+     * above opens a review, `ceremony.submit` completes an attestation, and `ceremony.confirmCheckbox`
+     * says out loud that a legally significant record is about to exist. Buttons reading “OK”
+     * would satisfy the API and not the regulation.
+     *
+     * `statementBody` is deliberately **not** in this catalogue and never will be. The attested text
+     * comes from the server and is rendered verbatim; translating it would mean displaying one
+     * artefact and signing another.
+     */
+    ceremony: {
+      title: 'Sign this revision',
+      revisionLabel: 'Revision',
+      purposeHint: 'Recorded with your signature, and not changeable afterwards.',
+      commentHint: 'Recorded alongside the meaning above. Never a substitute for it.',
+      loadingStatement: 'Preparing the statement\u2026',
+      steps: {
+        review: 'Review',
+        confirm: 'Confirm',
+        signed: 'Signed',
+      },
+      statementHeading: 'The statement you are about to sign',
+      statementHint:
+        'This exact text is what your signature attests. It comes from the server and is shown unchanged.',
+      preparedAt:
+        'Prepared {date}. Your signature carries the moment you confirm it, not this one.',
+      continue: 'Continue',
+      back: 'Back to the statement',
+      confirmHeading: 'Confirm and sign',
+      confirmIntro:
+        'You are about to create an electronic signature on {document}, revision {revision}, meaning: {purpose}.',
+      confirmCheckbox:
+        'I am signing this record electronically, and I understand this is a legally significant act.',
+      credentialsHint:
+        'Your credentials are proved again as you sign, because a signature needs a second identification component.',
+      submit: 'Sign this revision',
+      signing: 'Signing\u2026',
+      cancel: 'Cancel',
+      successTitle: 'Signed',
+      successBody: 'Your signature on revision {revision} is recorded.',
+      done: 'Close',
+    },
+    errors: {
+      conflict: 'You already hold a signature on this revision for that meaning.',
+      changed: 'The signatures on this revision changed. Review them below.',
+      rateLimited: 'Too many signing attempts. Wait a few minutes and try again.',
     },
   },
   recycleBin: {
@@ -1547,8 +1703,14 @@ export const en = {
       stored: 'Stored',
       referenced: 'Before deduplication',
       saved: 'Saved by deduplication',
-      blobs: '{count} files',
-      unreferenced: '{count} unreferenced',
+      blobs: plural({
+        one: '{count} file',
+        other: '{count} files',
+      }),
+      unreferenced: plural({
+        one: '{count} unreferenced',
+        other: '{count} unreferenced',
+      }),
       users: 'Users',
       userState: {
         ACTIVE: 'Active',
@@ -1627,7 +1789,10 @@ export const en = {
     run: 'Run report',
     any: 'Any',
     empty: 'No rows matched those filters.',
-    rowCount: '{count} row(s)',
+    rowCount: plural({
+      one: '{count} row',
+      other: '{count} rows',
+    }),
     scoping: {
       /** Said out loud, because otherwise two colleagues compare totals and one of them panics. */
       reach: 'Scoped to what you can see',
@@ -1763,5 +1928,12 @@ export const en = {
 export type Catalogue = Widen<typeof en>;
 
 type Widen<T> = {
-  [K in keyof T]: T[K] extends string ? string : Widen<T[K]>;
+  [K in keyof T]: T[K] extends string
+    ? string
+    : // A plural message is a leaf, not a group — Phase 7.4. Widening *into* one would strip the
+      // brand that keeps `MessageKey` free of `…rowCount.one`, and would let the Arabic catalogue
+      // satisfy the type with a plain string where a set of forms is required.
+      T[K] extends PluralMessage
+      ? PluralMessage
+      : Widen<T[K]>;
 };

@@ -26,9 +26,6 @@ import {
 } from '../admin-shared';
 import { createEntity, deleteEntity, restoreEntity, updateEntity } from './actions';
 
-export const ENTITY_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code'] as const;
-export const ENTITY_FILTER_KEYS = ['companyId'] as const;
-
 /**
  * Entities — the legal and operating units branches and departments hang from.
  *

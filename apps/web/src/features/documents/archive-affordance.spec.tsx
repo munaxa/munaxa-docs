@@ -1,4 +1,5 @@
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -28,11 +29,34 @@ import { DocumentScreen } from './document-screen';
  * suite is where that refusal is proved. What this asserts is that a person who cannot archive is
  * not offered a button that will fail — which is a usability and support-cost property, and the one
  * the standing rule is actually about.
+ *
+ * ## Phase 7 moved the button without changing what it proves
+ *
+ * The record page's secondary actions now live behind one overflow menu rather than in a row of up
+ * to eight buttons. So every assertion below opens the menu first — a real click, through the real
+ * component — and then asks the same question it always asked. That is deliberate: the property
+ * under test is *whether the affordance is offered*, and "offered" must keep meaning "reachable by
+ * a person", not "present in the markup". A test that reached into the closed menu's DOM would pass
+ * against a menu that never opens.
  */
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
 }));
+
+/**
+ * Opens the record page's overflow menu, if it has one.
+ *
+ * Returns silently when the trigger is absent — which is itself a legitimate state: a caller with
+ * no secondary actions at all gets no menu, and the assertions that follow then correctly find
+ * nothing.
+ */
+async function openActions(): Promise<void> {
+  const trigger = screen.queryByRole('button', { name: 'More actions' });
+  if (trigger !== null) {
+    await userEvent.click(trigger);
+  }
+}
 
 function renderScreen(element: ReactElement): void {
   // The suite's own harness, so this renders through the same provider tree every other rendered
@@ -47,12 +71,6 @@ function screenFor(options: { canArchive?: boolean; status?: string } = {}): Rea
       document={document({
         ...(options.status !== undefined && { status: options.status as never }),
       })}
-      folders={[]}
-      categories={[]}
-      confidentialityLevels={[]}
-      users={[]}
-      departments={[]}
-      fields={[]}
       canEdit={false}
       canMove={false}
       canDownload={false}
@@ -62,48 +80,54 @@ function screenFor(options: { canArchive?: boolean; status?: string } = {}): Rea
 }
 
 describe('the archive affordance', () => {
-  it('is offered to somebody who holds document:archive on a published record', () => {
+  it('is offered to somebody who holds document:archive on a published record', async () => {
     renderScreen(screenFor({ canArchive: true }));
+    await openActions();
 
-    expect(screen.getByRole('button', { name: 'Archive' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Archive' })).toBeTruthy();
   });
 
-  it('is absent without the permission, on the same document', () => {
+  it('is absent without the permission, on the same document', async () => {
     // The pair is the assertion: same status, same record, one difference — the permission the
     // server computed. A test that only checked the positive case would pass against a button
     // that is always rendered.
     renderScreen(screenFor({ canArchive: false }));
+    await openActions();
 
-    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Archive' })).toBeNull();
   });
 
-  it('is absent when the permission is not supplied at all', () => {
+  it('is absent when the permission is not supplied at all', async () => {
     // The prop is optional, and "the server said nothing" must read as "no", never as "yes".
     renderScreen(screenFor({}));
+    await openActions();
 
-    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Archive' })).toBeNull();
   });
 
-  it('is not offered from a state the lifecycle cannot archive from', () => {
+  it('is not offered from a state the lifecycle cannot archive from', async () => {
     // `IMPLEMENTED_TRANSITIONS` allows `PUBLISHED`, `EXPIRED` and `SUPERSEDED`. Offering it on a
     // draft would render a button whose only outcome is a 409 — which is the same defect as
     // offering one the permission forbids, arriving from the other direction.
     renderScreen(screenFor({ canArchive: true, status: DocumentStatus.DRAFT }));
+    await openActions();
 
-    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Archive' })).toBeNull();
   });
 
-  it('offers reinstatement instead once the record is archived', () => {
+  it('offers reinstatement instead once the record is archived', async () => {
     renderScreen(screenFor({ canArchive: true, status: DocumentStatus.ARCHIVED }));
+    await openActions();
 
-    expect(screen.getByRole('button', { name: 'Reinstate' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Reinstate' })).toBeTruthy();
     // And not both at once: an archived document cannot be archived again from the screen.
-    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Archive' })).toBeNull();
   });
 
-  it('offers archival from EXPIRED, which is the state the sweep produces', () => {
+  it('offers archival from EXPIRED, which is the state the sweep produces', async () => {
     renderScreen(screenFor({ canArchive: true, status: DocumentStatus.EXPIRED }));
+    await openActions();
 
-    expect(screen.getByRole('button', { name: 'Archive' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Archive' })).toBeTruthy();
   });
 });

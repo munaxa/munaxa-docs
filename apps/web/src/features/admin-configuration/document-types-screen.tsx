@@ -38,13 +38,6 @@ import {
 } from './actions';
 import { TypeFieldsEditor } from './type-fields-editor';
 
-export const DOCUMENT_TYPE_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'code'] as const;
-export const DOCUMENT_TYPE_FILTER_KEYS = [
-  'isActive',
-  'workflowDefinitionId',
-  'retentionPolicyId',
-] as const;
-
 const REVISION_LABELS: Readonly<Record<RevisionLabelStyleKey, MessageKey>> = {
   NUMERIC: 'admin.documentTypes.revisionNumeric',
   ALPHABETIC: 'admin.documentTypes.revisionAlphabetic',

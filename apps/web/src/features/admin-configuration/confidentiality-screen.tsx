@@ -31,14 +31,6 @@ import {
   updateConfidentialityLevel,
 } from './actions';
 
-export const CONFIDENTIALITY_SORT_FIELDS = [
-  'createdAt',
-  'updatedAt',
-  'name',
-  'code',
-  'rank',
-] as const;
-
 /**
  * Confidentiality levels.
  *

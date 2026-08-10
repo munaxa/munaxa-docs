@@ -3,7 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import { Alert, Badge, Button, Card, EmptyState, useToast } from '@munaxa/ui';
+import { Alert, Badge, Button, EmptyState, Panel, Stack, Surface, useToast } from '@munaxa/ui';
+import { ClipboardCheck } from '@munaxa/icons';
 
 import type {
   ApprovalTask,
@@ -72,12 +73,12 @@ export function ApprovalPanel({
 
   if (!workflow.requiresApproval) {
     return (
-      <Card>
-        <EmptyState
-          title={translate('approvals.title')}
-          description={translate('approvals.noApprovalNeeded')}
-        />
-      </Card>
+      <Panel title={approvalsTitle(translate)}>
+        {/* The sentence is the whole state. It used to be the *description* under a repeated
+            "Approvals" title; the panel's own header carries that now, so repeating it here would
+            say the same word twice in ten pixels. */}
+        <EmptyState title={translate('approvals.noApprovalNeeded')} />
+      </Panel>
     );
   }
 
@@ -88,128 +89,144 @@ export function ApprovalPanel({
     current.stages.every((stage) => stage.tasks.every((task) => task.decision === null));
 
   return (
-    <section className="flex flex-col gap-4">
-      <header className="flex flex-wrap items-center gap-3">
-        <h2 className="text-lg font-semibold">{translate('approvals.title')}</h2>
-        {current !== null && (
-          <Badge tone={current.status === 'PAUSED' ? 'warning' : 'muted'}>
-            {translate(`approvals.instance${current.status}`)}
-          </Badge>
-        )}
-        <span className="flex-1" />
-
-        {current === null && canSubmit && workflow.availableTransitions.includes('SUBMITTED') && (
-          <Button
-            variant="default"
-            onClick={() => {
-              setSubmitting(true);
-            }}
-          >
-            {translate('approvals.submit')}
-          </Button>
-        )}
-        {canWithdraw && (
-          <Button
-            variant="outline"
-            onClick={() => {
-              setWithdrawing(true);
-            }}
-          >
-            {translate('approvals.withdraw')}
-          </Button>
-        )}
-        {current !== null && canManage && (
-          <Button
-            variant="outline"
-            onClick={() => {
-              const run =
-                current.status === 'PAUSED'
-                  ? resumeApproval(current.id)
-                  : pauseApproval(current.id, { reason: WorkflowPauseReason.ADMINISTRATIVE });
-              void run.then((result) => {
-                if (result.ok) {
-                  refresh();
-                  return;
-                }
-                toast.error(result.detail ?? translate(`error.${result.code}`));
-              });
-            }}
-          >
-            {translate(current.status === 'PAUSED' ? 'approvals.resume' : 'approvals.paused')}
-          </Button>
-        )}
-      </header>
-
-      {current === null && workflow.history.length === 0 && (
-        <Card>
+    /*
+      `Panel` — Phase 7.2. The heading was `text-lg font-semibold` here, `text-lg font-medium` on
+      revisions and signatures, `text-sm font-semibold` on the preview and `text-sm font-medium` on
+      the audit trail: five sections of one page, five type treatments, and none of them a labelled
+      region. The panel supplies all of that, and the instance's own status badge sits in the header
+      beside the title where "where has this got to" is the first thing the section answers.
+    */
+    <Panel
+      title={
+        <span className="flex flex-wrap items-center gap-2">
+          {approvalsTitle(translate)}
+          {current !== null && (
+            <Badge tone={current.status === 'PAUSED' ? 'warning' : 'muted'}>
+              {translate(`approvals.instance${current.status}`)}
+            </Badge>
+          )}
+        </span>
+      }
+      actions={
+        <>
+          {current === null && canSubmit && workflow.availableTransitions.includes('SUBMITTED') && (
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => {
+                setSubmitting(true);
+              }}
+            >
+              {translate('approvals.submit')}
+            </Button>
+          )}
+          {canWithdraw && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setWithdrawing(true);
+              }}
+            >
+              {translate('approvals.withdraw')}
+            </Button>
+          )}
+          {current !== null && canManage && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const run =
+                  current.status === 'PAUSED'
+                    ? resumeApproval(current.id)
+                    : pauseApproval(current.id, { reason: WorkflowPauseReason.ADMINISTRATIVE });
+                void run.then((result) => {
+                  if (result.ok) {
+                    refresh();
+                    return;
+                  }
+                  toast.error(result.detail ?? translate(`error.${result.code}`));
+                });
+              }}
+            >
+              {translate(current.status === 'PAUSED' ? 'approvals.resume' : 'approvals.paused')}
+            </Button>
+          )}
+        </>
+      }
+    >
+      <Stack gap={4}>
+        {current === null && workflow.history.length === 0 && (
+          // No inner `Card` — Phase 7.2. This was a card inside a card inside the record page's own
+          // grid, three nested surfaces to say one sentence.
           <EmptyState
             title={translate('approvals.notSubmitted')}
             description={translate('approvals.submitHint')}
           />
-        </Card>
-      )}
+        )}
 
-      {current !== null && current.pauseReason !== null && (
-        <Alert tone="warning">
-          {translate('approvals.pausedReason', {
-            reason:
-              pauseLabelKey(current.pauseReason) === null
-                ? current.pauseReason
-                : translate(pauseLabelKey(current.pauseReason)!),
-          })}
-        </Alert>
-      )}
+        {current !== null && current.pauseReason !== null && (
+          <Alert tone="warning">
+            {translate('approvals.pausedReason', {
+              reason:
+                pauseLabelKey(current.pauseReason) === null
+                  ? current.pauseReason
+                  : translate(pauseLabelKey(current.pauseReason)!),
+            })}
+          </Alert>
+        )}
 
-      {current !== null && current.status === 'COMPLETED' && !current.numberAssigned && (
-        // Stated rather than left as a blank field. Since Phase 5 this is the workflow's own
-        // choice — a definition whose completion does not assign a number — not a product gap.
-        <Alert tone="info">{translate('approvals.numberPending')}</Alert>
-      )}
+        {current !== null && current.status === 'COMPLETED' && !current.numberAssigned && (
+          // Stated rather than left as a blank field. Since Phase 5 this is the workflow's own
+          // choice — a definition whose completion does not assign a number — not a product gap.
+          <Alert tone="info">{translate('approvals.numberPending')}</Alert>
+        )}
 
-      {current !== null && (
-        <InstanceTimeline
-          instance={current}
-          currentUserId={currentUserId}
-          canDecide={canApprove}
-          canReject={canReject}
-          onDecide={(taskId, decision) => {
-            setDeciding({ taskId, decision });
-          }}
-        />
-      )}
-
-      {current !== null && (
-        <div>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setCommenting(true);
+        {current !== null && (
+          <InstanceTimeline
+            instance={current}
+            currentUserId={currentUserId}
+            canDecide={canApprove}
+            canReject={canReject}
+            onDecide={(taskId, decision) => {
+              setDeciding({ taskId, decision });
             }}
-          >
-            {translate('approvals.addComment')}
-          </Button>
-        </div>
-      )}
+          />
+        )}
 
-      {workflow.history.length > 0 && (
-        <details className="flex flex-col gap-3">
-          <summary className="cursor-pointer text-sm font-medium">
-            {translate('approvals.history')}
-          </summary>
-          <div className="mt-3 flex flex-col gap-4">
-            {workflow.history.map((instance) => (
-              <InstanceTimeline
-                key={instance.id}
-                instance={instance}
-                currentUserId={currentUserId}
-                canDecide={false}
-                canReject={false}
-                onDecide={() => {}}
-              />
-            ))}
+        {current !== null && (
+          <div>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setCommenting(true);
+              }}
+            >
+              {translate('approvals.addComment')}
+            </Button>
           </div>
-        </details>
-      )}
+        )}
+
+        {workflow.history.length > 0 && (
+          <details className="flex flex-col gap-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              {translate('approvals.history')}
+            </summary>
+            <div className="mt-3 flex flex-col gap-4">
+              {workflow.history.map((instance) => (
+                <InstanceTimeline
+                  key={instance.id}
+                  instance={instance}
+                  currentUserId={currentUserId}
+                  canDecide={false}
+                  canReject={false}
+                  onDecide={() => {}}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+      </Stack>
 
       <FormDialog
         open={submitting}
@@ -280,7 +297,7 @@ export function ApprovalPanel({
           refresh();
         }}
       />
-    </section>
+    </Panel>
   );
 }
 
@@ -307,7 +324,16 @@ function InstanceTimeline({
   const translate = useTranslate();
 
   return (
-    <Card className="flex flex-col gap-4">
+    /*
+      A `Surface`, not a `Card` — Phase 7.2.
+
+      An instance is a *grouping inside* the approvals panel, and rendering it as a card put a third
+      nested surface on the record page: page grid → panel → card → the stage list's own bordered
+      rows. `Surface` is the layer beneath `Card` in the design system and exists for exactly this —
+      a background and a border without a card's semantics — so the nesting reads as one level of
+      grouping instead of three.
+    */
+    <Surface tone="muted" bordered padding={4} radius="lg" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-baseline gap-3 text-sm opacity-70">
         {/* The *version*, not the definition. "Which rules was this approved under" is the question
             this whole product exists to answer, and it is answered here rather than by a join. */}
@@ -361,7 +387,17 @@ function InstanceTimeline({
           ))}
         </ul>
       )}
-    </Card>
+    </Surface>
+  );
+}
+
+/** The section's title, with its icon — one definition, used by both of this panel's returns. */
+function approvalsTitle(translate: (key: MessageKey) => string): ReactNode {
+  return (
+    <span className="flex items-center gap-2">
+      <ClipboardCheck className="size-4 opacity-70" aria-hidden />
+      {translate('approvals.title')}
+    </span>
   );
 }
 

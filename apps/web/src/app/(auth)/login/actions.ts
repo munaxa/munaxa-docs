@@ -20,8 +20,6 @@ export interface SignInFormState {
   readonly mfaRequired?: boolean;
 }
 
-export const EMPTY_FORM_STATE: SignInFormState = { reason: null };
-
 /**
  * The sign-in form's action.
  *

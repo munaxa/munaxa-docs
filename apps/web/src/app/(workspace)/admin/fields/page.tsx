@@ -3,14 +3,11 @@ import type { ReactNode } from 'react';
 import type { MetadataField } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  FIELD_FILTER_KEYS,
-  FIELD_SORT_FIELDS,
-  FieldsScreen,
-} from '../../../../features/admin-configuration/fields-screen';
+import { FieldsScreen } from '../../../../features/admin-configuration/fields-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { FIELD_FILTER_KEYS, FIELD_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /** The tenant-defined metadata fields. */
 export default async function FieldsPage({

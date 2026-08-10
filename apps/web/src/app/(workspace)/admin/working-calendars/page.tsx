@@ -4,13 +4,10 @@ import type { Entity, WorkingCalendar } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../../features/admin-shared';
-import {
-  CALENDAR_FILTER_KEYS,
-  CALENDAR_SORT_FIELDS,
-  WorkingCalendarsScreen,
-} from '../../../../features/admin-approval-routing/working-calendars-screen';
+import { WorkingCalendarsScreen } from '../../../../features/admin-approval-routing/working-calendars-screen';
 import { adminAccess, adminList, adminOptions } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { CALENDAR_FILTER_KEYS, CALENDAR_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /**
  * Working calendars.

@@ -24,8 +24,6 @@ import {
 import { createWebhook, deleteWebhook, updateWebhook } from './actions';
 import { SecretOnce } from './secret-once';
 
-export const WEBHOOK_SORT_FIELDS = ['createdAt'] as const;
-
 /**
  * Outbound webhook endpoints.
  *

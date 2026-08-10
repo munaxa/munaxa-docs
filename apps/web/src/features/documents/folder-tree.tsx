@@ -4,7 +4,10 @@ import type { Route } from 'next';
 import Link from 'next/link';
 import { type ReactNode, useMemo } from 'react';
 
-import { Badge, Card } from '@munaxa/ui';
+import { Badge, Panel } from '@munaxa/ui';
+// `Library` is also a contract type in this file, and `FolderTree` is this module's own component —
+// both icons are aliased so the names cannot collide.
+import { FolderTree as FolderTreeIcon, Library as LibraryIcon, Star } from '@munaxa/icons';
 
 import type { Folder, Library } from '@edms/contracts';
 
@@ -55,10 +58,26 @@ export function FolderTree({
   );
 
   return (
-    <nav aria-label={translate('documents.nav.label')} className="flex flex-col gap-4">
-      <Card>
-        <h2 className="text-sm font-medium opacity-70">{translate('documents.nav.libraries')}</h2>
-        <ul className="mt-2 flex flex-col gap-1">
+    /*
+      Three `Panel`s, not three `Card`s with hand-written headings — Phase 7.2.
+
+      This rail had the record page's problem in miniature: each group announced itself with a
+      `text-sm font-medium opacity-70` heading floating above a card, so the label read as *less*
+      present than the links beneath it and nothing tied the two together. `Panel` gives each group
+      the same header treatment every section of the record page now has — the display face at one
+      size, with a rule under it — and makes each one a labelled region, which is what a navigation
+      rail of three independent groups should have been all along.
+    */
+    <nav aria-label={translate('documents.nav.label')} className="flex flex-col gap-3">
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <LibraryIcon className="size-4 opacity-70" aria-hidden />
+            {translate('documents.nav.libraries')}
+          </span>
+        }
+      >
+        <ul className="-mx-2 flex flex-col gap-0.5">
           {libraries.map((library) => (
             <li key={library.id}>
               <Link
@@ -78,12 +97,18 @@ export function FolderTree({
             </li>
           )}
         </ul>
-      </Card>
+      </Panel>
 
       {selectedLibraryId !== null && (
-        <Card>
-          <h2 className="text-sm font-medium opacity-70">{translate('documents.nav.folders')}</h2>
-          <ul className="mt-2 flex flex-col gap-1">
+        <Panel
+          title={
+            <span className="flex items-center gap-2">
+              <FolderTreeIcon className="size-4 opacity-70" aria-hidden />
+              {translate('documents.nav.folders')}
+            </span>
+          }
+        >
+          <ul className="-mx-2 flex flex-col gap-0.5">
             {nodes.map(({ folder, indent }) => (
               <li key={folder.id}>
                 <Link
@@ -100,12 +125,18 @@ export function FolderTree({
               </li>
             ))}
           </ul>
-        </Card>
+        </Panel>
       )}
 
-      <Card>
-        <h2 className="text-sm font-medium opacity-70">{translate('documents.nav.views')}</h2>
-        <ul className="mt-2 flex flex-col gap-1">
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <Star className="size-4 opacity-70" aria-hidden />
+            {translate('documents.nav.views')}
+          </span>
+        }
+      >
+        <ul className="-mx-2 flex flex-col gap-0.5">
           <li>
             <Link
               href="/documents?favorite=true"
@@ -120,7 +151,7 @@ export function FolderTree({
             </Link>
           </li>
         </ul>
-      </Card>
+      </Panel>
     </nav>
   );
 }

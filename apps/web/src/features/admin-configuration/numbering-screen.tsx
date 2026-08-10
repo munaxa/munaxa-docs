@@ -36,8 +36,6 @@ import {
 } from './actions';
 import { NumberingBuilder, type Separator } from './numbering-builder';
 
-export const NUMBERING_SORT_FIELDS = ['createdAt', 'updatedAt', 'name', 'key'] as const;
-
 const RESET_LABELS: Readonly<Record<SequenceResetScopeKey, MessageKey>> = {
   NEVER: 'admin.numbering.resetNEVER',
   YEARLY: 'admin.numbering.resetYEARLY',

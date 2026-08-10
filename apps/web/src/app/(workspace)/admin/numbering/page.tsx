@@ -3,13 +3,11 @@ import type { ReactNode } from 'react';
 import type { NumberingRule } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
-import {
-  NUMBERING_SORT_FIELDS,
-  NumberingScreen,
-} from '../../../../features/admin-configuration/numbering-screen';
+import { NumberingScreen } from '../../../../features/admin-configuration/numbering-screen';
 import { AdminForbidden } from '../../../../features/admin-shared';
 import { adminAccess, adminList } from '../../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../../lib/admin/list-state';
+import { NUMBERING_SORT_FIELDS } from '../../../../lib/admin/list-keys';
 
 /** Numbering rules. */
 export default async function NumberingPage({

@@ -14,13 +14,10 @@ import type {
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../features/admin-shared';
-import {
-  DOCUMENT_FILTER_KEYS,
-  DOCUMENT_SORT_FIELDS,
-  LibraryScreen,
-} from '../../../features/documents/library-screen';
+import { LibraryScreen } from '../../../features/documents/library-screen';
 import { adminAccess, adminList, adminOptions } from '../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../lib/admin/list-state';
+import { DOCUMENT_FILTER_KEYS, DOCUMENT_SORT_FIELDS } from '../../../lib/admin/list-keys';
 
 /**
  * The document library.
@@ -76,7 +73,11 @@ export default async function DocumentsPage({
       ? { data: [] as Folder[] }
       : await adminList<Folder>('/admin/folders', {
           page: 1,
-          pageSize: 200,
+          // The API's maximum, and it has to be: `MAX_PAGE_SIZE` is 100 and the pagination schema
+          // *rejects* anything above it. This asked for 200 from the day it was written, so every
+          // request 422'd and the screen threw before rendering — a page nobody could open. Found by
+          // Phase 6.6's browser suite, which is the first thing in this repository to load it.
+          pageSize: 100,
           sortBy: 'path',
           sortDirection: 'asc',
           search: '',
