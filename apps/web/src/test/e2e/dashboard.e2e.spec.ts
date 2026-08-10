@@ -168,4 +168,80 @@ describe('dashboard in the running application', () => {
       .getByRole('heading', { name: en.dashboard.recent.title })
       .waitFor({ state: 'visible' });
   });
+
+  /**
+   * The recent-document row, reached the way a person reaches it — Phase 7.6D.
+   *
+   * Phases 7.6B and 7.6C both left this unverified: the composition was improved and the dashboard
+   * was proven to run, but the seeded tenant had never opened anything, so the panel rendered its
+   * empty state and the row itself was only ever seen in a static render.
+   *
+   * The mechanism is not guessed. `DocumentService.open()` calls `activity.recordView(...)`, and the
+   * only route that reaches `open()` is `GET /documents/:id` — so a document becomes "recently
+   * opened" by **being opened**, and nothing else does it. Navigating to the record page is
+   * therefore the entire product path, and no row is written by hand to make the panel populate.
+   */
+  it('records a document as recently opened by opening it, and shows it on the dashboard', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // The real user action: go to the document. The record page server-renders, which is what calls
+    // GET /documents/:id, which is what records the view.
+    await page.goto(`${WEB_URL}/documents/${fixture.documentId}`, { waitUntil: 'networkidle' });
+    expect(new URL(page.url()).pathname).toBe(`/documents/${fixture.documentId}`);
+
+    // Back to the dashboard, by navigation rather than by reload of a crafted URL.
+    await page.getByRole('link', { name: en.nav.home, exact: true }).first().click();
+    await page.waitForURL((url) => url.pathname === '/');
+
+    const recent = page.locator('section, div').filter({
+      has: page.getByRole('heading', { name: en.dashboard.recent.title }),
+    });
+    await page
+      .getByRole('heading', { name: en.dashboard.recent.title })
+      .waitFor({ state: 'visible' });
+
+    const body = await page.locator('body').innerText();
+
+    // The empty state must be gone — that is the whole point of the phase.
+    expect(body).not.toContain(en.dashboard.recent.empty);
+
+    // Values derived from the seeded document rather than hard-coded display text.
+    expect(body).toContain(fixture.documentNumber);
+
+    // The row links to the document it names.
+    const rowLink = recent
+      .getByRole('link', { name: new RegExp(fixture.documentNumber, 'i') })
+      .first();
+    await rowLink.waitFor({ state: 'visible' });
+
+    await page.screenshot({
+      path: 'src/test/__e2e_screenshots__/recent-populated-1440.png',
+      fullPage: true,
+    });
+  });
+
+  it('keeps the populated row within the viewport at every width', async () => {
+    for (const width of [1440, 1280, 1024, 768, 640, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForFunction(() => document.readyState === 'complete');
+
+      const overflow = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(
+        overflow.scrollWidth,
+        `populated recent row overflows at ${String(width)}px`,
+      ).toBeLessThanOrEqual(overflow.clientWidth);
+
+      // The number is the narrowest thing on the row and the first to be clipped or wrapped
+      // incoherently, so it is what the width assertion is anchored to.
+      expect(await page.locator('body').innerText()).toContain(fixture.documentNumber);
+
+      await page.screenshot({
+        path: `src/test/__e2e_screenshots__/recent-populated-${String(width)}.png`,
+        fullPage: true,
+      });
+    }
+  });
 });
