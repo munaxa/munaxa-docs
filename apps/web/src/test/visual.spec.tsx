@@ -387,6 +387,84 @@ const NARROW: readonly {
   },
 ];
 
+/**
+ * Arabic, in RTL, with the counts that change the words — Phase 7.4C.
+ *
+ * Unit tests settle whether `admin.grid.rowCount` renders `صفان` at two. They cannot settle whether
+ * that string fits a badge, sits on the correct side of its label, or drags a Latin digit into the
+ * middle of an Arabic sentence in the wrong place. The counts below are chosen for the categories
+ * they land in — 1 `one`, 2 `two` (the form with no digit at all), 3 `few`, 11 `many` — so one
+ * screen shows four different Arabic constructions of the same noun.
+ */
+const ARABIC: readonly {
+  readonly name: string;
+  readonly width: number;
+  readonly ui: () => ReactElement;
+}[] = [
+  { name: 'ar-document-list-one', width: 1280, ui: () => libraryWith(1) },
+  { name: 'ar-document-list-two', width: 1280, ui: () => libraryWith(2) },
+  { name: 'ar-document-list-few', width: 1280, ui: () => libraryWith(3) },
+  { name: 'ar-document-list-many', width: 1280, ui: () => libraryWith(11) },
+  { name: 'ar-document-list-mobile', width: 390, ui: () => libraryWith(11) },
+];
+
+function libraryWith(rowCount: number): ReactElement {
+  const rows = Array.from({ length: rowCount }, (_, index) =>
+    documentSummary({ id: `doc-${String(index)}`, documentNumber: `QM-00${String(index)}` }),
+  );
+  return (
+    <LibraryScreen
+      rows={rows}
+      total={rowCount}
+      state={listState()}
+      libraries={[library()]}
+      folders={[folder()]}
+      selectedLibraryId={library().id}
+      selectedFolderId={folder().id}
+      selectedFolderName="Procedures"
+      documentTypes={[]}
+      categories={[]}
+      confidentialityLevels={[]}
+      users={[]}
+      departments={[]}
+      canCreate
+      canBulk={{ edit: true, restore: true, download: true }}
+    />
+  );
+}
+
+function arabicMarkup(ui: ReactElement): string {
+  return renderToStaticMarkup(
+    <Providers session={{ userId: 'u', tenantId: 't', locale: 'ar' }}>{ui}</Providers>,
+  );
+}
+
+describe('Arabic, right to left', () => {
+  describe.each(ARABIC)('$name', ({ name, width, ui }) => {
+    it.each(THEMES)('matches its %s baseline', async (theme) => {
+      const page = await renderPage(arabicMarkup(ui()), {
+        theme,
+        width,
+        height: 900,
+        locale: 'ar',
+      });
+      const result = await matchesBaseline(page, `${name}-${theme}`);
+      await page.close();
+      expect(result.changedPixels, result.diffPath ?? '').toBeLessThanOrEqual(0);
+    });
+  });
+
+  it('renders the counted noun in Arabic, not the key or English', async () => {
+    // The assertion a screenshot cannot make. Two is the interesting one: the dual, with no digit.
+    const page = await renderPage(arabicMarkup(libraryWith(2)), { locale: 'ar', width: 1280 });
+    const text = await page.locator('body').innerText();
+    await page.close();
+    expect(text).toContain('صفان');
+    expect(text).not.toContain('2 صفان');
+    expect(text).not.toContain('rows');
+  });
+});
+
 describe('narrow viewports', () => {
   describe.each(NARROW)('$name', ({ name, width, ui }) => {
     it('matches its visual baseline', async () => {

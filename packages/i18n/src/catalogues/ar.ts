@@ -5,18 +5,32 @@ import { plural } from '../plural';
  * The Arabic catalogue, typed against the English one: a key that English has and Arabic
  * lacks is a compile error, which is the only reliable way to keep two catalogues honest.
  *
- * ## The 23 plural messages are awaiting review — `docs/reports/phase-7.4a-arabic-pluralization-review.md`
+ * ## Counting in Arabic — the approved policy, applied to all 23 plural messages
  *
- * Each `plural({ … })` below carries only `other`, holding the single form this catalogue shipped
- * before plural messages existed. Arabic output is therefore identical to what it always was: no
- * regression, and no invented wording either.
+ * Arabic agrees a counted noun with its number across six categories, and the product now does it
+ * the same way everywhere (Phase 7.4C; the decision and its evidence are in
+ * `docs/reports/phase-7.4c-arabic-pluralization-completion.md`):
  *
- * Phase 7.4A reviewed all 23 against the repository's own Arabic and **completed none**, for one
- * reason that applies to every message: the catalogue writes duals correctly (`المراجعتان`,
- * `اللقطتين`, `بخطوتين`) but has **never written a digit beside one**, and a `two` form is exactly
- * that construction. Whether `{count}` should render as `2 صفان`, as `صفان` alone, or another way is
- * a house convention nobody has set. The report carries the per-message question, the attested
- * terminology for each counted noun, and the decision a reviewer has to take first.
+ * | category | construction | example |
+ * | --- | --- | --- |
+ * | `zero`  | digit + plural       | `0 صفوف`  |
+ * | `one`   | digit + singular     | `1 صف`    |
+ * | `two`   | **dual, no digit**   | `صفان`    |
+ * | `few`   | digit + plural       | `3 صفوف`  |
+ * | `many`  | digit + singular accusative (تمييز منصوب) | `11 صفًا` |
+ * | `other` | digit + singular genitive | `100 صف` |
+ *
+ * `two` carries no `{count}` on purpose: the dual already means two, so printing the digit beside it
+ * says it twice. That is the one place a form deliberately drops an interpolation variable.
+ *
+ * The vocabulary is the catalogue's own throughout — `صفوف`, `أحداث`, `مستندات`, `وثائق`, `أشخاص`,
+ * `عناصر`, `أرقام`, `عطلات`, `قرارات`, `نتائج`, `مرات`, `إشعارات` — and the document messages use
+ * `وثيقة`, which is what `documents.title` and `bulk.bar.label` already call a document.
+ *
+ * Sentence-embedded messages agree beyond the noun: `admin.roles.inUseByMembers` moves its pronoun
+ * (`عنه` → `عنهما` → `عنهم`), `admin.list.inUseByTypes` moves `عدّله` → `عدّلهما` → `عدّلها`, and the
+ * three `bulk.result.*` messages take feminine verb agreement (`رُفِضت`, `مُنِعت`, `أخفقت`) because
+ * what they count is `وثيقة`.
  */
 export const ar: Catalogue = {
   app: {
@@ -56,10 +70,12 @@ export const ar: Catalogue = {
     mfaTitle: 'التحقق بخطوتين',
     mfaNotEnrolledHint: 'أضف تطبيق مصادقة حتى لا تكفي كلمة مرور مسروقة للوصول إلى وثائقك.',
     mfaEnrolledHint: plural({
-      // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-      // `other` so nothing a reader sees changed. Arabic selects across six categories and
-      // this message answers with one; the remaining forms need a native reviewer.
-      other: 'تطبيق المصادقة مُفعَّل. لديك {count} من رموز الاسترداد غير المستخدمة.',
+      zero: 'تطبيق المصادقة مُفعَّل. لديك {count} رموز استرداد غير مستخدمة.',
+      one: 'تطبيق المصادقة مُفعَّل. لديك {count} رمز استرداد غير مستخدم.',
+      two: 'تطبيق المصادقة مُفعَّل. لديك رمزا استرداد غير مستخدمين.',
+      few: 'تطبيق المصادقة مُفعَّل. لديك {count} رموز استرداد غير مستخدمة.',
+      many: 'تطبيق المصادقة مُفعَّل. لديك {count} رمز استرداد غير مستخدم.',
+      other: 'تطبيق المصادقة مُفعَّل. لديك {count} رمز استرداد غير مستخدم.',
     }),
     mfaStart: 'إعداد تطبيق مصادقة',
     mfaStartAgain: 'ابدأ الإعداد من جديد',
@@ -141,10 +157,12 @@ export const ar: Catalogue = {
       selectAll: 'تحديد كل الصفوف',
       selectRow: 'تحديد {name}',
       rowCount: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: '{count} صفًا',
+        zero: '{count} صفوف',
+        one: '{count} صف',
+        two: 'صفان',
+        few: '{count} صفوف',
+        many: '{count} صفًا',
+        other: '{count} صف',
       }),
       pagination: 'الصفحات',
       previousPage: 'السابق',
@@ -171,16 +189,20 @@ export const ar: Catalogue = {
       recycleBin: 'سلة المحذوفات',
       filterAny: 'الكل',
       inUseByTypes: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: 'مستخدم في {count} من أنواع المستندات. عدّلها أولًا.',
+        zero: 'مستخدم في {count} أنواع مستندات. عدّلها أولًا.',
+        one: 'مستخدم في {count} نوع مستند. عدّله أولًا.',
+        two: 'مستخدم في نوعَي مستند. عدّلهما أولًا.',
+        few: 'مستخدم في {count} أنواع مستندات. عدّلها أولًا.',
+        many: 'مستخدم في {count} نوع مستند. عدّلها أولًا.',
+        other: 'مستخدم في {count} نوع مستند. عدّلها أولًا.',
       }),
       inUseByChildren: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: 'يحتوي على {count} من العناصر.',
+        zero: 'يحتوي على {count} عناصر.',
+        one: 'يحتوي على {count} عنصر.',
+        two: 'يحتوي على عنصرين.',
+        few: 'يحتوي على {count} عناصر.',
+        many: 'يحتوي على {count} عنصرًا.',
+        other: 'يحتوي على {count} عنصر.',
       }),
       needsPrerequisite: 'أضف {name} واحدًا على الأقل قبل ذلك.',
     },
@@ -280,10 +302,12 @@ export const ar: Catalogue = {
       revokeAll: 'سحب الكل',
       cannotDeleteSystem: 'لا يمكن حذف دور مدمج.',
       inUseByMembers: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: 'يحمل هذا الدور {count} من الأشخاص. أزِله عنهم أولًا.',
+        zero: 'يحمل هذا الدور {count} أشخاص. أزِله عنهم أولًا.',
+        one: 'يحمل هذا الدور {count} شخص. أزِله عنه أولًا.',
+        two: 'يحمل هذا الدور شخصان. أزِله عنهما أولًا.',
+        few: 'يحمل هذا الدور {count} أشخاص. أزِله عنهم أولًا.',
+        many: 'يحمل هذا الدور {count} شخصًا. أزِله عنهم أولًا.',
+        other: 'يحمل هذا الدور {count} شخص. أزِله عنهم أولًا.',
       }),
     },
     permissions: {
@@ -459,10 +483,12 @@ export const ar: Catalogue = {
         departmentCode: 'رمز القسم',
         documentTypeCode: 'رمز نوع الوثيقة',
         held: plural({
-          // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-          // `other` so nothing a reader sees changed. Arabic selects across six categories and
-          // this message answers with one; the remaining forms need a native reviewer.
-          other: 'تم حجز {count} من الأرقام.',
+          zero: 'تم حجز {count} أرقام.',
+          one: 'تم حجز {count} رقم.',
+          two: 'تم حجز رقمين.',
+          few: 'تم حجز {count} أرقام.',
+          many: 'تم حجز {count} رقمًا.',
+          other: 'تم حجز {count} رقم.',
         }),
         void: 'إلغاء',
         voidWarning: 'سيُلغى {value}. تُحفظ القيمة للأبد ولا يمكن إسنادها إلى وثيقة أبدًا.',
@@ -593,10 +619,12 @@ export const ar: Catalogue = {
       one: 'مجموعة اعتماد',
       members: 'الأعضاء',
       memberCount: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: '{count} أشخاص',
+        zero: '{count} أشخاص',
+        one: '{count} شخص',
+        two: 'شخصان',
+        few: '{count} أشخاص',
+        many: '{count} شخصًا',
+        other: '{count} شخص',
       }),
       notAPermission:
         'المجموعة قائمة توجيه لا صلاحية. إضافة شخص تجعله مرشحًا لمرحلة تسمّي المجموعة، ولا تمنحه شيئًا.',
@@ -616,10 +644,12 @@ export const ar: Catalogue = {
       holidayDate: 'التاريخ',
       holidayName: 'الاسم',
       holidayCount: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: '{count} عطلات',
+        zero: '{count} عطلات',
+        one: '{count} عطلة',
+        two: 'عطلتان',
+        few: '{count} عطلات',
+        many: '{count} عطلةً',
+        other: '{count} عطلة',
       }),
       timeZone: 'تُحتسب بتوقيت {zone}',
       preview: 'معاينة موعد',
@@ -697,10 +727,12 @@ export const ar: Catalogue = {
         'رُفض البريد إلى هذه العناوين رفضًا نهائيًا ولم تعد تُحاوَل. ولا تتأثر الإشعارات داخل التطبيق.',
       noSuppressions: 'لم يُعلَّق أي عنوان.',
       bounces: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: '{count} حالات رفض',
+        zero: '{count} حالات رفض',
+        one: '{count} حالة رفض',
+        two: 'حالتا رفض',
+        few: '{count} حالات رفض',
+        many: '{count} حالة رفض',
+        other: '{count} حالة رفض',
       }),
       releaseLabel: 'استئناف البريد إلى',
       releaseHint: 'اكتب العنوان كاملًا. تعرض القائمة أعلاه عناوين مقنّعة عن قصد.',
@@ -715,10 +747,12 @@ export const ar: Catalogue = {
       searchRebuildRequested: 'تمت جدولة إعادة البناء.',
       searchNeverRebuilt: 'لم تُعِد هذه المؤسسة بناء فهرسها من قبل.',
       searchRebuildSummary: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: 'تمت فهرسة {count} مستندًا، بدأت {startedAt}.',
+        zero: 'تمت فهرسة {count} مستندات، بدأت {startedAt}.',
+        one: 'تمت فهرسة {count} مستند، بدأت {startedAt}.',
+        two: 'تمت فهرسة مستندين، بدأت {startedAt}.',
+        few: 'تمت فهرسة {count} مستندات، بدأت {startedAt}.',
+        many: 'تمت فهرسة {count} مستندًا، بدأت {startedAt}.',
+        other: 'تمت فهرسة {count} مستند، بدأت {startedAt}.',
       }),
       searchRebuildRunning: 'قيد التنفيذ',
       searchRebuildCompleted: 'اكتملت',
@@ -905,16 +939,20 @@ export const ar: Catalogue = {
       browse: 'اختيار ملفات',
       hint: 'PDF وWord وExcel وPowerPoint والصور وDWG وZIP والنصوص.',
       fileCount: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
+        zero: 'حفظ {count} وثائق',
+        one: 'حفظ {count} وثيقة',
+        two: 'حفظ وثيقتين',
+        few: 'حفظ {count} وثائق',
+        many: 'حفظ {count} وثيقةً',
         other: 'حفظ {count} وثيقة',
       }),
       fileAnyway: 'احفظها على أي حال',
       duplicateWarning: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
+        zero: 'هذا الملف نفسه محفوظ بالفعل {count} مرات في هذه المؤسسة:',
+        one: 'هذا الملف نفسه محفوظ بالفعل {count} مرة في هذه المؤسسة:',
+        two: 'هذا الملف نفسه محفوظ بالفعل مرتين في هذه المؤسسة:',
+        few: 'هذا الملف نفسه محفوظ بالفعل {count} مرات في هذه المؤسسة:',
+        many: 'هذا الملف نفسه محفوظ بالفعل {count} مرةً في هذه المؤسسة:',
         other: 'هذا الملف نفسه محفوظ بالفعل {count} مرة في هذه المؤسسة:',
       }),
       blockedByDuplicates: 'أكّد التكرارات أعلاه قبل الحفظ.',
@@ -1061,9 +1099,11 @@ export const ar: Catalogue = {
     downloadInstead: 'يمكنك تنزيل الملف بدلًا من ذلك.',
     searchPlaceholder: 'ابحث في المستند',
     matches: plural({
-      // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-      // `other` so nothing a reader sees changed. Arabic selects across six categories and
-      // this message answers with one; the remaining forms need a native reviewer.
+      zero: '{count} نتائج',
+      one: '{count} نتيجة',
+      two: 'نتيجتان',
+      few: '{count} نتائج',
+      many: '{count} نتيجةً',
       other: '{count} نتيجة',
     }),
     nextMatch: 'النتيجة التالية',
@@ -1164,10 +1204,12 @@ export const ar: Catalogue = {
       none: 'لا توجد عمليات تصدير بعد',
       download: 'تنزيل',
       events: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: '{count} حدثاً',
+        zero: '{count} أحداث',
+        one: '{count} حدث',
+        two: 'حدثان',
+        few: '{count} أحداث',
+        many: '{count} حدثًا',
+        other: '{count} حدث',
       }),
       chainBroken: 'السلسلة مكسورة في هذا النطاق',
       state: {
@@ -1216,10 +1258,12 @@ export const ar: Catalogue = {
     period: 'المدة',
     used: 'الاستخدام',
     useCount: plural({
-      // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-      // `other` so nothing a reader sees changed. Arabic selects across six categories and
-      // this message answers with one; the remaining forms need a native reviewer.
-      other: '{count} قرارات',
+      zero: '{count} قرارات',
+      one: '{count} قرار',
+      two: 'قراران',
+      few: '{count} قرارات',
+      many: '{count} قرارًا',
+      other: '{count} قرار',
     }),
     approvedBy: 'وافق عليه',
     pair: '{delegator} ← {delegate}',
@@ -1253,10 +1297,12 @@ export const ar: Catalogue = {
     emptyHint: 'ستظهر هنا الاعتمادات وعمليات النشر وكل ما يحتاج إليك.',
     unread: 'غير مقروء',
     unreadCount: plural({
-      // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-      // `other` so nothing a reader sees changed. Arabic selects across six categories and
-      // this message answers with one; the remaining forms need a native reviewer.
-      other: '{count} غير مقروء',
+      zero: '{count} إشعارات غير مقروءة',
+      one: '{count} إشعار غير مقروء',
+      two: 'إشعاران غير مقروءين',
+      few: '{count} إشعارات غير مقروءة',
+      many: '{count} إشعارًا غير مقروء',
+      other: '{count} إشعار غير مقروء',
     }),
     markRead: 'تعليم كمقروء',
     markAllRead: 'تعليم الكل كمقروء',
@@ -1372,9 +1418,10 @@ export const ar: Catalogue = {
     bar: {
       label: 'الوثائق المحدَّدة',
       selected: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
+        // Invariant by product decision — a label with a value, not a counted phrase. This
+        // message lives in `ResourceList`, shared across the document library and every
+        // administration screen, so it counts whatever that list holds and cannot agree with a
+        // noun it does not know. `المحدَّد: {count}` sidesteps agreement rather than guessing it.
         other: 'المحدَّد: {count}',
       }),
       clear: 'إلغاء التحديد',
@@ -1389,22 +1436,28 @@ export const ar: Catalogue = {
       title: 'ما حدث لكل عنصر',
       summary: 'طُبِّق {applied} من {requested}.',
       refusedHint: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: 'رُفِض {count} لعدم امتلاكك صلاحية الوصول إليها.',
+        zero: 'رُفِضت {count} وثائق لعدم امتلاكك صلاحية الوصول إليها.',
+        one: 'رُفِضت {count} وثيقة لعدم امتلاكك صلاحية الوصول إليها.',
+        two: 'رُفِضت وثيقتان لعدم امتلاكك صلاحية الوصول إليهما.',
+        few: 'رُفِضت {count} وثائق لعدم امتلاكك صلاحية الوصول إليها.',
+        many: 'رُفِضت {count} وثيقةً لعدم امتلاكك صلاحية الوصول إليها.',
+        other: 'رُفِضت {count} وثيقة لعدم امتلاكك صلاحية الوصول إليها.',
       }),
       blockedHint: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: 'مُنِع {count} بقاعدة، مثل حجز قانوني.',
+        zero: 'مُنِعت {count} وثائق بقاعدة، مثل حجز قانوني.',
+        one: 'مُنِعت {count} وثيقة بقاعدة، مثل حجز قانوني.',
+        two: 'مُنِعت وثيقتان بقاعدة، مثل حجز قانوني.',
+        few: 'مُنِعت {count} وثائق بقاعدة، مثل حجز قانوني.',
+        many: 'مُنِعت {count} وثيقةً بقاعدة، مثل حجز قانوني.',
+        other: 'مُنِعت {count} وثيقة بقاعدة، مثل حجز قانوني.',
       }),
       failedHint: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: 'أخفق {count} بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        zero: 'أخفقت {count} وثائق بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        one: 'أخفقت {count} وثيقة بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        two: 'أخفقت وثيقتان بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        few: 'أخفقت {count} وثائق بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        many: 'أخفقت {count} وثيقةً بشكل غير متوقَّع، وقد سُجِّل ذلك.',
+        other: 'أخفقت {count} وثيقة بشكل غير متوقَّع، وقد سُجِّل ذلك.',
       }),
       close: 'إغلاق',
       links: 'روابط التنزيل',
@@ -1588,16 +1641,20 @@ export const ar: Catalogue = {
       referenced: 'قبل إزالة التكرار',
       saved: 'الموفَّر بإزالة التكرار',
       blobs: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: '{count} ملفًا',
+        zero: '{count} ملفات',
+        one: '{count} ملف',
+        two: 'ملفان',
+        few: '{count} ملفات',
+        many: '{count} ملفًا',
+        other: '{count} ملف',
       }),
       unreferenced: plural({
-        // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-        // `other` so nothing a reader sees changed. Arabic selects across six categories and
-        // this message answers with one; the remaining forms need a native reviewer.
-        other: '{count} بلا مرجع',
+        zero: '{count} ملفات بلا مرجع',
+        one: '{count} ملف بلا مرجع',
+        two: 'ملفان بلا مرجع',
+        few: '{count} ملفات بلا مرجع',
+        many: '{count} ملفًا بلا مرجع',
+        other: '{count} ملف بلا مرجع',
       }),
       users: 'المستخدمون',
       userState: {
@@ -1663,9 +1720,11 @@ export const ar: Catalogue = {
     any: 'الكل',
     empty: 'لا توجد صفوف مطابقة لعوامل التصفية هذه.',
     rowCount: plural({
-      // ARABIC REVIEW REQUIRED — the single form this catalogue already shipped, carried into
-      // `other` so nothing a reader sees changed. Arabic selects across six categories and
-      // this message answers with one; the remaining forms need a native reviewer.
+      zero: '{count} صفوف',
+      one: '{count} صف',
+      two: 'صفان',
+      few: '{count} صفوف',
+      many: '{count} صفًا',
       other: '{count} صف',
     }),
     scoping: {

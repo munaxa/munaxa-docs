@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ar } from './catalogues/ar';
 import { en } from './catalogues/en';
 import { isPluralMessage, plural, selectPluralForm } from './plural';
-import { translate, translatorFor } from './translate';
+import { type PluralKey, translate, translatorFor } from './translate';
 
 /**
  * The plural engine — Phase 7.4.
@@ -239,74 +239,186 @@ describe('the Arabic category boundaries a reviewer has to write against', () =>
     expect(new Intl.PluralRules('ar').select(count)).toBe(expected);
   });
 
-  it('every Arabic message still answers, in every category, while review is outstanding', () => {
+  it('every Arabic message answers in every category', () => {
     /*
-     * The 23 messages carry only `other` until a reviewer supplies the rest, so every category
-     * falls back to it. That is the state Phase 7.4 shipped deliberately — Arabic output identical
-     * to before, no invented wording — and this asserts the *safety* of it: no count, in any
-     * category, can render an empty string or a key while the review is pending.
+     * Written in Phase 7.4A to guard the *pending* state — when all 23 answered every category from
+     * one `other` form, this asserted that none of them could render a key or an empty string.
+     *
+     * Phase 7.4C completed the forms, and the digit assertion this test used to carry had to go:
+     * the approved policy prints **no digit in the `two` form**, because the Arabic dual already
+     * means two. So `صفان` legitimately fails "contains 2". The rule it was reaching for now lives
+     * where it belongs — "the dual carries no digit, and every other form carries one", asserted
+     * across every plural key rather than one. What survives here is what this test was always
+     * really for: nothing renders a key or an empty string, at any count.
      */
     for (const [count] of CATEGORIES) {
       const rendered = translate('ar', 'admin.grid.rowCount', { count });
-      expect(rendered).toContain(String(count));
-      expect(rendered).not.toBe('admin.grid.rowCount');
+      expect(rendered.length, `at ${String(count)}`).toBeGreaterThan(0);
+      expect(rendered, `at ${String(count)}`).not.toBe('admin.grid.rowCount');
     }
+  });
+});
+
+/** Every plural key in the catalogue, discovered rather than listed, so a new one cannot escape. */
+const PLURAL_KEYS: readonly PluralKey[] = (() => {
+  const keys: string[] = [];
+  const walk = (node: unknown, path: string): void => {
+    if (typeof node !== 'object' || node === null) {
+      return;
+    }
+    if (isPluralMessage(node)) {
+      keys.push(path);
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      walk(value, path === '' ? key : `${path}.${key}`);
+    }
+  };
+  walk(en, '');
+  return keys as PluralKey[];
+})();
+
+describe('the Arabic plural forms, as rendered', () => {
+  /**
+   * Wording assertions — Phase 7.4C, and the point of the phase.
+   *
+   * Category selection was already proved against `Intl.PluralRules`; what these assert is the
+   * **Arabic that reaches a reader**. The policy is one table applied 23 times: digit + plural for
+   * `zero` and `few`, digit + singular for `one` and `other`, digit + singular accusative (تمييز)
+   * for `many`, and — the one that needed a product decision — a **bare dual for `two`, with no
+   * digit**, because the dual already means two.
+   */
+  const ROW_FORMS: readonly (readonly [number, string])[] = [
+    [0, '0 صفوف'],
+    [1, '1 صف'],
+    [2, 'صفان'],
+    [3, '3 صفوف'],
+    [5, '5 صفوف'],
+    [10, '10 صفوف'],
+    [11, '11 صفًا'],
+    [12, '12 صفًا'],
+    [99, '99 صفًا'],
+    [100, '100 صف'],
+    [103, '103 صفوف'],
+    [111, '111 صفًا'],
+  ];
+
+  it.each(ROW_FORMS)('admin.grid.rowCount at %i reads %s', (count, expected) => {
+    expect(translate('ar', 'admin.grid.rowCount', { count })).toBe(expected);
+  });
+
+  it('reports.rowCount counts rows exactly as the grid does', () => {
+    // Phase 7.3 found these two rendering the same noun two different ways — `صفًا` on one screen,
+    // `صف` on the other, at the same count. One policy, one result, asserted rather than hoped for.
+    for (const [count] of ROW_FORMS) {
+      expect(translate('ar', 'reports.rowCount', { count })).toBe(
+        translate('ar', 'admin.grid.rowCount', { count }),
+      );
+    }
+  });
+
+  it('the dual carries no digit, and every other form carries one', () => {
+    // The policy's one deliberate omission, enforced across all 23 rather than trusted.
+    for (const key of PLURAL_KEYS) {
+      const two = translate('ar', key, { count: 2 });
+      if (key === 'bulk.bar.selected') {
+        continue;
+      }
+      expect(two, `${key} at two`).not.toContain('2');
+      for (const count of [1, 3, 11, 100]) {
+        expect(translate('ar', key, { count }), `${key} at ${String(count)}`).toContain(
+          String(count),
+        );
+      }
+    }
+  });
+
+  it.each([
+    ['audit.export.events', 1, '1 حدث'],
+    ['audit.export.events', 2, 'حدثان'],
+    ['audit.export.events', 3, '3 أحداث'],
+    ['audit.export.events', 11, '11 حدثًا'],
+    ['dashboard.admin.blobs', 2, 'ملفان'],
+    ['dashboard.admin.blobs', 11, '11 ملفًا'],
+    ['admin.approvalGroups.memberCount', 2, 'شخصان'],
+    ['admin.calendars.holidayCount', 2, 'عطلتان'],
+    ['delegations.useCount', 2, 'قراران'],
+    ['preview.matches', 2, 'نتيجتان'],
+    ['preview.matches', 3, '3 نتائج'],
+    ['notifications.unreadCount', 1, '1 إشعار غير مقروء'],
+    ['notifications.unreadCount', 2, 'إشعاران غير مقروءين'],
+    ['notifications.unreadCount', 3, '3 إشعارات غير مقروءة'],
+    ['notifications.unreadCount', 11, '11 إشعارًا غير مقروء'],
+    ['dashboard.admin.unreferenced', 2, 'ملفان بلا مرجع'],
+  ] as const)('%s at %i reads %s', (key, count, expected) => {
+    expect(translate('ar', key, { count })).toBe(expected);
+  });
+
+  it('sentence-embedded messages move their pronouns and verbs with the count', () => {
+    // Agreement past the noun. A count does not only change a word in Arabic; it changes what the
+    // rest of the sentence points at.
+    expect(translate('ar', 'admin.roles.inUseByMembers', { count: 1 })).toContain('عنه أولًا');
+    expect(translate('ar', 'admin.roles.inUseByMembers', { count: 2 })).toContain('عنهما أولًا');
+    expect(translate('ar', 'admin.roles.inUseByMembers', { count: 5 })).toContain('عنهم أولًا');
+
+    expect(translate('ar', 'admin.list.inUseByTypes', { count: 1 })).toContain('عدّله أولًا');
+    expect(translate('ar', 'admin.list.inUseByTypes', { count: 2 })).toContain('عدّلهما أولًا');
+    expect(translate('ar', 'admin.list.inUseByTypes', { count: 5 })).toContain('عدّلها أولًا');
+  });
+
+  it('the bulk results agree with وثيقة, which is what the product calls a document', () => {
+    expect(translate('ar', 'bulk.result.refusedHint', { count: 1 })).toContain('رُفِضت 1 وثيقة');
+    expect(translate('ar', 'bulk.result.refusedHint', { count: 2 })).toContain('رُفِضت وثيقتان');
+    expect(translate('ar', 'bulk.result.blockedHint', { count: 3 })).toContain('مُنِعت 3 وثائق');
+    expect(translate('ar', 'bulk.result.failedHint', { count: 11 })).toContain('أخفقت 11 وثيقةً');
+  });
+
+  it('bulk.bar.selected stays invariant, by decision', () => {
+    // The generic selection bar. `ResourceList` serves the document library and every
+    // administration screen, so it cannot know the noun — the label/value form is the approved
+    // answer, and it is the same string at every count.
+    for (const count of [0, 1, 2, 3, 11, 100]) {
+      expect(translate('ar', 'bulk.bar.selected', { count })).toBe(`المحدَّد: ${String(count)}`);
+    }
+  });
+
+  it('every Arabic form is real text — no key, no empty string, no English left behind', () => {
+    for (const key of PLURAL_KEYS) {
+      for (const count of [0, 1, 2, 3, 5, 10, 11, 12, 99, 100, 103, 111]) {
+        const rendered = translate('ar', key, { count });
+        expect(rendered.length, `${key} at ${String(count)}`).toBeGreaterThan(0);
+        expect(rendered, `${key} at ${String(count)}`).not.toBe(key);
+        expect(rendered, `${key} at ${String(count)}`).toMatch(/[\u0600-\u06FF]/);
+        expect(rendered, `${key} at ${String(count)}`).not.toContain('{count}');
+      }
+    }
+  });
+
+  it('no interpolation variable is lost beside the count', () => {
+    const rendered = translate('ar', 'admin.settings.searchRebuildSummary', {
+      count: 5,
+      startedAt: 'اليوم',
+    });
+    expect(rendered).toContain('اليوم');
+    expect(rendered).not.toContain('{startedAt}');
   });
 });
 
 describe('the Arabic plural review, as a tripwire', () => {
   /**
-   * §13's regression guard — Phase 7.4B.
+   * §13's regression guard, retargeted for Phase 7.4C.
    *
-   * Two failure modes are worth catching, and they point in opposite directions.
+   * Before this phase the number was 23 — every Arabic message answering all six categories from a
+   * single `other`. It is now **1**: `bulk.bar.selected`, invariant by product decision because the
+   * component it lives in cannot know what it is counting.
    *
-   * The first is **reversion**: one of the 23 quietly going back to a plain string. That is already
-   * covered above by "every message interpolating {count} is a plural message".
-   *
-   * The second is **silent progress**: somebody completing an Arabic message without adding the
-   * wording assertions that make it trustworthy. This list is the tripwire for that. When a message
-   * gains its `zero`/`one`/`two`/`few`/`many` forms, this test fails — deliberately — and the fix is
-   * to remove that key from the list *and add six wording assertions for it*, not to widen the
-   * expectation.
-   *
-   * It is not a generalised Arabic grammar engine, and deliberately so: it asserts only which
-   * messages are still answering every category from a single `other` form.
+   * The guard still points both ways. If it rises, a message lost its forms. If it falls, the one
+   * remaining invariant was given agreement it was decided not to have.
    */
-  const AWAITING_ARABIC_REVIEW = 23;
+  const INVARIANT_BY_DECISION = 1;
 
-  it(`${String(AWAITING_ARABIC_REVIEW)} Arabic messages still carry only their 'other' form`, () => {
-    const singleForm: string[] = [];
-    const walkPlurals = (node: unknown, path: string): void => {
-      if (typeof node !== 'object' || node === null) {
-        return;
-      }
-      if (isPluralMessage(node)) {
-        const forms = Object.entries(node)
-          .filter(([, value]) => typeof value === 'string')
-          .map(([key]) => key);
-        if (forms.length === 1 && forms[0] === 'other') {
-          singleForm.push(path);
-        }
-        return;
-      }
-      for (const [key, value] of Object.entries(node)) {
-        walkPlurals(value, path === '' ? key : `${path}.${key}`);
-      }
-    };
-    walkPlurals(ar, '');
-
-    expect(
-      singleForm.length,
-      `Arabic messages awaiting review changed from ${String(AWAITING_ARABIC_REVIEW)} to ` +
-        `${String(singleForm.length)}. If a message was completed, remove it from the count here ` +
-        `and add six wording assertions for it. See docs/reports/phase-7.4b-arabic-pluralization-completion.md.`,
-    ).toBe(AWAITING_ARABIC_REVIEW);
-  });
-
-  it('English has no message left answering every category from one form', () => {
-    // The mirror assertion, and the reason the Arabic number above is meaningful: English is done,
-    // so a single-form English plural would be a migration that was never finished.
-    const singleForm: string[] = [];
+  function singleFormPlurals(catalogue: unknown): string[] {
+    const found: string[] = [];
     const walkPlurals = (node: unknown, path: string): void => {
       if (typeof node !== 'object' || node === null) {
         return;
@@ -316,7 +428,7 @@ describe('the Arabic plural review, as a tripwire', () => {
           .filter(([, value]) => typeof value === 'string')
           .map(([key]) => key);
         if (forms.length === 1) {
-          singleForm.push(path);
+          found.push(path);
         }
         return;
       }
@@ -324,7 +436,16 @@ describe('the Arabic plural review, as a tripwire', () => {
         walkPlurals(value, path === '' ? key : `${path}.${key}`);
       }
     };
-    walkPlurals(en, '');
-    expect(singleForm).toStrictEqual([]);
+    walkPlurals(catalogue, '');
+    return found;
+  }
+
+  it('exactly one Arabic message is invariant, and it is the one that was decided to be', () => {
+    expect(singleFormPlurals(ar)).toStrictEqual(['bulk.bar.selected']);
+    expect(singleFormPlurals(ar)).toHaveLength(INVARIANT_BY_DECISION);
+  });
+
+  it('English has no message left answering every category from one form', () => {
+    expect(singleFormPlurals(en)).toStrictEqual([]);
   });
 });
