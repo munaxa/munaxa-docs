@@ -59,23 +59,54 @@ openable, appears on the dashboard's recent-documents row (Phase 7.6D proved tha
 This is not a defect in the Search screen. It is a property of the fixture, and it is why the Search
 baseline has only ever shown the empty state.
 
-## 6. The two legitimate ways forward
+## 6. The production indexing mechanism, now identified
+
+Found this phase, from source rather than assumption:
+
+- `search-projection.service.ts` — `indexDocumentFrom(facts)` then `index.upsert(document)`. This is
+  what writes `search_index_entry`.
+- `search-rebuild.service.ts` — replays the same projection over existing documents.
+- `search.controller.ts` — `@Controller({ path: 'search', version: '1' })` exposing
+  **`POST /search/rebuild`** with **`GET /search/rebuild`** for status.
+
+So the product does own an operator reindex, and it is the correct real mechanism for making
+already-seeded documents findable. It is not a test-only hook.
+
+### The attempt, and why it failed
+
+Driving it from the browser session was tried and **did not work**, for a reason worth recording so
+the next attempt does not repeat it:
+
+```
+POST http://127.0.0.1:3210/api/search/rebuild  →  200, body: "<!DOCTYPE html><html lang=\"en\" …"
+```
+
+A 200 that is *HTML* is Next.js's catch-all answering, not the API. The web app on :3210 does not
+proxy `/api` to the NestJS API on :3001, and the controller is versioned (`/search` at version 1),
+so the request never reached the reindex at all. The subsequent search then correctly still returned
+nothing — the failure was in the test's URL, not in the product.
+
+The remaining problem is authentication rather than routing: the browser holds an httpOnly session
+cookie for the **web** origin, and the web app exchanges it for a bearer when it calls the API. An
+E2E that calls the API directly has to obtain that bearer the same way the app does. `servers.ts`
+already signs in and captures storage state, so the helper belongs there.
+
+## 7. The two legitimate ways forward
 
 Both are real product paths. Neither is a fixture hack, and neither fits the remaining budget of this
 session:
 
 1. **Create the document through the product's own create/upload workflow** rather than by direct
-   insert, so the indexer runs as it does in production. This is the same principle Phase 7.6D used
-   for recent-documents: `open()` was the real mechanism, so the test opened a document. Here the
-   real mechanism is document creation.
-2. **Invoke the product's search-rebuild capability.** A `search_rebuild` table exists, so the
-   product owns a reindex path; driving it after seeding would make existing fixture documents
-   findable. This needs its API surface checked first — I did not verify it.
+   insert, so the projection runs as it does in production. This is the same principle Phase 7.6D
+   used for recent-documents: `open()` was the real mechanism, so the test opened a document.
+2. **Call `POST /search/rebuild` against the API origin with a real bearer**, obtained the way the
+   web app obtains it. Now that the route and the failure mode are both known, this is the smaller
+   of the two.
 
-Route 1 is the more faithful and the more reusable; route 2 is smaller. Either is ordinary
-engineering, not research.
+Route 1 is the more faithful and the more reusable; route 2 is smaller and now well-specified.
+Either is ordinary engineering, not research.
 
-## 7. What was NOT done
+## 8. What was NOT done
 
 - **A2** (Search still hand-rolls `<h2 class="text-lg font-medium">` / `<h3 class="text-sm
   font-medium">` where the product uses `Panel`/`Section`) — not implemented.
@@ -86,7 +117,7 @@ engineering, not research.
 
 The empty-state Search screen retains the light and dark baselines accepted in Phase 7.7A.
 
-## 8. Preserved
+## 9. Preserved
 
 Phase 7.7A's `sm:basis-0` fix is untouched, and its regression suite still passes **7/7** against
 the real stack in this session — the six-width `wrapped === (width < 640)` assertion included. The
@@ -94,7 +125,7 @@ Search E2E spec is byte-identical to its committed state.
 
 No Arabic string, API contract, permission, facet or search semantic was altered.
 
-## 9. Gates
+## 10. Gates
 
 | Gate | Result | Notes |
 | --- | --- | --- |
@@ -102,16 +133,18 @@ No Arabic string, API contract, permission, facet or search semantic was altered
 | `pnpm format:check` | PASS | docs only |
 | Everything else | NOT RUN | no product code changed; running them would report Phase 7.7A's results as this phase's |
 
-## 10. Verified / not verified
+## 11. Verified / not verified
 
 **Verified this phase:** the real search path executes end to end against the real stack; the query
 reaches the API; the response is a legitimate empty result; `search_index_entry` is empty; the
-fixture script never populates it; Phase 7.7A's fix and suite still pass.
+fixture script never populates it; the production reindex route exists and is versioned v1 on the
+API origin; a request to `/api/search/rebuild` on the *web* origin is answered by Next.js with HTML
+rather than reaching it; Phase 7.7A's fix and suite still pass 7/7.
 
 **Not verified:** anything about a populated Search screen — composition, dark, RTL, axe, keyboard,
 result navigation. None of it was claimed.
 
-## 11. Recommendation
+## 12. Recommendation
 
 The remaining work is ordinary engineering, and it should be one phase rather than three: make the
 E2E fixture create its document through the product's real creation path (or drive the real reindex),
