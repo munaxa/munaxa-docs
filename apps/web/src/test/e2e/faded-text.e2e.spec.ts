@@ -332,7 +332,8 @@ describe('faded text across the product', () => {
   afterAll(async () => {
     await context?.close();
     await browser?.close();
-    if (servers !== null) await stopServers(servers);
+    // `stopServers` is synchronous and takes the null case itself.
+    stopServers(servers);
     cleanUpFixtures();
   });
 

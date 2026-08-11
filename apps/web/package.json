@@ -22,7 +22,7 @@
     "@edms/i18n": "workspace:*",
     "@edms/utils": "workspace:*",
     "@munaxa/icons": "^1.0.0",
-    "@munaxa/platform": "^1.0.1",
+    "@munaxa/platform": "^1.0.2",
     "@munaxa/theme": "^1.0.0",
     "@munaxa/tokens": "^1.0.0",
     "@munaxa/ui": "^1.0.0",

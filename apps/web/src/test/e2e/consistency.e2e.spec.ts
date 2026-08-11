@@ -386,7 +386,17 @@ describe('platform grammar across the non-reference screens', () => {
     },
   );
 
-  it.each(['/audit', '/approvals', '/reports', '/admin/users'])(
+  /*
+   * `/documents` joins the sample — Phase 8.3.
+   *
+   * The four routes above were chosen in Phase 8 as the screens furthest from the reference ones.
+   * None of them renders a `Badge`, and `Badge` carried a serious `color-contrast` violation from
+   * Phase 5.2 until Phase 8.3: axe reported it on `/documents` in the light theme, on a route this
+   * suite never visited, so the suite stayed green for three phases while the violation shipped.
+   * A sample is only as good as what it happens to include, and the fix for that is to include the
+   * screen where the product's most reused status component actually appears.
+   */
+  it.each(['/audit', '/approvals', '/reports', '/admin/users', '/documents'])(
     'has no unrecorded critical or serious axe violations on %s',
     async (path) => {
       await page.setViewportSize({ width: 1280, height: 900 });
