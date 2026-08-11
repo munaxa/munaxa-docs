@@ -18,6 +18,7 @@ import {
   startServers,
   stopServers,
 } from './servers';
+import { setTheme, settleColours } from './theme';
 
 const CHROMIUM_PATH =
   process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
@@ -278,6 +279,122 @@ describe('platform grammar across the non-reference screens', () => {
    * real. These four are the ones the audit matrix marks as structurally different from the
    * reference screens, so they are where a violation is most likely.
    */
+  /**
+   * The navigation group titles, measured in both themes — Phase 8.2.
+   *
+   * The one live instance is the **admin section nav**: `admin-shared/section-nav.tsx` passes six
+   * titled groups to the platform's `SidebarNav`, while the main rail deliberately passes none
+   * (`SECTION_HEADINGS_ACCESSIBLE = false`, Phase 7.1, for this very reason). That asymmetry is why
+   * axe fires here and nowhere else.
+   *
+   * Colours are settled before measuring: Phase 7.9 established that reading during
+   * `transition-colors` reports interpolated values and turned one such reading into a finding that
+   * was not real. Two samples that agree, not a fixed sleep.
+   *
+   * **Measured: 2.79:1 light, 4.19:1 dark** — both below the 4.5:1 AA asks of 10px text. The
+   * numbers are recorded and guarded against getting worse rather than asserted at AA, because the
+   * class belongs to `@munaxa/platform` and cannot be changed from this repository (Phase 8.2 §3).
+   * When the platform ships `text-muted-foreground` without the `/70`, these floors start failing
+   * and get replaced by a plain 4.5 assertion, which is how the tolerance ends.
+   *
+   * The ratio is composited through a canvas rather than parsed from the colour string — see the
+   * comment inside, and the wrong numbers that made it necessary.
+   */
+  it.each(['light', 'dark'] as const)(
+    'measures the navigation group titles in %s',
+    async (theme) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.goto(`${WEB_URL}/admin/users`, { waitUntil: 'networkidle' });
+      await setTheme(page, theme);
+      await settleColours(page);
+
+      const measured = await page.evaluate(() => {
+        /*
+         * Composite through a canvas rather than parsing the colour string.
+         *
+         * `getComputedStyle().color` on a faded element comes back as `oklab(… / 0.7)`, and the
+         * first version of this measurement fed that string to a probe element and read it back —
+         * getting `oklab(…)` again, failing an `rgba()` regex, and silently falling back to black.
+         * It reported 21:1 in light and 1.1:1 in dark, which is what black on white and black on
+         * the dark canvas measure. Painting the background and then the foreground into a 1×1
+         * canvas makes the browser do both the colour-space conversion and the alpha compositing,
+         * and `getImageData` returns the pixel a reader actually sees.
+         */
+        const canvas = document.createElement('canvas');
+        canvas.width = 1;
+        canvas.height = 1;
+        const context = canvas.getContext('2d');
+
+        const pixel = (background: string, foreground?: string): readonly number[] => {
+          if (context === null) {
+            return [0, 0, 0];
+          }
+          context.clearRect(0, 0, 1, 1);
+          context.fillStyle = background;
+          context.fillRect(0, 0, 1, 1);
+          if (foreground !== undefined) {
+            context.fillStyle = foreground;
+            context.fillRect(0, 0, 1, 1);
+          }
+          const data = context.getImageData(0, 0, 1, 1).data;
+          return [data[0] ?? 0, data[1] ?? 0, data[2] ?? 0];
+        };
+
+        const luminance = (rgb: readonly number[]): number => {
+          const channel = (value: number): number => {
+            const c = value / 255;
+            return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+          };
+          return (
+            0.2126 * channel(rgb[0] ?? 0) +
+            0.7152 * channel(rgb[1] ?? 0) +
+            0.0722 * channel(rgb[2] ?? 0)
+          );
+        };
+
+        /** The nearest ancestor that actually paints — what the eye sees behind the text. */
+        const backgroundOf = (from: Element): string => {
+          let node: Element | null = from;
+          while (node !== null) {
+            const colour = getComputedStyle(node).backgroundColor;
+            if (colour !== 'rgba(0, 0, 0, 0)' && colour !== 'transparent') {
+              return colour;
+            }
+            node = node.parentElement;
+          }
+          return 'rgb(255, 255, 255)';
+        };
+
+        return [...document.querySelectorAll('nav p')]
+          .filter((node) => node.getBoundingClientRect().width > 0)
+          .map((title) => {
+            const background = backgroundOf(title);
+            const back = luminance(pixel(background));
+            const front = luminance(pixel(background, getComputedStyle(title).color));
+            const [hi, lo] = front > back ? [front, back] : [back, front];
+            return {
+              text: (title.textContent ?? '').trim().slice(0, 24),
+              ratio: Number((((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05)).toFixed(2)),
+            };
+          });
+      });
+
+      console.log(`[group-titles ${theme}]`, JSON.stringify(measured));
+      expect(measured.length, 'no titled navigation group was found to measure').toBeGreaterThan(0);
+
+      const worst = Math.min(...measured.map((entry) => entry.ratio));
+      expect(
+        worst,
+        `the navigation group titles regressed below the recorded ${theme} ratio`,
+        // Measured 2.79 light and 4.19 dark, in the running application with transitions settled.
+        // The floors sit just under them: this guards against the gap widening while the fix waits
+        // upstream, and both start failing the day the platform drops the `/70`.
+      ).toBeGreaterThanOrEqual(theme === 'dark' ? 4.15 : 2.75);
+
+      await setTheme(page, 'light');
+    },
+  );
+
   it.each(['/audit', '/approvals', '/reports', '/admin/users'])(
     'has no unrecorded critical or serious axe violations on %s',
     async (path) => {
