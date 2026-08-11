@@ -52,26 +52,18 @@ const RECORDED_FINDINGS = {
 } as const;
 
 /**
- * §6.3 — axe reports six serious `color-contrast` nodes on `/admin/users` and on no other sampled
- * route. The selector matches the platform navigation's group title
- * (`font-mono text-[10px] uppercase … text-muted-foreground/70` — a *fade of* the muted token, so
- * dimmer again than the rail items that measure 4.97:1 and 6.89:1).
+ * §6.3 — **fixed by Phase 8.2**, and the entry is deleted rather than kept.
  *
- * Recorded as **B — probable, one measurement short**: why the same class does not fire on
- * `/audit`, which renders the same rail, is not established, and Phase 7.9's lesson is that an
- * unexplained contrast number is usually the measurement rather than the product. The pairs are
- * logged beside the violation so the next phase starts from colours instead of counts.
+ * axe reported six serious `color-contrast` nodes on `/admin/users` and on no other sampled route,
+ * one per titled group in the admin section nav. The selector matched the platform navigation's
+ * group title, which painted itself with `text-muted-foreground/70` — a *fade of* the muted token,
+ * so dimmer again than the rail items beside it. `@munaxa/platform` 1.0.1 drops the `/70`; the
+ * titles now use the same full-strength token as those items and the six nodes are gone.
+ *
+ * This map is empty because that is what a fixed finding looks like: the assertion below is
+ * unconditional again, and any `color-contrast` node on any sampled route now fails the suite.
  */
-const RECORDED_AXE: Readonly<Record<string, readonly string[]>> = {
-  '/admin/users': [
-    'serious: color-contrast .gap-1.flex-col:nth-child(1) > .pb-1.font-mono.uppercase',
-    'serious: color-contrast .gap-1.flex-col:nth-child(2) > .pb-1.font-mono.uppercase',
-    'serious: color-contrast .gap-1.flex-col:nth-child(3) > .pb-1.font-mono.uppercase',
-    'serious: color-contrast .gap-1.flex-col:nth-child(4) > .pb-1.font-mono.uppercase',
-    'serious: color-contrast .gap-1.flex-col:nth-child(5) > .pb-1.font-mono.uppercase',
-    'serious: color-contrast .gap-1.flex-col:nth-child(6) > .pb-1.font-mono.uppercase',
-  ],
-};
+const RECORDED_AXE: Readonly<Record<string, readonly string[]>> = {};
 
 /**
  * The screens the four verified ones are *not* — Phase 8.
@@ -291,11 +283,11 @@ describe('platform grammar across the non-reference screens', () => {
    * `transition-colors` reports interpolated values and turned one such reading into a finding that
    * was not real. Two samples that agree, not a fixed sleep.
    *
-   * **Measured: 2.79:1 light, 4.19:1 dark** — both below the 4.5:1 AA asks of 10px text. The
-   * numbers are recorded and guarded against getting worse rather than asserted at AA, because the
-   * class belongs to `@munaxa/platform` and cannot be changed from this repository (Phase 8.2 §3).
-   * When the platform ships `text-muted-foreground` without the `/70`, these floors start failing
-   * and get replaced by a plain 4.5 assertion, which is how the tolerance ends.
+   * These titles measured **2.79:1 light and 4.19:1 dark** while the platform faded the muted
+   * token, both below the 4.5:1 AA asks of 10px text. Those numbers were recorded as floors rather
+   * than asserted at AA only because the class belonged to `@munaxa/platform` and could not be
+   * changed from this repository (Phase 8.2 §3). `@munaxa/platform` 1.0.1 drops the `/70`, so the
+   * tolerance is over: the assertion below is now the plain AA threshold, in both themes.
    *
    * The ratio is composited through a canvas rather than parsed from the colour string — see the
    * comment inside, and the wrong numbers that made it necessary.
@@ -385,11 +377,10 @@ describe('platform grammar across the non-reference screens', () => {
       const worst = Math.min(...measured.map((entry) => entry.ratio));
       expect(
         worst,
-        `the navigation group titles regressed below the recorded ${theme} ratio`,
-        // Measured 2.79 light and 4.19 dark, in the running application with transitions settled.
-        // The floors sit just under them: this guards against the gap widening while the fix waits
-        // upstream, and both start failing the day the platform drops the `/70`.
-      ).toBeGreaterThanOrEqual(theme === 'dark' ? 4.15 : 2.75);
+        `the navigation group titles fell below WCAG AA in ${theme}`,
+        // WCAG AA for text this size, asserted directly now that the platform paints these titles
+        // with the unfaded token. Measured in the running application with transitions settled.
+      ).toBeGreaterThanOrEqual(4.5);
 
       await setTheme(page, 'light');
     },
