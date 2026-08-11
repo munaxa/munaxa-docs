@@ -1,6 +1,11 @@
 
 # Phase 8.2 — SidebarNav Navigation Group Title Contrast
 
+> **Current status: the fix is written, tested and verified — see [§16](#16-third-attempt-access-granted-fix-made-and-verified).**
+> Sections 1–15 are the record of two sessions that could not reach `@munaxa/platform`, and they are
+> left exactly as they were written. The blocker was real while it lasted, and what it cost is the
+> most useful thing in this document.
+
 ## 1. Status
 
 **BLOCKED — the fix cannot be made from this repository, and no substitute was made.**
@@ -316,3 +321,122 @@ the session's repository scope (an admin can grant this in the Claude GitHub set
 rights for `@munaxa/platform` on GitHub Packages.
 
 **STATUS: BLOCKED** — unchanged, for a reason now proved by control rather than reported by a tool.
+
+---
+
+## 16. Third attempt, access granted — fix made and verified
+
+The blocker described in §7 and §15 is gone. `git ls-remote https://github.com/munaxa/munaxa-platform`
+returned refs on the first try, with no credential prompt, and the repository was already present
+in the session's working directory. Nothing about the diagnosis changed; only the access did.
+
+### The change
+
+`packages/platform/ui/shell/navigation.tsx`, line 92 — exactly the line §14 specified, and nothing
+else in the component:
+
+```diff
+- className="px-3 pb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70"
++ className="px-3 pb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground"
+```
+
+Resting items, active items, font, size, tracking, case, padding, background, the collapsed rule,
+the mobile drawer, RTL and the navigation semantics are all untouched, as §5 required.
+
+Released as **1.0.1** with a CHANGELOG entry. `VERSIONING.md` names "an accessibility correction"
+as a PATCH in as many words, so no judgement call was needed.
+
+Committed as `f709a29` on `claude/sidebar-nav-contrast-fix-nhpu3b` in `munaxa/munaxa-platform`.
+
+### The platform-level test
+
+Added to the existing `ui/shell/shell.test.tsx` rather than to a new harness — the repo has no
+contrast harness to reuse, and `toHaveClass` is its established way of asserting a rendered class.
+The test asserts the group title carries `text-muted-foreground` and carries no fade of it.
+
+It was proven to fail: reverting the class dropped the file to **1 failed / 25 passed**, and the
+failure was the new assertion rather than a collateral break. Restored, **26/26**.
+
+### Platform gates
+
+`format:check`, `lint` (32/32), `typecheck` (32/32), `test` (26/26), `build` (20/20), `validate`,
+and `scripts/verify-release.mjs` → *all checks passed*. The built `dist/ui/shell/navigation.js`
+contains no `text-muted-foreground/70`.
+
+### Measured after, in the running application
+
+The Docs suite was run against the real stack with the 1.0.1 artefact installed. Six titled groups
+in the admin section nav, both themes, transitions settled, composited through a canvas:
+
+| | before (1.0.0) | after (1.0.1) | AA needs |
+| --- | --- | --- | --- |
+| light | 2.79:1 | **4.97:1** | 4.5:1 |
+| dark | 4.19:1 | **7.44:1** | 4.5:1 |
+
+`[axe /admin/users]` returns `[]`. All six serious `color-contrast` nodes are gone.
+
+Two things in that table are worth stating plainly. The **before** numbers were re-measured from
+scratch in this session and came back 2.79 and 4.19 — identical to §4, which is independent
+confirmation of a measurement that had been wrong twice before it was right. The **dark after**
+number is **7.44, not the 6.89 this report and the handover both predicted**. The prediction was an
+inference from the resting items' recorded ratio rather than a measurement of these titles on this
+surface; the measured value governs, and the projection should not have been written as though it
+were data.
+
+### Suite changes
+
+`apps/web/src/test/e2e/consistency.e2e.spec.ts`, committed as `65cdd18`:
+
+- both floors (`2.75` light, `4.15` dark) replaced with a plain `>= 4.5` in each theme;
+- `RECORDED_AXE['/admin/users']` deleted, leaving the map empty and the axe assertion unconditional
+  for every sampled route.
+
+Proven to fail, the same way as the platform test: with 1.0.0 restored and the build genuinely
+re-run, **exactly three** assertions broke — the light floor, the dark floor, and the `/admin/users`
+axe check, which reported its six violations again with `text-muted-foreground/70` logged verbatim
+in the contrast pairs. The other eight passed. With 1.0.1 restored: **11/11**.
+
+### A methodological trap, recorded because it nearly produced a false result
+
+The first falsification attempt **passed**, which was the wrong answer. Turbo had replayed a cached
+`@edms/web:build` — the same hash, `4f29903e9c9b9090`, in both states — because the build hash does
+not include `node_modules` contents. The suite therefore measured a bundle built from 1.0.1 while
+1.0.0 was on disk, and reported 4.97/7.44 for the unfixed package.
+
+Only after `rm -rf apps/web/.next node_modules/.cache/turbo .turbo` and a forced rebuild did the
+real numbers appear. This belongs beside the conventions in §7 of the handover: **when the change
+under test lives in `node_modules`, the build cache must be cleared or the measurement is of the
+previous build.** A green suite is not evidence that the thing you changed is the thing that ran.
+
+### What was still not done, and why
+
+- **Not published.** `@munaxa/platform` releases go out through a manually-dispatched `Release`
+  workflow (`.github/workflows/release.yml`) that publishes every `@munaxa/*` package at its
+  declared version using `GITHUB_TOKEN`. Dispatching it from an unmerged branch would publish the
+  whole set from unreviewed code, and publishing is irreversible. That decision was put to the
+  requester, who chose the documented path: **merge the platform branch, then dispatch `Release`
+  from `main`.** `1.0.0` remains the only published version as of this writing.
+- **The dependency range was not bumped and the lockfile was not touched.** `apps/web/package.json`
+  still asks for `^1.0.0`, which will resolve `1.0.1` once it exists. Bumping the range against an
+  unpublished version would only break `--frozen-lockfile`.
+- **`node_modules` was not patched as a fix.** The 1.0.1 artefact was packed with `npm pack` and
+  unpacked over the installed copy *as a verification harness*: nothing was committed, the tree was
+  restored to 1.0.0 to run the falsification, and every claim above was checked in both directions.
+  This is the opposite of the workaround §15 refuses — that one would have shipped; this one only
+  measured, and left nothing behind.
+
+### The consequence for CI
+
+`65cdd18` asserts AA and therefore requires `@munaxa/platform >= 1.0.1` at runtime. Until that
+version is published **and** the lockfile resolves it, the suite builds the old class and those
+three assertions fail. The commit is deliberately held unpushed for that reason; it should land
+with, or after, the lockfile bump that follows the release.
+
+### Sequence to finish
+
+1. Review and merge `claude/sidebar-nav-contrast-fix-nhpu3b` in `munaxa/munaxa-platform`.
+2. Dispatch `Release` from `main` with `dry_run=false`.
+3. In Docs: `pnpm install` so the lockfile resolves `1.0.1`, then push `65cdd18` alongside it.
+4. Confirm CI green. The measurements above say what the suite should report.
+
+**STATUS: fix complete and verified; publication and consumption pending the release dispatch.**
