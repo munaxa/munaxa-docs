@@ -26,16 +26,22 @@ const WIDTHS = [1440, 1280, 1024, 768, 640, 390] as const;
 /**
  * Contrast failures that belong to `@munaxa/platform`, matched by the class that causes them.
  *
- * Both are shared components' own classes, with no prop by which a host application can change
- * them, so the only product-side remedies would be overriding platform styling or hardcoding a
- * colour — the two things `ARCHITECTURE.md` forbids. They are written up as platform enhancements
- * in the Phase 7.8 report, with measured and expected ratios.
+ * One entry, and it is the `Badge` palette issue recorded since Phase 5.2: `text-primary-strong` on
+ * the component's own `bg-primary/15` tint measures 4.31:1 against the 4.5:1 AA asks for. The class
+ * is the component's own, with no prop by which a host application can change it, so the only
+ * product-side remedies would be overriding platform styling or hardcoding a colour — the two
+ * things `ARCHITECTURE.md` forbids.
  *
- * This is the discipline `visual.spec.tsx` has used since Phase 5.2: the known gap is named, and
- * **every violation that is not one of these fails the build**. Deleting an entry when the platform
- * ships a fix is how a tolerated defect stops being tolerated.
+ * **`text-muted-foreground` was here after Phase 7.8 and has been removed — the gap was not real.**
+ * See `settleColours` below: the 3.57:1 that justified it was a colour transition measured
+ * mid-flight. With the transition settled the rail measures 6.89:1 in dark, and a tolerance for a
+ * defect that does not exist is worse than no tolerance at all, because it silently excuses every
+ * future regression that happens to use the same class.
+ *
+ * The discipline is `visual.spec.tsx`'s, since Phase 5.2: the known gap is named, and **every
+ * violation that is not this one fails the build**.
  */
-const KNOWN_PLATFORM_CONTRAST: readonly string[] = ['text-primary-strong', 'text-muted-foreground'];
+const KNOWN_PLATFORM_CONTRAST: readonly string[] = ['text-primary-strong'];
 
 /**
  * The application shell, measured across the four reference screens — Phase 7.8.
@@ -115,8 +121,11 @@ describe('the application shell in the running product', () => {
    * **axe** runs on the same page load, with `color-contrast` left on, in both themes. `incomplete`
    * is logged as well as `violations` because axe returns "needs review" rather than a violation
    * when it cannot resolve an element's effective background — a `color-mix` or a semi-transparent
-   * surface, both of which this theme uses. That is why axe can be silent about the rail while this
-   * suite's own computed ratio says 3.57–3.67:1 in dark: the two are answering different questions.
+   * surface, both of which this theme uses — so it is a count to watch rather than a pass mark.
+   *
+   * Colours are settled before axe runs, for the reason `settleColours` documents: measuring during
+   * a `transition-colors` reports interpolated values, and Phase 7.8 turned one such reading into a
+   * platform finding that was not real.
    */
   it.each(['light', 'dark'] as const)('paints the canvas and passes axe in %s', async (theme) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -125,6 +134,7 @@ describe('the application shell in the running product', () => {
     for (const route of routes) {
       await page.goto(`${WEB_URL}${route.path}`, { waitUntil: 'networkidle' });
       await setTheme(page, theme);
+      await settleColours(page);
 
       const canvas = await page.evaluate(() => ({
         html: getComputedStyle(document.documentElement).backgroundColor,
@@ -221,6 +231,7 @@ describe('the application shell in the running product', () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(WEB_URL, { waitUntil: 'networkidle' });
     await setTheme(page, theme);
+    await settleColours(page);
 
     const measured = await page.evaluate(() => {
       const luminance = (rgb: readonly number[]): number => {
@@ -271,12 +282,30 @@ describe('the application shell in the running product', () => {
             node.getBoundingClientRect().width > 0,
         );
 
+      const worst: Element | undefined = resting.reduce<Element | undefined>(
+        (lowest, link) => (lowest === undefined || ratio(link) < ratio(lowest) ? link : lowest),
+        undefined,
+      );
+
       return {
         links: links.length,
         active: active === null ? null : Number(ratio(active).toFixed(2)),
         restingWorst: Number(Math.min(...resting.map(ratio)).toFixed(2)),
         headingWorst:
           headings.length === 0 ? null : Number(Math.min(...headings.map(ratio)).toFixed(2)),
+        // Which element, and which pair — a ratio on its own cannot tell a token problem from a
+        // composition one, and Phase 7.9 needed to know which of the two this is.
+        worst:
+          worst === undefined
+            ? null
+            : {
+                text: (worst.textContent ?? '').trim().slice(0, 24),
+                color: getComputedStyle(worst).color,
+                background: `rgb(${opaqueBackground(worst).slice(0, 3).join(', ')})`,
+                // The token as well as the resolved colour: a ratio alone cannot tell a token
+                // problem from a composition one, and Phase 7.9 needed exactly that distinction.
+                token: getComputedStyle(worst).getPropertyValue('--muted-foreground').trim(),
+              },
       };
     });
 
@@ -288,33 +317,25 @@ describe('the application shell in the running product', () => {
     );
 
     /*
-     * The resting items, and the one number this product cannot currently reach.
+     * The resting items — AA in **both** themes, which is the correction Phase 7.9 exists to make.
      *
-     * `SidebarNav` renders a resting item as `text-muted-foreground` — its own class, from inside
-     * `@munaxa/platform`, with no prop by which a host application can change it. Measured:
-     * **4.97:1 in light** (AA) and **3.57–3.67:1 in dark**, below the 4.5:1 AA asks for text this
-     * size. The dark figure moves a little between runs because which link is "worst" depends on
-     * which route rendered the breadcrumb.
-     * The gap is a platform token pair, not a composition mistake, so the report writes it up as a
-     * platform enhancement rather than overriding a shared component's styling from one product.
-     *
-     * The dark floor is the recorded gap, not an opinion about what is acceptable: anything worse
-     * fails, and when the platform raises the token this branch starts failing and gets deleted.
+     * Measured with transitions settled: **4.97:1 light** (`#667085` on `#ffffff`) and **6.89:1
+     * dark** (`#98a2b3` on `#101828`), both matching the palette exactly. Phase 7.8's 3.57:1 was
+     * the light colour caught part-way through `transition-colors`, and the ≈2.78:1 before it was
+     * never reproducible either. There is no `SidebarNav` contrast gap.
      */
     expect(
       measured.restingWorst,
-      theme === 'dark'
-        ? 'the dark rail regressed below the recorded platform gap of 3.57:1'
-        : 'a resting rail item is below AA in light',
-    ).toBeGreaterThanOrEqual(theme === 'dark' ? 3.5 : 4.5);
+      `a resting rail item is below AA in ${theme}`,
+    ).toBeGreaterThanOrEqual(4.5);
 
     if (measured.headingWorst !== null) {
-      // The rail's group titles are `text-muted-foreground/70` — a *fade of the muted token*, so
-      // they are dimmer again than the items measured above. Logged and asserted only against the
-      // same recorded platform floor, for the same reason.
+      // The rail's group titles are `text-muted-foreground/70` — a fade *of* the muted token, so
+      // they are dimmer again than the items above. They are small uppercase labels rather than
+      // body text, so they are logged and held to the 3:1 large-text threshold.
       expect(
         measured.headingWorst,
-        `a rail section heading regressed in ${theme}`,
+        `a rail section heading is below 3:1 in ${theme}`,
       ).toBeGreaterThanOrEqual(3);
     }
 
@@ -324,13 +345,16 @@ describe('the application shell in the running product', () => {
   /**
    * The account control, traced rather than judged.
    *
-   * `/auth/me` returns `userId`, `tenantId`, `roles` and `permissions` — **no display name** — and
-   * the session cookie carries only an access token and a locale, so there is nowhere in this
-   * application a human name could come from. The chip therefore shows identifiers, and this test
-   * pins the honest half of that: whatever it shows, it is an accessible control with a name and it
-   * is not empty. Deriving a name from the UUID is what the report refuses to do.
+   * Phase 7.8 measured this chip rendering **two UUIDs** and an avatar initial taken from the first
+   * character of one of them, and established that the web application had nothing else to render:
+   * `/auth/me` returned identifiers only. Phase 7.9 found the information had been in the domain all
+   * along — `User.display_name` and `User.email` since Phase 1 — and added it to the response.
+   *
+   * So this asserts the person, not the identifier: the signed-in user's own name and address, as
+   * the fixture created them. It fails if the API stops carrying the fields, if the layout stops
+   * passing them, or if anybody reintroduces a name derived from the UUID.
    */
-  it('exposes the account control with an accessible name', async () => {
+  it('shows the signed-in person in the account control', async () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(WEB_URL, { waitUntil: 'networkidle' });
 
@@ -338,7 +362,15 @@ describe('the application shell in the running product', () => {
     await account.waitFor({ state: 'visible' });
     const text = (await account.innerText()).trim();
     console.log('[account chip]', JSON.stringify(text));
-    expect(text.length).toBeGreaterThan(0);
+
+    expect(text).toContain(fixture.signer.name);
+    expect(text).toContain(fixture.signer.email);
+    expect(text, 'the account chip is still rendering a raw identifier').not.toContain(
+      fixture.signer.id,
+    );
+    expect(text, 'the account chip is still rendering the tenant identifier').not.toContain(
+      fixture.tenantId,
+    );
   });
 
   /**
@@ -497,6 +529,40 @@ describe('the application shell in the running product', () => {
     });
   });
 });
+
+/**
+ * Wait for colour transitions to finish before measuring one — Phase 7.9, and the correction it
+ * exists to make.
+ *
+ * `SidebarNav` puts `transition-colors` on every rail item. Phase 7.8 measured the rail immediately
+ * after clicking the theme control and recorded **3.57:1 in dark**, wrote it up as a platform token
+ * gap, and guarded it. It was a **transition artefact**: `getComputedStyle().color` returns the
+ * interpolated value while a transition is in flight, so the reading was the *light* colour part-way
+ * to the dark one. The evidence that settled it is in this file's diagnostics — the element's own
+ * `--muted-foreground` read `#98a2b3` (dark), a freshly-created probe with the same class in the
+ * same parent computed `#98a2b3`, and only the transitioning anchor still reported `#667085`.
+ *
+ * Two samples that agree, rather than a fixed sleep: a sleep is a guess about a duration the
+ * platform is free to change.
+ */
+async function settleColours(page: Page): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const sample = (): Promise<string> =>
+          page.evaluate(() =>
+            [...document.querySelectorAll('nav a')]
+              .map((link) => getComputedStyle(link).color)
+              .join('|'),
+          );
+        const first = await sample();
+        await page.waitForTimeout(120);
+        return first === (await sample()) ? 'stable' : 'moving';
+      },
+      { timeout: 10_000, message: 'the rail never stopped animating its colours' },
+    )
+    .toBe('stable');
+}
 
 /**
  * Switch the theme the way a person does.

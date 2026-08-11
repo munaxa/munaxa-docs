@@ -81,7 +81,26 @@ Restored, rebuilt, re-run: **8/8**.
 The assertion is that the canvas is **painted**, not that it is any particular colour — a test
 naming `#0a0f1a` would be this repository restating a platform token.
 
-## 4. PLATFORM ENHANCEMENT — `SidebarNav` resting-item contrast
+## 4. ~~PLATFORM ENHANCEMENT~~ — RETRACTED: `SidebarNav` resting-item contrast
+
+> **Corrected by Phase 7.9.** This section reported the rail at **3.57–3.67:1 in dark** and wrote it
+> up as a platform token gap. **It was a measurement artefact and the gap does not exist.**
+>
+> `SidebarNav` puts `transition-colors` on every rail item, and this phase measured immediately
+> after clicking the theme control — `getComputedStyle().color` returns the *interpolated* value
+> while a transition is in flight, so the reading was the light colour part-way to the dark one.
+> With the transition settled the rail measures **6.89:1 in dark** and **4.97:1 in light**, both
+> comfortably AA, and both matching `themes/docs/palette.css` exactly (`#98a2b3` on `#101828`,
+> `#667085` on `#ffffff`).
+>
+> Phase 7.9 removed the tolerance this section created, tightened the assertion to AA in both
+> themes, and records the evidence in `docs/reports/phase-7.9-platform-visual-foundations.md` §3.
+> The earlier "≈2.78:1" from before Phase 7.8 was never reproducible either.
+>
+> The original text is kept below, struck through, because a retracted finding is more useful with
+> its reasoning visible than deleted.
+
+### ~~Original text (superseded)~~
 
 **Component:** `@munaxa/platform` → `ui/shell/navigation.js` → `SidebarNav`.
 
@@ -121,6 +140,13 @@ it ran against the unpainted canvas with earlier tests aborted mid-way; the numb
 clean runs and supersede it.
 
 ## 5. API ENHANCEMENT REQUIRED — no display name for the account chip
+
+> **Resolved by Phase 7.9.** The finding below is correct as written — `/auth/me` returned
+> identifiers only — and its recommendation was implemented: the route now carries `displayName`
+> and `email` from `UserDirectory.contactFor`, the fields `User` has held since Phase 1. The chip
+> reads `Ada Lovelace / signer@e2e.test` in the running application. Nothing was derived from the
+> UUID, then or now.
+
 
 Traced end to end rather than judged from the picture:
 
@@ -312,8 +338,8 @@ New running-application screenshots (not baselines, not pixel-compared): `shell-
 | --- | --- |
 | **FIXED** | the page canvas — `<body>` now carries the platform's `bg-background text-foreground` |
 | **VERIFIED** | shell audited in the running app on 4 screens; canvas in both themes on all 4; six widths; dark through the real control; Arabic 1280/390; live axe 0 unrecorded in both themes; keyboard traversal; the four reference screens unchanged (Search 23/23, Dashboard 19/19, zero baselines moved) |
-| **PLATFORM ENHANCEMENT** | `SidebarNav` resting item — 3.57–3.67:1 in dark against 4.5:1 AA, component-owned classes, no host-side prop |
-| **API ENHANCEMENT** | `/auth/me` carries no display name; the account chip can only show identifiers |
+| ~~**PLATFORM ENHANCEMENT**~~ | ~~`SidebarNav` resting item~~ — **RETRACTED by Phase 7.9.** A transition measured mid-flight; settled it is 6.89:1 in dark and 4.97:1 in light. No gap exists |
+| ~~**API ENHANCEMENT**~~ | ~~`/auth/me` carries no display name~~ — **RESOLVED by Phase 7.9**: the route now returns `displayName` and `email` |
 | **DEFERRED** | 67 `opacity-[0-9]` sites across 19 files — an A-class consistency defect, scoped and inventoried, not swept |
 | **NOT VERIFIED** | screens outside the four references (Approvals, Audit, Reports, Notifications, Administration) were not driven in the browser this phase; the shell tests cover the frame they share, not their contents |
 | **REJECTED** | any change to the four reference screens' internal composition; any local override of `SidebarNav`'s styling; any derived display name |
@@ -327,5 +353,6 @@ pasted onto a white page — the one flaw that made every screen look unfinished
 of how carefully each had been composed. It now reads as one surface: rail, top bar, canvas, panels
 and cards in a single palette, on all four screens, at every width, in both writing directions.
 
-What remains between the product and "coherent" is two shared-package changes, not product work:
-a rail that meets AA in dark, and a name to put in the account chip.
+What remained between the product and "coherent" was recorded here as two shared-package changes.
+Phase 7.9 settled both: the rail already met AA (§4 above is retracted), and the name for the
+account chip was in the domain all along — `/auth/me` simply never returned it.

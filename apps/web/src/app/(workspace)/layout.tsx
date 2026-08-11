@@ -11,6 +11,15 @@ import { currentSession } from '../../lib/session';
 
 interface MeResponse {
   readonly userId: string | null;
+  /**
+   * The caller's own name and address — Phase 7.9.
+   *
+   * Nullable because a token need not stand for a person: an API-key caller has a tenant and
+   * permissions and nobody behind it. The chip falls back to the identifier rather than deriving
+   * anything from it.
+   */
+  readonly displayName: string | null;
+  readonly email: string | null;
   readonly tenantId: string;
   readonly roles: readonly string[];
   readonly permissions: readonly PermissionKey[];
@@ -47,8 +56,17 @@ export default async function WorkspaceLayout({
   return (
     <WorkspaceShell
       destinations={destinationsFor(me.permissions)}
-      displayName={me.userId ?? ''}
-      description={me.tenantId}
+      /*
+       * The person, then how to reach them — Phase 7.9.
+       *
+       * This was `displayName={me.userId}` over `description={me.tenantId}`, so the account chip
+       * showed two UUIDs and an avatar initial taken from the first character of one of them.
+       * `/auth/me` now carries the name and the address the `User` record has held since Phase 1,
+       * so the chip shows what a person recognises. The identifier remains the fallback when the
+       * token stands for an API client rather than a human — nothing is derived from the UUID.
+       */
+      displayName={me.displayName ?? me.userId ?? ''}
+      description={me.email ?? me.tenantId}
       unreadNotifications={await unreadNotifications(session.accessToken)}
       signOutAction={signOutAction}
     >
