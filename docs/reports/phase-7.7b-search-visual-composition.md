@@ -2,6 +2,16 @@
 
 ## 1. Status
 
+**PARTIALLY COMPLETE — the blocker is cleared and the populated screen has been seen; A2 and A3 are
+not implemented.**
+
+The reindex works, the seeded document is searchable through the real product path, and the
+populated Search screen has been rendered and inspected in Chromium for the first time. Two findings
+came out of that inspection (§7A), one of which **corrects A3's premise**. The composition changes
+themselves were not made — the session budget ended at the inspection.
+
+### Superseded status (kept for the record)
+
 **BLOCKED on the phase's own precondition.** The item the brief marks IMPORTANT NEW REQUIREMENT —
 real populated Search results — cannot be produced from the existing E2E fixture, and the cause is
 established with evidence rather than assumed. No Search product code was changed, so **Phase 7.7A
@@ -106,6 +116,47 @@ session:
 Route 1 is the more faithful and the more reusable; route 2 is smaller and now well-specified.
 Either is ordinary engineering, not research.
 
+## 7A. THE BLOCKER IS CLEARED — real populated Search
+
+The bearer is the session's own. `lib/session.ts` keeps the access token in the **`edms_at`** cookie
+and the web app forwards it to the API, so reading that cookie from the authenticated browser
+context is the same credential the application itself uses. Nothing was signed, minted or bypassed.
+
+`bootstrap.ts` sets `setGlobalPrefix('api')` and URI versioning, so the real route is:
+
+```
+POST http://127.0.0.1:3001/api/v1/search/rebuild
+  → 202 {"id":"019fef46-7a6a-7ce8-b0e6-d2bcbe1587d7","state":"RUNNING","documentsIndexed":0,…}
+GET  http://127.0.0.1:3001/api/v1/search/rebuild   (polled until not RUNNING)
+```
+
+Then the real user path — type into the real searchbox, click the real Search button — returned the
+document. **9/9 E2E pass** against real PostgreSQL, Redis, API, production web build and login.
+
+### The populated screen, inspected
+
+```
+[ SOP-E2E-0001              ] [Relevance ▾] [Search]  [Save search]
+Try number:QMS-*, status:PUBLISHED, approver:me or updated:>2026-01-01
+⚠ Showing every document in the organisation. This search is recorded in the audit trail.
+
+Status          1 of 1 results
+  Draft    1    Batch release procedure        [SOP-E2E-0001] [✎ Draft] Rev Rev 0
+Type                Content indexing pending   8/11/2026
+  Standard operating procedure  1
+```
+
+**Two findings, both only visible with a real result:**
+
+1. **`Rev Rev 0` — a label duplication in the result row.** The revision is rendered with a "Rev"
+   prefix against a value that already reads `Rev 0`. A real defect, previously invisible because
+   no result had ever rendered.
+2. **A3's premise is partly wrong.** With results present, "1 of 1 results" is left-aligned directly
+   above the result list — not centred and orphaned. The orphaned appearance came from the *empty*
+   state, where there is no result column to align to. A3 should be re-scoped to the empty state, or
+   dropped, rather than implemented as originally written. Correcting the finding rather than
+   preserving it for consistency, as Step 0 requires.
+
 ## 8. What was NOT done
 
 - **A2** (Search still hand-rolls `<h2 class="text-lg font-medium">` / `<h3 class="text-sm
@@ -129,7 +180,7 @@ No Arabic string, API contract, permission, facet or search semantic was altered
 
 | Gate | Result | Notes |
 | --- | --- | --- |
-| **Search E2E (7.7A suite)** | **PASS** | 7/7 against the real stack, re-run this phase |
+| **Search E2E** | **PASS** | **9/9** against the real stack — 7.7A's seven plus the reindex and populated-search tests |
 | `pnpm format:check` | PASS | docs only |
 | Everything else | NOT RUN | no product code changed; running them would report Phase 7.7A's results as this phase's |
 

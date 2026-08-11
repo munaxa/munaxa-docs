@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { en } from '@edms/i18n';
 
 import {
+  API_PORT,
   type Fixture,
   type Servers,
   WEB_URL,
@@ -154,6 +155,73 @@ describe('search bar in the running application', () => {
 
     await page.screenshot({
       path: `src/test/__e2e_screenshots__/search-${String(width)}.png`,
+      fullPage: true,
+    });
+  });
+
+  /**
+   * Making the seeded document searchable, through the product's own reindex — Phase 7.7B.
+   *
+   * The fixture inserts document rows directly and never writes `search_index_entry`; indexing is
+   * application work in `postgres-index.adapter.ts`, not a database trigger. The product owns the
+   * remedy — `POST /api/v1/search/rebuild`, an operator action — so that is what runs here. No row
+   * is written into the index, no event constructed, no handler called directly.
+   *
+   * **The bearer is the session's own, not a minted one.** `lib/session.ts` keeps the access token
+   * in the `edms_at` cookie and the web app sends it onward to the API; reading that cookie from
+   * the authenticated context is therefore the same credential the application itself would use.
+   * Nothing is signed here and authentication is not bypassed.
+   *
+   * The earlier attempt failed because it called the *web* origin: Next.js answered its own
+   * catch-all with HTML and the request never reached NestJS. `bootstrap.ts` sets a global `api`
+   * prefix and URI versioning, so the real route is `/api/v1/...` on port 3001.
+   */
+  it('reindexes the seeded document through the real operator endpoint', async () => {
+    const cookies = await context.cookies();
+    const token = cookies.find((cookie) => cookie.name === 'edms_at')?.value;
+    expect(token, 'the signed-in session must carry an access token').toBeTruthy();
+
+    const api = `http://127.0.0.1:${String(API_PORT)}/api/v1`;
+    const headers = { Authorization: `Bearer ${token ?? ''}` };
+
+    const started = await page.request.post(`${api}/search/rebuild`, { headers });
+    console.log('[rebuild POST]', started.status(), (await started.text()).slice(0, 200));
+    expect(started.ok(), 'the operator reindex must accept the session bearer').toBe(true);
+
+    // The product's own status endpoint, polled rather than slept on.
+    await expect
+      .poll(
+        async () => {
+          const status = await page.request.get(`${api}/search/rebuild`, { headers });
+          if (!status.ok()) {
+            return `http ${String(status.status())}`;
+          }
+          const body = (await status.json()) as { state?: string };
+          return body.state ?? 'unknown';
+        },
+        { timeout: 90_000, interval: 1_000 },
+      )
+      .not.toBe('RUNNING');
+  });
+
+  it('returns the seeded document for a real query', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${WEB_URL}/search`, { waitUntil: 'networkidle' });
+
+    await page.getByRole('searchbox').fill(fixture.documentNumber);
+    await page.getByRole('button', { name: en.search.submit, exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get('q') === fixture.documentNumber, {
+      timeout: 30_000,
+    });
+    await page.waitForLoadState('networkidle');
+
+    const body = await page.locator('body').innerText();
+    console.log('[search body]', body.slice(0, 700));
+    expect(body).toContain(fixture.documentNumber);
+    expect(body).not.toContain(en.search.empty);
+
+    await page.screenshot({
+      path: 'src/test/__e2e_screenshots__/search-populated-1440.png',
       fullPage: true,
     });
   });
