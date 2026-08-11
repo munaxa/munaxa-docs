@@ -2,205 +2,343 @@
 
 ## 1. Status
 
-**PARTIALLY COMPLETE — the blocker is cleared and the populated screen has been seen; A2 and A3 are
-not implemented.**
+**COMPLETE.**
 
-The reindex works, the seeded document is searchable through the real product path, and the
-populated Search screen has been rendered and inspected in Chromium for the first time. Two findings
-came out of that inspection (§7A), one of which **corrects A3's premise**. The composition changes
-themselves were not made — the session budget ended at the inspection.
+Every item on the phase's completion list has evidence behind it: a really-indexed document, a real
+populated Search screen rendered and looked at, `Rev Rev 0` fixed, A2 implemented, A3 corrected and
+then fixed at its real cause, six widths, dark, Arabic at 1280 and 390, live axe with zero critical
+and zero serious, keyboard traversal, a real click that really navigated, and four regression tests
+each proved able to fail. Phase 7.7A's fix and its six-width suite are intact and re-proved.
 
-### Superseded status (kept for the record)
+Two things are recorded as **findings rather than changes**, and neither is Search's: the E2E
+fixture writes a revision label the domain would never mint (§6), and the application's page canvas
+does not adopt the dark theme (§11). Both are stated with measurements.
 
-**BLOCKED on the phase's own precondition.** The item the brief marks IMPORTANT NEW REQUIREMENT —
-real populated Search results — cannot be produced from the existing E2E fixture, and the cause is
-established with evidence rather than assumed. No Search product code was changed, so **Phase 7.7A
-is intact**.
+## 2. Objective
 
-A2 and A3 were not implemented. Doing them without populated results would mean recomposing a
-results hierarchy that has still never been seen with results in it.
+Bring Search to the visual quality of the completed Library and Dashboard work, using the shared
+platform only, and produce the first real populated-results evidence this screen has ever had.
 
-## 2. Commit
+## 3. How the screen was populated — the mechanism, once, for the record
 
-Docs only. `apps/web/src/test/e2e/search.e2e.spec.ts` was restored byte-for-byte to its Phase 7.7A
-state after the investigation — `git status` clean before commit.
-
-## 3. Objective
-
-Bring Search into the shared section grammar (A2), reattach the result count to the results (A3),
-and produce the first real populated-results evidence.
-
-## 4. What was attempted, and what happened
-
-A real search was driven through the running product — real PostgreSQL 16.13, real Redis, real API,
-real production web build, real login. The document number was typed into the real search field and
-the real form submitted:
+The blocker was cleared in the previous pass and is not re-investigated here. The path:
 
 ```
-page.getByRole('searchbox').fill(fixture.documentNumber)
-page.getByRole('button', { name: 'Search' }).click()
+browser login → edms_at cookie (the session's own access token)
+  → POST http://127.0.0.1:3001/api/v1/search/rebuild      202 RUNNING
+  → GET  http://127.0.0.1:3001/api/v1/search/rebuild      polled until not RUNNING
+  → SearchRebuildService → SearchProjectionService → search_index_entry
+  → the real Search UI → a real result
 ```
 
-The screen returned **"Nothing matches that search"**.
+`lib/session.ts` keeps the access token in `edms_at` and the web app forwards it to the API, so
+reading that cookie from the authenticated context is the application's own credential. Nothing was
+signed, minted, bypassed or stubbed; no test-only endpoint exists; no row was written into the index
+by hand. `bootstrap.ts` sets a global `api` prefix and URI versioning, which is why the earlier
+attempt against the *web* origin was answered by Next.js's catch-all with HTML.
 
-That is a genuine result, not a flake, and Step 13's failure discipline says to diagnose it rather
-than retry or relax it.
+Everything below ran against real PostgreSQL 16.13, real Redis, the real API artefact, the
+production web build and a real login.
 
-## 5. Root cause — the fixture's documents are invisible to Search by construction
+## 4. The populated screen, as it was before this phase
 
-Measured against the live database during and after the run:
-
-```
-select count(*) from search_index_entry;   →  0
-```
-
-And the reason, from the seeding script itself:
-
-```
-grep -nE "search_index_entry|searchIndex" scripts/e2e-signature-fixture.mjs   →  no matches
-```
-
-`seedFixture()` shells out to `scripts/e2e-signature-fixture.mjs`, which inserts the document rows
-directly. It never writes `search_index_entry`, and indexing is not a database trigger — it is
-application work in `postgres-index.adapter.ts`. So a fixture document exists, is listable, is
-openable, appears on the dashboard's recent-documents row (Phase 7.6D proved that), and is
-**structurally unfindable by Search**.
-
-This is not a defect in the Search screen. It is a property of the fixture, and it is why the Search
-baseline has only ever shown the empty state.
-
-## 6. The production indexing mechanism, now identified
-
-Found this phase, from source rather than assumption:
-
-- `search-projection.service.ts` — `indexDocumentFrom(facts)` then `index.upsert(document)`. This is
-  what writes `search_index_entry`.
-- `search-rebuild.service.ts` — replays the same projection over existing documents.
-- `search.controller.ts` — `@Controller({ path: 'search', version: '1' })` exposing
-  **`POST /search/rebuild`** with **`GET /search/rebuild`** for status.
-
-So the product does own an operator reindex, and it is the correct real mechanism for making
-already-seeded documents findable. It is not a test-only hook.
-
-### The attempt, and why it failed
-
-Driving it from the browser session was tried and **did not work**, for a reason worth recording so
-the next attempt does not repeat it:
+`search-populated-1440.png`, captured last pass and **opened and inspected** at the start of this
+one:
 
 ```
-POST http://127.0.0.1:3210/api/search/rebuild  →  200, body: "<!DOCTYPE html><html lang=\"en\" …"
+Status            1 of 1 results
+  Draft   1       Batch release procedure                    [SOP-E2E-0001] [✎ Draft] Rev Rev 0
+Type                Content indexing pending  8/11/2026
 ```
 
-A 200 that is *HTML* is Next.js's catch-all answering, not the API. The web app on :3210 does not
-proxy `/api` to the NestJS API on :3001, and the controller is versioned (`/search` at version 1),
-so the request never reached the reindex at all. The subsequent search then correctly still returned
-nothing — the failure was in the test's URL, not in the product.
+Three defects, none of which any previous phase could have seen:
 
-The remaining problem is authentication rather than routing: the browser holds an httpOnly session
-cookie for the **web** origin, and the web app exchanges it for a bearer when it calls the API. An
-E2E that calls the API directly has to obtain that bearer the same way the app does. `servers.ts`
-already signs in and captures storage state, so the helper belongs there.
+1. **`Rev Rev 0`** — the revision named twice.
+2. **The revision was clipped by the card's own right border.** The page had no horizontal
+   scrollbar, so a document-level overflow check called the screen clean.
+3. **Seven hundred pixels of nothing between the title and its own status.** `flex items-center`
+   with a `flex-1` title pushed the number, status and revision against the right edge of an 845px
+   column, so a document and its state read as two unrelated facts.
 
-## 7. The two legitimate ways forward
+## 5. FIXED — `Rev Rev 0`, traced rather than guessed
 
-Both are real product paths. Neither is a fixture hack, and neither fits the remaining budget of this
-session:
+The data flow, read end to end:
 
-1. **Create the document through the product's own create/upload workflow** rather than by direct
-   insert, so the projection runs as it does in production. This is the same principle Phase 7.6D
-   used for recent-documents: `open()` was the real mechanism, so the test opened a document.
-2. **Call `POST /search/rebuild` against the API origin with a real bearer**, obtained the way the
-   web app obtains it. Now that the route and the failure mode are both known, this is the smaller
-   of the two.
+| Step | What it holds |
+| --- | --- |
+| `revision-label.ts` → `revisionLabelFor` | mints `Original` (ordinal 0), `R1`, `A`, `1.0` — by style |
+| `prisma-revision.writer.ts` | calls it **once, at creation**, and stores the string |
+| `searchHitSchema` | `revisionOrdinal: number \| null`, `revisionLabel: string \| null` |
+| `search-projection.service.ts` | copies the stored label; adds nothing |
+| `search-screen.tsx` | wrapped it in `search.revisionLabel` = **`'Rev {label}'`** |
 
-Route 1 is the more faithful and the more reusable; route 2 is smaller and now well-specified.
-Either is ordinary engineering, not research.
+So the API contract is correct and the presentation layer was not. Every label the domain can mint
+is already the revision's whole name, and the prefix produced `Rev R1`, `Rev Original`, `Rev 1.0` —
+and, against the E2E fixture's label, `Rev Rev 0`. The approval panel (`approval-panel.tsx:358`) and
+the signature panel (`signature-panel.tsx:226`) have always rendered the label bare; Search was the
+only screen adding a prefix.
 
-## 7A. THE BLOCKER IS CLEARED — real populated Search
+**The fix is one line of presentation** — the label renders as itself — plus the removal of the now
+dead `search.revisionLabel` key from the English and Arabic catalogues. No contract, no API, no
+schema, no stored value changed.
 
-The bearer is the session's own. `lib/session.ts` keeps the access token in the **`edms_at`** cookie
-and the web app forwards it to the API, so reading that cookie from the authenticated browser
-context is the same credential the application itself uses. Nothing was signed, minted or bypassed.
+### Test-proof
 
-`bootstrap.ts` sets `setGlobalPrefix('api')` and URI versioning, so the real route is:
-
-```
-POST http://127.0.0.1:3001/api/v1/search/rebuild
-  → 202 {"id":"019fef46-7a6a-7ce8-b0e6-d2bcbe1587d7","state":"RUNNING","documentsIndexed":0,…}
-GET  http://127.0.0.1:3001/api/v1/search/rebuild   (polled until not RUNNING)
-```
-
-Then the real user path — type into the real searchbox, click the real Search button — returned the
-document. **9/9 E2E pass** against real PostgreSQL, Redis, API, production web build and login.
-
-### The populated screen, inspected
+The prefix was restored and the suite re-run:
 
 ```
-[ SOP-E2E-0001              ] [Relevance ▾] [Search]  [Save search]
-Try number:QMS-*, status:PUBLISHED, approver:me or updated:>2026-01-01
-⚠ Showing every document in the organisation. This search is recorded in the audit trail.
-
-Status          1 of 1 results
-  Draft    1    Batch release procedure        [SOP-E2E-0001] [✎ Draft] Rev Rev 0
-Type                Content indexing pending   8/11/2026
-  Standard operating procedure  1
+× names the revision once
+× renders any revision style the domain can mint, unprefixed
+  Tests  2 failed | 11 passed
 ```
 
-**Two findings, both only visible with a real result:**
+Exactly the two revision assertions failed and nothing else. Restored; 13/13.
 
-1. **`Rev Rev 0` — a label duplication in the result row.** The revision is rendered with a "Rev"
-   prefix against a value that already reads `Rev 0`. A real defect, previously invisible because
-   no result had ever rendered.
-2. **A3's premise is partly wrong.** With results present, "1 of 1 results" is left-aligned directly
-   above the result list — not centred and orphaned. The orphaned appearance came from the *empty*
-   state, where there is no result column to align to. A3 should be re-scoped to the empty state, or
-   dropped, rather than implemented as originally written. Correcting the finding rather than
-   preserving it for consistency, as Step 0 requires.
+## 6. FINDING (not changed) — the E2E fixture mints a label the domain cannot
 
-## 8. What was NOT done
+`scripts/e2e-signature-fixture.mjs` writes `label: 'Rev 0'` at three places by direct insert.
+`revisionLabelFor(0, NUMERIC)` returns **`Original`**; no style in the product produces a label
+containing "Rev". The fixture is therefore not representative, and it is the reason the duplication
+read as *`Rev Rev 0`* rather than as the subtler *`Rev Original`*.
 
-- **A2** (Search still hand-rolls `<h2 class="text-lg font-medium">` / `<h3 class="text-sm
-  font-medium">` where the product uses `Panel`/`Section`) — not implemented.
-- **A3** (result count orphaned between the bar and the results) — not implemented.
-- Populated result row, facets composition, saved/recent search composition — not implemented.
-- Dark, RTL, live axe, keyboard traversal **for a populated Search** — not run, because there is
-  nothing populated to run them against.
+Left as-is deliberately: `signing.e2e.spec.ts` asserts the literal `Rev 0` twice,
+`recovery.e2e.spec.ts` reads `fixture.revisionLabel`, and `servers.ts` exports it. Changing the
+fixture is a cross-suite edit that belongs to whoever owns the fixture, not to a Search phase. The
+jsdom regression test therefore uses **`R2`** — a label the domain really mints — so the assertion
+is about the product rather than about the fixture.
 
-The empty-state Search screen retains the light and dark baselines accepted in Phase 7.7A.
+## 7. FIXED — A2, the section grammar
 
-## 9. Preserved
+| Was | Now |
+| --- | --- |
+| `<Card className="flex flex-col gap-1 p-3"><h3 className="text-sm font-medium">` per facet | `<Panel title={…}>` |
+| `<section><h2 className="text-lg font-medium">` for saved searches | `<Section title={…} gap={2}>` |
+| `<section><h2 className="text-lg font-medium">` for recent searches | `<Section title={…} gap={2}>` |
+| nine `opacity-60/70/80` fades | `text-muted-foreground` |
 
-Phase 7.7A's `sm:basis-0` fix is untouched, and its regression suite still passes **7/7** against
-the real stack in this session — the six-width `wrapped === (width < 640)` assertion included. The
-Search E2E spec is byte-identical to its committed state.
+`Panel` was chosen from the platform's own note on it — *"the building block of inspectors, **filter
+panels**, side rails and property lists"* — not by defaulting every heading to it. It supplies the
+shared header treatment (`font-display text-sm font-semibold`) and, because it labels the region,
+each facet group becomes something a screen-reader user can jump between instead of walking every
+option in all three. `Section` does the same for saved and recent searches at `text-lg`.
 
-No Arabic string, API contract, permission, facet or search semantic was altered.
+The opacity change is worth stating precisely: `opacity-70` fades the *rendered* pixel, so the
+result depends on what is behind it and drifts between themes. `text-muted-foreground` is the
+platform's own token. **No colour, font, radius, shadow, spacing token or primitive was created.**
 
-## 10. Gates
+### Test-proof
+
+The facet `Panel` was reverted to `Card` + `<h3>`:
+
+```
+× exposes each facet group as a region a reader can jump to
+× keeps one h1 and puts every section heading beneath it
+  Tests  2 failed | 11 passed
+```
+
+## 8. A3 — MISDIAGNOSED, then fixed at its real cause
+
+Phase 7.7 recorded the result count as "orphaned and centred". The previous pass, seeing a populated
+screen, reported that as **wrong**. Both renders now exist, and the truth is a third thing.
+
+**Populated (`search-populated-1440.png`):** the count sits left-aligned directly above the result
+list. Nothing wrong. Not changed.
+
+**Zero results (`search-zero-results-1440.png`, captured this phase):** `0 of 0 results` began 272px
+in from the content edge with nothing beside it — the "floating in the middle" reading, exactly.
+
+The cause is not the count. A search that matches nothing returns **no facet buckets**, `FacetGroup`
+returns `null` for every one of them, and the `aside` rendered anyway — an empty `md:w-64` column
+plus a `gap-4`, pushing the whole results column 272px right. Nothing was centred; an invisible
+element was moving it.
+
+So the rail is now rendered only when it has something in it — facet buckets, or an active filter,
+because "Clear filters" is the way out of a search that filtered everything away and removing it
+would strand the reader. The empty state also gains the full measure. **The count itself was not
+moved**, which is what the populated render said to do.
+
+### Test-proof
+
+`facetsPresent(...)` was replaced with `true`:
+
+```
+× lays out no filter rail when a search matches nothing
+  Tests  1 failed | 12 passed
+```
+
+## 9. FIXED — the populated result composition
+
+```tsx
+<Stack direction="horizontal" gap={2} align="center">
+  <span className="min-w-0 truncate font-medium">…title…</span>
+  <div className="shrink-0"><DocumentStatusBadge status={hit.status} /></div>
+</Stack>
+…body highlights, when the API returns them…
+<Stack direction="horizontal" gap={2} align="center" wrap className="text-muted-foreground text-xs">
+  type · number · revision · date · provenance badges
+</Stack>
+```
+
+- **Two lines, as Phase 7.6B settled for the dashboard's recent documents.** The two screens read as
+  the same product because they are the same composition, not because values were matched by hand.
+- **The status sits beside the title, not at the far edge.** `justify="between"` is right for the
+  dashboard's 400px panel and wrong for an 845px results column — the one deliberate divergence,
+  and it is stated in the code.
+- **The document type is new, and it is real.** `typeLabels` is already resolved for the facet rail
+  and already passed into this screen; the hit carries `documentTypeId`. The label beside a result
+  is the same string the `Type` facet shows above it. `folderId` has no such map, so no folder is
+  shown — nothing was invented to fill the line.
+- **One badge fewer.** The document number was a `Badge`; it is now plain `tabular-nums` text, like
+  the dashboard's. The status badge and the content-provenance badges stay, because each is a state
+  rather than a decoration.
+- No card inside a card, no new border, no decorative element.
+
+## 10. Facets, saved and recent searches
+
+Facets are rendered from `initialResults.facets` exactly as the API returns them. **No category was
+invented** — no Folders, no Metadata, no OCR tab. `searchHitSchema` is a document hit throughout,
+`bodySource` is a per-hit attribute, and Phase 7.7's E2 refusal stands unchanged.
+
+Saved and recent searches are real contracts with real create/delete actions; they moved to
+`Section` and were otherwise left alone. **Search Tips and Index Status remain unbuilt and were not
+invented.**
+
+## 11. FINDING (not changed) — the page canvas does not adopt the dark theme
+
+The dark screenshot shows a dark shell, dark panels and a dark result card over a **light page
+canvas**. Measured in the running application rather than judged from the picture:
+
+```
+[dark canvas] {"html":"rgba(0, 0, 0, 0)","body":"rgba(0, 0, 0, 0)",
+               "main":"rgba(0, 0, 0, 0)","dark":true}
+```
+
+All three are transparent, so the browser's default white shows through. This is **product-wide and
+predates this phase**: `recent-populated-dark.png` from Phase 7.6E shows the same white canvas
+behind the dashboard. It is also not visible in the visual-suite baselines, which render a screen
+without the shell — `search-populated-dark.png` there is correctly dark throughout, which is how the
+two can disagree.
+
+Not fixed here. Giving the application shell a themed background is a global change, and a
+Search-scoped phase is the wrong place to make it. Recorded for the phase that owns the shell.
+
+## 12. Evidence
+
+### Six widths, populated
+
+`search-populated-{1440,1280,1024,768,640,390}.png`, one authenticated session resized six times.
+At every width: the title, the status, the type, the number, the revision, the date and
+`1 of 1 results` all present; `scrollWidth <= clientWidth`; and — the assertion the clipped revision
+demanded — **every descendant of the result card measured inside the card's own bounds**, not merely
+inside the page.
+
+### Dark
+
+Through the top bar's own toggle, never by setting a class. Content intact, revision intact, nothing
+clipped. The canvas finding is §11.
+
+### Arabic / RTL
+
+Through the real `edms_locale` cookie, at 1280 and 390. `html[lang="ar"]`, `html[dir="rtl"]`
+asserted. Inspected: the heading, the controls, the count, the title, the Arabic status
+(`مسودة`), the facet panels (`الحالة` / `النوع` / `السنة`) and the metadata line all mirror, while
+`SOP-E2E-0001`, `Rev 0`, `Standard operating procedure` and `8/11/2026` stay coherent LTR runs
+inside the RTL line. No overflow at either width. **No Arabic wording was invented** — every string
+is an existing catalogue entry, and the one key this phase touched was *removed*, not added.
+
+### Live axe
+
+Injected `axe-core` against the real populated page at 1440, colour-contrast left **on**:
+
+```
+0 critical, 0 serious
+```
+
+### Keyboard
+
+The screen was actually operated. Walking forward from the query field reaches the submit button, a
+facet control (`aria-pressed`) and the result link, with a visible ring at the stops. No arbitrary
+number of Tab presses is asserted — that would test the DOM order rather than whether a person can
+work.
+
+### Real navigation
+
+A real click on the real result, followed to `/documents/{id}`, asserted on the resulting URL *and*
+on the document number in the destination. Not `page.goto`, not an `href` read, no router mock.
+
+## 13. Regression tests
+
+| # | Test | Proved able to fail by |
+| --- | --- | --- |
+| 1 | revision named once (2 assertions, jsdom) | restoring `Rev {label}` → 2 failed |
+| 2 | facet groups are labelled regions; one h1 (A2) | reverting `Panel` → `Card` + `<h3>` → 2 failed |
+| 3 | no filter rail when nothing matches (A3) | forcing the rail on → 1 failed |
+| 4 | six-width bar behaviour (Phase 7.7A) | `sm:basis-auto` → **1440/1280/1024/768/640 failed, 390 passed** |
+| 5 | populated result rendering — type, status, number, date, no key leak | covered by 1–3's shared render |
+| 6 | real result navigation (E2E) | — |
+| 7 | dark populated (E2E) | — |
+| 8/9 | Arabic populated at 1280 / 390 (E2E) | — |
+
+Test 4's result is the discriminating one: a fix for the desktop wrap that quietly undid Phase 7.1's
+390px behaviour would have failed there too, and it did not. **No assertion was weakened to obtain
+green**, and `PIXEL_TOLERANCE` was not lowered.
+
+`apps/web/src/features/search/search-results.spec.tsx` is new — 13 tests.
+`apps/web/src/test/e2e/search.e2e.spec.ts` grows from 9 to **23**.
+
+## 14. Gates
 
 | Gate | Result | Notes |
 | --- | --- | --- |
-| **Search E2E** | **PASS** | **9/9** against the real stack — 7.7A's seven plus the reindex and populated-search tests |
-| `pnpm format:check` | PASS | docs only |
-| Everything else | NOT RUN | no product code changed; running them would report Phase 7.7A's results as this phase's |
+| `pnpm format:check` | PASS | |
+| `pnpm lint` | PASS | 13/13 |
+| `pnpm typecheck` | PASS | 13/13 |
+| `pnpm test` | PASS | 13/13 — API 645, web incl. the 13 new |
+| `pnpm --filter @edms/web build` | PASS | rebuilt four times (change, proof, restore, final) |
+| `pnpm verify:styles` | PASS | 10/10 |
+| **Search E2E** | **PASS** | **23/23** against the real stack |
+| `pnpm test:visual` | PASS | 97 pass / 10 fail — all ten the **pre-existing** Arabic-font surfaces |
+| Integration | **NOT RUN** | no API, schema or package behaviour changed — the only package edit is the removal of one dead message key |
 
-## 11. Verified / not verified
+## 15. Baselines
 
-**Verified this phase:** the real search path executes end to end against the real stack; the query
-reaches the API; the response is a legitimate empty result; `search_index_entry` is empty; the
-fixture script never populates it; the production reindex route exists and is versioned v1 on the
-API origin; a request to `/api/search/rebuild` on the *web* origin is answered by Next.js with HTML
-rather than reaching it; Phase 7.7A's fix and suite still pass 7/7.
+| Baseline | Change | Inspected |
+| --- | --- | --- |
+| `search-light` / `search-dark` | zero-result state, now without the empty rail | yes — count at the content edge, empty state on the full measure |
+| `search-populated-light` / `search-populated-dark` | **new** | yes — `R2` once, title dominant, metadata one quiet line, dark fully dark |
 
-**Not verified:** anything about a populated Search screen — composition, dark, RTL, axe, keyboard,
-result navigation. None of it was claimed.
+The visual suite reported 12 failures on the first run — the ten known Arabic surfaces plus these
+two, which is the change this phase intended — and returned to ten after acceptance. Both changed
+baselines were **opened and looked at** before acceptance, not accepted from a pixel count.
 
-## 12. Recommendation
+## 16. Final audit
 
-The remaining work is ordinary engineering, and it should be one phase rather than three: make the
-E2E fixture create its document through the product's real creation path (or drive the real reindex),
-then implement A2 and A3 against a screen that actually has results in it, and verify with the
-Phase 7.6C–E pattern that is now routine here.
+Asked of the finished screen, against `search-populated-1440.png`:
 
-Splitting further would add ceremony without adding evidence. The blocker is a fixture that predates
-Search, not a design question.
+- **Does it belong to the same system as Library, Dashboard and Document Record?** Yes — same page
+  frame, same `Panel`/`Section` headers, the dashboard's own two-line document composition.
+- **Can a reader tell what they searched, how many results there are, what each result is, its
+  status, useful metadata, and how to open it?** Yes, in that order down the screen.
+- **Is anything competing with the document title?** No. It is the only `font-medium` at full size
+  on the row; everything else is `text-xs text-muted-foreground`.
+- **Anything decorative without a reason?** No. Every badge is a state the contract carries.
+- **Any raw i18n key?** No — asserted in both jsdom and Arabic E2E.
+- **Any unsupported feature?** No. No result-type tabs, no Search Tips, no Index Status.
+- **Any unexplained spacing?** No. Spacing is `Stack`/`Section`/`Panel` scale steps.
+
+## 17. Classification
+
+| Verdict | Item |
+| --- | --- |
+| **FIXED** | `Rev Rev 0`; A2 section grammar; A3 (at its real cause — the empty rail); populated result composition; nine `opacity-*` fades → the muted token |
+| **VERIFIED** | real indexed document; populated UI; six widths; dark; Arabic 1280 + 390; live axe 0/0; keyboard; real click navigation; Phase 7.7A still 6/6 |
+| **MISDIAGNOSED** | A3 as written ("count orphaned and centred") — corrected; the count was never moved |
+| **DEFERRED** | the E2E fixture's non-domain `Rev 0` label (§6) — cross-suite, not Search's |
+| **NOT VERIFIED** | axe in dark and in Arabic — run in light at 1440 only, and not claimed beyond that |
+| **PLATFORM / PRODUCT GAP** | the page canvas does not adopt the dark theme (§11), product-wide; and Phase 7.7A's note that `Input`'s `w-full` makes `basis-auto` unusable in a flex row still stands |
+
+## 18. Preserved
+
+Phase 7.7A's `sm:basis-0` is untouched and its six-width suite passes against the real stack, with
+the 390px behaviour Phase 7.1 introduced asserted explicitly. No Arabic string, API contract,
+permission, facet or search semantic was altered.

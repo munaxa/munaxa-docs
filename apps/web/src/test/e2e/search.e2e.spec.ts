@@ -22,6 +22,17 @@ const CHROMIUM_PATH =
 
 const WIDTHS = [1440, 1280, 1024, 768, 640, 390] as const;
 
+/** axe-core is already a dependency here; it is injected into the live page, not added anew. */
+const AXE_PATH = require.resolve('axe-core/axe.min.js');
+
+/**
+ * The seeded document's title, from `scripts/e2e-signature-fixture.mjs`.
+ *
+ * The `Fixture` contract carries the number, the revision and the ids but not the title, and
+ * widening it for one assertion would touch six suites. This is the same string the script writes.
+ */
+const DOCUMENT_TITLE = 'Batch release procedure';
+
 /**
  * The search bar, measured in the running product — Phase 7.7A.
  *
@@ -225,4 +236,296 @@ describe('search bar in the running application', () => {
       fullPage: true,
     });
   });
+
+  /**
+   * The result row, read from the running application — Phase 7.7B.
+   *
+   * `Rev Rev 0` was found by looking at the previous pass's screenshot, and it is guarded twice:
+   * here against the real product with the real fixture label, and in
+   * `features/search/search-results.spec.tsx` against the labels the domain actually mints. The
+   * jsdom test is the sharper one; this is the one that would have caught it.
+   */
+  it('names the revision once in the running application', async () => {
+    await gotoPopulated(page, fixture.documentNumber);
+
+    const body = await page.locator('body').innerText();
+    expect(body, 'the revision label is prefixed with a redundant "Rev"').not.toMatch(/Rev\s+Rev/);
+    expect(body).toContain(fixture.revisionLabel);
+  });
+
+  /**
+   * Six widths, with a result on screen — Phase 7.7B.
+   *
+   * Phase 7.7A measured the *bar* at these widths against an empty screen. A result row has a
+   * title, a status, a type, a number, a revision and a date in it, and the 1440 screenshot from
+   * the previous pass showed the revision clipped by the card's own border. So this measures the
+   * row as well: every part readable, nothing outside its card, no page-level overflow.
+   */
+  it.each(WIDTHS)('keeps the populated result usable at %ipx', async (width) => {
+    await page.setViewportSize({ width, height: 900 });
+    await gotoPopulated(page, fixture.documentNumber);
+
+    const body = await page.locator('body').innerText();
+    expect(body, `the result title is missing at ${String(width)}px`).toContain(DOCUMENT_TITLE);
+    expect(body, `the document number is missing at ${String(width)}px`).toContain(
+      fixture.documentNumber,
+    );
+    expect(body, `the revision is missing at ${String(width)}px`).toContain(fixture.revisionLabel);
+    expect(body, `the result count is missing at ${String(width)}px`).toMatch(/1 of 1/);
+
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(
+      overflow.scrollWidth,
+      `populated search overflows at ${String(width)}px`,
+    ).toBeLessThanOrEqual(overflow.clientWidth);
+
+    /*
+     * Inside its own card, not merely inside the page.
+     *
+     * This is the assertion the previous pass's screenshot demanded: `Rev Rev 0` ran past the
+     * result card's right border while the *page* had no horizontal scrollbar at all, so a
+     * document-level overflow check would have called it clean.
+     */
+    const contained = await page.evaluate(() => {
+      const card = document.querySelector('main ul li a > *');
+      if (!(card instanceof HTMLElement)) {
+        return null;
+      }
+      const bounds = card.getBoundingClientRect();
+      return [...card.querySelectorAll('*')].every((child) => {
+        const box = child.getBoundingClientRect();
+        return box.width === 0 || (box.left >= bounds.left - 1 && box.right <= bounds.right + 1);
+      });
+    });
+    expect(contained, `result content escapes its card at ${String(width)}px`).toBe(true);
+
+    await page.screenshot({
+      path: `src/test/__e2e_screenshots__/search-populated-${String(width)}.png`,
+      fullPage: true,
+    });
+  });
+
+  /**
+   * The zero-result state — Phase 7.7B, and the render A3 has to be decided against.
+   *
+   * Phase 7.7's A3 said the result count renders "orphaned and centred". The previous pass showed
+   * that is not true with results present. This captures the other state so the finding is settled
+   * by a render rather than by either phase's recollection.
+   */
+  it('renders the zero-result state for a query that matches nothing', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoPopulated(page, 'zzz-matches-nothing-zzz');
+
+    const body = await page.locator('body').innerText();
+    expect(body).toContain(en.search.empty);
+    expect(body).toMatch(/0 of 0/);
+
+    await page.screenshot({
+      path: 'src/test/__e2e_screenshots__/search-zero-results-1440.png',
+      fullPage: true,
+    });
+  });
+
+  /**
+   * A real click on a real result, followed to a real document — Phase 7.7B.
+   *
+   * Not `page.goto`, not an `href` read: the presence of an attribute is not navigation, which is
+   * the standard Phase 7.6E set for the dashboard's rows.
+   */
+  it('opens the document when the result is clicked', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoPopulated(page, fixture.documentNumber);
+
+    await page
+      .getByRole('link', { name: /procedure/i })
+      .first()
+      .click();
+    await page.waitForURL((url) => /\/documents\/[0-9a-f-]{36}/.test(url.pathname), {
+      timeout: 30_000,
+    });
+    await page.waitForLoadState('networkidle');
+
+    expect(page.url()).toContain(`/documents/${fixture.documentId}`);
+    const body = await page.locator('body').innerText();
+    expect(body).toContain(fixture.documentNumber);
+    expect(body.toLowerCase()).not.toContain('something went wrong');
+  });
+
+  /**
+   * The screen operated from the keyboard — Phase 7.7B.
+   *
+   * No count of Tab presses is asserted: that is a test of the DOM order, not of whether a person
+   * can work. What is asserted is that walking forward from the query field reaches the submit
+   * button, a facet control and the result link, and that focus is visible at each stop.
+   */
+  it('is operable from the keyboard with a result on screen', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoPopulated(page, fixture.documentNumber);
+
+    await page.getByRole('searchbox').focus();
+
+    const reached = { submit: false, facet: false, result: false, outlined: false };
+    for (let step = 0; step < 40; step += 1) {
+      await page.keyboard.press('Tab');
+      const stop = await page.evaluate(() => {
+        const active = document.activeElement;
+        if (!(active instanceof HTMLElement)) {
+          return null;
+        }
+        const style = getComputedStyle(active);
+        return {
+          tag: active.tagName,
+          type: active.getAttribute('type'),
+          pressed: active.getAttribute('aria-pressed'),
+          href: active.getAttribute('href'),
+          // A visible ring — an outline or a box-shadow. Either satisfies "focus is visible"; a
+          // control with neither is unusable for anybody navigating without a pointer.
+          outlined: style.outlineStyle !== 'none' || style.boxShadow !== 'none',
+        };
+      });
+      if (stop === null) {
+        continue;
+      }
+      if (stop.outlined) {
+        reached.outlined = true;
+      }
+      if (stop.tag === 'BUTTON' && stop.type === 'submit') {
+        reached.submit = true;
+      }
+      if (stop.pressed !== null) {
+        reached.facet = true;
+      }
+      if (stop.href !== null && stop.href.includes('/documents/')) {
+        reached.result = true;
+      }
+      if (reached.submit && reached.facet && reached.result) {
+        break;
+      }
+    }
+
+    expect(reached).toStrictEqual({ submit: true, facet: true, result: true, outlined: true });
+  });
+
+  /**
+   * axe against the live populated screen — Phase 7.7B.
+   *
+   * jsdom has no cascade, so `color-contrast` cannot reach a verdict there. Here it can, and it is
+   * left on.
+   */
+  it('has no critical or serious axe violations with a result on screen', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoPopulated(page, fixture.documentNumber);
+
+    await page.addScriptTag({ path: AXE_PATH });
+    const violations = await page.evaluate(async () => {
+      const results = await (
+        window as unknown as { axe: { run: (ctx: Document) => Promise<{ violations: unknown[] }> } }
+      ).axe.run(document);
+      return (results.violations as { id: string; impact: string; nodes: unknown[] }[])
+        .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
+        .map(
+          (violation) => `${violation.impact}: ${violation.id} (${String(violation.nodes.length)})`,
+        );
+    });
+
+    expect(violations).toStrictEqual([]);
+  });
+
+  /** Dark, through the top bar's own switch rather than by setting a class. */
+  it('renders the populated result in dark, through the real toggle', async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoPopulated(page, fixture.documentNumber);
+
+    await page.getByRole('button', { name: en.nav.darkMode, exact: true }).click();
+    await page.waitForFunction(() => document.documentElement.classList.contains('dark'));
+
+    const body = await page.locator('body').innerText();
+    expect(body).toContain(fixture.documentNumber);
+    expect(body).not.toContain(en.search.empty);
+
+    /*
+     * Measured rather than asserted, and the reason is in the report.
+     *
+     * The dark screenshot shows a dark shell and dark panels over a **light page canvas**. The same
+     * is true of `recent-populated-dark.png` from Phase 7.6E, so it is product-wide and predates
+     * this phase — Search did not cause it and a Search-scoped phase is the wrong place to change a
+     * background every screen shares. Printing the computed values keeps the finding evidence-based
+     * instead of an impression of a picture.
+     */
+    console.log(
+      '[dark canvas]',
+      JSON.stringify(
+        await page.evaluate(() => ({
+          html: getComputedStyle(document.documentElement).backgroundColor,
+          body: getComputedStyle(document.body).backgroundColor,
+          main: getComputedStyle(document.querySelector('main') ?? document.body).backgroundColor,
+          dark: document.documentElement.classList.contains('dark'),
+        })),
+      ),
+    );
+
+    await page.screenshot({
+      path: 'src/test/__e2e_screenshots__/search-populated-dark.png',
+      fullPage: true,
+    });
+
+    await page.getByRole('button', { name: en.nav.lightMode, exact: true }).click();
+    await page.waitForFunction(() => !document.documentElement.classList.contains('dark'));
+  });
+
+  /**
+   * Arabic, through the real `edms_locale` cookie — Phase 7.7B.
+   *
+   * Nothing is faked with CSS. The assertion that matters is the mixed-direction one: the document
+   * number and the revision label are LTR runs inside an RTL line, and that is where RTL breaks.
+   */
+  it.each([1280, 390])('renders the populated result in Arabic at %ipx', async (width) => {
+    await context.addCookies([{ name: 'edms_locale', value: 'ar', url: WEB_URL }]);
+    await page.setViewportSize({ width, height: 900 });
+    await gotoPopulated(page, fixture.documentNumber);
+
+    expect(await page.locator('html').getAttribute('dir')).toBe('rtl');
+    expect(await page.locator('html').getAttribute('lang')).toBe('ar');
+
+    const body = await page.locator('body').innerText();
+    expect(body, `the document number is lost in Arabic at ${String(width)}px`).toContain(
+      fixture.documentNumber,
+    );
+    expect(body, `the revision is lost in Arabic at ${String(width)}px`).toContain(
+      fixture.revisionLabel,
+    );
+    expect(body, 'a raw message key reached the Arabic screen').not.toMatch(/search\.[a-zA-Z]/);
+
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(
+      overflow.scrollWidth,
+      `Arabic search overflows at ${String(width)}px`,
+    ).toBeLessThanOrEqual(overflow.clientWidth);
+
+    await page.screenshot({
+      path: `src/test/__e2e_screenshots__/search-populated-ar-${String(width)}.png`,
+      fullPage: true,
+    });
+
+    await context.clearCookies({ name: 'edms_locale' });
+  });
 });
+
+/**
+ * The populated screen, reached the way a link would reach it.
+ *
+ * The URL *is* this screen's state — `search-screen.tsx` says so and the server renders the first
+ * page from it — so navigating to `/search?q=…` is the product's own path, not a shortcut around
+ * the form. The form itself is exercised by the test above that types into it.
+ */
+async function gotoPopulated(page: Page, query: string): Promise<void> {
+  await page.goto(`${WEB_URL}/search?q=${encodeURIComponent(query)}&sort=relevance`, {
+    waitUntil: 'networkidle',
+  });
+}

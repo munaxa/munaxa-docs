@@ -1165,7 +1165,6 @@ export const en = {
     lowConfidence: 'Low-confidence OCR read',
     unrestricted:
       'Showing every document in the organisation. This search is recorded in the audit trail.',
-    revisionLabel: 'Rev {label}',
     savedTitle: 'Saved searches',
     savedEmpty: 'No saved searches yet',
     savedEmptyHint: 'Run a search, then save it to keep it a click away.',

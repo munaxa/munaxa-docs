@@ -28,6 +28,8 @@ import {
   folder,
   library,
   listState,
+  SEARCH_HIT_TYPE_ID,
+  populatedSearchResults,
   searchResults,
   signature,
   userDashboard,
@@ -363,6 +365,31 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
         saved={[]}
         recent={[]}
         typeLabels={{}}
+        categoryLabels={{}}
+        departmentLabels={{}}
+        entityLabels={{}}
+      />
+    ),
+  },
+  /**
+   * Search **with a result in it** — Phase 7.7B, and the surface this screen never had.
+   *
+   * Every previous Search baseline was the empty state, which is exactly why a doubled revision
+   * label ("Rev Rev 0") and a result row whose metadata overflowed its own card survived six
+   * phases: nothing in the repository had ever rendered a hit. The fixture is typed against
+   * `SearchHit`, so a contract change breaks it here rather than in production.
+   */
+  {
+    name: 'search-populated',
+    ui: () => (
+      <SearchScreen
+        queryText="batch"
+        sort="relevance"
+        filters={{}}
+        initialResults={populatedSearchResults()}
+        saved={[]}
+        recent={[]}
+        typeLabels={{ [SEARCH_HIT_TYPE_ID]: 'Standard operating procedure' }}
         categoryLabels={{}}
         departmentLabels={{}}
         entityLabels={{}}

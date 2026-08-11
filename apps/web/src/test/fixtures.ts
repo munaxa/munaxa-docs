@@ -6,6 +6,7 @@ import type {
   DocumentSummary,
   Folder,
   Library,
+  SearchHit,
   SearchResults,
   UserDashboard,
 } from '@edms/contracts';
@@ -242,6 +243,58 @@ export function searchResults(overrides: Partial<SearchResults> = {}): SearchRes
     nextCursor: null,
     ...overrides,
   };
+}
+
+/** The document type a hit points at, so a caller can build the `typeLabels` map that matches. */
+export const SEARCH_HIT_TYPE_ID = '019489f0-0000-7000-8000-0000000000a1';
+
+/**
+ * One result — Phase 7.7B.
+ *
+ * The revision label is **`R2`**, which is what `revisionLabelFor` actually mints for ordinal 2
+ * under the `NUMERIC` style. That matters: the screen used to wrap the label in "Rev {label}", so a
+ * fixture whose label already said `Rev 0` was the only reason anybody saw the duplication. A
+ * fixture carrying a label the domain really produces makes the assertion about the *product*.
+ */
+export function searchHit(overrides: Partial<SearchHit> = {}): SearchHit {
+  return {
+    documentId: '019489f0-0000-7000-8000-000000000201',
+    score: 1,
+    title: 'Batch release procedure',
+    documentNumber: 'SOP-0001',
+    status: DocumentStatus.PUBLISHED,
+    documentTypeId: SEARCH_HIT_TYPE_ID,
+    categoryId: null,
+    libraryId: '019489f0-0000-7000-8000-000000000202',
+    folderId: '019489f0-0000-7000-8000-000000000203',
+    ownerId: '019489f0-0000-7000-8000-000000000204',
+    filename: 'batch-release.pdf',
+    revisionOrdinal: 2,
+    revisionLabel: 'R2',
+    language: 'en',
+    bodySource: 'TEXT',
+    contentPending: false,
+    lowConfidence: false,
+    confidentialityRank: 0,
+    updatedAt: '2026-01-02T09:00:00.000Z',
+    publishedAt: '2026-01-02T09:00:00.000Z',
+    effectiveFrom: null,
+    highlights: {},
+    ...overrides,
+  };
+}
+
+/** A populated result set, with the facet rail a real search comes back with. */
+export function populatedSearchResults(): SearchResults {
+  return searchResults({
+    data: [searchHit()],
+    meta: { total: 1, unrestricted: false },
+    facets: {
+      status: [{ value: DocumentStatus.PUBLISHED, count: 1 }],
+      type: [{ value: SEARCH_HIT_TYPE_ID, count: 1 }],
+      year: [{ value: '2026', count: 1 }],
+    },
+  });
 }
 
 // --- Dashboard --------------------------------------------------------------------------------

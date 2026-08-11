@@ -1150,7 +1150,6 @@ export const ar: Catalogue = {
     ocrMatch: 'نص مقروء بالتعرف الضوئي',
     lowConfidence: 'قراءة ضوئية منخفضة الثقة',
     unrestricted: 'يتم عرض جميع وثائق المنشأة. هذا البحث مسجّل في سجل التدقيق.',
-    revisionLabel: 'مراجعة {label}',
     savedTitle: 'عمليات البحث المحفوظة',
     savedEmpty: 'لا توجد عمليات بحث محفوظة بعد',
     savedEmptyHint: 'نفّذ بحثًا ثم احفظه ليبقى في متناولك.',
