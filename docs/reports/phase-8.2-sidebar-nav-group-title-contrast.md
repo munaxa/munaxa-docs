@@ -1,10 +1,12 @@
 
 # Phase 8.2 — SidebarNav Navigation Group Title Contrast
 
-> **Current status: the fix is written, tested and verified — see [§16](#16-third-attempt-access-granted-fix-made-and-verified).**
-> Sections 1–15 are the record of two sessions that could not reach `@munaxa/platform`, and they are
-> left exactly as they were written. The blocker was real while it lasted, and what it cost is the
-> most useful thing in this document.
+> **Current status: COMPLETE.** `@munaxa/platform` 1.0.1 is published, consumed through the
+> lockfile, and verified in the running application — see
+> [§17](#17-release-and-consumption-phase-82-complete). [§16](#16-third-attempt-access-granted-fix-made-and-verified)
+> records the fix and its verification; sections 1–15 are the record of two sessions that could not
+> reach `@munaxa/platform`, left exactly as they were written. The blocker was real while it lasted,
+> and what it cost is the most useful thing in this document.
 
 ## 1. Status
 
@@ -440,3 +442,82 @@ with, or after, the lockfile bump that follows the release.
 4. Confirm CI green. The measurements above say what the suite should report.
 
 **STATUS: fix complete and verified; publication and consumption pending the release dispatch.**
+
+---
+
+## 17. Release and consumption — Phase 8.2 COMPLETE
+
+§16 ended at the release boundary: the fix was verified against a locally packed tarball, and
+`1.0.0` was still the only published version. That boundary has now been crossed properly. Nothing
+in §16's verification was reused as evidence here — every measurement below was taken again against
+the package as installed from the registry.
+
+### The release went through the repository's own workflow
+
+Dispatched `.github/workflows/release.yml` — the same manually-dispatched workflow that produced
+every prior release, and the only sanctioned publication path.
+
+| | |
+| --- | --- |
+| Dry run (branch) | run `31487044992`, attempt 1 **failed**, attempt 2 **success** |
+| Merge to `main` | `f709a29` merged as `eb1aa54` |
+| Publish | run `31487369931`, ref `main`, `dry_run=false` → **success** |
+| Registry | `versions` → `["1.0.0","1.0.1"]`; `dist-tags.latest` → `1.0.1` |
+
+The published artefact is built from `main`, not from unmerged code.
+
+**The first dry run's failure was not this change.** It was
+`packages/platform/audit/test/performance.test.ts:71` —
+`expect(performance.now() - start).toBeLessThan(14)`, which measured 20.02ms on the runner. That is
+a bare wall-clock budget in the `@munaxa/audit` package; this branch's diff is four files, none of
+them in `audit`, and the test passed 3/3 locally. It was re-run rather than worked around, and the
+re-run was green.
+
+This is worth recording as a finding in its own right: **the release gate can be blocked by a
+timing-sensitive assertion unrelated to whatever is being released.** Any future release may hit it.
+Left alone deliberately — it is outside this phase's scope and belongs to whoever owns `@munaxa/audit`.
+
+### Consumption, without shortcuts
+
+- `apps/web/package.json` moved to `^1.0.1`, not left at `^1.0.0`. The suite now asserts AA
+  unconditionally, so `1.0.0` cannot satisfy it; the manifest should not claim otherwise.
+- `pnpm-lock.yaml` refreshed by a real install. It resolves
+  `https://npm.pkg.github.com/download/@munaxa/platform/1.0.1/…` with an integrity hash.
+- Every `node_modules` was deleted before installing, so nothing survived from §16's packed-tarball
+  harness. The installed copy sits at a fresh store path, `@munaxa+platform@1.0.1_…`.
+- `pnpm install --frozen-lockfile` from an empty `node_modules` → exit 0, proving CI reproduces it.
+- The installed `dist/ui/shell/navigation.js` contains `tracking-wider text-muted-foreground` and
+  **zero** occurrences of `text-muted-foreground/70`.
+
+### Measured against the registry-consumed package
+
+Full production build after deleting `.next`, every `dist`, and all Turbo caches — every task
+reported `cache miss`, and `@edms/web:build` hashed to `20d8b3f3ebfeb643` rather than the
+`4f29903e9c9b9090` of every earlier build in this phase. That hash change is the corroboration §16's
+cache trap lacked: the dependency swap genuinely altered the build inputs this time.
+
+| | before (1.0.0) | after (registry 1.0.1) | AA |
+| --- | --- | --- | --- |
+| light | 2.79:1 | **4.97:1** | 4.5:1 |
+| dark | 4.19:1 | **7.44:1** | 4.5:1 |
+
+`[axe /admin/users]` → `[]`. Consistency suite **11/11**. Identical to §16's numbers, now produced
+by a package nobody assembled by hand.
+
+### Gates
+
+`format:check` clean · `lint` 13/13, 0 errors · `typecheck` 13/13 · `test` 1097 passed, 1 skipped ·
+`verify:styles` 10/10 · `shell.e2e` 8/8 · `consistency.e2e` 11/11.
+
+The three `@edms/api` lint warnings and the two `no-console` warnings are pre-existing and untouched.
+
+### The tolerances are gone, and nothing replaced them
+
+- The `2.75`/`4.15` floors are gone; both themes assert `>= 4.5` directly.
+- `RECORDED_AXE` is empty. No route carries a contrast exception.
+- No host-side override of `SidebarNav` exists. No colour is hardcoded. No token was added.
+
+Commits: `09a8aa4` (dependency and lockfile) and `65cdd18` (suite) in `munaxa-docs`; `f709a29`,
+merged as `eb1aa54`, in `munaxa-platform`.
+
+**STATUS: COMPLETE.**
