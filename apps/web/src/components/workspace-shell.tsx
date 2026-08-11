@@ -8,7 +8,9 @@ import type { ReactNode } from 'react';
 import {
   AppShell,
   AppShellProvider,
+  Badge,
   Button,
+  buttonVariants,
   NavigationDrawer,
   type RenderNavigationLink,
   Sidebar,
@@ -182,6 +184,7 @@ export function WorkspaceShell({
   destinations,
   displayName,
   description,
+  unreadNotifications,
   signOutAction,
   children,
 }: {
@@ -189,6 +192,8 @@ export function WorkspaceShell({
   displayName: string;
   /** Secondary line under the name — the tenant this session belongs to. */
   description: string;
+  /** Unread messages for the top bar's bell. `null` when the count could not be established. */
+  unreadNotifications?: number | null | undefined;
   signOutAction: () => Promise<void>;
   children: ReactNode;
 }): ReactNode {
@@ -220,6 +225,7 @@ export function WorkspaceShell({
           <TopBar
             actions={
               <div className="flex items-center gap-1">
+                <NotificationBell count={unreadNotifications ?? null} renderLink={renderLink} />
                 <ThemeToggle />
                 <UserMenu
                   name={displayName}
@@ -364,6 +370,84 @@ function Brand(): ReactNode {
       <span className="truncate text-sm font-semibold tracking-tight">{en.app.name}</span>
     </span>
   );
+}
+
+/**
+ * The top bar's notification affordance — Phase 7.5.
+ *
+ * The product had no bell. Notifications were reachable only by finding the rail row, which means
+ * the one thing on the screen that changes without the reader doing anything had no presence in the
+ * frame that is always visible. Every reference in the brief puts a counted bell in the top bar, and
+ * the API agrees: `GET /notifications/unread-count` exists, in its own words, "precisely so a badge
+ * has something to call".
+ *
+ * **Composed, not built.** `buttonVariants` supplies the ghost shape the theme toggle beside it
+ * already uses, `Badge` supplies the count, and the icon is `@munaxa/icons`. `TopBar` documents its
+ * `actions` slot as "Trailing content, aligned to the end: notifications, theme toggle, the user
+ * menu", so this is the composition the platform intends rather than a new one.
+ *
+ * **The count sits beside the bell, not on it, and that was a retreat.** The reference screenshots
+ * show an overlaid pill on the glyph's corner, which was built first and then looked at: the
+ * platform has no overlay-count primitive, so reaching that shape meant pinning `Badge` with
+ * `absolute -end-1 -top-1 min-w-4 px-1 text-[10px] leading-4`. Rendered and zoomed, it was a tall
+ * pink rectangle floating beside the bell rather than a pill on it — and the classes that produced
+ * it are precisely the "hardcode visual values to imitate the screenshots" this phase forbids.
+ * Inline is what `Badge` is for, and it is what `NavigationItem.badge` — the platform's only badge
+ * slot — also means by "trailing content". The gap is written up in the Phase 7.5 report; it is not
+ * worked around here.
+ *
+ * **The count is spoken, not just shown.** The button's accessible name is the plain destination;
+ * the count follows as visually-hidden text built from `notifications.unreadCount`, the message the
+ * notifications screen already uses. Reusing it rather than writing a new sentence is deliberate —
+ * that key's Arabic was reviewed under the numeral policy in Phase 7.4C, including the dual that
+ * carries no digit, and a new string here would be new Arabic written without that review.
+ *
+ * `null` means the count could not be established and renders no badge at all. A zero badge would
+ * claim "you are up to date"; an absent one claims nothing, which is the truth when the request
+ * failed.
+ */
+function NotificationBell({
+  count,
+  renderLink,
+}: {
+  readonly count: number | null;
+  readonly renderLink: RenderNavigationLink;
+}): ReactNode {
+  const translate = useTranslate();
+  const label = translate('nav.notifications');
+
+  const badged = count !== null && count > 0;
+
+  return renderLink({
+    href: '/notifications',
+    // `buttonVariants` rather than wrapping a `Button`, because the platform's `Button` is a plain
+    // forwarded `<button>` with no `asChild`. This is the escape hatch it ships for exactly this
+    // case — "usable on non-`<button>` elements (e.g. `<a>` CTAs styled as buttons)" — so the bell
+    // is the same ghost shape as the theme toggle beside it without a second button style.
+    //
+    // `icon` when bare, `sm` when it carries a count, because an icon button is a square and a
+    // square cannot hold a glyph and a number.
+    className: buttonVariants('ghost', badged ? 'sm' : 'icon', badged ? 'gap-2' : undefined),
+    'aria-current': undefined,
+    title: undefined,
+    children: (
+      <>
+        <Bell className="size-4" aria-hidden />
+        {badged && (
+          // Inline beside the glyph, not overlaid on it — see the note above the component on why
+          // the overlay was abandoned. `Badge` with no sizing overrides at all: whatever the
+          // platform decides a badge looks like is what appears here.
+          <Badge tone="danger" aria-hidden>
+            {/* 99+ rather than a four-digit pill that would push the user menu around. */}
+            {count > 99 ? '99+' : count.toLocaleString()}
+          </Badge>
+        )}
+        <span className="sr-only">
+          {badged ? `${label}, ${translate('notifications.unreadCount', { count })}` : label}
+        </span>
+      </>
+    ),
+  });
 }
 
 /**

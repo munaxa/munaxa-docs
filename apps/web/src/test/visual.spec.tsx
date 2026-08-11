@@ -9,7 +9,7 @@ import { AppShellProvider, SidebarNav } from '@munaxa/ui';
 import { en } from '@edms/i18n';
 
 import RouteLoading from '../app/loading';
-import { WorkspaceRail, iconFor } from '../components/workspace-shell';
+import { WorkspaceRail, WorkspaceShell, iconFor } from '../components/workspace-shell';
 import { Providers } from '../app/providers';
 import { ApprovalInboxScreen } from '../features/approvals/inbox-screen';
 import { DashboardScreen } from '../features/dashboard/dashboard-screen';
@@ -28,6 +28,8 @@ import {
   folder,
   library,
   listState,
+  SEARCH_HIT_TYPE_ID,
+  populatedSearchResults,
   searchResults,
   signature,
   userDashboard,
@@ -323,6 +325,28 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
     ),
   },
   /**
+   * The top bar's notification bell, badged — Phase 7.5.
+   *
+   * The whole shell rather than the bell alone, because what this baseline is for is the *placement*
+   * of a pill over a glyph inside a row of icon buttons: whether it collides with the theme toggle,
+   * whether it clips at the bar's edge, and whether it sits on the correct side once the document
+   * direction flips. A screenshot of the bell in isolation would show none of those.
+   */
+  {
+    name: 'top-bar-bell',
+    ui: () => (
+      <WorkspaceShell
+        destinations={destinationsFor(ALL_PERMISSIONS)}
+        displayName="Test Person"
+        description="Test Tenant"
+        unreadNotifications={7}
+        signOutAction={() => Promise.resolve()}
+      >
+        <p className="p-4">Content</p>
+      </WorkspaceShell>
+    ),
+  },
+  /**
    * The route-level loading state — Phase 7.1.
    *
    * Every navigation in the application passes through this, which makes it one of the most-seen
@@ -341,6 +365,31 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
         saved={[]}
         recent={[]}
         typeLabels={{}}
+        categoryLabels={{}}
+        departmentLabels={{}}
+        entityLabels={{}}
+      />
+    ),
+  },
+  /**
+   * Search **with a result in it** — Phase 7.7B, and the surface this screen never had.
+   *
+   * Every previous Search baseline was the empty state, which is exactly why a doubled revision
+   * label ("Rev Rev 0") and a result row whose metadata overflowed its own card survived six
+   * phases: nothing in the repository had ever rendered a hit. The fixture is typed against
+   * `SearchHit`, so a contract change breaks it here rather than in production.
+   */
+  {
+    name: 'search-populated',
+    ui: () => (
+      <SearchScreen
+        queryText="batch"
+        sort="relevance"
+        filters={{}}
+        initialResults={populatedSearchResults()}
+        saved={[]}
+        recent={[]}
+        typeLabels={{ [SEARCH_HIT_TYPE_ID]: 'Standard operating procedure' }}
         categoryLabels={{}}
         departmentLabels={{}}
         entityLabels={{}}
@@ -370,6 +419,14 @@ const NARROW: readonly {
   readonly width: number;
   readonly ui: () => ReactElement;
 }[] = [
+  {
+    // Phase 7.6B. The dashboard had exactly one baseline, at 1280, so every claim about it on a
+    // phone was an argument about `Grid` rather than a look at the screen. Three column counts,
+    // two stacked list columns and a seven-tile KPI region all collapse here at once.
+    name: 'dashboard-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'dashboard')!.ui(),
+  },
   {
     name: 'document-list-tablet',
     width: 768,
@@ -406,6 +463,18 @@ const ARABIC: readonly {
   { name: 'ar-document-list-few', width: 1280, ui: () => libraryWith(3) },
   { name: 'ar-document-list-many', width: 1280, ui: () => libraryWith(11) },
   { name: 'ar-document-list-mobile', width: 390, ui: () => libraryWith(11) },
+  // Phase 7.6B. The dashboard's recent-document row now carries a document number and a date beside
+  // Arabic text, which is the mixed-direction case a screenshot is the only way to check.
+  {
+    name: 'ar-dashboard',
+    width: 1280,
+    ui: () => SURFACES.find((surface) => surface.name === 'dashboard')!.ui(),
+  },
+  {
+    name: 'ar-dashboard-mobile',
+    width: 390,
+    ui: () => SURFACES.find((surface) => surface.name === 'dashboard')!.ui(),
+  },
 ];
 
 function libraryWith(rowCount: number): ReactElement {

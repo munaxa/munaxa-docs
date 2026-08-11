@@ -25,15 +25,21 @@ import { WorkspacePage } from '../../components/workspace-page';
 export function RecentScreen({ rows }: { readonly rows: readonly RecentDocument[] }): ReactNode {
   const translate = useTranslate();
 
-  if (rows.length === 0) {
-    return (
-      <EmptyState
-        title={translate('documents.recent.empty')}
-        description={translate('documents.recent.emptyHint')}
-      />
-    );
-  }
-
+  /*
+   * The empty state is *inside* the frame — Phase 8.1.
+   *
+   * This screen used to `return <EmptyState … />` before reaching `WorkspacePage`, so somebody who
+   * had opened nothing got a page with **no `Page`, no `PageHeader`, no `<h1>` and no breadcrumb**.
+   * Phase 8 measured `h1Count: 0` on `/documents/recent` and nowhere else: a screen reader had
+   * nothing to announce the page by, and the only way back to the library was the rail.
+   *
+   * It survived six phases of verification because every one of them populated the list first. An
+   * empty screen is a state a real person meets on their first day, and it is the one state nobody
+   * had rendered.
+   *
+   * `EmptyState` itself is unchanged and so is everything below it — the branch simply moved inside
+   * the frame the populated state already used, and both branches now share one heading.
+   */
   return (
     <WorkspacePage
       title={translate('documents.nav.recent')}
@@ -42,26 +48,33 @@ export function RecentScreen({ rows }: { readonly rows: readonly RecentDocument[
         { label: translate('documents.nav.recent') },
       ]}
     >
-      <ul className="flex flex-col gap-2">
-        {rows.map((row) => (
-          <li key={row.id}>
-            <Link href={`/documents/${row.id}` as Route}>
-              <Card className="flex items-center gap-3">
-                <span className="min-w-0 flex-1 truncate">{row.title}</span>
-                {row.documentNumber !== null && <Badge tone="muted">{row.documentNumber}</Badge>}
-                <span className="text-sm opacity-70">{row.folderName}</span>
-                {/*
+      {rows.length === 0 ? (
+        <EmptyState
+          title={translate('documents.recent.empty')}
+          description={translate('documents.recent.emptyHint')}
+        />
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {rows.map((row) => (
+            <li key={row.id}>
+              <Link href={`/documents/${row.id}` as Route}>
+                <Card className="flex items-center gap-3">
+                  <span className="min-w-0 flex-1 truncate">{row.title}</span>
+                  {row.documentNumber !== null && <Badge tone="muted">{row.documentNumber}</Badge>}
+                  <span className="text-sm opacity-70">{row.folderName}</span>
+                  {/*
                   A `<time>` with a machine-readable attribute and a locale-formatted body: the
                   first is what a screen reader and a crawler read, the second is what a person does.
                 */}
-                <time className="text-sm opacity-70" dateTime={row.viewedAt}>
-                  {new Date(row.viewedAt).toLocaleString()}
-                </time>
-              </Card>
-            </Link>
-          </li>
-        ))}
-      </ul>
+                  <time className="text-sm opacity-70" dateTime={row.viewedAt}>
+                    {new Date(row.viewedAt).toLocaleString()}
+                  </time>
+                </Card>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
     </WorkspacePage>
   );
 }

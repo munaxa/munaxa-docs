@@ -14,6 +14,8 @@ import {
   useToast,
 } from '@munaxa/ui';
 
+import { Plus } from '@munaxa/icons';
+
 import type { BulkOperationResult, DocumentSummary, Folder, Library } from '@edms/contracts';
 import { formatFor } from '@edms/domain';
 
@@ -150,6 +152,37 @@ export function LibraryScreen({
         { label: translate('nav.documents'), href: '/documents' },
         ...(selectedFolderName === '' ? [] : [{ label: selectedFolderName }]),
       ]}
+      /**
+       * The primary action, promoted out of the toolbar — Phase 7.6.
+       *
+       * `ResourceList` renders `onCreate` as the last control in its `Toolbar`, beside the search
+       * box, the deleted filter and the column menu. That is the right place for a *list* control
+       * and the wrong place for the screen's primary action: the one thing a reader comes here to
+       * do sat in a row of things that change what they are looking at, at the same weight as a
+       * dropdown.
+       *
+       * `PageHeader` has carried an `actions` slot since the platform shipped it, and
+       * `WorkspacePage` has passed it through since Phase 7 — four screens used it and the library
+       * was not one of them. So this is the composition that already existed, applied to the screen
+       * with the strongest claim on it, and it is what every reference screenshot shows: the create
+       * action at the top of the page, not inside the table's chrome.
+       *
+       * `onCreate` is correspondingly *not* passed below, because two create buttons is worse than
+       * either placement. The permission test is unchanged and still the server's answer.
+       */
+      actions={
+        canCreate && selectedFolderId !== null ? (
+          <Button
+            type="button"
+            onClick={() => {
+              setAdding('UPLOAD');
+            }}
+          >
+            <Plus className="size-4" aria-hidden />
+            {translate('admin.actions.create')}
+          </Button>
+        ) : undefined
+      }
     >
       <div className="flex flex-col gap-6 lg:flex-row">
         <aside className="lg:w-72 lg:shrink-0">
@@ -176,9 +209,8 @@ export function LibraryScreen({
             onRowActivate={(row) => {
               router.push(`/documents/${row.id}` as Route);
             }}
-            onCreate={
-              canCreate && selectedFolderId !== null ? () => setAdding('UPLOAD') : undefined
-            }
+            // Deliberately absent: the create action lives in the page header now — see the
+            // `actions` prop above. `ResourceList` still owns every other toolbar control.
             onDelete={(row, reason) => deleteDocument(row.id, row.version, reason)}
             // Phase 10's rule, and it applies here rather than to every administered list: a
             // controlled record's removal is an act somebody answers for, and the recycle bin shows

@@ -494,13 +494,27 @@ function TextCompare({ result }: { readonly result: RevisionCompare }): ReactNod
       <ul className="flex max-h-80 list-none flex-col gap-2 overflow-auto rounded border p-3">
         {changes.map((change, index) => (
           <li key={index} className="text-sm leading-relaxed">
+            {/*
+              `bg-destructive/10` and `bg-success/10` — Phase 7.9, and the only raw colours the
+              product had left.
+
+              These were `bg-red-500/10` and `bg-green-500/10`: Tailwind's own palette, which is
+              theme-blind. They do not change between light and dark, they do not move when the Docs
+              palette is retuned upstream, and `ARCHITECTURE.md`'s rule is that nothing in this
+              repository hardcodes a colour. `--destructive` and `--success` are the platform's
+              existing semantic tokens for exactly "this was taken away" and "this was added", and
+              they carry dark values.
+
+              The meaning does not rest on the colour either way: `<del>` and `<ins>` are what tell
+              a screen reader which is which, and they are unchanged.
+            */}
             {change.kind === 'REMOVED' && (
-              <del className="rounded bg-red-500/10 px-1 no-underline opacity-80">
+              <del className="bg-destructive/10 rounded px-1 no-underline opacity-80">
                 {change.from}
               </del>
             )}
             {change.kind === 'ADDED' && (
-              <ins className="rounded bg-green-500/10 px-1 no-underline">{change.to}</ins>
+              <ins className="bg-success/10 rounded px-1 no-underline">{change.to}</ins>
             )}
             {change.kind === 'CHANGED' && (
               <span>

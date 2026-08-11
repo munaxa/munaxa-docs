@@ -88,3 +88,4 @@ dump.rdb
 # same rule as every other artefact above applies: it is the product of a run rather than part of
 # the product.
 apps/api/.storage/
+apps/web/src/test/__e2e_screenshots__/
