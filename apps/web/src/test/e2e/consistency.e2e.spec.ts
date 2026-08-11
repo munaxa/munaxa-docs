@@ -37,8 +37,15 @@ const KNOWN_PLATFORM_CONTRAST = 'text-primary-strong';
  * it fixes the screen, which is how the finding stops being tolerated.
  */
 const RECORDED_FINDINGS = {
-  /** §6.1 — `RecentScreen` returns a bare `EmptyState`, outside `WorkspacePage`, when the list is empty. */
-  noPageHeading: ['recent'],
+  /**
+   * §6.1 — **fixed by Phase 8.1**, and the entry is deleted rather than kept.
+   *
+   * `RecentScreen` returned a bare `EmptyState` outside `WorkspacePage` when the list was empty, so
+   * `/documents/recent` measured `h1Count: 0`. The empty branch now renders inside the frame. This
+   * list is empty because that is what a fixed finding looks like: the assertion below is
+   * unconditional again.
+   */
+  noPageHeading: [] as readonly string[],
   /** §6.2 — the delegations table overflows the viewport at 390px. */
   overflows: ['delegations'],
 } as const;
@@ -232,8 +239,14 @@ describe('platform grammar across the non-reference screens', () => {
     expect(wrong).toStrictEqual([]);
   });
 
-  /** The recorded finding, asserted as a finding: it is still there, and it is still only there. */
-  it('still shows the recorded page-heading gap, and only there', () => {
+  /**
+   * The recorded findings, asserted as findings: still there, and still only there.
+   *
+   * Phase 8.1 emptied `noPageHeading`, so this now asserts that **no** screen is missing its
+   * heading — which is the same test doing the same job, and the reason the entry could be deleted
+   * with confidence rather than merely crossed out.
+   */
+  it('shows the recorded page-heading gaps, and only those', () => {
     const missing = [...measured.entries()]
       .filter(([, value]) => value.reachable && !value.forbidden && value.h1Count !== 1)
       .map(([name]) => name);
