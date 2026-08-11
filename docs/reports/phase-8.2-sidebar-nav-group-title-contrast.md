@@ -250,3 +250,69 @@ then a release, a version bump here, and the two floors in `consistency.e2e.spec
 
 If the platform repository is added to a future session's scope, this is a ten-minute change with
 its verification already written.
+
+---
+
+## 15. Second attempt, after platform access was reported available — still BLOCKED
+
+A later pass was asked to continue on the basis that `munaxa/munaxa-platform` was now in scope, and
+to clone it. **It is not, and it could not be cloned.** Recorded here rather than in a new report,
+because it is the same blocker with sharper evidence.
+
+### The control experiment
+
+The same command, the same token, the same method, against both repositories:
+
+```
+git -c "http.extraheader=Authorization: Bearer $GITHUB_TOKEN" ls-remote …/munaxa-platform
+  → fatal: could not read Username for 'https://github.com'
+
+git -c "http.extraheader=Authorization: Bearer $GITHUB_TOKEN" ls-remote …/munaxa-docs
+  → d7b8337… HEAD
+  → 39c2d02… refs/heads/claude/enterprise-feature-audit-y30g5o
+```
+
+The docs repository answers; the platform repository falls through to a credential prompt, which is
+what GitHub returns when a token cannot see a repository at all — it 404s, git retries anonymously,
+and then asks for a username. **The session's git credential is scoped to `munaxa-docs`.** This is
+not an inference from a tool error: the control proves the token and the transport are fine.
+
+The MCP surfaces agree, verbatim:
+
+```
+mcp__github__list_branches → Access denied: repository "munaxa/munaxa-platform" is not
+                             configured for this session. Allowed repositories: munaxa/munaxa-docs
+add_repo(munaxa, munaxa-platform, push) → MCP tool call requires approval
+```
+
+`add_repo` is the mechanism that would grant it, and it needs an approval this non-interactive
+session cannot obtain.
+
+### The registry, checked independently
+
+Even with the source, there would be nothing to consume:
+
+```
+pnpm view @munaxa/platform versions   → ["1.0.0"]
+pnpm view @munaxa/platform dist-tags  → { "latest": "1.0.0" }
+```
+
+**`1.0.0` is the only published version.** Parts 5 and 6 — release and consume — are blocked by the
+registry as well as by repository access, and neither is something this repository can resolve.
+
+### What was deliberately not done
+
+- **Not cloned by any other route.** There is no other route; a fake clone is a fake fix.
+- **Not patched in `node_modules`.** It would not survive an install, would not reach CI, and is the
+  host-side workaround the brief forbids twice over.
+- **Not moved back into Docs.** The ownership boundary is the finding.
+- **Floors not replaced with `>= 4.5`.** Part 7 says to replace them *after* the release is consumed.
+  It has not been. Replacing them now would turn a guard into a failing test that proves nothing.
+- **axe exception not touched.** The violation is still real.
+
+**No code changed in this pass.** The specification in §5 and §14 is complete and unchanged; what is
+missing is access, and the two things needed are named precisely: `munaxa/munaxa-platform` added to
+the session's repository scope (an admin can grant this in the Claude GitHub settings), and publish
+rights for `@munaxa/platform` on GitHub Packages.
+
+**STATUS: BLOCKED** — unchanged, for a reason now proved by control rather than reported by a tool.
