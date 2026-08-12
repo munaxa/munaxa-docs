@@ -25,8 +25,18 @@ const CHROMIUM_PATH =
 
 const AXE_PATH = require.resolve('axe-core/axe.min.js');
 
-/** The `Badge` palette issue, recorded since Phase 5.2 and the only tolerated contrast failure. */
-const KNOWN_PLATFORM_CONTRAST = 'text-primary-strong';
+/*
+ * The `text-primary-strong` suppression is gone — Phase 8.3.
+ *
+ * From Phase 5.2 until now this suite filtered out every contrast violation whose node mentioned
+ * `text-primary-strong`, on every route, calling it "the only tolerated contrast failure". It was
+ * doing its job: axe had been reporting `Badge` as a serious violation the whole time, and the
+ * filter is why three phases of green runs never surfaced it. A tolerated failure that outlives the
+ * reason for tolerating it is indistinguishable from a defect nobody can see.
+ *
+ * `@munaxa/platform` 1.0.2 fixes the underlying token, so the exception has nothing left to excuse
+ * and the assertion below is unconditional again.
+ */
 
 /**
  * The findings this audit made, named so the suite guards everything else.
@@ -386,14 +396,24 @@ describe('platform grammar across the non-reference screens', () => {
     },
   );
 
-  it.each(['/audit', '/approvals', '/reports', '/admin/users'])(
+  /*
+   * `/documents` joins the sample — Phase 8.3.
+   *
+   * The four routes above were chosen in Phase 8 as the screens furthest from the reference ones.
+   * None of them renders a `Badge`, and `Badge` carried a serious `color-contrast` violation from
+   * Phase 5.2 until Phase 8.3: axe reported it on `/documents` in the light theme, on a route this
+   * suite never visited, so the suite stayed green for three phases while the violation shipped.
+   * A sample is only as good as what it happens to include, and the fix for that is to include the
+   * screen where the product's most reused status component actually appears.
+   */
+  it.each(['/audit', '/approvals', '/reports', '/admin/users', '/documents'])(
     'has no unrecorded critical or serious axe violations on %s',
     async (path) => {
       await page.setViewportSize({ width: 1280, height: 900 });
       await page.goto(`${WEB_URL}${path}`, { waitUntil: 'networkidle' });
       await page.addScriptTag({ path: AXE_PATH });
 
-      const violations = await page.evaluate(async (known: string) => {
+      const violations = await page.evaluate(async () => {
         const results = await (
           window as unknown as {
             axe: { run: (ctx: Document) => Promise<{ violations: unknown[] }> };
@@ -408,11 +428,11 @@ describe('platform grammar across the non-reference screens', () => {
         )
           .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
           .flatMap((violation) =>
-            violation.nodes
-              .filter((node) => !node.html.includes(known))
-              .map((node) => `${violation.impact}: ${violation.id} ${node.target.join(' ')}`),
+            violation.nodes.map(
+              (node) => `${violation.impact}: ${violation.id} ${node.target.join(' ')}`,
+            ),
           );
-      }, KNOWN_PLATFORM_CONTRAST);
+      });
 
       console.log(`[axe ${path}]`, JSON.stringify(violations));
 
