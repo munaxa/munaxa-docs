@@ -142,20 +142,20 @@ importers:
         specifier: workspace:*
         version: link:../../packages/utils
       '@munaxa/icons':
-        specifier: ^1.0.0
-        version: 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^1.1.1
+        version: 1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/platform':
-        specifier: ^1.2.0
-        version: 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^1.3.0
+        version: 1.3.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/theme':
-        specifier: ^1.0.0
-        version: 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^1.1.1
+        version: 1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/tokens':
-        specifier: ^1.0.0
-        version: 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^1.1.1
+        version: 1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/ui':
-        specifier: ^1.0.0
-        version: 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^1.1.1
+        version: 1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@tanstack/react-query':
         specifier: ^5.64.1
         version: 5.101.4(react@19.2.8)
@@ -1003,55 +1003,36 @@ packages:
   '@munaxa/config-typescript@1.0.0':
     resolution: {integrity: sha512-C6oMv9k87Ss6tvwiPAdaysQCOgdt5U5V8eEtdCspg/lcKh4dxMua5Xn09RM9HaI1m59ONiYlTERW4UDzgjHKrw==, tarball: https://npm.pkg.github.com/download/@munaxa/config-typescript/1.0.0/a5329d53fe1c29534452c0a4b8e318d2105a3f7e}
 
-  '@munaxa/icons@1.0.0':
-    resolution: {integrity: sha512-1kYPSJ4mSdjVfi0K/4P2nSAU8sl2Utlzip9adsoF1IlBwr9feZTQEnfKw13zcv6DdZCA8WV4CD9pvPEgnLjWnQ==, tarball: https://npm.pkg.github.com/download/@munaxa/icons/1.0.0/7e9f27636717a78df60c69fd7017b17497ea0937}
-    peerDependencies:
-      react: ^19.0.0
-      react-dom: ^19.0.0
-    peerDependenciesMeta:
-      react:
-        optional: true
-      react-dom:
-        optional: true
-
-  '@munaxa/platform@1.2.0':
-    resolution: {integrity: sha512-85IussF10nJPs0axe0z0ftLDftCSDOQBaWrtivWnHVjNTfbdeLb8vLa0vL1zdv8wej0iiuLp/ZsOUR7YLQ+dsg==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.2.0/d063cf76c29ff104635de5bf52448c8f4a735346}
+  '@munaxa/icons@1.1.1':
+    resolution: {integrity: sha512-RSRLXAdm3p7ZOfqwmbLiDInzoV5eCWC2JQMzH7rKQ9avCWBmoziceTHb0m1UP1NeIMLl4iS/90FqCp5il8xPUA==, tarball: https://npm.pkg.github.com/download/@munaxa/icons/1.1.1/79b1b393bc49ace90975079b43abf32d311d22b7}
     peerDependencies:
       react: ^19.0.0
       react-dom: ^19.0.0
 
-  '@munaxa/theme@1.0.0':
-    resolution: {integrity: sha512-b7+eM7083kcP+viaHEJmg9EyTIFYZm7r6/OiGrNArcMnIwFvpuNpNNh2gV+FnFavBNHn9mre6dNnvjZ09chgSg==, tarball: https://npm.pkg.github.com/download/@munaxa/theme/1.0.0/3d75489a080cc6149218f875e4a2c308e7e1466f}
+  '@munaxa/platform@1.3.0':
+    resolution: {integrity: sha512-po5ptVJQtbSZeQLb52+1DhKy63GHzwPpwer4n8rh+7zany57LrybhhMzb4xehsYWfUxMhhQ6E+i0PtmQI/PQmQ==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.3.0/2a1425ea05ccbb0caaa2dbae1f025e8ff7bea134}
+    hasBin: true
     peerDependencies:
       react: ^19.0.0
       react-dom: ^19.0.0
-    peerDependenciesMeta:
-      react:
-        optional: true
-      react-dom:
-        optional: true
 
-  '@munaxa/tokens@1.0.0':
-    resolution: {integrity: sha512-6ndUrENzrwtDbMUiMtvvNco/tiUy8FfKDy6MBbSBn2819Fw83VnaN/RnbbYfeQZ7UD1z1SjrPLVmpDKDiofIeQ==, tarball: https://npm.pkg.github.com/download/@munaxa/tokens/1.0.0/c3abdcaa4f05b7a98f6e76a93c6bc66196d2f32f}
+  '@munaxa/theme@1.1.1':
+    resolution: {integrity: sha512-/A0tu1WDtfnRkbY828k7yQW7OF5mX7C5Yhippah6oaYEKcpKrUremMVS4h69cy+aHUQjnQmDslDYTxptfuNiag==, tarball: https://npm.pkg.github.com/download/@munaxa/theme/1.1.1/bec7916433a30224820ef18fe5776174f3b2460c}
     peerDependencies:
       react: ^19.0.0
       react-dom: ^19.0.0
-    peerDependenciesMeta:
-      react:
-        optional: true
-      react-dom:
-        optional: true
 
-  '@munaxa/ui@1.0.0':
-    resolution: {integrity: sha512-CJZvBe/RfzGAqySxSnh9L8+OnwtT6FOtjLZfkjSTtQQFy9X8c6poNp/HHzfjhazqFZitfRhHaggzMOlNb0PSGQ==, tarball: https://npm.pkg.github.com/download/@munaxa/ui/1.0.0/cd8a2e1a0c55dfa0a58a04406e6942ac7a232555}
+  '@munaxa/tokens@1.1.1':
+    resolution: {integrity: sha512-J24v4XDz1e2r3fcskUyOznrb1JgD6wdn25UNtwjrUr9KQ76whX8/rojl+hford2nen8cM4xgf6TYrelP2LB3Gg==, tarball: https://npm.pkg.github.com/download/@munaxa/tokens/1.1.1/fab67a85ba841cca4f4b119048a4a731260e75e5}
     peerDependencies:
       react: ^19.0.0
       react-dom: ^19.0.0
-    peerDependenciesMeta:
-      react:
-        optional: true
-      react-dom:
-        optional: true
+
+  '@munaxa/ui@1.1.1':
+    resolution: {integrity: sha512-bB4LT/5qXaytd6hvnoJ0GkG9u0FZVhLUwRqjXkAavkvflJ6JvhWNwa05wg5wPFuIbH+kaodncAfz7oN5Cu7TeA==, tarball: https://npm.pkg.github.com/download/@munaxa/ui/1.1.1/f26e5779d4129e734c8238d034251aaefb44e008}
+    peerDependencies:
+      react: ^19.0.0
+      react-dom: ^19.0.0
 
   '@napi-rs/canvas-android-arm64@0.1.100':
     resolution: {integrity: sha512-hjhCKhntPv9+t4ckHymdx0phYNcVW+GKQR6Lzw2zE+pOVjOplSmtx9nNNknTjbEDLcuLZqA1y8ufKg1XfgftzQ==}
@@ -4425,17 +4406,16 @@ snapshots:
 
   '@munaxa/config-typescript@1.0.0': {}
 
-  '@munaxa/icons@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@munaxa/icons@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-    optionalDependencies:
+      '@munaxa/platform': 1.3.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/platform@1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@munaxa/platform@1.3.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@dnd-kit/core': 6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@dnd-kit/modifiers': 9.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
@@ -4462,30 +4442,27 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/theme@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@munaxa/theme@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-    optionalDependencies:
+      '@munaxa/platform': 1.3.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/tokens@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@munaxa/tokens@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-    optionalDependencies:
+      '@munaxa/platform': 1.3.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/ui@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@munaxa/ui@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-    optionalDependencies:
+      '@munaxa/platform': 1.3.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
     transitivePeerDependencies:
