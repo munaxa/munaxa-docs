@@ -200,7 +200,21 @@ scheme ships a lifted `--primary`).
 `build` 20/20 · `validate` · `verify-release.mjs` *all checks passed* · `build-storybook` ·
 `test:a11y` 26/26.
 
-**Docs:** consumed 1.1.0 and re-verified — see §17.
+**Docs**, against the registry-consumed 1.1.0 on a build with every cache cleared:
+
+| Suite | Result |
+| --- | --- |
+| `consistency.e2e` | **12/12**, `[axe /documents] []` |
+| `faded-text.e2e` | **4/4**, one sub-4.5 surface — the disabled `opacity-50` control, exempt |
+| `shell.e2e` | 8/8 on re-run; **one flaky failure first time**, see below |
+
+`shell.e2e` failed once on "no way to reach navigation on search at 640px", which is the signature
+Phase 7.8 recorded for the API rate limit — a missing nav affordance that is really a throttled
+request. Two things say it is not this release, and neither is "it passed when I ran it again":
+`shell.stories.tsx` is the only shell file 1.1.0 touches, and **stories are not published** — the
+installed package contains no `*.stories.*` at all, so that change cannot reach Docs. The log also
+carries no `RATE_LIMITED` marker, so the precise cause is unestablished; it is recorded as flaky
+rather than explained away.
 
 ## 17. Package and release
 
