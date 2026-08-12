@@ -1,21 +1,55 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 
+import { BrandProvider, brandIcons, brandOpenGraphImage, productBrands } from '@munaxa/ui';
 import { TEXT_DIRECTION, en } from '@edms/i18n';
 
 import { currentLocale } from '../lib/session';
 import { Providers } from './providers';
 import './globals.css';
 
+const brand = productBrands.docs;
+
+/**
+ * What a browser shows for this product.
+ *
+ * Every value comes from the brand registry rather than from a path typed here. Three Munaxa
+ * products in one window used to be three identical tabs; the tab icon is the only thing telling
+ * them apart at that size, so it is the one that has to be product-specific.
+ *
+ * `title.template` puts the product last, where a truncated tab title still reads as the screen
+ * you are on. `robots` stays as it was: this is an authenticated surface and is never indexable —
+ * the share image is for the links people paste into a chat, not for a crawler.
+ */
 export const metadata: Metadata = {
-  title: en.app.name,
+  title: { default: brand.name, template: `%s · ${brand.name}` },
   description: en.app.description,
+  applicationName: brand.name,
+  icons: brandIcons(brand),
+  openGraph: {
+    type: 'website',
+    siteName: brand.name,
+    title: brand.name,
+    description: en.app.description,
+    images: [brandOpenGraphImage(brand)],
+  },
+  twitter: { card: 'summary_large_image', images: [brandOpenGraphImage(brand).url] },
   robots: { index: false, follow: false },
 };
 
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
+  /*
+   * The product colour, and the one place in this repository a raw hex legitimately appears: the
+   * browser paints the address bar and the task-switcher card before any stylesheet is parsed, so
+   * it cannot read `--primary`. It is read from the registry, which reads it from the theme, so
+   * there is still exactly one source of truth for it.
+   */
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: brand.color },
+    { media: '(prefers-color-scheme: dark)', color: brand.color },
+  ],
 };
 
 /**
@@ -55,7 +89,17 @@ export default async function RootLayout({
         this product with no change — which is the property `globals.css` exists to protect.
       */}
       <body className="bg-background text-foreground">
-        <Providers session={{ userId: null, tenantId: null, locale }}>{children}</Providers>
+        {/*
+          Which product this is, declared once.
+
+          `ProductLogo` reads it from here rather than being handed a file, so every logo below —
+          the rail, the drawer, the sign-in card — is the Docs lockup by construction rather than
+          by each caller remembering. It pairs with the theme imported in `globals.css`: same id,
+          colour on one side and artwork on the other.
+        */}
+        <BrandProvider product="docs">
+          <Providers session={{ userId: null, tenantId: null, locale }}>{children}</Providers>
+        </BrandProvider>
       </body>
     </html>
   );

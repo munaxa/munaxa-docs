@@ -18,6 +18,7 @@ import {
   SidebarTrigger,
   TopBar,
   UserMenu,
+  ProductLogo,
   useTheme,
 } from '@munaxa/ui';
 
@@ -26,7 +27,6 @@ import {
   ChartColumn,
   FileCheck,
   FileText,
-  FileStack,
   Files,
   House,
   Moon,
@@ -40,7 +40,7 @@ import {
   UserRoundCheck,
 } from '@munaxa/icons';
 
-import { type MessageKey, en } from '@edms/i18n';
+import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../app/providers';
 import type { NavigationDestination } from '../lib/navigation';
@@ -219,8 +219,14 @@ export function WorkspaceShell({
     <AppShellProvider>
       <AppShell
         skipLinkLabel={translate('nav.skipToContent')}
-        sidebar={<Sidebar brand={<Brand />}>{navigation}</Sidebar>}
-        drawer={<NavigationDrawer label={translate('nav.menu')}>{navigation}</NavigationDrawer>}
+        sidebar={
+          <Sidebar brand={(collapsed) => <Brand collapsed={collapsed} />}>{navigation}</Sidebar>
+        }
+        drawer={
+          <NavigationDrawer label={translate('nav.menu')} brand={<Brand collapsed={false} />}>
+            {navigation}
+          </NavigationDrawer>
+        }
         topBar={
           <TopBar
             actions={
@@ -343,32 +349,30 @@ export function WorkspaceRail({
 }
 
 /**
- * The workspace's identity anchor — Phase 7.
+ * The workspace's identity anchor — Phase 7, and the approved logo since the branding phase.
  *
- * It was a bare `<span>`: the top-left of the application, which is the first thing a reader's eye
- * lands on, said the product's name in the same weight as a navigation row. A mark beside the name
- * is what makes the rail read as a product rather than as a menu, and it is the one place a small
- * amount of visual assertion is worth spending.
+ * It was a bare `<span>`, then a `FileStack` glyph in a `bg-primary` tile: a stand-in for a mark
+ * that did not exist yet, and honest about it. The approved `munaxa. docs` lockup exists now and
+ * ships with the platform, so the stand-in goes.
  *
- * Built from a token class and a platform icon rather than an asset: the brand is `bg-primary`, so
- * it retunes with the palette in `munaxa-platform` and needs no image to ship, no dark-mode variant
- * and no second file to keep in step. `ARCHITECTURE.md`'s rule — branding is configuration, not
- * code — is satisfied by using the semantic colour rather than a picture of it.
+ * `ProductLogo` reads the product from `BrandProvider` in the root layout rather than from a prop,
+ * which is what makes "never show another product's mark" a thing this file cannot get wrong. It
+ * also loads the approved dark-background export in the dark scheme rather than filtering the
+ * light one — the `munaxa.` wordmark is neutral ink and has to become white, while the olive
+ * symbol and the word "docs" keep their approved colours, which no filter does.
  *
- * The mark is `aria-hidden`; the name beside it is the accessible one, and when the rail collapses
- * the platform hides the whole brand rather than truncating it.
+ * `ARCHITECTURE.md`'s rule — branding is configuration, not code — still holds: nothing here names
+ * a file, a colour or a ratio.
+ *
+ * Collapsed, the rail is 84px wide and the platform keeps rendering the brand, so the lockup gives
+ * way to the symbol rather than being squeezed. The name is the logo's own accessible name; there
+ * is no separate text label to read it out a second time.
  */
-function Brand(): ReactNode {
-  return (
-    <span className="flex items-center gap-2">
-      <span
-        className="bg-primary text-primary-foreground flex size-6 shrink-0 items-center justify-center rounded-md"
-        aria-hidden
-      >
-        <FileStack className="size-3.5" />
-      </span>
-      <span className="truncate text-sm font-semibold tracking-tight">{en.app.name}</span>
-    </span>
+function Brand({ collapsed }: { collapsed: boolean }): ReactNode {
+  return collapsed ? (
+    <ProductLogo variant="symbol" height={26} priority />
+  ) : (
+    <ProductLogo variant="horizontal" height={24} priority />
   );
 }
 

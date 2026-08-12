@@ -89,3 +89,8 @@ dump.rdb
 # the product.
 apps/api/.storage/
 apps/web/src/test/__e2e_screenshots__/
+
+# Brand artwork, copied out of @munaxa/platform by `munaxa-sync-brand` on predev/prebuild.
+# Generated, never authored: committing a snapshot is how a product keeps serving last
+# quarter's logo after the approved one changed upstream.
+apps/*/public/branding/

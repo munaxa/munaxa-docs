@@ -31,5 +31,15 @@ export function middleware(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/health).*)'],
+  /*
+   * `branding` is excluded for the same reason `_next/static` is: it is a static file, not a
+   * screen.
+   *
+   * Middleware runs for `public/` assets too, so without this the logo on the sign-in card is a
+   * request with no session cookie — and the guard above answers it with a redirect to `/login`.
+   * The browser gets an HTML document where it asked for a PNG and renders a broken image, on the
+   * one screen whose whole job is to say which product you are signing in to. Nothing in the
+   * folder is privileged: it is the same artwork the marketing site serves.
+   */
+  matcher: ['/((?!_next/static|_next/image|branding|favicon.ico|api/health).*)'],
 };
