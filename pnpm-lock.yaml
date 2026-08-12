@@ -145,8 +145,8 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/platform':
-        specifier: ^1.1.0
-        version: 1.1.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^1.2.0
+        version: 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/theme':
         specifier: ^1.0.0
         version: 1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1014,8 +1014,8 @@ packages:
       react-dom:
         optional: true
 
-  '@munaxa/platform@1.1.0':
-    resolution: {integrity: sha512-ROXkWbLnvclhbZCoX2i7kUWyuAxymeJ703Dp+Daq2zkyAtOZ4/oNzqdt3Gc5sfaCKpshvk4W8OBzrm/Osgyneg==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.1.0/b8f4b8459edd82c77be2474f14b9f7a0c375bff9}
+  '@munaxa/platform@1.2.0':
+    resolution: {integrity: sha512-85IussF10nJPs0axe0z0ftLDftCSDOQBaWrtivWnHVjNTfbdeLb8vLa0vL1zdv8wej0iiuLp/ZsOUR7YLQ+dsg==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.2.0/d063cf76c29ff104635de5bf52448c8f4a735346}
     peerDependencies:
       react: ^19.0.0
       react-dom: ^19.0.0
@@ -4427,7 +4427,7 @@ snapshots:
 
   '@munaxa/icons@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.1.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -4435,7 +4435,7 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/platform@1.1.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@munaxa/platform@1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@dnd-kit/core': 6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@dnd-kit/modifiers': 9.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
@@ -4464,7 +4464,7 @@ snapshots:
 
   '@munaxa/theme@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.1.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -4474,7 +4474,7 @@ snapshots:
 
   '@munaxa/tokens@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.1.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -4484,7 +4484,7 @@ snapshots:
 
   '@munaxa/ui@1.0.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.1.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.2.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
