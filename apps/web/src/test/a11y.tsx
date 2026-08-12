@@ -3,6 +3,8 @@ import axe, { type AxeResults, type Result, type RunOptions } from 'axe-core';
 import type { ReactElement, ReactNode } from 'react';
 import { expect } from 'vitest';
 
+import { BrandProvider } from '@munaxa/ui';
+
 import { DEFAULT_LOCALE, type LocaleKey } from '@edms/i18n';
 
 import { Providers } from '../app/providers';
@@ -65,13 +67,22 @@ export interface A11yOptions {
  * The providers are the real ones rather than doubles, because the translator is where an
  * accessible name comes from on almost every control in this product: a test that stubbed it
  * would assert that a button has the name `nav.account` and pass while the shipped one has none.
+ *
+ * `BrandProvider` is here for the same reason and mirrors `app/layout.tsx`, where it wraps
+ * everything. The logo's accessible name — "Munaxa Docs" — is the shell's identity anchor, and it
+ * comes from the brand in scope rather than from a prop; a stub would let the rail pass its axe
+ * check with a name the shipped one does not have. It is also the only way the product can be
+ * wrong here: `useBrand` throws rather than defaulting, precisely so a missing provider is a
+ * failure rather than a School logo on a Docs screen.
  */
 export function renderWithProviders(
   ui: ReactNode,
   locale: LocaleKey = DEFAULT_LOCALE,
 ): HTMLElement {
   const { container } = render(
-    <Providers session={{ userId: 'test-user', tenantId: 'test-tenant', locale }}>{ui}</Providers>,
+    <BrandProvider product="docs">
+      <Providers session={{ userId: 'test-user', tenantId: 'test-tenant', locale }}>{ui}</Providers>
+    </BrandProvider>,
   );
   return container;
 }
