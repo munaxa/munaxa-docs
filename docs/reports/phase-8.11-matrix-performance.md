@@ -60,7 +60,7 @@ canonical render
 The order is the safety argument. The reverse — keyboard then contrast — would measure a page nobody
 navigated to, and §6's proof J states exactly what that would cost.
 
-## 5. Three isolation proofs, all mandatory
+## 5. Four isolation proofs, all mandatory
 
 | Proof | Claim | Result |
 | --- | --- | --- |
