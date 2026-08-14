@@ -185,12 +185,13 @@ divider carries no information a listener needs — the groups it sits between a
 
 ### Coverage — `ui/patterns/uncovered.stories.tsx`
 
-Six stories bringing all eighteen components onto the page, in the states a product uses rather than
-one happy default: `Progress` in four tones plus the unlabelled default, three `ReadinessRing`s, a
+Six stories bringing seventeen of the eighteen onto the page, in the states a product uses rather
+than one happy default: `Progress` in four tones plus the unlabelled default, three `ReadinessRing`s, a
 `Stepper` mid-flow, `Label` bound to a real `Input`, a `RadioGroup`, the six table primitives with
 both `scope="col"` and `scope="row"` headers, and the dropdown and popover open on arrival.
 
-`CommandSeparator` sits in `Selection/Palette` instead, which the matrix already opens.
+The eighteenth, `CommandSeparator`, sits in `Selection/Palette` instead — the matrix already opens
+that palette, and a separator belongs in one.
 
 ### The ratchet — `ui/story-coverage.test.ts`
 
@@ -217,7 +218,7 @@ Each fix has a discriminating proof, run in both directions:
 | --- | --- | --- | --- |
 | `Progress` names the bar with no label passed | ✓ | ✗ | ✓ |
 | `Progress` + axe on the rendered component | ✓ | ✗ | ✓ |
-| `CommandSeparator` is not a `separator` in the listbox | ✓ | ✗ | ✓ |
+| `CommandSeparator` is `aria-hidden`, so the listbox does not own it | ✓ | ✗ | ✓ |
 | A palette with a separator has no violations | ✓ | ✗ | ✓ |
 | `story-coverage` — every public component is rendered | ✓ | ✗ (25 reported) | ✓ |
 
