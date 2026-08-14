@@ -169,10 +169,26 @@ describe('the platform DataGrid row menu, from the keyboard, in the running prod
     }
 
     expect(manifest?.name).toBe('@munaxa/platform');
-    expect(manifest?.version).toBe('1.3.1');
+
+    /*
+     * A floor, not a pin — Phase 8.12.
+     *
+     * This assertion exists to prove Docs consumes the published artifact that carries the
+     * `DataGrid` fix, and 1.3.1 is where that fix landed. Pinning the exact version made it fail on
+     * the next release for no accessibility reason at all, which teaches a team to edit the test
+     * rather than read it. The floor keeps the claim and survives a bump.
+     */
+    const [major = 0, minor = 0, patch = 0] = (manifest?.version ?? '0.0.0')
+      .split('.')
+      .map((part) => Number.parseInt(part, 10));
+    const atLeast131 = major > 1 || (major === 1 && (minor > 3 || (minor === 3 && patch >= 1)));
+    expect(
+      atLeast131,
+      `installed ${String(manifest?.version)}; the DataGrid keyboard fix ships from 1.3.1`,
+    ).toBe(true);
     expect(
       entry,
       'resolved outside the pnpm store — that would not be the published artifact',
-    ).toContain('node_modules/.pnpm/@munaxa+platform@1.3.1');
+    ).toContain('node_modules/.pnpm/@munaxa+platform@');
   }, 60_000);
 });

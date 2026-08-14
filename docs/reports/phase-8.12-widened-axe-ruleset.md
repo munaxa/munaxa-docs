@@ -2,15 +2,14 @@
 
 ## 1. Status
 
-**COMPLETE at the platform layer, stopped at the release boundary.**
+**COMPLETE.** Released as 1.4.0, verified on the registry, and consumed by Docs from it.
 
 The accessibility matrix has run exactly **one** axe rule since Phase 8.4. Widening it found **three
 real defects** in shared platform components, all fixed here, with the matrix green at **800/800**
 under the wider ruleset and the per-combination inventory identical to 1.3.1 row by row.
 
-`@munaxa/platform` is prepared as **1.4.0** (version bumped, changelog written, gates green) but not
-published: publishing is outward-facing and this phase's brief did not authorise it. §11 says exactly
-what remains.
+`@munaxa/platform` **1.4.0** is published through the official workflow and consumed by Docs from the
+registry — §11 carries the evidence.
 
 ## 2. Starting state, verified rather than assumed
 
@@ -166,24 +165,66 @@ the fixes are additive rather than behavioural.
 | `build` · `build-storybook` | 20/20 · success |
 | `test:a11y` | **48/48**, contrast 800/800, keyboard 800/800, 13 proofs |
 
-## 11. What remains — the release boundary
+## 11. Release and consumption
 
-The fixes are in shared components, so Docs only benefits once they ship. Prepared and **not**
-performed:
+**Version 1.4.0** — MINOR, because `inspectorLabel` is a new optional prop; the three fixes alone
+would have been a PATCH.
 
-- Version bumped to **1.4.0** — MINOR, because `inspectorLabel` is a new optional prop; the three
-  fixes alone would have been a PATCH.
-- Changelog written.
+| Step | Evidence |
+| --- | --- |
+| CI on PR [#10](https://github.com/munaxa/munaxa-platform/pull/10) | lint/typecheck/test/build, façades, and the widened accessibility matrix all green |
+| Merged to `main` | `28603da` |
+| Release workflow | dispatched from `main`, `dry_run=false` |
+| Registry | `npm view` → versions include **1.4.0**, `latest` → **1.4.0** |
+| Published tarball | 503 files, **zero** test/spec/story/storybook/harness/instrumentation entries |
+| Fixes in the artifact | `sr-only` in `breadcrumb.js`, `tabIndex: 0` in `separator.js`, `inspectorLabel` in `split.js`, and **no `aside` element** created in `sidebar.js` — the only match there is the explanatory comment |
+| Docs dependency | `^1.4.0` |
+| Lockfile | registry tarball + integrity hash; no `file:`, `link:`, `workspace:` or local tarball |
+| Clean frozen install | `node_modules` wiped, `pnpm install --frozen-lockfile` → resolves `@munaxa+platform@1.4.0` |
+| Installed artifact | version 1.4.0, both component fixes present |
+| Clean production build | `.next`, Turbo caches removed; `cache miss`, compiled successfully, 9/9 tasks |
 
-Still to do, in order: dispatch the `Release` workflow from `main` with `dry_run=false`, verify the
-registry independently, update `apps/web/package.json` to `^1.4.0`, refresh the lockfile, clean
-frozen install, and re-run the Docs gates and accessibility suites. Publishing is outward-facing, so
-it waits for an explicit go-ahead.
+### Docs verification against the installed 1.4.0
 
-**One consequence to check during Docs verification**: `ScrollArea`'s viewport is now a Tab stop, so
-any Docs test that counts tab stops on a screen containing a scroll area will see one more.
+| Suite | Result |
+| --- | --- |
+| `consistency.e2e` | **12/12** |
+| `shell.e2e` | **8/8** |
+| `search.e2e` | **23/23** |
+| `dashboard.e2e` | **19/19** |
+| `recent-empty.e2e` | **15/15** |
+| `faded-text.e2e` | **4/4** |
+| `datagrid-keyboard.e2e` | **3/3** |
 
-## 12. Limitations, unchanged
+Gates: format, lint 13/13, typecheck 13/13, test 13/13, `verify:styles` (251 utility classes), build
+9/9.
+
+### One Docs test needed changing, and why that is not a weakened assertion
+
+`datagrid-keyboard.e2e` failed on 1.4.0 — not on behaviour, but on a version **pin** I wrote in Phase
+8.8: `expect(manifest?.version).toBe('1.3.1')`. Both behavioural assertions (the menu opens on
+Enter; the row does not activate) passed.
+
+The pin is now a floor: the installed version must be **at least 1.3.1**, the release where the
+`DataGrid` fix landed, and must still resolve from `node_modules/.pnpm/@munaxa+platform@`. The claim
+it makes — that Docs consumes the published artifact carrying the fix — is unchanged; what changed is
+that it no longer fails on every future release for no accessibility reason, which would have taught
+a team to edit the test rather than read it.
+
+**The predicted `ScrollArea` consequence did not materialise.** Its viewport is now a Tab stop, but
+no Docs suite counts tab stops on a screen containing a scroll area, so nothing moved.
+
+## 12. Known release-reliability finding, recorded not fixed
+
+The first CI run failed on **`@munaxa/rbac#test`** — the wall-clock assertion documented in Phase 8.6
+§13 and named in this phase's brief §18 as out of scope. `@munaxa/platform:test` passed in that same
+run. The job was re-run and went green; the timing budgets were not touched.
+
+The Cloudflare **`Workers Builds: platform-storybook`** check remains red, as it has been since
+before Phase 8.8. It is a Storybook deployment check outside the release chain, and its detail lives
+in a dashboard this session cannot reach.
+
+## 13. Limitations, unchanged
 
 - One viewport (1280×900).
 - `Combobox` still does not open on ArrowDown — an ARIA authoring-practice enhancement, not an
