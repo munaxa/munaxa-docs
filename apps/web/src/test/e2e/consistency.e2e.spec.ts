@@ -103,6 +103,49 @@ const ROUTES = [
   { name: 'admin-settings', path: '/admin/settings' },
 ] as const;
 
+/**
+ * Every statically-addressable route the application defines, for the axe sweep.
+ *
+ * Derived from `apps/web/src/app/**\/page.tsx` and kept beside `ROUTES` deliberately: the
+ * consistency grammar above samples screens, while this asserts the accessibility floor on all of
+ * them. Parameterised routes need a seeded id and are covered by their own suites.
+ */
+const AXE_ROUTES = [
+  '/',
+  '/approvals',
+  '/audit',
+  '/delegations',
+  '/documents',
+  '/documents/recent',
+  '/notifications',
+  '/recycle-bin',
+  '/reports',
+  '/search',
+  '/admin',
+  '/admin/api-clients',
+  '/admin/approval-groups',
+  '/admin/branches',
+  '/admin/categories',
+  '/admin/companies',
+  '/admin/confidentiality',
+  '/admin/departments',
+  '/admin/document-types',
+  '/admin/entities',
+  '/admin/fields',
+  '/admin/libraries',
+  '/admin/notification-templates',
+  '/admin/numbering',
+  '/admin/permissions',
+  '/admin/retention',
+  '/admin/roles',
+  '/admin/settings',
+  '/admin/templates',
+  '/admin/users',
+  '/admin/webhooks',
+  '/admin/workflows',
+  '/admin/working-calendars',
+] as const;
+
 interface Measured {
   readonly reachable: boolean;
   readonly forbidden: boolean;
@@ -406,7 +449,25 @@ describe('platform grammar across the non-reference screens', () => {
    * A sample is only as good as what it happens to include, and the fix for that is to include the
    * screen where the product's most reused status component actually appears.
    */
-  it.each(['/audit', '/approvals', '/reports', '/admin/users', '/documents'])(
+  /*
+   * Every route, not a sample — Phase 8.15.
+   *
+   * The five routes below this comment were chosen carefully and the choice still cost something.
+   * The application defines **forty** routes and this suite visited five, so a full-ruleset sweep
+   * of the other thirty-five found what an unvisited screen always eventually holds:
+   * `/admin/settings` shipped **twelve** `role="switch"` controls with no accessible name at all
+   * (`button-name`, critical) and a paragraph painted in `--muted`, a *background* token, in both
+   * themes. Neither had ever been looked at by anything.
+   *
+   * The lesson is the one Phase 8.3 already recorded here about `Badge` and `/documents`, and the
+   * response then was to add one route. This adds all of them: a sweep is only as good as what it
+   * happens to include, and the only sample that cannot be wrong is the whole set.
+   *
+   * Impact filter unchanged — critical and serious, exactly as before — so this widens *reach*
+   * without quietly changing the standard. Moderate findings are recorded in the phase report;
+   * `region` currently fires on every route and is deferred there with its cause.
+   */
+  it.each(AXE_ROUTES)(
     'has no unrecorded critical or serious axe violations on %s',
     async (path) => {
       await page.setViewportSize({ width: 1280, height: 900 });
