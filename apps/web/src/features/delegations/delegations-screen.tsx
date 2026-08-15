@@ -126,7 +126,21 @@ export function DelegationsScreen({
           </option>
         </Select>
 
-        <div className="ms-auto flex gap-2">
+        {/*
+          `flex-wrap` is load-bearing — Phase 8.21, and WCAG 2.1 AA 1.4.10.
+
+          The row around this group wraps; the group itself did not. Its two buttons are
+          `whitespace-nowrap` (the platform `Button`'s own class, and correct — a control that
+          breaks mid-label is worse), so the group's min-content width was the sum of both labels:
+          416px, inside a 320px viewport. `/delegations` overflowed by 112px at 320 and 42px at
+          390, and that was the last screen in the product that did.
+
+          Wrapping makes the group's min-content the *widest single button* rather than the pair,
+          which fits, so the page reflows instead of asking for a second scroll direction. The
+          labels here are the longest of any action pair in the product — "Declare an emergency
+          delegation" alone is 243px — which is why this screen and no other reached the edge.
+        */}
+        <div className="ms-auto flex flex-wrap justify-end gap-2">
           <Button
             type="button"
             onClick={() => {

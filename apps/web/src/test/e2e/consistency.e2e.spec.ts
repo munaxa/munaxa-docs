@@ -57,8 +57,18 @@ const RECORDED_FINDINGS = {
    * unconditional again.
    */
   noPageHeading: [] as readonly string[],
-  /** §6.2 — the delegations table overflows the viewport at 390px. */
-  overflows: ['delegations'],
+  /**
+   * §6.2 — **fixed by Phase 8.21**, and the entry is deleted rather than kept.
+   *
+   * The finding was recorded as "the delegations table overflows the viewport at 390px". The table
+   * was never the cause: it scrolls inside its own container, as every table in the product does.
+   * What overflowed was the page's action group — two `whitespace-nowrap` buttons in a `flex` that
+   * could not wrap — by 112px at 320 and 42px at 390. `DelegationsScreen` wraps that group now.
+   *
+   * This list is empty because that is what a fixed finding looks like: the assertion below is
+   * unconditional again, and it measures 320 as well.
+   */
+  overflows: [] as readonly string[],
 } as const;
 
 /**
@@ -155,6 +165,7 @@ interface Measured {
   readonly rawKeys: string[];
   readonly overflow1280: boolean;
   readonly overflow390: boolean;
+  readonly overflow320: boolean;
 }
 
 describe('platform grammar across the non-reference screens', () => {
@@ -237,6 +248,21 @@ describe('platform grammar across the non-reference screens', () => {
         () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
       );
 
+      /*
+       * 320 as well — Phase 8.21, and it costs a resize rather than a page load.
+       *
+       * Phase 8.17 made 320 the enforced width for the reference screens, on the grounds that WCAG
+       * 2.1 AA 1.4.10 names 320 CSS px exactly. These twenty-nine screens kept a 390 floor for one
+       * phase longer, and `/delegations` overflowed at both — by 42px at 390 and 112px at 320. The
+       * narrower width is where a group that cannot wrap shows itself first, so measuring only the
+       * wider one is measuring the easier half.
+       */
+      await page.setViewportSize({ width: 320, height: 900 });
+      await page.waitForFunction(() => document.readyState === 'complete');
+      const overflow320 = await page.evaluate(
+        () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      );
+
       measured.set(route.name, {
         reachable,
         forbidden,
@@ -246,6 +272,7 @@ describe('platform grammar across the non-reference screens', () => {
         rawKeys: [...new Set(rawKeys)],
         overflow1280: shape.overflow,
         overflow390,
+        overflow320,
       });
       console.log(`[grammar ${route.name}]`, JSON.stringify(measured.get(route.name)));
     }
@@ -306,13 +333,15 @@ describe('platform grammar across the non-reference screens', () => {
     expect(leaking).toStrictEqual([]);
   });
 
-  it('contains every screen horizontally at 1280 and 390', () => {
+  it('contains every screen horizontally at 1280, 390 and 320', () => {
     const overflowing = [...measured.entries()]
       .filter(([name]) => !RECORDED_FINDINGS.overflows.includes(name as never))
-      .filter(([, value]) => value.overflow1280 || value.overflow390)
+      .filter(([, value]) => value.overflow1280 || value.overflow390 || value.overflow320)
       .map(
         ([name, value]) =>
-          `${name}: ${value.overflow1280 ? '1280 ' : ''}${value.overflow390 ? '390' : ''}`,
+          `${name}: ${value.overflow1280 ? '1280 ' : ''}${value.overflow390 ? '390 ' : ''}${
+            value.overflow320 ? '320' : ''
+          }`,
       );
     expect(overflowing).toStrictEqual([]);
   });
