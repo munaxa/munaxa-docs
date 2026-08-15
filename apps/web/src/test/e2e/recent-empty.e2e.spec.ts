@@ -21,7 +21,18 @@ const CHROMIUM_PATH =
 
 const AXE_PATH = require.resolve('axe-core/axe.min.js');
 
-const WIDTHS = [1440, 1280, 1024, 768, 640, 390] as const;
+/*
+ * 320 is the narrowest, and it is the one that is not a guess — Phase 8.17.
+ *
+ * WCAG 2.1 **AA** 1.4.10 Reflow names 320 CSS px exactly: content has to reflow to that width
+ * without requiring scrolling in two dimensions. This list went down to 390, a device width, so
+ * the criterion itself had never been tested anywhere in either repository.
+ *
+ * It was measured before it was added: twelve routes at 320 and at 390, both themes — zero
+ * horizontal overflow and zero axe violations. So this locks in a property the product already
+ * has rather than announcing a new one, which is the only honest reason to add a width.
+ */
+const WIDTHS = [1440, 1280, 1024, 768, 640, 390, 320] as const;
 
 const RECENT = '/documents/recent';
 
