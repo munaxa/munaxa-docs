@@ -102,8 +102,17 @@ export function SettingsScreen({
         </Alert>
       )}
 
+      {/*
+        Unknown groups are named by their own key, not all collapsed into "System" — Phase 8.15.
+
+        `Section` renders `role="region"` with the title as its accessible name, so two unrecognised
+        groups both falling back to one label produced two landmarks a screen-reader user could not
+        tell apart (`landmark-unique`). The key is also simply more useful: an administrator looking
+        at a setting the UI has no label for is better served by its real group name than by
+        "System".
+      */}
       {[...groups.entries()].map(([group, items]) => (
-        <Section key={group} title={translate(GROUP_LABELS[group] ?? 'admin.sections.system')}>
+        <Section key={group} title={GROUP_LABELS[group] ? translate(GROUP_LABELS[group]) : group}>
           <div className="flex flex-col gap-3">
             {items.map((setting) => (
               <SettingRow
@@ -170,7 +179,9 @@ function SearchIndexSection({ latest }: { latest: SearchRebuild | null }): React
     <Section title={translate('admin.settings.searchIndex')}>
       <Panel>
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-muted">{translate('admin.settings.searchIndexDescription')}</p>
+          <p className="text-sm text-muted-foreground">
+            {translate('admin.settings.searchIndexDescription')}
+          </p>
           <p className="text-sm" data-testid="search-rebuild-state">
             {latest === null ? (
               translate('admin.settings.searchNeverRebuilt')

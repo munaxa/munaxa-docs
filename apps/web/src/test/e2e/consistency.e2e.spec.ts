@@ -57,8 +57,18 @@ const RECORDED_FINDINGS = {
    * unconditional again.
    */
   noPageHeading: [] as readonly string[],
-  /** §6.2 — the delegations table overflows the viewport at 390px. */
-  overflows: ['delegations'],
+  /**
+   * §6.2 — **fixed by Phase 8.21**, and the entry is deleted rather than kept.
+   *
+   * The finding was recorded as "the delegations table overflows the viewport at 390px". The table
+   * was never the cause: it scrolls inside its own container, as every table in the product does.
+   * What overflowed was the page's action group — two `whitespace-nowrap` buttons in a `flex` that
+   * could not wrap — by 112px at 320 and 42px at 390. `DelegationsScreen` wraps that group now.
+   *
+   * This list is empty because that is what a fixed finding looks like: the assertion below is
+   * unconditional again, and it measures 320 as well.
+   */
+  overflows: [] as readonly string[],
 } as const;
 
 /**
@@ -103,6 +113,49 @@ const ROUTES = [
   { name: 'admin-settings', path: '/admin/settings' },
 ] as const;
 
+/**
+ * Every statically-addressable route the application defines, for the axe sweep.
+ *
+ * Derived from `apps/web/src/app/**\/page.tsx` and kept beside `ROUTES` deliberately: the
+ * consistency grammar above samples screens, while this asserts the accessibility floor on all of
+ * them. Parameterised routes need a seeded id and are covered by their own suites.
+ */
+const AXE_ROUTES = [
+  '/',
+  '/approvals',
+  '/audit',
+  '/delegations',
+  '/documents',
+  '/documents/recent',
+  '/notifications',
+  '/recycle-bin',
+  '/reports',
+  '/search',
+  '/admin',
+  '/admin/api-clients',
+  '/admin/approval-groups',
+  '/admin/branches',
+  '/admin/categories',
+  '/admin/companies',
+  '/admin/confidentiality',
+  '/admin/departments',
+  '/admin/document-types',
+  '/admin/entities',
+  '/admin/fields',
+  '/admin/libraries',
+  '/admin/notification-templates',
+  '/admin/numbering',
+  '/admin/permissions',
+  '/admin/retention',
+  '/admin/roles',
+  '/admin/settings',
+  '/admin/templates',
+  '/admin/users',
+  '/admin/webhooks',
+  '/admin/workflows',
+  '/admin/working-calendars',
+] as const;
+
 interface Measured {
   readonly reachable: boolean;
   readonly forbidden: boolean;
@@ -112,6 +165,7 @@ interface Measured {
   readonly rawKeys: string[];
   readonly overflow1280: boolean;
   readonly overflow390: boolean;
+  readonly overflow320: boolean;
 }
 
 describe('platform grammar across the non-reference screens', () => {
@@ -194,6 +248,21 @@ describe('platform grammar across the non-reference screens', () => {
         () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
       );
 
+      /*
+       * 320 as well — Phase 8.21, and it costs a resize rather than a page load.
+       *
+       * Phase 8.17 made 320 the enforced width for the reference screens, on the grounds that WCAG
+       * 2.1 AA 1.4.10 names 320 CSS px exactly. These twenty-nine screens kept a 390 floor for one
+       * phase longer, and `/delegations` overflowed at both — by 42px at 390 and 112px at 320. The
+       * narrower width is where a group that cannot wrap shows itself first, so measuring only the
+       * wider one is measuring the easier half.
+       */
+      await page.setViewportSize({ width: 320, height: 900 });
+      await page.waitForFunction(() => document.readyState === 'complete');
+      const overflow320 = await page.evaluate(
+        () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      );
+
       measured.set(route.name, {
         reachable,
         forbidden,
@@ -203,6 +272,7 @@ describe('platform grammar across the non-reference screens', () => {
         rawKeys: [...new Set(rawKeys)],
         overflow1280: shape.overflow,
         overflow390,
+        overflow320,
       });
       console.log(`[grammar ${route.name}]`, JSON.stringify(measured.get(route.name)));
     }
@@ -263,13 +333,15 @@ describe('platform grammar across the non-reference screens', () => {
     expect(leaking).toStrictEqual([]);
   });
 
-  it('contains every screen horizontally at 1280 and 390', () => {
+  it('contains every screen horizontally at 1280, 390 and 320', () => {
     const overflowing = [...measured.entries()]
       .filter(([name]) => !RECORDED_FINDINGS.overflows.includes(name as never))
-      .filter(([, value]) => value.overflow1280 || value.overflow390)
+      .filter(([, value]) => value.overflow1280 || value.overflow390 || value.overflow320)
       .map(
         ([name, value]) =>
-          `${name}: ${value.overflow1280 ? '1280 ' : ''}${value.overflow390 ? '390' : ''}`,
+          `${name}: ${value.overflow1280 ? '1280 ' : ''}${value.overflow390 ? '390 ' : ''}${
+            value.overflow320 ? '320' : ''
+          }`,
       );
     expect(overflowing).toStrictEqual([]);
   });
@@ -406,7 +478,25 @@ describe('platform grammar across the non-reference screens', () => {
    * A sample is only as good as what it happens to include, and the fix for that is to include the
    * screen where the product's most reused status component actually appears.
    */
-  it.each(['/audit', '/approvals', '/reports', '/admin/users', '/documents'])(
+  /*
+   * Every route, not a sample — Phase 8.15.
+   *
+   * The five routes below this comment were chosen carefully and the choice still cost something.
+   * The application defines **forty** routes and this suite visited five, so a full-ruleset sweep
+   * of the other thirty-five found what an unvisited screen always eventually holds:
+   * `/admin/settings` shipped **twelve** `role="switch"` controls with no accessible name at all
+   * (`button-name`, critical) and a paragraph painted in `--muted`, a *background* token, in both
+   * themes. Neither had ever been looked at by anything.
+   *
+   * The lesson is the one Phase 8.3 already recorded here about `Badge` and `/documents`, and the
+   * response then was to add one route. This adds all of them: a sweep is only as good as what it
+   * happens to include, and the only sample that cannot be wrong is the whole set.
+   *
+   * Impact filter unchanged — critical and serious, exactly as before — so this widens *reach*
+   * without quietly changing the standard. Moderate findings are recorded in the phase report;
+   * `region` currently fires on every route and is deferred there with its cause.
+   */
+  it.each(AXE_ROUTES)(
     'has no unrecorded critical or serious axe violations on %s',
     async (path) => {
       await page.setViewportSize({ width: 1280, height: 900 });

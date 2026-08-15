@@ -15,14 +15,25 @@ import {
   startServers,
   stopServers,
 } from './servers';
-import { setTheme, settleColours } from './theme';
+import { setTheme, settleColours, waitForHydration } from './theme';
 
 const CHROMIUM_PATH =
   process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 
 const AXE_PATH = require.resolve('axe-core/axe.min.js');
 
-const WIDTHS = [1440, 1280, 1024, 768, 640, 390] as const;
+/*
+ * 320 is the narrowest, and it is the one that is not a guess — Phase 8.17.
+ *
+ * WCAG 2.1 **AA** 1.4.10 Reflow names 320 CSS px exactly: content has to reflow to that width
+ * without requiring scrolling in two dimensions. This list went down to 390, a device width, so
+ * the criterion itself had never been tested anywhere in either repository.
+ *
+ * It was measured before it was added: twelve routes at 320 and at 390, both themes — zero
+ * horizontal overflow and zero axe violations. So this locks in a property the product already
+ * has rather than announcing a new one, which is the only honest reason to add a width.
+ */
+const WIDTHS = [1440, 1280, 1024, 768, 640, 390, 320] as const;
 
 /**
  * Contrast failures that belong to `@munaxa/platform`, matched by the class that causes them.
@@ -386,9 +397,38 @@ describe('the application shell in the running product', () => {
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.goto(`${WEB_URL}${route.path}`, { waitUntil: 'networkidle' });
 
+      /*
+       * Hydration, before any width is measured — Phase 8.23, and the first thing this suite's new
+       * CI job found.
+       *
+       * The way into the navigation changes at `md`: above it the rail's links, below it the
+       * drawer trigger. `TopBar` renders that trigger only when `isMobile` is true, and `isMobile`
+       * is `matchMedia` read in an effect — so before the client has hydrated there is no trigger
+       * at any width. `networkidle` and `readyState === 'complete'` are both satisfied well before
+       * that. On this container hydration always won the race; the first CI run lost it and
+       * reported `ways: 0` on `/search` at 640px, about a product that offers one.
+       */
+      await waitForHydration(page);
+
       for (const width of WIDTHS) {
         await page.setViewportSize({ width, height: 900 });
         await page.waitForFunction(() => document.readyState === 'complete');
+
+        // …and then for the resize to have been *rendered*: the viewport at the requested width,
+        // then two animation frames, which is a React commit plus the paint after it. Both waits
+        // are for facts other than the one asserted below — waiting for "ways > 0" would have made
+        // that assertion unable to fail.
+        await page.waitForFunction((wanted) => window.innerWidth === wanted, width);
+        await page.evaluate(
+          async () =>
+            new Promise<void>((resolve) => {
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  resolve();
+                });
+              });
+            }),
+        );
 
         const measured = await page.evaluate(() => {
           const visible = (element: Element): boolean =>

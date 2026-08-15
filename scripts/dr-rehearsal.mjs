@@ -193,15 +193,33 @@ function checkpointOf(url) {
     slug,
   }));
 
+  /*
+   * One query per tenant, not one per table per tenant — Phase 8.18.
+   *
+   * `askAsTenant` spawns a `psql` process per call, and this loop used to call it once for every
+   * table of every tenant. Measured on this repository's own fixture cluster: 79 tables x 73
+   * tenants x 2 databases x 2 sides = **23 068 process spawns**, which is what a rehearsal of two
+   * 15MB databases was spending its time on. Nothing was slow; something was repeated.
+   *
+   * The cost is O(tables x tenants), so it grows with the tenant roll — which is exactly the
+   * degradation recorded across Phases 8.15-8.17 (409s -> 619s -> past its 600s timeout) as e2e
+   * fixture tenants accumulated. It is not a test-only problem: an operator rehearsing recovery on
+   * a real deployment with a few hundred tenants would hit the same wall, harder.
+   *
+   * A single `UNION ALL` returns every count for a tenant in one round trip, under the same
+   * `set_config('app.tenant_id', ...)` the loop used, so the numbers are read through the tenant
+   * discriminator exactly as before. Same query, same policy, same answers — one process instead
+   * of seventy-nine.
+   */
+  const countsSql = tables
+    .map((table) => `SELECT '${table}' AS t, count(*) AS n FROM "${table}"`)
+    .join(' UNION ALL ');
+
   const perTenant = {};
   for (const tenant of tenants) {
     const counts = {};
-    for (const table of tables) {
-      const [value = '0'] = askAsTenant(
-        url,
-        tenant.id,
-        `SELECT count(*) FROM "${table}"`,
-      )[0] ?? [];
+    for (const table of tables) counts[table] = 0;
+    for (const [table, value] of askAsTenant(url, tenant.id, countsSql)) {
       counts[table] = Number(value);
     }
 

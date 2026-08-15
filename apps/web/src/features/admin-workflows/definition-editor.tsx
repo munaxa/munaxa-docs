@@ -189,7 +189,16 @@ export function DefinitionEditor({
           <Accordion type="multiple">
             {value.stages.map((stage, index) => (
               <AccordionItem key={index} value={String(index)}>
-                <AccordionTrigger level={4}>
+                {/*
+                  Level 3 — Phase 8.24, and it is the same correction as `PermissionMatrix`.
+
+                  Every place this editor renders is inside a dialogue: the "Add workflow"
+                  dialogue on `/admin/workflows` and the draft dialogue on a workflow's versions
+                  screen. `Dialog` renders its title as an `h2`, so a stage heading at level 4 skips
+                  3 in both — measured as `h1 Approval workflows` → `h2 Add workflow` → `4. 1
+                  Review`.
+                */}
+                <AccordionTrigger level={3}>
                   {index + 1}.{' '}
                   {stage.name === '' ? translate('admin.workflows.stageName') : stage.name}
                 </AccordionTrigger>

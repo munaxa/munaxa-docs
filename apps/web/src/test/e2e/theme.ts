@@ -22,7 +22,24 @@ import { en } from '@edms/i18n';
  * client render agree — and only then becomes "Light" or "Dark". Clicking by name before hydration
  * finishes waits thirty seconds for a button that does not exist yet.
  */
-export async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
+/**
+ * Resolves once the client has hydrated and its effects have run — Phase 8.23.
+ *
+ * The signal is `ThemeToggle`'s label, for the reason `setTheme` documents below: it reads
+ * `nav.appearance` in the server's markup and in the first client render, and becomes "Light" or
+ * "Dark" only after the effect that resolves the theme. So a resolved label means effects have run.
+ *
+ * It is extracted because a second suite needed it. `shell.e2e` measures how a person reaches the
+ * navigation at each width, and below `md` that is the drawer trigger — which `TopBar` renders only
+ * when `isMobile` is true, and `isMobile` is `matchMedia` read in an effect. Before hydration there
+ * is no trigger, so a measurement taken too early reports "no way to reach navigation" about a
+ * product that offers one. On this container hydration always won that race; the first CI run of
+ * the end-to-end suite lost it, on `/search` at 640px.
+ *
+ * Deliberately a *different* fact from anything the callers assert: waiting for the trigger itself
+ * would have made those assertions unable to fail.
+ */
+export async function waitForHydration(page: Page): Promise<void> {
   await page.waitForFunction(
     (labels) =>
       [...document.querySelectorAll('button[aria-label]')].some((button) =>
@@ -30,6 +47,10 @@ export async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<voi
       ),
     [en.nav.lightMode, en.nav.darkMode] as readonly string[],
   );
+}
+
+export async function setTheme(page: Page, theme: 'light' | 'dark'): Promise<void> {
+  await waitForHydration(page);
 
   const already = await page.evaluate(() => document.documentElement.classList.contains('dark'));
   if (already === (theme === 'dark')) {
