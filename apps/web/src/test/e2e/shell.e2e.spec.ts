@@ -15,7 +15,7 @@ import {
   startServers,
   stopServers,
 } from './servers';
-import { setTheme, settleColours } from './theme';
+import { setTheme, settleColours, waitForHydration } from './theme';
 
 const CHROMIUM_PATH =
   process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
@@ -397,9 +397,38 @@ describe('the application shell in the running product', () => {
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.goto(`${WEB_URL}${route.path}`, { waitUntil: 'networkidle' });
 
+      /*
+       * Hydration, before any width is measured — Phase 8.23, and the first thing this suite's new
+       * CI job found.
+       *
+       * The way into the navigation changes at `md`: above it the rail's links, below it the
+       * drawer trigger. `TopBar` renders that trigger only when `isMobile` is true, and `isMobile`
+       * is `matchMedia` read in an effect — so before the client has hydrated there is no trigger
+       * at any width. `networkidle` and `readyState === 'complete'` are both satisfied well before
+       * that. On this container hydration always won the race; the first CI run lost it and
+       * reported `ways: 0` on `/search` at 640px, about a product that offers one.
+       */
+      await waitForHydration(page);
+
       for (const width of WIDTHS) {
         await page.setViewportSize({ width, height: 900 });
         await page.waitForFunction(() => document.readyState === 'complete');
+
+        // …and then for the resize to have been *rendered*: the viewport at the requested width,
+        // then two animation frames, which is a React commit plus the paint after it. Both waits
+        // are for facts other than the one asserted below — waiting for "ways > 0" would have made
+        // that assertion unable to fail.
+        await page.waitForFunction((wanted) => window.innerWidth === wanted, width);
+        await page.evaluate(
+          async () =>
+            new Promise<void>((resolve) => {
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  resolve();
+                });
+              });
+            }),
+        );
 
         const measured = await page.evaluate(() => {
           const visible = (element: Element): boolean =>
