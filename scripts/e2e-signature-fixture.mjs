@@ -5,6 +5,44 @@ import { PrismaClient } from '@prisma/client';
 
 import { ALL_PERMISSIONS, Permission } from '../packages/domain/dist/index.js';
 
+/*
+ * The curated deletion order, at module top level because `--cleanup` runs at top level too: a
+ * `const` declared beside `cleanup()` further down is still in its temporal dead zone when that
+ * call happens, and the whole teardown dies with a `ReferenceError` instead.
+ */
+const ORDERED_FIXTURE_TABLES = [
+  'audit_event',
+  // Phase 6.10, and in this order: an approval's rows reference the document, and the
+  // notification and outbox rows reference nothing but the tenant. Deleting the document
+  // first would fail on `onDelete: Restrict`.
+  'notification_message',
+  'notification_batch',
+  'outbox_message',
+  'workflow_comment',
+  'workflow_timer',
+  'approval_task',
+  'workflow_stage',
+  'number_reservation',
+  'workflow_instance',
+  'document_signature',
+  'document_revision',
+  'document',
+  'folder',
+  'library',
+  'document_type',
+  'numbering_rule',
+  'confidentiality_level',
+  'file_object',
+  'user_role',
+  'role_permission',
+  'session',
+  '"user"',
+  'role',
+  'workflow_version',
+  'workflow_definition',
+  'tenant_setting',
+];
+
 /**
  * The fixture the signing end-to-end test signs against — Phase 6.6.
  *
@@ -48,7 +86,8 @@ if (!url) {
 const secondUrl = process.env.SECOND_DATABASE_MIGRATION_URL ?? '';
 
 const client = new PrismaClient({ datasources: { db: { url } } });
-const second = secondUrl === '' ? null : new PrismaClient({ datasources: { db: { url: secondUrl } } });
+const second =
+  secondUrl === '' ? null : new PrismaClient({ datasources: { db: { url: secondUrl } } });
 
 if (process.argv.includes('--cleanup')) {
   await cleanup(client);
@@ -137,7 +176,15 @@ async function seedNeighbour() {
     data: { id: libraryId, tenantId, code: 'QMS', name: 'Quality', ownerScopeType: 'TENANT' },
   });
   await second.folder.create({
-    data: { id: folderId, tenantId, libraryId, name: 'Root', path: folderId, depth: 1, isRoot: true },
+    data: {
+      id: folderId,
+      tenantId,
+      libraryId,
+      name: 'Root',
+      path: folderId,
+      depth: 1,
+      isRoot: true,
+    },
   });
   await second.library.update({ where: { id: libraryId }, data: { rootFolderId: folderId } });
   await second.fileObject.create({
@@ -272,7 +319,15 @@ async function seed() {
     data: { id: libraryId, tenantId, code: 'QMS', name: 'Quality', ownerScopeType: 'TENANT' },
   });
   await client.folder.create({
-    data: { id: folderId, tenantId, libraryId, name: 'Root', path: folderId, depth: 1, isRoot: true },
+    data: {
+      id: folderId,
+      tenantId,
+      libraryId,
+      name: 'Root',
+      path: folderId,
+      depth: 1,
+      isRoot: true,
+    },
   });
   await client.library.update({ where: { id: libraryId }, data: { rootFolderId: folderId } });
 
@@ -492,49 +547,116 @@ async function seed() {
 }
 
 /** Every tenant this script has ever created in the given database, gone. */
+/**
+ * Fixture teardown — Phase 8.20, and it had never once worked.
+ *
+ * Three defects compounded, and each hid the next:
+ *
+ * 1. These tables carry `relforcerowsecurity`, so row-level security applies to the table owner
+ *    too. The deletes ran with no `app.tenant_id`, so every `DELETE ... WHERE tenant_id = $1`
+ *    matched **zero rows**.
+ * 2. `.catch(() => 0)` turned that into an apparently successful zero-row delete.
+ * 3. `tenant.delete()` then failed on the first foreign key still referencing it, and
+ *    `.catch(() => null)` swallowed that too.
+ *
+ * So the teardown reported success every time while removing nothing, and 75 fixture tenants had
+ * accumulated in each database by the time anyone counted — which is what Phase 8.18 measured as
+ * the DR rehearsal's O(tables x tenants) blow-up.
+ *
+ * **One session.** `set_config(..., false)` is session-scoped and Prisma pools connections, so the
+ * discriminator and the deletes can land on different ones — Phase 8.19 got this far and stopped
+ * rather than commit a teardown that half-worked. An interactive `$transaction` pins the whole
+ * sequence to a single connection, which is the guarantee this needs and costs no new dependency.
+ *
+ * **The append-only audit rule stays.** `audit_event` refuses DELETE by trigger, and that is a
+ * production invariant worth keeping. `ALTER TABLE ... DISABLE TRIGGER USER` inside the
+ * transaction is scoped to it and unwinds with it — it touches no other database, and a rollback
+ * restores the trigger without anything else having to remember to.
+ *
+ * **Nothing is swallowed.** If a fixture tenant survives, this throws, and the caller fails.
+ */
 async function cleanup(client) {
   const tenants = await client.tenant.findMany({
     where: { slug: { startsWith: 'e2e' } },
-    select: { id: true },
+    select: { id: true, slug: true },
   });
-  for (const { id } of tenants) {
-    for (const table of [
-      'audit_event',
-      // Phase 6.10, and in this order: an approval's rows reference the document, and the
-      // notification and outbox rows reference nothing but the tenant. Deleting the document
-      // first would fail on `onDelete: Restrict`.
-      'notification_message',
-      'notification_batch',
-      'outbox_message',
-      'workflow_comment',
-      'workflow_timer',
-      'approval_task',
-      'workflow_stage',
-      'number_reservation',
-      'workflow_instance',
-      'document_signature',
-      'document_revision',
-      'document',
-      'folder',
-      'library',
-      'document_type',
-      'numbering_rule',
-      'confidentiality_level',
-      'file_object',
-      'user_role',
-      'role_permission',
-      'session',
-      '"user"',
-      'role',
-      'workflow_version',
-      'workflow_definition',
-      'tenant_setting',
-    ]) {
-      await client
-        .$executeRawUnsafe(`DELETE FROM ${table} WHERE tenant_id = $1::uuid`, id)
-        .catch(() => 0);
+
+  /*
+   * Only the tables this database actually has — Phase 8.20.
+   *
+   * The old teardown's `.catch(() => 0)` tolerated a missing table as a side effect of tolerating
+   * everything, and `session` is genuinely absent here. Inside a transaction an error aborts the
+   * whole thing, so the list is filtered up front rather than caught per statement: missing tables
+   * are skipped explicitly, and every remaining failure is still fatal.
+   */
+  const present = new Set(
+    (
+      await client.$queryRawUnsafe(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
+      )
+    ).map((row) => row.table_name),
+  );
+  /*
+   * The curated order first, then every other tenant-owned table the schema actually has.
+   *
+   * The hand-written list encodes the orderings that matter — an approval's rows before its
+   * document, a document before its folder — and it was also simply incomplete: `search_index_entry`
+   * was missing, which the old `.catch(() => 0)` hid along with everything else. Asking the schema
+   * for the remainder means a table added later cannot quietly reintroduce the leak.
+   */
+  const curated = ORDERED_FIXTURE_TABLES.filter((table) => present.has(table.replaceAll('"', '')));
+  const owned = (
+    await client.$queryRawUnsafe(
+      `SELECT table_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND column_name = 'tenant_id'`,
+    )
+  ).map((row) => row.table_name);
+  const curatedNames = new Set(curated.map((table) => table.replaceAll('"', '')));
+  /*
+   * Derived tables go **first**. They are the ones nobody hand-listed, which in practice means
+   * dependents — `bulk_operation` references `user`, `search_index_entry` references a document —
+   * and deleting a dependent before its parent is always safe, where the reverse is not.
+   */
+  const ordered = [...owned.filter((name) => !curatedNames.has(name)), ...curated];
+
+  for (const { id, slug } of tenants) {
+    // Belt and braces: the query above is already scoped, and a teardown that can delete a tenant
+    // is worth making impossible to point at a real one.
+    if (!slug.startsWith('e2e')) {
+      throw new Error(`refusing to clean up non-fixture tenant ${slug}`);
     }
-    await client.tenant.delete({ where: { id } }).catch(() => null);
+
+    await client.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('app.tenant_id', '${id}', false)`);
+      await tx.$executeRawUnsafe('ALTER TABLE audit_event DISABLE TRIGGER USER');
+
+      /*
+       * `library` and `folder` reference each other — `folder.library_id` one way,
+       * `library.root_folder_id` the other — so no deletion order alone can satisfy both. The
+       * root pointer is nulled first, which breaks the cycle without touching either table's
+       * constraints.
+       */
+      await tx.$executeRawUnsafe(
+        'UPDATE library SET root_folder_id = NULL WHERE tenant_id = $1::uuid',
+        id,
+      );
+
+      for (const table of ordered) {
+        await tx.$executeRawUnsafe(`DELETE FROM ${table} WHERE tenant_id = $1::uuid`, id);
+      }
+
+      await tx.$executeRawUnsafe('ALTER TABLE audit_event ENABLE TRIGGER USER');
+      await tx.$executeRawUnsafe('DELETE FROM tenant WHERE id = $1::uuid', id);
+    });
+  }
+
+  /*
+   * The invariant, asserted rather than assumed. A teardown that cannot say it failed is exactly
+   * how this went unnoticed for so long.
+   */
+  const left = await client.tenant.count({ where: { slug: { startsWith: 'e2e' } } });
+  if (left > 0) {
+    throw new Error(`fixture cleanup left ${String(left)} e2e tenant(s) behind`);
   }
 }
 
@@ -554,13 +676,19 @@ async function scrypt(password) {
   const n = 2 ** 17;
   const salt = randomBytes(16);
   const key = await new Promise((resolve, reject) => {
-    derive(password, salt, 32, { N: n, r: 8, p: 1, maxmem: 256 * 1024 * 1024 }, (error, derived) => {
-      if (error) {
-        reject(error);
-      } else {
-        resolve(derived);
-      }
-    });
+    derive(
+      password,
+      salt,
+      32,
+      { N: n, r: 8, p: 1, maxmem: 256 * 1024 * 1024 },
+      (error, derived) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve(derived);
+        }
+      },
+    );
   });
   return ['scrypt', n, 8, 1, salt.toString('base64'), key.toString('base64')].join('$');
 }
