@@ -290,6 +290,191 @@ jobs:
       - name: Integration tests
         run: pnpm test:integration
 
+  e2e:
+    name: End-to-end · ${{ matrix.shard.name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    # The nine end-to-end files are the only thing that exercises the product as a product: the
+    # real API artefact, `next start` over the production build, a real browser, a real database and
+    # a real Redis. Until now they ran on developers' machines and nowhere else — so every fix this
+    # audit made (the fixture teardown, reflow at 320, the menu modality) was guarded only by
+    # somebody remembering to run them.
+    #
+    # ## Why this is a matrix and not one job
+    #
+    # `auth.login` is rate limited to **ten attempts per five minutes per IP**, and the guard is
+    # real: `rate-limit.ts` declares it and the API enforces it against Redis. The nine files need
+    # about nineteen sign-ins between them — each file seeds its own tenant and its own users, so
+    # there is no session any two of them could share — and the whole suite finishes inside one
+    # five-minute window. One job would therefore spend the budget on itself and fail on `429`s
+    # that look like "the page never navigated".
+    #
+    # The limiter is not the thing to change. Each shard below is a separate job with its own Redis
+    # and its own API instance, so each gets its own budget, and the shards are split by **login
+    # cost** rather than by file count:
+    #
+    #   signing   — signing 5, faded-text 1, search 1        =  7
+    #   recovery  — recovery 7, datagrid-keyboard 1          =  8
+    #   screens   — consistency 1, shell 1, dashboard 1, recent-empty 1 = 4
+    #
+    # Every shard stays under ten with room to spare, and the product's security boundary is
+    # untouched. If a file's sign-in count grows, the shard it lives in is where that shows up.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: 'signing, faded text and search'
+            files: 'src/test/e2e/signing.e2e.spec.ts src/test/e2e/faded-text.e2e.spec.ts src/test/e2e/search.e2e.spec.ts'
+          - name: 'recovery and the data grid'
+            files: 'src/test/e2e/recovery.e2e.spec.ts src/test/e2e/datagrid-keyboard.e2e.spec.ts'
+          - name: 'the screens'
+            files: 'src/test/e2e/consistency.e2e.spec.ts src/test/e2e/shell.e2e.spec.ts src/test/e2e/dashboard.e2e.spec.ts src/test/e2e/recent-empty.e2e.spec.ts'
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: edms_owner
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edms_owner -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      # The restore rehearsal restores *beside* the source rather than over it, and refuses to run
+      # against a destination that is not empty — so it needs a second cluster, with a superuser,
+      # that nothing else has touched. A second service container is exactly that, and it is
+      # discarded with the job.
+      postgres-dr:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      LOG_LEVEL: fatal
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_ACCESS_SECRET: ci-only-secret-at-least-thirty-two-characters
+      CORS_ORIGINS: http://localhost:3000
+      STORAGE_DRIVER: NONE
+      SEARCH_DRIVER: POSTGRES
+      OCR_DRIVER: NONE
+      MAIL_DRIVER: NONE
+      AV_DRIVER: NONE
+      DATABASE_URL: postgresql://edms_app@127.0.0.1:5432/e2e_edms_acme
+      DATABASE_MIGRATION_URL: postgresql://edms_owner@127.0.0.1:5432/e2e_edms_acme
+      SECOND_DATABASE_URL: postgresql://edms_app@127.0.0.1:5432/e2e_edms_rival
+      SECOND_DATABASE_MIGRATION_URL: postgresql://edms_owner@127.0.0.1:5432/e2e_edms_rival
+      DR_DEST_ADMIN_URL: postgresql://postgres@127.0.0.1:5433/postgres
+      TENANT_CATALOGUE: >-
+        {"defaults":{"databaseUrlTemplate":"postgresql://edms_app@127.0.0.1:5432/e2e_edms_{slug}",
+        "migrationUrlTemplate":"postgresql://edms_owner@127.0.0.1:5432/e2e_edms_{slug}",
+        "storage":{"driver":"LOCAL","container":"munaxa-docs","prefixTemplate":"tenants/{slug}"},
+        "search":{"indexTemplate":"docs-{slug}"}},
+        "tenants":[{"id":"019489f0-0000-7000-8000-0000000000a1","slug":"acme"},
+        {"id":"019489f0-0000-7000-8000-0000000000b2","slug":"rival"}]}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@munaxa'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same two steps the integration job uses, against the databases the end-to-end
+      # environment names. `CREATE DATABASE` cannot run inside a transaction and roles are
+      # cluster-scoped, so both are psql rather than the migration runner.
+      - name: Create the tenant databases and the cluster roles
+        run: |
+          set -euo pipefail
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 \
+            -c 'CREATE DATABASE e2e_edms_acme OWNER edms_owner' \
+            -c 'CREATE DATABASE e2e_edms_rival OWNER edms_owner'
+          psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -f infra/sql/cluster/01-roles.sql
+        env:
+          ADMIN_URL: postgresql://edms_owner@127.0.0.1:5432/postgres
+
+      # The restore rehearsal recreates the roles on the destination itself, but it does so *after*
+      # `pg_restore --create`; the cluster still has to exist and be reachable, which is what this
+      # asserts before eight minutes of suite discovers otherwise.
+      - name: Check the restore destination is reachable and empty
+        run: |
+          set -euo pipefail
+          psql "$DR_DEST_ADMIN_URL" -v ON_ERROR_STOP=1 -c 'SELECT version()' >/dev/null
+          count=$(psql "$DR_DEST_ADMIN_URL" -tAc "SELECT count(*) FROM pg_database WHERE datname LIKE '%edms%'")
+          if [ "$count" != "0" ]; then
+            echo "::error::the restore destination already holds $count edms database(s)"
+            exit 1
+          fi
+
+      - name: Migrate every tenant database
+        run: node scripts/migrate-tenants.mjs
+
+      # The suite runs the artefacts the image ships — `apps/api/dist/main.js` and `next start` over
+      # the production build — so it depends on a real build rather than compiling its own.
+      - name: Build
+        run: pnpm build
+
+      # Chromium only. The suite drives one browser, and installing three costs minutes per shard.
+      - name: Install Chromium
+        run: pnpm --filter @edms/web exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: pnpm --filter @edms/web exec vitest run --project=e2e --fileParallelism=false ${{ matrix.shard.files }}
+
+      # The API and the web server write to these, and a failure that only reproduces inside a full
+      # run is unreadable without them: the route error boundary shows a correlation id and nothing
+      # else, and the exception behind that id is in the API's log alone.
+      - name: Upload the server logs when the suite fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-server-logs-${{ strategy.job-index }}
+          path: |
+            /tmp/e2e-api.log
+            /tmp/e2e-web.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   images:
     name: Container images · three targets from one commit
     runs-on: ubuntu-latest
