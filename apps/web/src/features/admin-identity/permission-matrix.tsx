@@ -101,7 +101,16 @@ export function PermissionMatrix({
             const held = descriptors.filter((descriptor) => granted.has(descriptor.key)).length;
             return (
               <AccordionItem key={resource} value={resource}>
-                <AccordionTrigger level={4}>
+                {/*
+                  Level 3, because the heading above these is the dialogue's — Phase 8.24.
+
+                  `PermissionMatrix` renders inside the role dialogue, whose title `Dialog` renders
+                  as an `h2`. At level 4 the outline read `h1 Roles` → `h2 Add role` → **eighteen
+                  level-4 headings**, one per permission group, with level 3 never used: axe
+                  reports the first jump as `heading-order`, but the whole matrix sat a level too
+                  deep, and heading navigation is how somebody moves through eighteen groups.
+                */}
+                <AccordionTrigger level={3}>
                   {resource} ·{' '}
                   {translate('admin.list.count', { count: held, total: descriptors.length })}
                 </AccordionTrigger>
