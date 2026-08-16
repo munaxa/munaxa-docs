@@ -1,4 +1,12 @@
-import { Controller, Get, HttpCode, HttpStatus, Inject, Res, VERSION_NEUTRAL } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  Res,
+  VERSION_NEUTRAL,
+} from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 
@@ -70,9 +78,7 @@ export class HealthController {
   @ApiOperation({ summary: 'May this instance receive traffic?' })
   async ready(@Res({ passthrough: true }) response: Response): Promise<HealthReport> {
     const report = await this.health.report();
-    response.status(
-      report.status === 'DOWN' ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.OK,
-    );
+    response.status(report.status === 'DOWN' ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.OK);
     return report;
   }
 

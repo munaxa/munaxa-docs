@@ -59,7 +59,12 @@ function build(status: DependencyStatus): {
     version: '0.1.0',
     checkedAt: '2026-08-16T00:00:00.000Z',
     dependencies: [
-      { name: 'database:acme', status, latencyMs: 1, ...(status === 'UP' ? {} : { detail: 'PrismaClientInitializationError' }) },
+      {
+        name: 'database:acme',
+        status,
+        latencyMs: 1,
+        ...(status === 'UP' ? {} : { detail: 'PrismaClientInitializationError' }),
+      },
       { name: 'cache', status: 'UP', latencyMs: 1 },
     ],
   };
@@ -77,8 +82,11 @@ function build(status: DependencyStatus): {
 
   return {
     controller: new HealthController(health, clock),
-    response: { handle, get statusCode() {
-      return recorder.statusCode ?? -1;
-    } },
+    response: {
+      handle,
+      get statusCode() {
+        return recorder.statusCode ?? -1;
+      },
+    },
   };
 }
