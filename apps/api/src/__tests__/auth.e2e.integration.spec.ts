@@ -359,3 +359,47 @@ describe('rate limiting over HTTP', () => {
     expect(statuses.some((status) => status === 401 || status === 400)).toBe(true);
   }, 60_000);
 });
+
+/**
+ * Phase 9.1 — the paths an orchestrator polls, asserted because three runbooks depend on them.
+ *
+ * `deployment.md` gates a release on `/api/health/ready`, `disaster-recovery.md` tells an operator
+ * to confirm the same URL on a replaced instance, and `penetration-testing.md` lists the
+ * unauthenticated surface as `/api/health/live`, `/api/health/ready` and `/api/health`. Every one of
+ * those answered **404**: the controller took the global `v1` default while the documents described
+ * the unversioned path, and nothing asserted the route, so a production-mode boot was the first
+ * thing ever to notice.
+ *
+ * These run through `configureApp` — the production prefix, versioning and guard order — so they
+ * fail if the controller ever drifts back onto the versioned default.
+ */
+describe('the probes an orchestrator polls', () => {
+  it('answers liveness at the documented path, without a credential', async () => {
+    const { status, body } = await get<{ status: string; uptimeSeconds: number }>(
+      '/api/health/live',
+    );
+
+    expect(status, '`deployment.md` polls this exact URL').toBe(200);
+    expect(body.status).toBe('UP');
+    expect(typeof body.uptimeSeconds).toBe('number');
+  });
+
+  it('answers readiness at the documented path, without a credential', async () => {
+    const { status } = await get('/api/health/ready');
+
+    expect(status, 'the release checklist gates on this URL being green').toBe(200);
+  });
+
+  it('answers the operator detail probe at the documented path', async () => {
+    const { status } = await get('/api/health');
+
+    expect(status).toBe(200);
+  });
+
+  it('keeps the probes off the versioned surface, which is a customer contract', async () => {
+    // The point of version-neutrality: a readiness URL pinned to `v1` breaks the day `v1` retires.
+    const { status } = await get('/api/v1/health/ready');
+
+    expect(status, 'health is infrastructure, not a versioned API').toBe(404);
+  });
+});
