@@ -345,13 +345,86 @@ Nothing in an earlier report has been rewritten.
 
 ## 17. Final status
 
-**Pending — CI on the final commit has not yet reported.** This section and §18 are filled from the
-run on the last commit of this phase and are deliberately left open rather than written in advance.
-What is already known from that run: format check **green**, lint **green**, product isolation
-**green**. The remaining jobs — typecheck, unit tests, build, visual regression, integration, three
-E2E shards and the container-image job carrying the new engine check — were still running when this
-section was written.
+CI run **232** on `471be82`, the last code-bearing commit of this phase. **All seven jobs green on
+the first attempt** — no re-run, no retry, nothing disclosed as flaky.
 
-## 18. Final decision
+| Job | Result |
+| --- | --- |
+| Lint · Typecheck · Test · Build (incl. format, platform stylesheet, contrast and visual regression) | **success** |
+| Integration · real PostgreSQL, two tenants | **success** |
+| End-to-end · signing, faded text and search | **success** |
+| End-to-end · recovery and the data grid | **success** |
+| End-to-end · the screens | **success** |
+| Container images · three targets from one commit | **success** |
+| └ *The API image carries the query engine its own runtime asks for* | **success** — the new gate, passing on the fix and failing on the commit before it |
+| Product isolation | **success** |
 
-Pending §17.
+The report commit on top of it is Markdown only, and the workflow's `paths-ignore: '**/*.md'` means
+it correctly fires no run. `471be82` is the commit this certification is about.
+
+### Cleanup
+
+Every container, the `munaxa-prod` network, the `prod-storage` volume and the seeded smoke tenants
+were removed after the evidence was collected. The smoke fixture file, its credentials and the
+scratch scripts were deleted. Six local image tags remain on this host as build artefacts; they were
+never pushed to a registry, because choosing a registry is a deployment decision this repository has
+not made.
+
+## 18. Blockers
+
+| # | Blocker | State |
+| --- | --- | --- |
+| 1 | Deployment proven by deploying | **CLOSED** — §5–§11 |
+| 2 | Rollback proven by rolling back | **CLOSED as to mechanism** — §12; no known-good previous target existed, and this release creates one |
+| 3 | Branch protection on both repositories | **OPEN** — administratively blocked, §13 |
+| 4 | Stray branch `claude/phase-9-certification` deleted | **OPEN** — 403, carries nothing unique, §13 |
+
+## 19. Administrative actions required
+
+Only `tam2om` can perform these; nothing in this session can, and no further unauthorised attempt
+was made after the state was established.
+
+1. Enable branch protection on `main` in **`munaxa/munaxa-docs`** and **`munaxa/munaxa-platform`**:
+   require a pull request, require the CI checks named in §17, and forbid direct pushes.
+2. Delete the branch `claude/phase-9-certification` (`08b7c65`) in `munaxa/munaxa-docs`.
+
+Until (1) is done, "every gate is blocking" is a convention this repository follows rather than a
+rule it enforces, and a single direct push to `main` can bypass every check in §17.
+
+## 20. Final decision
+
+# NOT PRODUCTION READY
+
+The product is now materially closer than it has ever been, and the reason for the answer is narrow
+and specific rather than a general lack of confidence.
+
+**What changed in this phase's favour.** The images had never been run. Running them found a defect
+that made the product completely non-functional — no user could sign in — and a second defect that
+would have let the first one past the release gate unnoticed. Both are fixed, both are guarded, and
+both fixes were verified on a running deployment rather than argued from source. Authentication,
+authorisation, tenant isolation in both directions, audit immutability and row-level security were
+all exercised against real containers and a real database. Rollback was executed rather than
+described.
+
+**Why the answer is still no.** Phase 9 set the rule that this phase is bound by: *do not call it
+ready if branch protection is absent.* It is absent, on both repositories, and this session cannot
+add it. That is not a technicality. Every guarantee in §17 rests on checks that nothing currently
+requires anybody to pass, and the defect in §5 is a live demonstration of what an unenforced gate is
+worth — the `images` job existed for phases and asserted the one property that could not catch it.
+
+There is no "ready except". The single action in §19(1) is what stands between this state and a
+different answer, and it takes an administrator a few minutes.
+
+## 21. Recommended next phase
+
+**Phase 9.3 — Enforcement and first hosted deployment.** Two items, in this order:
+
+1. Branch protection enabled by the administrator and then *proven* — an attempted direct push to
+   `main` that is refused, and a pull request that cannot merge with a red check. Claimed only when
+   the refusal has been observed.
+2. A hosted deployment of `471be82` or later: TLS termination, a load balancer polling the readiness
+   probe that now means something, DNS, managed secrets, and a multi-instance rolling replacement.
+   §12's rollback drill repeated against it, this time with a known-good previous version.
+
+`infra/loadtest/run.mjs` still has no baseline and the quarterly restore test has not been
+exercised. Both are real gaps and neither blocks §19(1), which is why they follow rather than lead.
