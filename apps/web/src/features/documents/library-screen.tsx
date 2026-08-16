@@ -8,6 +8,7 @@ import {
   Badge,
   Button,
   type ColumnDef,
+  Split,
   Switch,
   formatFileSize,
   useMediaQuery,
@@ -19,7 +20,7 @@ import { Plus } from '@munaxa/icons';
 import type { BulkOperationResult, DocumentSummary, Folder, Library } from '@edms/contracts';
 import { formatFor } from '@edms/domain';
 
-import { WorkspacePage } from '../../components/workspace-page';
+import { WorkspacePage, type WorkspaceCrumb } from '../../components/workspace-page';
 import { useTranslate } from '../../app/providers';
 import type { ListState } from '../../lib/admin/list-state';
 import {
@@ -33,6 +34,7 @@ import { deleteDocument, requestDownload, restoreDocument, setFavorite } from '.
 import { bulkExport, bulkRestore } from './bulk-actions';
 import { BulkMetadataDialog, BulkResultDialog } from './bulk-panel';
 import { FolderTree } from './folder-tree';
+import { folderTrail } from './folder-trail';
 import { DocumentStatusBadge } from './status-badge';
 import { type DocumentTypeChoice, UploadDialog } from './upload-dialog';
 
@@ -107,6 +109,64 @@ export function LibraryScreen({
   const includeSubfolders = state.filters.underFolderId !== undefined;
 
   /**
+   * Where this folder sits, and what it holds.
+   *
+   * The crumb read `Documents › SOP` — the destination, and nothing about the route to it. In a
+   * library where SOP sits under Quality, under Manufacturing, that is three levels of context
+   * dropped from the one line on the page whose job is to carry them.
+   *
+   * The library is a crumb of its own rather than the root folder's name, because that is how
+   * somebody says it out loud — "the SOP folder in Quality Management" — and because the root
+   * folder and the library are the same place under two names. `Folder.libraryName` supplies it, so
+   * the crumb comes from the same rows the trail does rather than from a second lookup.
+   */
+  const selectedFolder = folders.find((entry) => entry.id === selectedFolderId) ?? null;
+  const trail = folderTrail(folders, selectedFolderId);
+  const rootFolderId = libraries.find((entry) => entry.id === selectedLibraryId)?.rootFolderId;
+  const libraryName = trail[0]?.libraryName;
+
+  const crumbs: WorkspaceCrumb[] = [
+    { label: translate('nav.documents'), href: '/documents' },
+    ...(libraryName === undefined || rootFolderId === undefined
+      ? []
+      : [
+          {
+            label: libraryName,
+            href: `/documents?libraryId=${String(selectedLibraryId)}&folderId=${rootFolderId}` as Route,
+          },
+        ]),
+    // The root is already spoken for by the library crumb above; repeating it would name the same
+    // place twice in a row.
+    ...trail
+      .filter((entry) => !entry.isRoot)
+      .map((entry) => ({
+        label: entry.name,
+        href: `/documents?libraryId=${String(selectedLibraryId)}&folderId=${entry.id}` as Route,
+      })),
+  ];
+  // The page you are already on is not a link — `WorkspacePage`'s own rule, applied to whichever
+  // crumb ended up last rather than to a fixed position.
+  const breadcrumb = crumbs.map((crumb, index) =>
+    index === crumbs.length - 1 ? { label: crumb.label } : crumb,
+  );
+
+  /**
+   * Two counts rather than the standing sentence, when there is a folder to count.
+   *
+   * Both are the server's own figures — `meta.total` for the documents, `Folder.childCount` for the
+   * subfolders — so neither is this screen counting the rows it happens to be holding. A folder
+   * missing from the fetched page (the API caps folders at 100) leaves `selectedFolder` null and
+   * the generic description stands, because "0 folders" would be a claim rather than an absence.
+   */
+  const description =
+    selectedFolder === null
+      ? translate('documents.description')
+      : [
+          translate('documents.count.documents', { count: total }),
+          translate('documents.count.folders', { count: selectedFolder.childCount }),
+        ].join(' · ');
+
+  /**
    * How many columns this viewport can actually carry — Phase 7.1.
    *
    * A baseline at 390px is what found this, and what it found was not cosmetic: the grid shares its
@@ -144,14 +204,11 @@ export function LibraryScreen({
   return (
     <WorkspacePage
       title={translate('documents.title')}
-      description={translate('documents.description')}
+      description={description}
       // Where you are, said once at the top rather than only by which node the tree has
       // highlighted — Phase 7. The library and the folder are how somebody describes a location out
-      // loud ("the SOP folder in Quality"), and until now the screen never wrote it down.
-      breadcrumb={[
-        { label: translate('nav.documents'), href: '/documents' },
-        ...(selectedFolderName === '' ? [] : [{ label: selectedFolderName }]),
-      ]}
+      // loud ("the SOP folder in Quality"), and until now the screen wrote down only the last step.
+      breadcrumb={breadcrumb}
       /**
        * The primary action, promoted out of the toolbar — Phase 7.6.
        *
@@ -184,17 +241,33 @@ export function LibraryScreen({
         ) : undefined
       }
     >
-      <div className="flex flex-col gap-6 lg:flex-row">
-        <aside className="lg:w-72 lg:shrink-0">
+      {/*
+        `Split`, not the hand-written `flex flex-col gap-6 lg:flex-row` this replaces — and not
+        `SidebarLayout`, which is what Administration uses one directory away.
+
+        `SidebarLayout` was the obvious candidate and it is the wrong one *here*. It renders its
+        sidebar inside `hidden lg:block`, so below 1024px the pane is removed rather than moved: it
+        documents this itself — "the application shows the same navigation in a drawer instead" —
+        and this screen has no such drawer. Adopting it would have deleted the folder tree on every
+        tablet and phone, which is the library's primary navigation, in a slice whose whole claim is
+        that it changes no behaviour.
+
+        `Split` keeps what the hand-written classes did: one column when there is no room for two,
+        two when there is, in source order either way. The content pane's `min-w-0` comes with it,
+        which is what stops a wide table pushing the tree off screen.
+      */}
+      <Split
+        ratio="1/4"
+        gap={6}
+        start={
           <FolderTree
             libraries={libraries}
             folders={folders}
             selectedLibraryId={selectedLibraryId}
             selectedFolderId={selectedFolderId}
           />
-        </aside>
-
-        <section className="min-w-0 flex-1">
+        }
+        end={
           <ResourceList<DocumentSummary>
             rows={rows}
             total={total}
@@ -442,8 +515,8 @@ export function LibraryScreen({
                 : []),
             ]}
           />
-        </section>
-      </div>
+        }
+      />
 
       {adding !== null && selectedFolderId !== null && (
         <UploadDialog

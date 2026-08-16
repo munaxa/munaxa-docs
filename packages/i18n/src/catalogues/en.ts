@@ -857,6 +857,25 @@ export const en = {
   documents: {
     title: 'Documents',
     description: 'Everything filed in this organisation, and where it sits.',
+    /**
+     * What the folder on screen actually holds.
+     *
+     * Two counts rather than one sentence, because they answer two different questions — "is there
+     * anything here" and "does this go deeper" — and a reader deciding whether to open the tree is
+     * asking the second. Both are the server's own figures: the document total is the list's
+     * `meta.total`, and the folder count is `Folder.childCount`, so neither is this screen counting
+     * rows it happens to have been handed.
+     */
+    count: {
+      documents: plural({
+        one: '{count} document',
+        other: '{count} documents',
+      }),
+      folders: plural({
+        one: '{count} folder',
+        other: '{count} folders',
+      }),
+    },
     nav: {
       label: 'Libraries and folders',
       libraries: 'Libraries',
