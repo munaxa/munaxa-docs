@@ -20,8 +20,27 @@
 // a deleted row never blocks a new one. The one deliberate exception is a document's number,
 // which stays reserved forever precisely so it can never be re-issued.
 
+// `binaryTargets` is pinned, not detected — Phase 9.2.
+//
+// Prisma picks a query-engine build by looking for `libssl` at *generate* time, and the build stage
+// of `Dockerfile` is `node:22-bookworm-slim`, which carries no libssl at all (measured: zero files
+// under /usr/lib/x86_64-linux-gnu, no `openssl` binary). With nothing to detect, generation falls
+// back to `debian-openssl-1.1.x`. The runtime stage installs `ca-certificates`, which pulls in
+// OpenSSL 3, so the deployed container asks for `debian-openssl-3.0.x` and finds an engine that is
+// not there. Every database call then fails with `PrismaClientInitializationError` — readiness
+// reports both tenant databases DOWN and the product cannot authenticate anybody.
+//
+// It survived every gate because nothing before Phase 9.2 ran the image: CI builds all three
+// targets and pushes them, unit and integration tests run against a host-generated client on a
+// machine that does have libssl, and the Dockerfile's own comment predicted the failure ("the
+// OpenSSL version a Prisma binary is compiled against is the classic source of a container that
+// builds and cannot connect") without anything asserting it.
+//
+// Naming the target removes the detection step from the deployment's critical path. `native` stays
+// first so a developer's own machine — macOS, arm64, a different libc — still gets its engine.
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {

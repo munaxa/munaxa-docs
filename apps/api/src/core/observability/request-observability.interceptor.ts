@@ -10,7 +10,10 @@ import {
 import type { Request, Response } from 'express';
 import { type Observable, catchError, tap, throwError } from 'rxjs';
 
+import { isDomainError } from '@edms/domain';
+
 import { CLOCK_PORT, type ClockPort } from '../../ports/clock.port';
+import { STATUS_BY_CODE } from '../errors/all-exceptions.filter';
 import { correlationIdOf, traceContextOf } from '../http/correlation-id.middleware';
 import { currentContext } from '../tenancy/tenant-context';
 import { LOGGER, type Logger } from './logger';
@@ -117,6 +120,28 @@ function routeOf(request: Request): string {
   return typeof route?.path === 'string' ? route.path : 'unmatched';
 }
 
+/**
+ * What status will this failure become — asked before the filter has run.
+ *
+ * ## Why a domain error is checked first — Phase 9.2
+ *
+ * This was `HttpException ? getStatus() : 500`, and almost nothing in this product throws an
+ * `HttpException`: refusals are `DomainError`s, which `AllExceptionsFilter` maps through
+ * `STATUS_BY_CODE`. So every `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_FAILED` and
+ * `RATE_LIMITED` was logged as `status: 500` and — worse — metered into the `5xx` class of
+ * `HTTP_REQUEST_DURATION`. It was measured on a real deployment: a sign-in with a wrong password
+ * answered **401** on the wire and wrote `"status":500` on the log line for the same request.
+ *
+ * That is an alerting defect rather than a cosmetic one. 17 §9 alerts on the server-error rate, and
+ * on these numbers a user mistyping a password pages an on-call while a genuine 5xx is invisible in
+ * the noise. `statusClass` reads the number this function returns, so the label was wrong too.
+ *
+ * The mapping is imported rather than re-stated, so the log, the metric and the response can never
+ * disagree about what a code means.
+ */
 function statusOf(error: unknown): number {
+  if (isDomainError(error)) {
+    return STATUS_BY_CODE[error.code];
+  }
   return error instanceof HttpException ? error.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 }

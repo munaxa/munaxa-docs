@@ -1,5 +1,6 @@
-import { Controller, Get, HttpCode, HttpStatus, Inject, VERSION_NEUTRAL } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Inject, Res, VERSION_NEUTRAL } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 
 import { type HealthReport, type Liveness } from '@edms/contracts';
 
@@ -45,11 +46,34 @@ export class HealthController {
     return { status: 'UP', uptimeSeconds: Math.floor(process.uptime()) };
   }
 
+  /**
+   * ## Why the status code moves with the report — Phase 9.2
+   *
+   * This answered **200** while its own body read `"status":"DOWN"` with every tenant database
+   * unreachable. `deployment.md` gates a release on "`/api/health/ready` green on every instance
+   * before the load balancer is opened", and a load balancer does not read JSON — it reads the
+   * status line. A probe that returns 200 whatever it found admits a broken instance to the pool
+   * and reports the deployment as successful, which is the failure mode a readiness probe exists
+   * to prevent. It was measured on a real deployment: 200, `DOWN`, both databases down.
+   *
+   * `DEGRADED` stays 200 on purpose. It means nothing is down and something is slow or partial, and
+   * an instance that can still serve should not be pulled out of rotation for it — the alternative
+   * empties the pool during a degradation, which is the same argument liveness makes above.
+   *
+   * The code is set on the response rather than thrown, because `AllExceptionsFilter` turns every
+   * throw into `application/problem+json` and would replace the dependency list with a generic
+   * detail string. The operator needs to know *which* dependency, and the orchestrator needs the
+   * status line; this is the only shape that gives both.
+   */
   @Get('ready')
   @Public('Readiness is polled by the load balancer, which holds no credentials.')
   @ApiOperation({ summary: 'May this instance receive traffic?' })
-  async ready(): Promise<HealthReport> {
-    return this.health.report();
+  async ready(@Res({ passthrough: true }) response: Response): Promise<HealthReport> {
+    const report = await this.health.report();
+    response.status(
+      report.status === 'DOWN' ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.OK,
+    );
+    return report;
   }
 
   @Get()
