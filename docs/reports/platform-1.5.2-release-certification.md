@@ -222,4 +222,34 @@ pre-existing external/integration issue — non-blocking
 
 ## 17. Final release decision
 
-*(completed once the Docs pull request's required checks report)*
+# PLATFORM 1.5.2 — RELEASED AND VERIFIED
+
+```
+@munaxa/platform:      1.5.1 → 1.5.2
+Registry:              1.5.2 verified — present, latest, tarball inspected
+Docs:                  consuming 1.5.2 from the registry, one copy
+Docs CI:               7/7 required checks green, first attempt
+E2E:                   161/161 — all three shards green as required checks
+Recovery:              19/19
+Branch protection:     active on both repositories
+Production
+certification:         previous certification remains valid,
+                       with 1.5.2 compatibility explicitly verified
+```
+
+**Docs `main` is `cc78ebe`**, protected, working tree clean, synchronised with origin. PR #43 was
+merged by rebase through the protected process — no bypass, no override, no ruleset touched.
+
+### What this decision does and does not say
+
+Docs was certified on `@munaxa/platform@1.5.1`. After upgrading to `@munaxa/platform@1.5.2`, the
+compatibility gates passed. **Publishing 1.5.2 does not invalidate the Phase 9.6 production
+certification**, and no full re-run of Phase 9 was required or performed.
+
+The upgrade was behaviourally relevant — a UI component change reaching every `DatePicker` surface —
+so it was measured rather than waved through: the visual suite was run on both versions and produced
+identical results (§13), and the full required suite, including all three E2E shards and the
+container-image engine gate, ran green on the merge candidate.
+
+It does not claim that the deployment was re-executed. Nothing in this change alters an application
+artefact's behaviour beyond the calendar paging fix, and §12's gates are the evidence offered.
