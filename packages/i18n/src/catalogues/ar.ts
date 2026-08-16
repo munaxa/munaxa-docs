@@ -838,6 +838,36 @@ export const ar: Catalogue = {
   documents: {
     title: 'الوثائق',
     description: 'كل ما هو محفوظ في هذه المؤسسة، وأين يقع.',
+    /**
+     * Standalone counted nouns, following `rowCount`, `memberCount` and `holidayCount` above rather
+     * than `upload.fileCount` below.
+     *
+     * The distinction matters for the dual. `fileCount` reads `حفظ وثيقتين` because its noun is
+     * governed by a verb and takes the accusative; these two stand alone, so the dual is nominative
+     * — `وثيقتان`, `مجلدان` — exactly as `صفان`, `شخصان` and `عطلتان` already are. Both carry no
+     * numeral, which is the Phase 7.4C rule.
+     *
+     * NOT YET REVIEWED BY A NATIVE SPEAKER. The pattern is copied from the catalogue's existing
+     * standalone counts rather than invented, but the words themselves are new here.
+     */
+    count: {
+      documents: plural({
+        zero: '{count} وثائق',
+        one: '{count} وثيقة',
+        two: 'وثيقتان',
+        few: '{count} وثائق',
+        many: '{count} وثيقةً',
+        other: '{count} وثيقة',
+      }),
+      folders: plural({
+        zero: '{count} مجلدات',
+        one: '{count} مجلد',
+        two: 'مجلدان',
+        few: '{count} مجلدات',
+        many: '{count} مجلدًا',
+        other: '{count} مجلد',
+      }),
+    },
     nav: {
       label: 'المكتبات والمجلدات',
       libraries: 'المكتبات',
