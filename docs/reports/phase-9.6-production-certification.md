@@ -223,11 +223,27 @@ None of these blocks certification, and none is dismissed:
 2. **No load baseline.** `infra/loadtest/run.mjs` has never recorded one; the first run *is* the
    baseline.
 3. **No in-quarter restore test.** `backup-and-restore.md` defines it; it has not been exercised here.
-4. **`paths-ignore` and required checks.** Both `ci.yml` files ignore `**/*.md`. A pull request whose
-   changes are *only* Markdown triggers no workflow, so the required checks never report and the PR
-   cannot merge. It did not affect PR #41 — that push contained non-Markdown files — but a
-   documentation-only PR would wedge. The usual remedy is a skipped-job shim reporting the same check
-   names. Recorded, not fixed, because fixing it is a CI change and this phase is not one.
+4. **`paths-ignore` and required checks — predicted here, then measured, then fixed.** Both `ci.yml`
+   files ignored `**/*.md`, so a pull request whose changes are only Markdown triggered no workflow,
+   the required checks never reported, and the pull request could not merge. It did not affect
+   PR #41 — that push contained non-Markdown files.
+
+   It affected the pull request publishing *this report*. PR #42 — one Markdown file, 349
+   insertions, no conflicts — produced **0 workflow runs**, **0 check runs** and
+   `mergeable_state: blocked`. The certification record could not be merged into the repository it
+   certified, which is a sharp enough demonstration that it was worth fixing rather than filing.
+
+   Fixed in the same pull request by removing `paths-ignore` from the Docs `pull_request` trigger,
+   so a pull request always runs the suite. The published remedy — a second workflow whose jobs
+   share the real ones' names and succeed trivially — was rejected: when a pull request touches both
+   a Markdown file and a source file, both workflows fire and both publish a check of the same name,
+   and the shim finishes in seconds while the suite takes ten minutes. In that window the ruleset
+   sees green for a check nothing has run. A merge gate with a ten-minute false-green window is
+   worse than the wedge it replaces. The filter stays on the `push` trigger, which gates nothing.
+
+   Platform's `ci.yml` still carries the filter on both triggers and has the same latent wedge. It
+   is untouched here — no Platform change was in scope — and is carried forward as the one open CI
+   item.
 5. **A red Cloudflare preview build** on the platform's default branch (`Workers Builds:
    platform-storybook`), outside the certification set.
 6. **`claude/phase-9-certification`** — administrative cleanup (§7).
@@ -314,10 +330,10 @@ Each is present today, none is a failure of the certified application, and none 
 - **Operational load baseline** — `infra/loadtest/run.mjs` has never recorded one; the first run *is*
   the baseline.
 - **In-quarter restore exercise** — defined in `backup-and-restore.md`, not exercised here.
-- **Docs-only PR CI skip behaviour** — `paths-ignore: '**/*.md'` means a Markdown-only pull request
-  triggers no workflow, so required checks never report and it cannot merge. Classified
-  **POST-CERTIFICATION CI IMPROVEMENT**; the remedy is a skipped-job shim reporting the same check
-  names. Deliberately not changed here.
+- **Docs-only PR CI skip behaviour** — **fixed on Docs, still open on Platform.** The Markdown-only
+  pull request publishing this report produced 0 workflow runs and could not merge, so
+  `paths-ignore` was removed from the Docs `pull_request` trigger; see §12.4 for why the published
+  shim remedy was rejected. Platform's workflow still carries the filter and the same latent wedge.
 - **Stray branch** — `claude/phase-9-certification` still returns HTTP 200; deletion refused by the
   proxy's write policy. **Administrative cleanup remains pending; it does not affect production
   certification.** Its content is patch-equivalent to commits now on `main`.
