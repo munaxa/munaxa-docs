@@ -90,14 +90,32 @@ describe('workspace shell accessibility', () => {
     expect(unplaced, `destinations in no section: ${unplaced.join(', ')}`).toStrictEqual([]);
   });
 
-  it('names every section heading it renders', () => {
-    shell();
-    // `SidebarNav` renders a group title as a heading. An unnamed run of links is the flat list
-    // this grouping exists to replace.
-    const headings = screen
-      .getAllByRole('navigation')[0]
-      ?.querySelectorAll('h2, h3, [role="presentation"]');
-    expect(headings).toBeDefined();
+  it('renders the four titled sections, and leaves Overview untitled', () => {
+    /*
+     * This assertion used to read `expect(headings).toBeDefined()`, which a `querySelectorAll`
+     * satisfies even when it matches nothing — so it passed for four phases while the rail rendered
+     * no headings at all. It was written that way because the headings were genuinely suppressed:
+     * `SidebarNav` painted them at 2.78:1 until `@munaxa/platform` 1.0.1, and the product held them
+     * behind a constant rather than override platform styling.
+     *
+     * The bundle this product consumes now paints them at full strength, so the words are back and
+     * the test asserts them by name. Overview stays deliberately untitled — a lone dashboard link
+     * under the word "Overview" is a heading longer than the thing it heads.
+     */
+    const rail = shell().querySelector('nav');
+    expect(rail).not.toBeNull();
+
+    /*
+     * `<p>`, not `<h2>` — and asserted against what the platform actually renders rather than what
+     * a group title might be expected to be. `SidebarNav` paints the title as a paragraph and does
+     * not point the group's `<div>` at it with `aria-labelledby`, so these runs are grouped
+     * visually but not programmatically. That is the platform's decision to revisit, not this
+     * product's to override, and writing the assertion against `h2` would only have made this test
+     * fail for a reason that has nothing to do with the rail's arrangement.
+     */
+    const titles = [...(rail?.querySelectorAll('p') ?? [])].map((node) => node.textContent?.trim());
+    expect(titles).toStrictEqual(['Library', 'Work', 'Oversight', 'System']);
+    expect(titles).not.toContain('Overview');
   });
 
   it('hides the navigation icons from assistive technology', () => {
