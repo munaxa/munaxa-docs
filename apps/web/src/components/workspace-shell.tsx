@@ -109,6 +109,21 @@ export const NAVIGATION_ICON_IDS: readonly string[] = Object.keys(NAVIGATION_ICO
  * under the word "Overview" is a heading longer than the thing it heads, and `NavigationGroup`
  * makes `title` optional for exactly this.
  *
+ * ## Why the headings were absent for four phases
+ *
+ * Phase 7.1 measured `SidebarNav`'s group heading at **2.78:1** on the Docs light surface —
+ * `text-muted-foreground/70`, a *fade of* the muted token, at `text-[10px]`, against the 4.5:1
+ * WCAG 2.1 AA asks of text that size. There was no product-side fix: the classes are the platform
+ * component's own, and both remedies available here — overriding platform styling, or hardcoding a
+ * colour — are forbidden by `ARCHITECTURE.md`. So the titles were held behind a constant while the
+ * arrangement shipped without them.
+ *
+ * `@munaxa/platform` 1.0.1 dropped the `/70`, and the bundle this product now consumes paints the
+ * heading `text-muted-foreground` — the same full-strength token as the rail items beside it.
+ * `consistency.e2e.spec.ts` measures it in the running application at **≥ 4.5:1 in both themes**,
+ * unconditionally. The constant is gone rather than set to `true`, because a flag that can only
+ * hold one value is not a flag.
+ *
  * Keyed by destination id, like `NAVIGATION_ICONS` above and for the same reason: which
  * destinations exist is the server's decision, resolved from permissions in `lib/navigation.ts`;
  * how the ones that exist are arranged on screen is this file's. A group whose destinations the
@@ -133,28 +148,6 @@ const NAVIGATION_SECTIONS: readonly {
   },
   { id: 'system', titleKey: 'nav.groupSystem', destinations: ['admin'] },
 ];
-
-/**
- * Whether the section headings are rendered — Phase 7.1, and it is currently `false`.
- *
- * Phase 7 gave the rail four named sections. Phase 7.1 added a baseline for the product's own
- * arrangement, which had never been rendered anywhere a contrast check could see it, and the check
- * failed immediately: `SidebarNav` styles a group heading `text-muted-foreground/70` at
- * `text-[10px]`, which is **2.78:1** on the Docs light surface against the 4.5:1 WCAG 2.1 AA
- * requires. Phase 7 shipped four of them without knowing.
- *
- * There is no product-side fix. The classes are the platform component's own, and both remedies
- * available here — overriding platform styling, or hardcoding a colour — are forbidden by
- * `ARCHITECTURE.md` and by this phase's own brief. So the words pause and the accessibility does
- * not: `NavigationGroup.title` is optional by the platform's design, an untitled group still
- * renders as its own separated run (the nav's `gap-5`), and the four sections stay in the order and
- * the shape Phase 7 gave them.
- *
- * The titles are kept in the table below rather than deleted, because restoring them is this one
- * constant once the palette or the opacity is fixed upstream. The Phase 7.1 report carries the
- * measurement and the request.
- */
-const SECTION_HEADINGS_ACCESSIBLE = false;
 
 /**
  * Exported for the test that keeps the sections in step with the destination table.
@@ -322,9 +315,8 @@ export function WorkspaceRail({
         : [
             {
               id: section.id,
-              ...(SECTION_HEADINGS_ACCESSIBLE && section.titleKey !== null
-                ? { title: translate(section.titleKey) }
-                : {}),
+              // Overview alone has no title — see the note above the table.
+              ...(section.titleKey !== null ? { title: translate(section.titleKey) } : {}),
               items,
             },
           ];
