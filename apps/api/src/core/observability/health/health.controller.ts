@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, HttpStatus, Inject } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Inject, VERSION_NEUTRAL } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { type HealthReport, type Liveness } from '@edms/contracts';
@@ -12,9 +12,25 @@ import { HealthService } from './health.service';
  *
  * Liveness must not touch a dependency: if a slow database made liveness fail, Kubernetes
  * would restart every pod during a database incident and turn a degradation into an outage.
+ *
+ * ## Why it is version-neutral — Phase 9.1
+ *
+ * These were `/api/v1/health/…` because the controller took the global default, and every
+ * operational document in this repository says otherwise: `deployment.md` gates a release on
+ * `/api/health/ready`, `disaster-recovery.md` tells an operator to confirm `/api/health/ready` on a
+ * replaced instance, and `penetration-testing.md` lists the unauthenticated surface as
+ * `/api/health/live`, `/api/health/ready`, `/api/health`. All three named a path that answered
+ * **404**, and nothing asserted the route, so the drift was invisible until a production-mode boot
+ * was actually probed.
+ *
+ * `MetricsController` had already made this argument for itself: a scrape endpoint is a contract
+ * with the deployment's own monitoring rather than with a customer's integration, and a Prometheus
+ * job that needed editing at a major version would be an alerting gap on release day. A liveness
+ * probe is the same kind of contract, with the orchestrator instead — a readiness URL pinned to
+ * `v1` breaks the day `v1` retires, which is the day the cluster can least afford it.
  */
 @ApiTags('health')
-@Controller('health')
+@Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
   constructor(
     private readonly health: HealthService,
