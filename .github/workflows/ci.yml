@@ -1,17 +1,42 @@
 name: CI
 
 on:
+  # No `paths-ignore` here, and that is the point.
+  #
+  # `main` became a protected branch whose ruleset requires all seven of this workflow's checks,
+  # and a required check that never reports is not a skipped check — it stays *pending* forever and
+  # the pull request can never merge. A path filter and a required status check disagree about what
+  # "did not run" means: the filter means "nothing to test", the ruleset means "not yet proven".
+  #
+  # It was measured rather than predicted. PR #42 published the Phase 9.6 certification report — one
+  # Markdown file, 349 insertions, no conflicts — and produced **zero** workflow runs, **zero**
+  # check runs, and `mergeable_state: blocked`. The report that certified the repository could not
+  # be merged into the repository it certified.
+  #
+  # The published remedy is a second workflow with jobs of the same names that trivially succeed
+  # when only documentation changed. It is rejected here, because when a pull request touches both
+  # a Markdown file and a source file *both* workflows fire and both publish a check of the same
+  # name — and the shim finishes in seconds while the real suite takes ten minutes. For that window
+  # the ruleset sees a green check with the right name and the branch looks mergeable before
+  # anything has been tested. A merge gate with a ten-minute window of false green is worse than
+  # the wedge it fixes.
+  #
+  # So pull requests simply run the suite, always. What that costs is runner minutes on a
+  # documentation change. What it buys is that every context the ruleset requires is a context this
+  # workflow actually produced, with no path on which a check can be satisfied by anything other
+  # than the work it names.
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE'
   # Also on the branch itself, before a pull request exists.
   #
   # Without this, nothing had ever run the install path: the workflow fired only on pull
   # requests, so a lockfile that could not install sat undetected from Phase 0.5 until somebody
   # tried it by hand. Feedback that arrives only at review time is feedback that arrives after
   # the work.
+  #
+  # The filter stays here. A push run gates nothing — it is feedback while the work is in progress,
+  # and `main` can only be reached through a pull request now, which has already run the suite. The
+  # wedge above is a property of required checks, and only pull requests are subject to them.
   push:
     branches:
       - main
