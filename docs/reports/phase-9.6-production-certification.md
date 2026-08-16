@@ -261,6 +261,89 @@ ignoring it.
 
 Phases 9.2 through 9.5 have not been rewritten.
 
-## 14. Final production decision
+## 14. Final CI on the merged head
 
-<!-- Issued once CI on the merged head reports. -->
+CI on `bc11b20` — the merged state, not a branch — completed **7 of 7 green on the first attempt**,
+with no re-run and nothing disclosed as flaky:
+
+```
+Lint · Typecheck · Test · Build                     success
+Integration · real PostgreSQL, two tenants          success
+End-to-end · signing, faded text and search         success
+End-to-end · recovery and the data grid             success
+End-to-end · the screens                            success
+Container images · three targets from one commit    success
+Product isolation                                   success
+```
+
+All seven are the contexts the ruleset requires. The three End-to-end shards — omitted from the
+protection configuration when it was first created (§13) — ran here as required checks for the first
+time in this product's history.
+
+The `Container images` job includes the Prisma engine gate added in Phase 9.2: it loads the API image
+and asks it which query engine its own runtime requires and whether it carries it. That gate fails on
+`78c6a59` and passes here, on `main`.
+
+## 15. Final production decision
+
+# PHASE 9.6 — PRODUCTION READY
+
+## MUNAXA DOCS IS PRODUCTION READY.
+
+| | |
+| --- | --- |
+| **Certified Docs commit** | `bc11b20` (`main`, protected) — code-bearing head `dae1ca0` |
+| **Platform** | `@munaxa/platform@1.5.1`, `main` at `72009f2` (protected) |
+| **CI** | **7 / 7 green** on the merged head, first attempt |
+| **Branch protection** | PASS — Docs `main` · PASS — Platform `main`; both rulesets active, `bypass_actors: null` |
+| **Required checks** | PASS — 7 contexts on Docs, 3 on Platform, all verified byte-for-byte against real check-runs |
+| **Merge enforcement** | PASS — PR #41, `BLOCKED` at 1 approval with 7/7 green, `CLEAN` at 0; merged 2026-08-16T09:16:42Z |
+| **Production deployment** | PASS — the three images built from one commit and actually executed |
+| **Production smoke** | 10 / 10, run twice |
+| **Recovery** | 19 / 19 |
+| **Rollback** | PASS in both directions, ~2 s each way, 0 migration files between images |
+| **Tenant isolation** | PASS — both directions, at the API and in the database |
+| **RLS** | 77 / 77 tables enabled **and forced** |
+| **Health / readiness** | PASS — 200 → 503 → 200 across a real dependency outage; liveness 200 throughout |
+| **Final matrix** | **24 PASS · 1 PARTIAL · 0 FAIL** |
+
+### Remaining non-blocking items
+
+Each is present today, none is a failure of the certified application, and none is dismissed:
+
+- **Operational load baseline** — `infra/loadtest/run.mjs` has never recorded one; the first run *is*
+  the baseline.
+- **In-quarter restore exercise** — defined in `backup-and-restore.md`, not exercised here.
+- **Docs-only PR CI skip behaviour** — `paths-ignore: '**/*.md'` means a Markdown-only pull request
+  triggers no workflow, so required checks never report and it cannot merge. Classified
+  **POST-CERTIFICATION CI IMPROVEMENT**; the remedy is a skipped-job shim reporting the same check
+  names. Deliberately not changed here.
+- **Stray branch** — `claude/phase-9-certification` still returns HTTP 200; deletion refused by the
+  proxy's write policy. **Administrative cleanup remains pending; it does not affect production
+  certification.** Its content is patch-equivalent to commits now on `main`.
+- **Pre-existing Cloudflare Storybook failure** — `Workers Builds: platform-storybook` on the
+  platform's default branch, outside the certification set and correctly not required.
+
+### What this certification rests on, and what it does not claim
+
+It rests on measurement. The product was deployed and executed rather than reasoned about, and that
+is what found the three defects Phase 9.2 fixed — a query engine that made every database call fail,
+a readiness probe that answered 200 while reporting DOWN, and domain refusals metered as server
+errors. Each has a guard that fails without it. Tenant isolation, RLS, audit immutability and the
+readiness contract were exercised against real containers and a real database, and rollback was
+performed rather than described.
+
+It does not claim a red required check was observed blocking a merge. That was never attempted,
+because producing one means pushing knowingly-broken code, and an unfilled cell in a table is the
+better of those two outcomes. What was observed is stronger than a stored configuration and weaker
+than a red-check test, and §5 says exactly which.
+
+It does not claim a hosted production environment has been exercised. One host with a Docker daemon
+is what was available, and §12 names everything a hosted deployment would add.
+
+```
+CODE → TESTED → CI → DEPLOYED → HEALTHY → SMOKE TESTED → TENANT ISOLATED
+     → AUDITED → ROLLED BACK → RESTORED → CI ENFORCED → MERGE ENFORCED → PRODUCTION READY
+```
+
+The chain is closed. This is the end of the certification programme.
