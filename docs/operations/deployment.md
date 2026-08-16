@@ -32,6 +32,21 @@ TENANT_CATALOGUE_PATH=/etc/munaxa/tenants.json node scripts/migrate-tenants.mjs
 image's history and readable by anybody who can run `docker history`, which is the ordinary way a
 token leaks.
 
+**Step 2 runs from a checkout, not from an image.** `scripts/migrate-tenants.mjs` shells out to
+`pnpm exec prisma`, and the runtime images carry neither pnpm nor the Prisma CLI — running it inside
+one fails with `spawnSync pnpm ENOENT`. It is written for a release engineer's working copy at the
+release commit, or a CI job on the same commit, with `DATABASE_MIGRATION_URL` and the tenant
+catalogue in its environment. Phase 9.2 discovered this by trying the obvious thing first; the
+alternative — a migration image that carries the CLI — is a real option and is not what ships today.
+
+**The worker image starts, prints one line and exits 0.** Every consumer this product has runs in
+the API process, gated on `QUEUE_CONSUMERS_ENABLED`, and `apps/worker/src/main.ts` exists as the
+seam for the day that changes rather than as a consumer today. So step 3's "workers first, they
+drain" is describing a process that currently drains nothing, and an orchestrator that expects a
+long-running container will read the clean exit as a crash loop. Until that seam is composed, deploy
+the worker image only if you have set `QUEUE_CONSUMERS_ENABLED=false` on the API — and know that in
+that configuration nothing consumes the queues at all. The ordinary deployment is API and web.
+
 **Worker images are built per deployment shape.** `--build-arg WITH_LIBREOFFICE=true` and
 `--build-arg WITH_TESSERACT=true` decide whether the binaries are *present*; `OFFICE_DRIVER` and
 `OCR_DRIVER` decide whether they are *called*. Both, because an image without LibreOffice cannot be
@@ -129,5 +144,8 @@ Everything below is a gate. A failing gate is never skipped to go green.
       see the caveat in `scenarios.mjs`: no phase has yet recorded a baseline, so the first run
       *is* the baseline rather than a comparison
 - [ ] The backup restore test is within its quarter ([backup-and-restore.md](./backup-and-restore.md))
-- [ ] Production migration, then workers, then API, then web
-- [ ] `/api/health/ready` green on every instance before the load balancer is opened
+- [ ] Production migration from a checkout at the release commit, then API, then web — see §1 on
+      why the worker image is not part of an ordinary deployment
+- [ ] `/api/health/ready` answering **200** on every instance before the load balancer is opened.
+      It answers 503 while any dependency is DOWN, so the status code is the gate and the body names
+      which dependency; before Phase 9.2 it answered 200 whatever it found
