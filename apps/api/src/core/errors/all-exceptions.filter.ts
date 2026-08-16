@@ -29,7 +29,16 @@ const NOT_FOUND_STATUS: number = HttpStatus.NOT_FOUND;
  * belonging to someone else — those go to the log, keyed by the same correlation id
  * (`docs/architecture/15-api-architecture.md` §4).
  */
-const STATUS_BY_CODE: Readonly<Record<ErrorCodeKey, number>> = {
+/**
+ * Exported since Phase 9.2, and deliberately not copied.
+ *
+ * `RequestObservabilityInterceptor` needs the same answer this filter gives — what status will this
+ * failure become — before the filter has run, in order to log and meter it. It was guessing
+ * `HttpException ? getStatus() : 500`, and this product's refusals are `DomainError`s rather than
+ * `HttpException`s, so every 401, 403, 404, 422 and 429 was recorded as a server error. A second
+ * copy of the table in the interceptor would have fixed today's drift and guaranteed tomorrow's.
+ */
+export const STATUS_BY_CODE: Readonly<Record<ErrorCodeKey, number>> = {
   [ErrorCode.VALIDATION_FAILED]: HttpStatus.UNPROCESSABLE_ENTITY,
   [ErrorCode.NOT_FOUND]: HttpStatus.NOT_FOUND,
   [ErrorCode.FORBIDDEN]: HttpStatus.FORBIDDEN,

@@ -514,10 +514,40 @@ jobs:
           context: .
           target: api
           push: false
-          load: false
+          # Loaded, unlike the other two, because the next step has to run something inside it.
+          load: true
+          tags: munaxa-docs-api:ci
           secret-files: npmrc=${{ runner.temp }}/npmrc
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Phase 9.2. "It builds" was the only thing this job asserted, and the first time the image
+      # was actually run — on a real deployment — every database call failed: Prisma had generated
+      # its query engine for `debian-openssl-1.1.x` because the build stage carries no libssl to
+      # detect, while the runtime stage carries OpenSSL 3. Readiness reported both tenant databases
+      # DOWN and nothing could authenticate. The Dockerfile's own comment had predicted it.
+      #
+      # This asks the image the question the deployment asks: which engine does *your* runtime
+      # require, and do you carry it? It needs no database and no network, so it is a build-time
+      # gate rather than one more thing a release engineer discovers under pressure.
+      - name: The API image carries the query engine its own runtime asks for
+        run: |
+          docker run --rm --entrypoint sh munaxa-docs-api:ci -eu -c '
+            ssl=$(ls /usr/lib/x86_64-linux-gnu/libssl.so.* 2>/dev/null | sed -n "s/.*libssl\.so\.\([0-9]\).*/\1/p" | head -1)
+            case "${ssl:-}" in
+              3) want=debian-openssl-3.0.x ;;
+              1) want=debian-openssl-1.1.x ;;
+              *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
+            esac
+            echo "This runtime requires: $want"
+            if find /app/node_modules -name "libquery_engine-$want.so.node" | grep -q .; then
+              echo "OK - the image carries the query engine its own runtime asks for."
+            else
+              echo "FAIL - no libquery_engine-$want.so.node in this image. Present instead:"
+              find /app/node_modules -name "libquery_engine-*" -printf "  %f\n" | sort -u
+              exit 1
+            fi
+          '
 
       - name: Build the worker image
         uses: docker/build-push-action@v6
