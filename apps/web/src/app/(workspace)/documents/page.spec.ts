@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Permission, type PermissionKey } from '@edms/domain';
+import { MetadataDataType, Permission, type PermissionKey } from '@edms/domain';
 
 /**
  * What the Documents page asks the API for, and what it does not.
@@ -8,9 +8,9 @@ import { Permission, type PermissionKey } from '@edms/domain';
  * ## Why the assertion is the request set rather than the render
  *
  * The page fetched nine things in one `Promise.all`. Six of them — document types, categories,
- * confidentiality levels, users, departments and metadata fields — are administrative resources
+ * confidentiality levels, users, departments and metadata fields — were administrative resources
  * behind `settings:manage`, `user:manage` and `org:manage`, and they exist for exactly two
- * dialogues: `UploadDialog` and `BulkMetadataDialog`. Nothing else on the screen reads them.
+ * dialogues: `UploadDialog` and `BulkMetadataDialog`.
  *
  * A caller who cannot open either dialogue holds none of those permissions, so all six answered
  * 403 — and sharing a `Promise.all` with the libraries meant one refusal threw the whole server
@@ -18,10 +18,15 @@ import { Permission, type PermissionKey } from '@edms/domain';
  * the running stack, that was true of the auditor *and* the document controller; only a tenant
  * administrator could open the page at all.
  *
- * So the fix is which requests are made, and the test has to be about that. A render assertion
- * cannot see it: the page renders identically whether it asked for six datasets it then ignored or
- * never asked at all. These tests read the mock's call list, which is the thing that actually
- * changed.
+ * Two phases fixed it, and both are asserted here because a regression in either restores the same
+ * dead page. The first made the *dependency* conditional: do not ask for what you cannot use. The
+ * second replaced the administrative reads with the operational ones — `/configuration/*` on
+ * `configuration:view` and `/directory/*` on `directory:view` — so a caller who *can* use them is
+ * no longer refused.
+ *
+ * A render assertion cannot see any of this: the page draws identically whether it asked for six
+ * datasets it then ignored, asked the wrong endpoint, or never asked at all. These tests read the
+ * mock's call list, which is the thing that actually changed.
  */
 
 /**
@@ -36,7 +41,14 @@ const { adminAccess, adminOptions, adminList } = vi.hoisted(() => ({
         permission: PermissionKey,
       ) => Promise<{ readonly granted: boolean; readonly permissions: readonly PermissionKey[] }>
     >(),
-  adminOptions: vi.fn<(path: string, sortBy: string) => Promise<{ data: unknown[] }>>(),
+  adminOptions:
+    vi.fn<
+      (
+        path: string,
+        sortBy: string,
+        filters?: Readonly<Record<string, string>>,
+      ) => Promise<{ data: unknown[] }>
+    >(),
   adminList:
     vi.fn<
       (path: string, state: unknown) => Promise<{ data: unknown[]; meta: { total: number } }>
@@ -52,8 +64,14 @@ vi.mock('../../../features/admin-shared', () => ({ AdminForbidden: () => null })
 
 const { default: DocumentsPage } = await import('./page');
 
-/** The six that exist only to fill a dialogue. */
-const DIALOG_ONLY = [
+/**
+ * The administrative endpoints this page must never touch again.
+ *
+ * Named individually rather than as a prefix, because the point is not "no `/admin`" — the
+ * libraries and folders are still administered reads and still required. It is these six, each of
+ * which returns more than a picker needs and demands a management key to get it.
+ */
+const ADMINISTRATIVE = [
   '/admin/document-types',
   '/admin/categories',
   '/admin/confidentiality-levels',
@@ -62,15 +80,42 @@ const DIALOG_ONLY = [
   '/admin/fields',
 ];
 
+/** A document type carrying whichever metadata field data types the test needs. */
+function typeWith(...dataTypes: readonly string[]) {
+  return {
+    id: 'type-1',
+    code: 'SOP',
+    name: 'Procedure',
+    isActive: true,
+    defaultConfidentialityId: 'conf-1',
+    fields: dataTypes.map((dataType, index) => ({
+      metadataFieldId: `field-${String(index)}`,
+      key: `f${String(index)}`,
+      name: `Field ${String(index)}`,
+      dataType,
+      isRequired: false,
+      sortOrder: index,
+      defaultValue: null,
+      options: [],
+      description: null,
+    })),
+  };
+}
+
 /** Renders the page for a caller holding exactly these grants, and reports what it asked for. */
-async function requestsFor(permissions: readonly PermissionKey[]): Promise<readonly string[]> {
+async function requestsFor(
+  permissions: readonly PermissionKey[],
+  documentTypes: readonly unknown[] = [typeWith()],
+): Promise<readonly string[]> {
   adminAccess.mockResolvedValue({ granted: true, permissions });
   adminOptions.mockImplementation((path: string) =>
     Promise.resolve({
       data:
         path === '/admin/libraries'
           ? [{ id: 'lib-1', name: 'Quality', rootFolderId: 'root-1' }]
-          : [],
+          : path === '/configuration/document-types'
+            ? [...documentTypes]
+            : [],
     }),
   );
   adminList.mockResolvedValue({ data: [], meta: { total: 0 } });
@@ -105,21 +150,41 @@ describe('render-critical data is always requested', () => {
   });
 });
 
-describe('a caller who can open neither dialogue', () => {
-  it('asks for none of the six administrative datasets', async () => {
+describe('the administrative endpoints are no longer a dependency of anybody', () => {
+  it.each([
+    ['auditor', AUDITOR],
+    ['controller', CONTROLLER],
+  ])('is not requested for %s', async (_name, permissions) => {
     /*
-     * The whole slice, in one assertion. Each of these answered 403 for this caller and took the
-     * page down with it; now they are simply not requested, which is strictly less access than
-     * before rather than more.
+     * The security half of this phase, in one assertion. Each of these returns more than the screen
+     * consumes — the numbering rule and retention schedule on a type, the confidentiality *handling
+     * policy*, an operations view of every account, a headcount per organisational unit — and each
+     * demands a management key to get it. The narrow read models exist so none of them is ever
+     * asked for again.
      */
-    const requested = await requestsFor([...AUDITOR]);
-    for (const path of DIALOG_ONLY) {
-      expect(requested, `${path} must not be requested without a dialogue to fill`).not.toContain(
-        path,
-      );
+    const requested = await requestsFor([...permissions], [typeWith(MetadataDataType.USER)]);
+    for (const path of ADMINISTRATIVE) {
+      expect(
+        requested,
+        `${path} must not be a dependency of the documents workspace`,
+      ).not.toContain(path);
     }
   });
 
+  it('never asks for the metadata field catalogue, whoever the caller is', async () => {
+    // `/admin/fields` was fetched purely to join `options` and `description` onto a type's fields.
+    // Both travel on the type now, so the tenant's whole field catalogue — including fields
+    // attached to no type, and the tenant-authored validation patterns — stopped being reachable
+    // from this page at all.
+    for (const permissions of [AUDITOR, CONTROLLER]) {
+      expect(await requestsFor([...permissions])).not.toContain('/admin/fields');
+      adminOptions.mockReset();
+      adminList.mockReset();
+    }
+  });
+});
+
+describe('a caller who can open neither dialogue', () => {
   it('asks for exactly three things', async () => {
     // Named as a count as well as a set, so an added dependency has to be looked at rather than
     // silently joining the render-critical group.
@@ -129,49 +194,115 @@ describe('a caller who can open neither dialogue', () => {
       '/documents',
     ]);
   });
+
+  it('touches neither read model', async () => {
+    const requested = await requestsFor([...AUDITOR]);
+    expect(requested.filter((path) => path.startsWith('/configuration'))).toEqual([]);
+    expect(requested.filter((path) => path.startsWith('/directory'))).toEqual([]);
+  });
 });
 
-describe('the capability boundary', () => {
-  it('fetches the dialogue data for a caller who may create', async () => {
+describe('the upload dialogue, which needs the whole filing vocabulary', () => {
+  it('is given it for a caller who may create', async () => {
     const requested = await requestsFor([Permission.DOCUMENT_VIEW, Permission.DOCUMENT_CREATE]);
-    for (const path of DIALOG_ONLY) {
-      expect(requested, `${path} is needed to fill the upload dialogue`).toContain(path);
-    }
+    expect(requested).toContain('/configuration/document-types');
+    expect(requested).toContain('/configuration/categories');
+    expect(requested).toContain('/configuration/confidentiality-levels');
   });
 
-  it('fetches it for a caller who may only bulk-edit', async () => {
-    // `BulkMetadataDialog` takes the categories, so edit alone is enough to need the group.
+  it('asks only for the types a new document may actually be filed as', async () => {
+    await requestsFor([Permission.DOCUMENT_VIEW, Permission.DOCUMENT_CREATE]);
+    const call = adminOptions.mock.calls.find(([path]) => path === '/configuration/document-types');
+    expect(call?.[2]).toEqual({ isActive: 'true' });
+  });
+});
+
+describe('the bulk metadata dialogue, which renders one control', () => {
+  it('is given the categories and nothing else', async () => {
+    /*
+     * `BulkMetadataDialog` takes `categories` and no other dataset — its whole form is one category
+     * picker. Fetching the types, the levels and a directory for it was fetching a tenant's
+     * classification vocabulary to fill in controls the dialogue does not have.
+     */
     const requested = await requestsFor([Permission.DOCUMENT_VIEW, Permission.DOCUMENT_EDIT]);
-    for (const path of DIALOG_ONLY) {
-      expect(requested).toContain(path);
-    }
+    expect(requested).toContain('/configuration/categories');
+    expect(requested).not.toContain('/configuration/document-types');
+    expect(requested).not.toContain('/configuration/confidentiality-levels');
+    expect(requested).not.toContain('/directory/people');
+    expect(requested).not.toContain('/directory/departments');
   });
+});
 
-  it('does not fetch it for grants that open neither dialogue', async () => {
+describe('capabilities that open no dialogue', () => {
+  it('drag nothing back in', async () => {
     // Download and restore are real capabilities and neither opens a dialogue that needs
-    // configuration, so neither may drag the six back in.
+    // configuration, so neither may reintroduce a dependency.
     const requested = await requestsFor([
       Permission.DOCUMENT_VIEW,
       Permission.DOCUMENT_DOWNLOAD,
       Permission.DOCUMENT_RESTORE,
     ]);
-    for (const path of DIALOG_ONLY) {
-      expect(requested).not.toContain(path);
-    }
+    expect(requested).toStrictEqual(['/admin/libraries', '/admin/folders', '/documents']);
+  });
+});
+
+describe('the directory is read only when a field asks for one', () => {
+  const CREATOR = [Permission.DOCUMENT_VIEW, Permission.DOCUMENT_CREATE] as const;
+
+  it('is untouched when no document type defines a USER or DEPARTMENT field', async () => {
+    /*
+     * The narrowest read in the product, and the point is that most tenants never trigger it. The
+     * capability says a dialogue can open; the *configuration* says whether that dialogue has a
+     * control needing a list of people. Asking on capability alone was reading the staff list to
+     * render a form with no field for it.
+     */
+    const requested = await requestsFor([...CREATOR], [typeWith(MetadataDataType.TEXT)]);
+    expect(requested).not.toContain('/directory/people');
+    expect(requested).not.toContain('/directory/departments');
+  });
+
+  it('reads people when a type defines a USER field, and still not departments', async () => {
+    const requested = await requestsFor([...CREATOR], [typeWith(MetadataDataType.USER)]);
+    expect(requested).toContain('/directory/people');
+    expect(requested).not.toContain('/directory/departments');
+  });
+
+  it('reads departments when a type defines a DEPARTMENT field, and still not people', async () => {
+    const requested = await requestsFor([...CREATOR], [typeWith(MetadataDataType.DEPARTMENT)]);
+    expect(requested).toContain('/directory/departments');
+    expect(requested).not.toContain('/directory/people');
+  });
+
+  it('reads both when a type defines both', async () => {
+    const requested = await requestsFor(
+      [...CREATOR],
+      [typeWith(MetadataDataType.USER, MetadataDataType.DEPARTMENT)],
+    );
+    expect(requested).toContain('/directory/people');
+    expect(requested).toContain('/directory/departments');
+  });
+
+  it('looks across every type, not only the first', async () => {
+    // A tenant with twelve types and one `USER` field on the last of them still needs the list.
+    const requested = await requestsFor(
+      [...CREATOR],
+      [typeWith(MetadataDataType.TEXT), typeWith(MetadataDataType.USER)],
+    );
+    expect(requested).toContain('/directory/people');
   });
 });
 
 describe('refusals are not hidden', () => {
-  it('still throws when a dialogue dataset a capable caller needs is refused', async () => {
+  it('still throws when a read a capable caller needs is refused', async () => {
     /*
-     * The distinction this slice draws is between "cannot use the feature, so do not ask" and
-     * "can use the feature and was refused". The second is a real authorization problem — the
-     * document controller's, recorded as its own follow-up — and swallowing it into an empty
-     * dropdown would be the page lying about what the tenant has configured.
+     * The distinction this design draws is between "cannot use the feature, so do not ask" and
+     * "can use the feature and was refused". The second is a real authorization problem, and
+     * swallowing it into an empty dropdown would be the page lying about what the tenant has
+     * configured.
      */
     adminAccess.mockResolvedValue({ granted: true, permissions: [...CONTROLLER] });
     adminOptions.mockImplementation((path: string) =>
-      path === '/admin/document-types'
+      path === '/configuration/document-types'
         ? Promise.reject(new Error('Forbidden'))
         : Promise.resolve({ data: [] }),
     );

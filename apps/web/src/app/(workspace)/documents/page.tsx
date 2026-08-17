@@ -1,17 +1,16 @@
 import type { ReactNode } from 'react';
 
 import type {
-  Category,
-  ConfidentialityLevel,
-  Department,
+  CategoryOption,
+  ConfidentialityOption,
+  DepartmentOption,
   DocumentSummary,
-  DocumentType,
+  DocumentTypeOption,
   Folder,
   Library,
-  MetadataField,
-  User,
+  PersonOption,
 } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { MetadataDataType, Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../features/admin-shared';
 import {
@@ -68,55 +67,90 @@ export default async function DocumentsPage({
   };
 
   /**
-   * Whether either dialogue this page can open is reachable for this caller.
+   * Which dialogue this caller can open, which is what decides what is worth fetching.
    *
-   * The six lists below exist for `UploadDialog` and `BulkMetadataDialog` and for nothing else —
-   * not the tree, not the breadcrumb, not the header, not the counts, not the list, not the
-   * toolbar. `fields` does not even reach the browser; it assembles `documentTypes[].fields` for
-   * the metadata section inside the upload dialogue.
+   * The two are not the same dependency and used to be treated as one. `UploadDialog` renders a
+   * type picker, a category picker, a confidentiality picker and the selected type's metadata
+   * fields; `BulkMetadataDialog` renders **one** control, and it is the category. So a caller who
+   * may bulk-edit but not create needs the categories and nothing else — asking for the rest was
+   * fetching a tenant's classification vocabulary to fill in a form that has no field for it.
    */
-  const needsDialogData = canCreate || canBulk.edit;
+  const opensUpload = canCreate;
+  const opensBulkMetadata = canBulk.edit;
 
   /**
-   * Two groups, because a failure means two different things.
+   * Render-critical, and deliberately still fail-fast.
    *
-   * **Render-critical**, and deliberately still fail-fast: without the libraries there is no
-   * workspace to draw, and a thrown read is the honest answer — the error boundary rather than a
-   * page pretending the tenant has none.
-   *
-   * **Dialogue-only**, and requested only when a dialogue can be opened. Every one of the six is an
-   * administrative resource: `/admin/document-types`, `/admin/categories`,
-   * `/admin/confidentiality-levels` and `/admin/fields` require `settings:manage`, `/admin/users`
-   * requires `user:manage`, `/admin/departments` requires `org:manage`. A reader holds none of
-   * them, so all six answered 403 — and because they sat in the same `Promise.all` as the
-   * libraries, one refusal took the whole workspace down with it. The document controller failed
-   * the same way, which is why this was never a purely auditor-shaped problem.
-   *
-   * The fix is the dependency, not the authorization. Nothing here is granted, widened or
-   * softened: a caller who cannot open the dialogue simply stops asking for the data that fills it,
-   * which is strictly less access than before. A caller who *can* open it asks exactly as it always
-   * did, and a 403 they receive is still thrown rather than swallowed — see the note on the
-   * document controller in `docs/reports`.
+   * Without the libraries there is no workspace to draw, and a thrown read is the honest answer —
+   * the error boundary rather than a page pretending the tenant has none.
    */
   const libraries = await adminOptions<Library>('/admin/libraries', 'name');
 
-  const [types, categories, levels, users, departments, fields] = needsDialogData
-    ? await Promise.all([
-        adminOptions<DocumentType>('/admin/document-types', 'name'),
-        adminOptions<Category>('/admin/categories', 'path'),
-        adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
-        adminOptions<User>('/admin/users', 'displayName'),
-        adminOptions<Department>('/admin/departments', 'path'),
-        adminOptions<MetadataField>('/admin/fields', 'name'),
-      ])
-    : [
-        { data: [] as DocumentType[] },
-        { data: [] as Category[] },
-        { data: [] as ConfidentialityLevel[] },
-        { data: [] as User[] },
-        { data: [] as Department[] },
-        { data: [] as MetadataField[] },
-      ];
+  /**
+   * The filing vocabulary, from the operational read model rather than the administrative one.
+   *
+   * These used to be `/admin/document-types`, `/admin/categories` and
+   * `/admin/confidentiality-levels`, all behind `settings:manage` — the key that *defines* the
+   * vocabulary, held by the tenant administrator alone. A document controller holds
+   * `document:create` and could therefore open a dialogue it could not fill, so every one of those
+   * requests answered 403 and the workspace was unopenable for it. Measured, not inferred.
+   *
+   * `/configuration/*` answers the question this page is actually asking — *what may I file this
+   * as* — on `configuration:view`, and returns a picker's worth of each: no numbering rule, no
+   * retention schedule, and no confidentiality *handling policy*. The administrative routes are
+   * untouched and still require `settings:manage`.
+   *
+   * **`/admin/fields` is gone entirely.** It was never rendered; it existed so the server could
+   * join `options` and `description` onto the type's fields. Both now travel on the type, so the
+   * tenant's whole metadata catalogue — including fields attached to nothing, and the
+   * tenant-authored validation patterns — is no longer a dependency of this page or of anything
+   * else in Documents.
+   *
+   * A 403 here is still thrown rather than swallowed. The distinction this page draws is between
+   * "cannot use the feature, so do not ask" and "can use the feature and was refused"; the second
+   * is a real authorization problem and an empty dropdown would be the page lying about what the
+   * tenant has configured.
+   */
+  const [types, categories, levels] = await Promise.all([
+    opensUpload
+      ? adminOptions<DocumentTypeOption>('/configuration/document-types', 'name', {
+          // A *new* document may only be filed as a live type. The properties form asks without
+          // this filter, because a document may already carry one that has since been retired.
+          isActive: 'true',
+        })
+      : Promise.resolve({ data: [] as DocumentTypeOption[] }),
+    opensUpload || opensBulkMetadata
+      ? adminOptions<CategoryOption>('/configuration/categories', 'path')
+      : Promise.resolve({ data: [] as CategoryOption[] }),
+    opensUpload
+      ? adminOptions<ConfidentialityOption>('/configuration/confidentiality-levels', 'name')
+      : Promise.resolve({ data: [] as ConfidentialityOption[] }),
+  ]);
+
+  /**
+   * People and departments, and only when a field actually asks for one.
+   *
+   * These fill the `USER` and `DEPARTMENT` branches of the metadata form and nothing else on this
+   * screen — not an owner picker, which is what they looked like from the outside. A tenant whose
+   * document types define no such field has no use for either list, so this asks the types it just
+   * loaded rather than asking the caller's capabilities: the capability says a dialogue can open,
+   * the *configuration* says whether the dialogue has a control that needs a directory.
+   *
+   * Which means the common case reaches `/directory` not at all, and the narrowest read in the
+   * product stays unread until a tenant configures something that needs it.
+   */
+  const fieldTypes = new Set(
+    types.data.flatMap((type) => type.fields.map((field) => field.dataType)),
+  );
+
+  const [users, departments] = await Promise.all([
+    fieldTypes.has(MetadataDataType.USER)
+      ? adminOptions<PersonOption>('/directory/people', 'displayName')
+      : Promise.resolve({ data: [] as PersonOption[] }),
+    fieldTypes.has(MetadataDataType.DEPARTMENT)
+      ? adminOptions<DepartmentOption>('/directory/departments', 'path')
+      : Promise.resolve({ data: [] as DepartmentOption[] }),
+  ]);
 
   // The library the URL names, or the first one. A landing page that showed nothing until somebody
   // picked a library would be a landing page nobody's first visit works on.
@@ -167,8 +201,6 @@ export default async function DocumentsPage({
     },
   });
 
-  const fieldsById = new Map(fields.data.map((field) => [field.id, field]));
-
   return (
     <LibraryScreen
       rows={documents.data}
@@ -186,35 +218,24 @@ export default async function DocumentsPage({
       // Resolved here, on the server, from the same URL the query above was built from — so the
       // header cannot describe a scope the list was never asked for.
       view={documentsView(state.filters, selectedLibraryId !== null)}
-      documentTypes={types.data
-        .filter((type) => type.isActive)
-        .map((type) => ({
-          value: type.id,
-          label: type.name,
-          // Assembled here rather than in the client, because the field definitions and the type's
-          // own list of them are two server reads and joining them on the client would be a third
-          // round trip for something the page already has.
-          fields: type.fields.flatMap((entry) => {
-            const definition = fieldsById.get(entry.metadataFieldId);
-            return definition === undefined
-              ? []
-              : [
-                  {
-                    id: definition.id,
-                    key: definition.key,
-                    name: definition.name,
-                    dataType: definition.dataType,
-                    isRequired: entry.isRequired,
-                    options: definition.options.map((option) => ({
-                      value: option.value,
-                      label: option.label,
-                    })),
-                    description: definition.description,
-                    defaultValue: entry.defaultValue,
-                  },
-                ];
-          }),
-        }))}
+      documentTypes={types.data.map((type) => ({
+        value: type.id,
+        label: type.name,
+        // A rename rather than a join. This used to look up each field in a `Map` built from the
+        // whole tenant's metadata catalogue — a second administrative read, fetched purely to
+        // recover two columns — and drop any field the catalogue page did not happen to include.
+        // The type carries them now, so there is nothing to look up and nothing to silently drop.
+        fields: type.fields.map((field) => ({
+          id: field.metadataFieldId,
+          key: field.key,
+          name: field.name,
+          dataType: field.dataType,
+          isRequired: field.isRequired,
+          options: field.options.map((option) => ({ value: option.value, label: option.label })),
+          description: field.description,
+          defaultValue: field.defaultValue,
+        })),
+      }))}
       categories={categories.data.map((category) => ({
         value: category.id,
         label: category.name,

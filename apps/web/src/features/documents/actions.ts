@@ -1,17 +1,16 @@
 'use server';
 
 import {
-  type Category,
+  type CategoryOption,
   type CompletedUpload,
-  type ConfidentialityLevel,
-  type Department,
+  type ConfidentialityOption,
+  type DepartmentOption,
   type Document,
-  type DocumentType,
+  type DocumentTypeOption,
   type DuplicateReport,
   type Folder,
-  type MetadataField,
+  type PersonOption,
   type UploadTarget,
-  type User,
   assignDocumentNumberSchema,
   completeUploadSchema,
   createDocumentSchema,
@@ -21,6 +20,7 @@ import {
   moveDocumentSchema,
   updateDocumentSchema,
 } from '@edms/contracts';
+import { MetadataDataType } from '@edms/domain';
 
 import { type ActionResult, succeeded, toActionResult } from '../../lib/admin/action-result';
 import { adminGet, adminList, adminOptions, adminWrite } from '../../lib/admin/api';
@@ -90,26 +90,52 @@ export async function findDuplicates(fileObjectId: string): Promise<DuplicateRep
  * its shape exactly: awaited before the dialogue opens, so there is no half-rendered form, and a
  * refusal becomes a message rather than a discarded screen.
  *
- * Nothing about authorization changes. The endpoints are the same, the token is the same, and each
- * one still enforces its own permission — a caller who could not read the tenant's departments
- * before still cannot, they simply learn it when they ask to edit rather than when they open the
- * record.
+ * **The endpoints changed in this phase, and the authorization boundary is why.** They used to be
+ * `/admin/categories`, `/admin/confidentiality-levels`, `/admin/users`, `/admin/departments`,
+ * `/admin/fields` and `/admin/document-types` — `settings:manage`, `user:manage` and `org:manage`,
+ * the three keys the matrix marks `—` for the document controller. So the sentence this comment
+ * used to end with ("a caller who could not read the tenant's departments before still cannot,
+ * they simply learn it when they ask to edit") described a real hole: the role that *edits*
+ * documents for a living could not open the form that edits one.
+ *
+ * The reads now come from the operational model — `/configuration/*` on `configuration:view`,
+ * `/directory/*` on `directory:view` — which returns a picker's worth of each rather than the
+ * administrative record. Nothing is granted here that the API does not gate; the administrative
+ * routes are untouched and still refuse this caller.
+ *
+ * `/admin/fields` is gone: `options` and `description` travel on the type's own fields now, so the
+ * tenant's whole metadata catalogue is no longer a dependency of opening a properties form.
  */
 export async function loadEditOptions(
   documentTypeId: string | null,
   confidentialityRank: number,
 ): Promise<ActionResult<DocumentEditOptions>> {
   try {
-    const [categories, levels, users, departments, fields, types] = await Promise.all([
-      adminOptions<Category>('/admin/categories', 'name'),
-      adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
-      adminOptions<User>('/admin/users', 'displayName'),
-      adminOptions<Department>('/admin/departments', 'path'),
-      adminOptions<MetadataField>('/admin/fields', 'name'),
-      adminOptions<DocumentType>('/admin/document-types', 'name'),
-    ]);
-    const fieldsById = new Map(fields.data.map((field) => [field.id, field]));
+    /*
+     * The people and department lists are conditional on the *type*, not on the caller — the same
+     * rule the workspace applies. Resolving the type first costs a round trip this used to spend
+     * on the field catalogue, and buys not touching the directory at all for the tenants whose
+     * document types define no `USER` or `DEPARTMENT` field, which is most of them.
+     *
+     * No `isActive` filter, deliberately: a document may carry a type that has since been retired,
+     * and a properties form that could not resolve it would render an empty metadata section
+     * rather than the fields the document actually has.
+     */
+    const types = await adminOptions<DocumentTypeOption>('/configuration/document-types', 'name');
     const type = types.data.find((candidate) => candidate.id === documentTypeId);
+    const fieldTypes = new Set((type?.fields ?? []).map((field) => field.dataType));
+
+    const [categories, levels, users, departments] = await Promise.all([
+      adminOptions<CategoryOption>('/configuration/categories', 'name'),
+      adminOptions<ConfidentialityOption>('/configuration/confidentiality-levels', 'name'),
+      fieldTypes.has(MetadataDataType.USER)
+        ? adminOptions<PersonOption>('/directory/people', 'displayName')
+        : Promise.resolve({ data: [] as PersonOption[] }),
+      fieldTypes.has(MetadataDataType.DEPARTMENT)
+        ? adminOptions<DepartmentOption>('/directory/departments', 'path')
+        : Promise.resolve({ data: [] as DepartmentOption[] }),
+    ]);
+
     return succeeded({
       categories: categories.data.map((category) => ({
         value: category.id,
@@ -123,26 +149,16 @@ export async function loadEditOptions(
         value: department.id,
         label: department.name,
       })),
-      fields: (type?.fields ?? []).flatMap((entry) => {
-        const definition = fieldsById.get(entry.metadataFieldId);
-        return definition === undefined
-          ? []
-          : [
-              {
-                id: definition.id,
-                key: definition.key,
-                name: definition.name,
-                dataType: definition.dataType,
-                isRequired: entry.isRequired,
-                options: definition.options.map((option) => ({
-                  value: option.value,
-                  label: option.label,
-                })),
-                description: definition.description,
-                defaultValue: entry.defaultValue,
-              },
-            ];
-      }),
+      fields: (type?.fields ?? []).map((field) => ({
+        id: field.metadataFieldId,
+        key: field.key,
+        name: field.name,
+        dataType: field.dataType,
+        isRequired: field.isRequired,
+        options: field.options.map((option) => ({ value: option.value, label: option.label })),
+        description: field.description,
+        defaultValue: field.defaultValue,
+      })),
     });
   } catch (error) {
     return toActionResult<DocumentEditOptions>(error);

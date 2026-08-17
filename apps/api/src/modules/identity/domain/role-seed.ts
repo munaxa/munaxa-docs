@@ -92,6 +92,22 @@ const DOCUMENT_CONTROLLER_PERMISSIONS: readonly PermissionKey[] = Object.freeze(
   // point — the same kind of thing as a document type or a numbering rule, which this column
   // already owns. `document:sign` is deliberately not here: see the tenant administrator's note.
   Permission.TEMPLATE_MANAGE,
+  /*
+   * The two read keys that make the four `—` cells above survivable.
+   *
+   * This column is deliberately denied `user:manage`, `org:manage` and `settings:manage`, and that
+   * denial is right — but it was also, until this phase, a denial of everything those keys gated,
+   * including *reading* the vocabulary this role files documents against. The result was measured
+   * rather than argued: `/documents` rendered the route's error boundary for a document controller,
+   * because choosing a document type meant reading `/admin/document-types`, and only the tenant
+   * administrator could.
+   *
+   * Consuming configuration is not administering it. These two grant the narrow `/configuration`
+   * and `/directory` read models and nothing else; every mutation and every administrative response
+   * stays exactly where the matrix put it.
+   */
+  Permission.CONFIGURATION_VIEW,
+  Permission.DIRECTORY_VIEW,
 ]);
 
 /** Reads everything in scope plus the trail, and may never mutate anything, at any scope (§6). */

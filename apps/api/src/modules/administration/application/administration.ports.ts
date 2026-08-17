@@ -123,10 +123,22 @@ export interface DocumentTypeRow extends Stamped {
   readonly defaultConfidentialityName: string;
   readonly revisionLabelStyle: RevisionLabelStyleKey;
   readonly isActive: boolean;
+  /**
+   * The attached fields, each carrying enough to *render* it.
+   *
+   * `options` and `description` are here rather than left to the field catalogue, and that is what
+   * lets `/admin/fields` stop being a dependency of anything that fills in a document. A choice
+   * field without its choices is a picker with nothing in it, and joining them on required a
+   * second administrative read of every field in the tenant to recover two columns.
+   *
+   * `validation` is deliberately not here: the API enforces it, and no client renders it.
+   */
   readonly fields: readonly (TypeField & {
     readonly key: string;
     readonly name: string;
     readonly dataType: MetadataDataTypeKey;
+    readonly options: readonly MetadataOption[];
+    readonly description: string | null;
   })[];
 }
 

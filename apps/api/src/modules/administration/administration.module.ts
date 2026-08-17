@@ -24,6 +24,7 @@ import { PrismaConfigurationRepository } from './infrastructure/prisma-configura
 import { PrismaNumberIssueRepository } from './infrastructure/prisma-number-issue.repository';
 import { PrismaTenantSettingsRepository } from './infrastructure/prisma-tenant-settings.repository';
 import { ApprovalRoutingController } from './presentation/approval-routing.controller';
+import { ConfigurationReadController } from './presentation/configuration-read.controller';
 import {
   ConfigurationController,
   NumberingAdminController,
@@ -61,6 +62,10 @@ import {
 @Module({
   controllers: [
     ConfigurationController,
+    // The same vocabulary, projected for the people who *file* documents rather than define it.
+    // A second controller because it is a second permission — `configuration:view` — and a
+    // class-level gate is what lets that be true of every route on it.
+    ConfigurationReadController,
     ApprovalRoutingController,
     RetentionAdminController,
     NumberingAdminController,

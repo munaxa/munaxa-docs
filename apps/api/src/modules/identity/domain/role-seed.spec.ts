@@ -47,3 +47,74 @@ describe('the document controller keeps both library keys', () => {
     expect(controller.has(Permission.LIBRARY_MANAGE)).toBe(true);
   });
 });
+
+/**
+ * Consuming the tenant's configuration, without administering it.
+ *
+ * The same shape of gap as `library:view`'s, one layer out and measured the same way. A document
+ * controller holds `document:create` and `document:edit`; exercising either means choosing a
+ * document type, a category and a confidentiality level, and filling in whatever metadata fields
+ * the type defines. Every one of those lists was behind `settings:manage`, `user:manage` or
+ * `org:manage` — the three keys §6 marks `—` for this column — so the role whose whole job is
+ * filing documents got the route's error boundary instead of the workspace.
+ *
+ * The read keys close that. What they must **not** do is close it by moving the column's four `—`
+ * cells, which is what the second block below exists to fail over.
+ */
+describe('the document controller may consume configuration without administering it', () => {
+  const controller = new Set<string>(DEFAULT_ROLE_PERMISSIONS[SystemRole.DOCUMENT_CONTROLLER]);
+
+  it('holds both operational read keys', () => {
+    expect(controller.has(Permission.CONFIGURATION_VIEW)).toBe(true);
+    expect(controller.has(Permission.DIRECTORY_VIEW)).toBe(true);
+  });
+
+  it.each([
+    ['settings:manage', Permission.SETTINGS_MANAGE],
+    ['user:manage', Permission.USER_MANAGE],
+    ['org:manage', Permission.ORG_MANAGE],
+    ['role:manage', Permission.ROLE_MANAGE],
+  ])('still holds no %s — the read keys replace it, they do not open the door to it', (_n, key) => {
+    expect(controller.has(key)).toBe(false);
+  });
+});
+
+describe('the auditor gains nothing from this phase', () => {
+  const auditor = new Set<string>(DEFAULT_ROLE_PERMISSIONS[SystemRole.AUDITOR]);
+
+  it('holds neither read key', () => {
+    // Reading documents does not require the catalogue they were filed against, and the fix for
+    // one role must not be a widening of another. Asserted rather than assumed, because "we did
+    // not add it" is not something a future seed edit has to respect.
+    expect(auditor.has(Permission.CONFIGURATION_VIEW)).toBe(false);
+    expect(auditor.has(Permission.DIRECTORY_VIEW)).toBe(false);
+  });
+});
+
+describe('the tenant administrator keeps everything it could already reach', () => {
+  const admin = new Set<string>(DEFAULT_ROLE_PERMISSIONS[SystemRole.TENANT_ADMIN]);
+
+  it('holds the read keys as well as the management ones', () => {
+    // `RbacGuard` requires *all* declared permissions rather than any, so holding `settings:manage`
+    // is not by itself enough to call a route declaring `configuration:view`.
+    expect(admin.has(Permission.CONFIGURATION_VIEW)).toBe(true);
+    expect(admin.has(Permission.DIRECTORY_VIEW)).toBe(true);
+    expect(admin.has(Permission.SETTINGS_MANAGE)).toBe(true);
+    expect(admin.has(Permission.USER_MANAGE)).toBe(true);
+    expect(admin.has(Permission.ORG_MANAGE)).toBe(true);
+  });
+});
+
+describe('no other seeded role receives the read keys', () => {
+  it.each([
+    SystemRole.LIBRARY_MANAGER,
+    SystemRole.AUTHOR,
+    SystemRole.APPROVER,
+    SystemRole.READER,
+    SystemRole.GUEST,
+  ])('%s holds neither', (role) => {
+    const held = new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]);
+    expect(held.has(Permission.CONFIGURATION_VIEW)).toBe(false);
+    expect(held.has(Permission.DIRECTORY_VIEW)).toBe(false);
+  });
+});

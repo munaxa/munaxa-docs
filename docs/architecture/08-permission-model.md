@@ -56,11 +56,67 @@ export const Permission = {
   ROLE_MANAGE: 'role:manage',
   ORG_MANAGE: 'org:manage',
   SETTINGS_MANAGE: 'settings:manage',
+  CONFIGURATION_VIEW: 'configuration:view',
+  DIRECTORY_VIEW: 'directory:view',
 } as const;
 ```
 
 Adding a permission means: add the key, add it to the matrix below, gate the endpoint, gate the UI
 affordance, and seed it into the roles that should hold it — one commit.
+
+### Consumption is not management
+
+The last two keys are the only read-oriented keys in the catalogue that are not about documents,
+and they exist because of a gap that was measured rather than argued. A document controller holds
+`document:create` and `document:edit`. Exercising either means choosing a document type, a category
+and a confidentiality level, and filling in whatever metadata fields the type defines — and every
+one of those lists was reachable only through `settings:manage`, `user:manage` or `org:manage`,
+the three keys §6 marks `—` for that column. So the role whose whole job is filing documents got
+the route's error boundary instead of the workspace: only a tenant administrator could open
+`/documents` at all.
+
+**They gate new, narrower routes rather than relaxing the administrative ones.** Phase 6.3 moved
+the library *read* to `library:view` and the folder read followed it, because in both cases the
+administrative response was also the right response for a reader. Here it is not:
+
+| Administrative resource | Also carries |
+| --- | --- |
+| `DocumentType` | numbering rule, workflow definition, retention policy, revision-label style |
+| `ConfidentialityLevel` | `allowDownload`, `allowPrint`, `watermark`, `requireReason` — the tenant's handling policy |
+| `MetadataField` | the tenant-authored `validation` patterns, and every field attached to no type |
+| `User` | email, account status, MFA enrolment, last sign-in, password state, roles, departments |
+| `Department` | entity and branch ancestry, headcount per unit |
+
+Sending any of that because a dropdown needs a label is how a read permission quietly becomes an
+administrative one. So `/admin/*` is untouched and keeps its management keys, and these two gate
+`/v1/configuration/{document-types,categories,confidentiality-levels}` and
+`/v1/directory/{people,departments}`, which return an identifier, a label, and the few fields a
+form was measured to consume. `packages/contracts`' `operations/read-models.spec.ts` asserts every
+exclusion above by name.
+
+**Two keys, not one and not six.** Document types reference categories, confidentiality levels and
+metadata fields by id and echo their names; a role that may read types but not the fields attached
+to them renders a type picker whose metadata section is empty. That is one decision. The tenant's
+*people* are a second one — different administrative owner, different sensitivity — so a tenant can
+grant the filing vocabulary without granting the staff list. §2's rule decides both: a permission is
+a decision somebody can actually be trusted with separately.
+
+**`document:view` was deliberately not reused.** It would have cost nothing to seed and nothing to
+migrate, and because `RbacGuard` reads tenant-wide grants only, gating the read models on it would
+have admitted exactly the three roles holding it tenant-wide. It is still wrong: it couples "may
+read documents" to "may read tenant configuration", and it would have handed the auditor the
+vocabulary as a side effect of a key it already held.
+
+**`settings:view` was rejected as a name.** `/admin/settings` — the password policy, the session
+idle timeout, the confidentiality rank above which reads are audited — stays on `settings:manage`,
+and a key named for settings that deliberately did not read them would promise the wrong thing.
+`configuration:view` is named for the module, service and kind enumeration behind the three
+resources it does read.
+
+Both are **tenant-wide** grants like every other key here: `AccessTokenClaims` carries tenant-wide
+grants only, ACL entries never reach `RbacGuard`, and neither route takes a scope parameter because
+a document type belongs to the tenant rather than to a node in the scope tree. Neither ends in
+`:manage`, so neither is inheritance-proof — which is correct, since no ACL walk is involved.
 
 ## 3. Scope tree and inheritance
 
@@ -201,8 +257,10 @@ assigned to them · `—` never.
 | `role:manage` | ✓ | — | — | — | — | — | — | — |
 | `org:manage` | ✓ | — | — | — | — | — | — | — |
 | `settings:manage` | ✓ | — | — | — | — | — | — | — |
+| `configuration:view` | ✓ | ✓ | — | — | — | — | — | — |
+| `directory:view` | ✓ | ✓ | — | — | — | — | — | — |
 
-Three deliberate rows:
+Four deliberate rows:
 
 - **`notification:manage` is `own` for every role, including `GUEST`** — the only row in this matrix
   that is granted to everybody, and the only one where that is not a mistake. It is not reach over
@@ -220,6 +278,13 @@ Three deliberate rows:
   seniority. An administrator who needs to approve is assigned or delegated the task, and the audit
   says so.
 - **Auditor can never mutate.** Read plus export, nothing else, at any scope.
+
+- **The two read keys are the document controller's, and not the auditor's.** Every other `✓` in
+  that column is matched by a `✓` or a `S` somewhere to its right; these two stop. The controller
+  needs them to *use* `document:create` and `document:edit`, which the auditor does not hold —
+  reading documents does not require the catalogue they were filed against. Solving the
+  controller's problem by widening the auditor would have been the cheaper migration and the wrong
+  boundary, and `role-seed.spec.ts` fails if either key appears in the auditor's set.
 
 ## 7. Enforcement
 

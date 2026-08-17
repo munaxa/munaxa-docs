@@ -11,6 +11,7 @@ import { SCOPE_REPOSITORY } from './application/scope.ports';
 import { PrismaScopeAdminRepository } from './infrastructure/prisma-scope-admin.repository';
 import { PrismaScopeRepository } from './infrastructure/prisma-scope.repository';
 import { OrganizationController } from './presentation/organization.controller';
+import { DirectoryDepartmentsController } from './presentation/directory-read.controller';
 
 import { OrganizationDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
 import { DASHBOARD_ORGANIZATION_METRICS } from '../dashboard/application/ports';
@@ -35,7 +36,12 @@ import { OrganizationReportSource } from './infrastructure/report-source.adapter
  * that — the administration surface has exactly one consumer, the controller below.
  */
 @Module({
-  controllers: [OrganizationController],
+  controllers: [
+    OrganizationController,
+    // The narrower department endpoint `OrganizationController` said would arrive — a picker's
+    // worth of each unit, gated on `directory:view` rather than `org:manage`.
+    DirectoryDepartmentsController,
+  ],
   providers: [
     // Phase 15: the departments report — counts of people, never their names.
     { provide: REPORT_ORGANIZATION_SOURCE, useClass: OrganizationReportSource },
