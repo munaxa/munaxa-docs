@@ -92,6 +92,14 @@ describe('the record page’s request fan-out', () => {
       '/admin/departments',
       '/admin/fields',
       '/admin/document-types',
+      // The operational read models those six became. The deferral is the claim under test, so the
+      // list has to follow the endpoints — otherwise it would keep passing while asserting that a
+      // page does not call routes nothing calls any more.
+      '/configuration/document-types',
+      '/configuration/categories',
+      '/configuration/confidentiality-levels',
+      '/directory/people',
+      '/directory/departments',
     ]) {
       expect(asked.some((path) => path.startsWith(deferred))).toBe(false);
     }

@@ -121,6 +121,14 @@ export async function adminRead<TResult>(path: string): Promise<ActionResult<TRe
 export async function adminOptions<TItem>(
   path: string,
   sortBy: string,
+  /**
+   * Anything the endpoint narrows by — today only `isActive` on the operational document types.
+   *
+   * A picker for a *new* document offers active types; the properties form has to resolve the type
+   * a document already carries, which may since have been retired. One parameter rather than two
+   * functions, because the difference is a filter and not a different read.
+   */
+  filters: Readonly<Record<string, string>> = {},
 ): Promise<Collection<TItem>> {
   return adminList<TItem>(path, {
     page: 1,
@@ -129,7 +137,7 @@ export async function adminOptions<TItem>(
     sortDirection: 'asc',
     search: '',
     deleted: 'live',
-    filters: {},
+    filters,
   });
 }
 

@@ -820,7 +820,17 @@ const DOCUMENT_TYPE_RELATIONS = {
       isRequired: true,
       sortOrder: true,
       defaultValue: true,
-      field: { select: { key: true, name: true, dataType: true } },
+      /*
+       * `options` and `description` join the three that were already here, and the reason is a
+       * dependency they delete rather than anything this screen renders. A form filling in a
+       * type's fields needs a `SELECT` field's choices and its hint; without them here, every
+       * consumer had to fetch the *whole* metadata field catalogue — `/admin/fields`, behind
+       * `settings:manage`, including fields attached to no type and the tenant-authored
+       * validation regexes — purely to join two columns back onto rows it already had.
+       */
+      field: {
+        select: { key: true, name: true, dataType: true, options: true, description: true },
+      },
     },
   },
 } as const;
@@ -969,7 +979,13 @@ function toDocumentType(
       isRequired: boolean;
       sortOrder: number;
       defaultValue: string | null;
-      field: { key: string; name: string; dataType: MetadataFieldRow['dataType'] };
+      field: {
+        key: string;
+        name: string;
+        dataType: MetadataFieldRow['dataType'];
+        options: unknown;
+        description: string | null;
+      };
     }[];
   },
 ): DocumentTypeRow {
@@ -996,6 +1012,8 @@ function toDocumentType(
       key: attached.field.key,
       name: attached.field.name,
       dataType: attached.field.dataType,
+      options: narrowOptions(attached.field.options),
+      description: attached.field.description,
     })),
   };
 }

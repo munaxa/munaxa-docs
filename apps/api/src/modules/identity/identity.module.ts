@@ -72,6 +72,7 @@ import { MfaController } from './presentation/mfa.controller';
 import { AuthController } from './presentation/auth.controller';
 import { DelegationController } from './presentation/delegation.controller';
 import { RoleAdminController, UserAdminController } from './presentation/identity-admin.controller';
+import { DirectoryPeopleController } from './presentation/directory-read.controller';
 
 import { IdentityDashboardMetrics } from './infrastructure/dashboard-metrics.adapter';
 import { IdentityDashboardDelegationMetrics } from './infrastructure/dashboard-delegation.adapter';
@@ -115,6 +116,9 @@ import {
     AuthController,
     MfaController,
     UserAdminController,
+    // A name and an identifier for a `USER` metadata field, gated on `directory:view`. Separate
+    // from `UserAdminController` because it is a separate permission and a far narrower response.
+    DirectoryPeopleController,
     RoleAdminController,
     DelegationController,
     // Phase 17. Machine credentials and the tenant's identity provider are *authentication*, which
