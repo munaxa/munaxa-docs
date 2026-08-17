@@ -69,6 +69,115 @@ const current = (): string[] =>
  */
 const LIBRARY = library().name;
 
+describe('the three groups', () => {
+  /*
+   * Slice 4 collapsed three bordered `Panel`s into one `Surface`. The boxes were the only thing that
+   * went: each group is still a labelled region, because `Section` claims `role="region"` with
+   * `aria-labelledby` exactly as `Panel` did. These three assertions are what stop a future tidy-up
+   * from taking the landmarks with the borders — a rail that looks grouped and is not grouped for a
+   * screen reader would pass every screenshot in the suite.
+   */
+  it.each([
+    ['Libraries', 'folder'],
+    ['Folders', 'folder'],
+    ['Views', 'folder'],
+  ] as const)('exposes %s as a labelled region', (name, view) => {
+    tree(view);
+    expect(screen.getByRole('region', { name })).toBeTruthy();
+  });
+
+  it('is one navigation landmark, not three', () => {
+    tree('folder');
+    expect(screen.getAllByRole('navigation')).toHaveLength(1);
+  });
+
+  it('keeps every link, in order, with its href', () => {
+    tree('folder', undefined, PROCEDURES.id);
+    expect(
+      screen
+        .getAllByRole('link')
+        .map((link) => [link.textContent?.trim(), link.getAttribute('href')]),
+    ).toStrictEqual([
+      [library().name, `/documents?libraryId=${library().id}&folderId=${library().rootFolderId}`],
+      ['Quality Management', `/documents?libraryId=${library().id}&folderId=${ROOT.id}`],
+      ['Procedures', `/documents?libraryId=${library().id}&folderId=${PROCEDURES.id}`],
+      ['Favourites', '/documents?favorite=true'],
+      ['Recently opened', '/documents/recent'],
+    ]);
+  });
+
+  it('drops the Folders group when no library is selected', () => {
+    /*
+     * Two different emptinesses, and this is the first: libraries exist but none is selected, so
+     * there are no folders to show. The group goes and the rule that would have sat beside it goes
+     * with it — which is why the groups are interleaved from an array rather than written out with
+     * three separators, and what this asserts.
+     */
+    tree('empty');
+    expect(screen.queryByRole('region', { name: 'Folders' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Libraries' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Views' })).toBeTruthy();
+    // The library is still listed — it is selectable, just not selected.
+    expect(screen.getByRole('link', { name: LIBRARY })).toBeTruthy();
+  });
+
+  it('says so when there is no library at all', () => {
+    // The second emptiness: a tenant with nothing set up yet. Distinct from the case above, and the
+    // only one that renders the message.
+    renderWithProviders(
+      <FolderTree
+        libraries={[]}
+        folders={[]}
+        selectedLibraryId={null}
+        selectedFolderId={null}
+        documentCounts={{}}
+        view="empty"
+      />,
+    );
+    expect(screen.getByText('No libraries have been set up yet.')).toBeTruthy();
+    // The views survive, and should: Favourites and Recently opened are answerable with no library
+    // configured, so the only links left are those two.
+    expect(screen.getAllByRole('link').map((link) => link.textContent?.trim())).toStrictEqual([
+      'Favourites',
+      'Recently opened',
+    ]);
+  });
+});
+
+describe('folder hierarchy', () => {
+  it('indents a whole spacing step per level, logically', () => {
+    /*
+     * Measured in a real browser at `8, 24, 40, 56` from the reading edge, in **both** directions —
+     * the step was three quarters of a step (12px) before Slice 4, which could not order a short name
+     * at depth two against a long one at depth one.
+     *
+     * Asserted as `paddingInlineStart` rather than as a rendered offset because that is the contract
+     * that makes the RTL half true: a `paddingLeft` here would measure identically in this jsdom test
+     * and indent from the wrong edge in Arabic.
+     */
+    renderWithProviders(
+      <FolderTree
+        libraries={[library()]}
+        folders={[
+          folder({ id: 'd0', parentId: null, name: 'L0', path: 'a', isRoot: true }),
+          folder({ id: 'd1', parentId: 'd0', name: 'L1', path: 'a.b' }),
+          folder({ id: 'd2', parentId: 'd1', name: 'L2', path: 'a.b.c' }),
+          folder({ id: 'd3', parentId: 'd2', name: 'L3', path: 'a.b.c.d' }),
+        ]}
+        selectedLibraryId={library().id}
+        selectedFolderId="d2"
+        documentCounts={{}}
+        view="folder"
+      />,
+    );
+
+    const ladder = ['L0', 'L1', 'L2', 'L3'].map(
+      (name) => screen.getByRole('link', { name }).style.paddingInlineStart,
+    );
+    expect(ladder).toStrictEqual(['0.5rem', '1.5rem', '2.5rem', '3.5rem']);
+  });
+});
+
 describe('folder view', () => {
   it('marks the folder the reader is in, and no view', () => {
     tree('folder', undefined, PROCEDURES.id);
