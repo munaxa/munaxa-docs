@@ -308,6 +308,9 @@ export function LibraryScreen({
             folders={folders}
             selectedLibraryId={selectedLibraryId}
             selectedFolderId={selectedFolderId}
+            // The same value the heading, the counts and the breadcrumb read. One resolution of
+            // "which view is this", consumed four times.
+            view={view}
           />
         }
         end={

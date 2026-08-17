@@ -12,6 +12,7 @@ import { FolderTree as FolderTreeIcon, Library as LibraryIcon, Star } from '@mun
 import type { Folder, Library } from '@edms/contracts';
 
 import { useTranslate } from '../../app/providers';
+import type { DocumentsView } from './documents-view';
 
 /**
  * Library and folder navigation — the left-hand side of the workspace.
@@ -33,6 +34,7 @@ export function FolderTree({
   selectedLibraryId,
   selectedFolderId,
   documentCounts,
+  view,
 }: {
   readonly libraries: readonly Library[];
   /** Every folder of the selected library, in path order. Empty when no library is selected. */
@@ -41,8 +43,28 @@ export function FolderTree({
   readonly selectedFolderId: string | null;
   /** Documents directly in each folder, where the server counted them. */
   readonly documentCounts?: Readonly<Record<string, number>> | undefined;
+  /**
+   * Which question the page is answering — the same value the header reads.
+   *
+   * The rail took none of this, so it answered "which folder is current" from `selectedFolderId`
+   * alone. That identifier is the library's root on a filtered view, which is how the page came to
+   * say "Favourites" at the top while the rail marked the root folder as where the reader was.
+   *
+   * Passed in rather than re-derived from the filters here. Two components inferring the same thing
+   * from the same URL is exactly how the Slice 2 defect happened, one layer up.
+   */
+  readonly view: DocumentsView;
 }): ReactNode {
   const translate = useTranslate();
+
+  /**
+   * Whether a folder is the reader's current location at all.
+   *
+   * On a filtered view the list belongs to no folder, so nothing in the two panels above may claim
+   * to be current — not the folder, and not the library either, because "you are in Quality
+   * Management" is the same false statement one level up.
+   */
+  const inFolderView = view === 'folder';
 
   const nodes = useMemo(
     () =>
@@ -84,7 +106,7 @@ export function FolderTree({
                 href={
                   `/documents?libraryId=${library.id}&folderId=${library.rootFolderId}` as Route
                 }
-                aria-current={library.id === selectedLibraryId ? 'true' : undefined}
+                aria-current={inFolderView && library.id === selectedLibraryId ? 'true' : undefined}
                 className="block truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium"
               >
                 {library.name}
@@ -113,7 +135,7 @@ export function FolderTree({
               <li key={folder.id}>
                 <Link
                   href={`/documents?libraryId=${selectedLibraryId}&folderId=${folder.id}` as Route}
-                  aria-current={folder.id === selectedFolderId ? 'true' : undefined}
+                  aria-current={inFolderView && folder.id === selectedFolderId ? 'true' : undefined}
                   className="flex items-center gap-2 truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium"
                   style={{ paddingInlineStart: `${String(0.5 + indent * 0.75)}rem` }}
                 >
@@ -140,12 +162,28 @@ export function FolderTree({
           <li>
             <Link
               href="/documents?favorite=true"
-              className="block rounded px-2 py-1 hover:bg-accent"
+              /*
+               * `filtered` is favourites, and only favourites — `documents-view.ts` says so and its
+               * own comment records that a second de-scoping filter would have to name itself
+               * before this line could stay honest. Until then this is the entry that view means.
+               *
+               * The same `aria-current` the folders above use, rather than a colour or a weight:
+               * the two panels already expose "you are here" this way, and a third mechanism for
+               * the same fact would be one screen readers do not hear.
+               */
+              aria-current={view === 'filtered' ? 'true' : undefined}
+              className="block rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium"
             >
               {translate('documents.nav.favorites')}
             </Link>
           </li>
           <li>
+            {/*
+              No `aria-current`, and not an oversight: `/documents/recent` is its own route with its
+              own screen, and that screen does not render this rail. There is no state in which this
+              link is on screen *and* current, so marking it would be describing a page this
+              component never appears on.
+            */}
             <Link href="/documents/recent" className="block rounded px-2 py-1 hover:bg-accent">
               {translate('documents.nav.recent')}
             </Link>
