@@ -82,6 +82,7 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
       <LibraryScreen
         rows={[documentSummary()]}
         total={1}
+        view="folder"
         state={listState()}
         libraries={[library()]}
         folders={[folder()]}

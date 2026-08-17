@@ -35,6 +35,7 @@ function renderLibrary(rowCount: number): void {
     <LibraryScreen
       rows={rows}
       total={rowCount}
+      view="folder"
       state={listState()}
       libraries={[library()]}
       folders={[folder()]}

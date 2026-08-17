@@ -857,10 +857,21 @@ describe('9 · responsive layout', () => {
     const { page } = await pageFor(fixture.signer.email);
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
-    await page
-      .getByRole('heading', { name: 'Documents', exact: true })
-      .first()
-      .waitFor({ timeout: 30_000 });
+    /*
+     * Waits for **the grid**, which is what this test measures, rather than for the page title.
+     *
+     * The old wait was `getByRole('heading', { name: 'Documents' })`, and it was never asserting the
+     * title — it was asserting that the page had rendered. That made a readiness gate depend on a
+     * label, so naming the folder in the heading (Slice 2) would have broken a test about
+     * horizontal overflow, for a reason having nothing to do with overflow.
+     *
+     * The checkbox poll is this file's own idiom, two describes above, and for the same stated
+     * reason: the control the test operates is the honest thing to wait for. Here the test measures
+     * the *list* at six widths, so the list's own rows are what must exist first.
+     */
+    await expect
+      .poll(() => page.getByRole('checkbox').count(), { timeout: 30_000 })
+      .toBeGreaterThan(0);
     await page.waitForLoadState('networkidle');
 
     for (const { label, width } of WIDTHS) {
@@ -975,17 +986,20 @@ describe('9 · responsive layout', () => {
     const { page } = await pageFor(fixture.signer.email);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${WEB_URL}/documents`, { waitUntil: 'domcontentloaded' });
-    await page
-      .getByRole('heading', { name: 'Documents', exact: true })
-      .first()
-      .waitFor({ timeout: 30_000 });
     await page.waitForLoadState('networkidle');
 
-    // The rail is gone at this width — that is the shell working, not a defect — so navigation has
-    // to be reachable some other way. The drawer trigger is that way, and a phone layout that hides
-    // the rail without offering it is a phone layout with no navigation at all.
+    /*
+     * The rail is gone at this width — that is the shell working, not a defect — so navigation has
+     * to be reachable some other way. The drawer trigger is that way, and a phone layout that hides
+     * the rail without offering it is a phone layout with no navigation at all.
+     *
+     * The trigger is also this test's readiness gate now. A `getByRole('heading', { name:
+     * 'Documents' })` wait used to sit above, which tied a test about navigation to the page's
+     * title; the trigger was already waited for immediately afterwards, so the heading gate was
+     * redundant as well as wrong. Its 30s patience moves here rather than being dropped.
+     */
     const trigger = page.getByRole('button', { name: /menu|navigation/i }).first();
-    await trigger.waitFor({ timeout: 15_000 });
+    await trigger.waitFor({ timeout: 30_000 });
     await trigger.click();
     await expect
       .poll(() => page.getByRole('link', { name: 'Search' }).count(), { timeout: 15_000 })
