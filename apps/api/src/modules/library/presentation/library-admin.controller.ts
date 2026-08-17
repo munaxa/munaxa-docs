@@ -130,7 +130,32 @@ export class LibraryAdminController {
 export class FolderAdminController {
   constructor(@Inject(LIBRARY_ADMIN_SERVICE) private readonly libraries: LibraryAdminService) {}
 
+  /**
+   * Reading the structure, which is not the same capability as changing it.
+   *
+   * Phase 6.3 split the libraries controller this way and deliberately left the folder routes
+   * alone: "two controllers because they are two permissions — a library manager granted one on a
+   * node frequently is not meant to have the other." That reasoning is about the two *management*
+   * grants, and it still holds — every mutation below keeps `folder:manage`. What it did not cover
+   * is reading, and the consequence only became visible later.
+   *
+   * An auditor holds `document:view` and `library:view` and, by design, no management grant at all.
+   * It could therefore open the document workspace, list the libraries — and then fail here, on the
+   * request for the folder *names*. `adminList` throws on a 403 and a server component that cannot
+   * load its data renders the route's error boundary, so the whole workspace was a dead page for
+   * the one seeded role whose entire purpose is reading.
+   *
+   * A folder is the library's internal structure, so it reads with the permission that already
+   * means "may see this library". No new permission: `folder:view` would have to be seeded, and
+   * every custom role in every existing tenant would silently lack it.
+   *
+   * The audience does not widen. `library:view` is a tenant-wide grant — `AccessTokenClaims` says
+   * so, and ACL reach is resolved per request rather than folded into the token — and the only
+   * seeded roles holding it are the tenant administrator, the document controller and the auditor,
+   * which is exactly the set that can already list the libraries these folders belong to.
+   */
   @Get()
+  @RequirePermission(Permission.LIBRARY_VIEW)
   async list(
     @Query(new ZodValidationPipe(folderListQuerySchema))
     query: ReturnType<typeof folderListQuerySchema.parse>,
@@ -138,7 +163,15 @@ export class FolderAdminController {
     return collection(await this.libraries.listFolders(query), toFolder);
   }
 
+  /**
+   * The same read capability, and the scope check is untouched.
+   *
+   * Two questions, two layers: `RbacGuard` asks whether the caller has the structural-read
+   * capability at all, and `ScopedTo` asks whether it reaches *this* folder. Relaxing the first
+   * does not relax the second.
+   */
   @Get(':id')
+  @RequirePermission(Permission.LIBRARY_VIEW)
   @ScopedTo('id', ScopeType.FOLDER)
   async get(@Param('id') id: string): Promise<Folder> {
     return toFolder(await this.libraries.getFolder(id));
