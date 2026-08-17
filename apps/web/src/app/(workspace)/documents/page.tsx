@@ -34,6 +34,12 @@ import { DOCUMENT_FILTER_KEYS, DOCUMENT_SORT_FIELDS } from '../../../lib/admin/l
  * The configuration lists — types, categories, levels, people, departments — are fetched alongside
  * because the upload dialogue needs them the moment it opens, and fetching them on open would put a
  * spinner between "drop a file" and "say what it is".
+ *
+ * **Alongside, but only for somebody who can open a dialogue.** Those lists are administrative
+ * resources, and a caller who may read documents but not configure the tenant is refused all six.
+ * Sharing one `Promise.all` with the libraries turned that refusal into the route's error boundary,
+ * so the workspace was unopenable for the auditor and for the document controller alike. The
+ * capability decides the dependency now; see the note above the two groups below.
  */
 export default async function DocumentsPage({
   searchParams,
@@ -47,15 +53,70 @@ export default async function DocumentsPage({
 
   const state = readListState(await searchParams, DOCUMENT_SORT_FIELDS, DOCUMENT_FILTER_KEYS);
 
-  const [libraries, types, categories, levels, users, departments, fields] = await Promise.all([
-    adminOptions<Library>('/admin/libraries', 'name'),
-    adminOptions<DocumentType>('/admin/document-types', 'name'),
-    adminOptions<Category>('/admin/categories', 'path'),
-    adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
-    adminOptions<User>('/admin/users', 'displayName'),
-    adminOptions<Department>('/admin/departments', 'path'),
-    adminOptions<MetadataField>('/admin/fields', 'name'),
-  ]);
+  /**
+   * What this caller may actually do, resolved once and used twice — for the dialogues below, and
+   * for whether their configuration is worth fetching at all.
+   *
+   * Read from `access.permissions`, which is the answer the API already gave; nothing here computes
+   * a second permission model.
+   */
+  const canCreate = access.permissions.includes(Permission.DOCUMENT_CREATE);
+  const canBulk = {
+    edit: access.permissions.includes(Permission.DOCUMENT_EDIT),
+    restore: access.permissions.includes(Permission.DOCUMENT_RESTORE),
+    download: access.permissions.includes(Permission.DOCUMENT_DOWNLOAD),
+  };
+
+  /**
+   * Whether either dialogue this page can open is reachable for this caller.
+   *
+   * The six lists below exist for `UploadDialog` and `BulkMetadataDialog` and for nothing else —
+   * not the tree, not the breadcrumb, not the header, not the counts, not the list, not the
+   * toolbar. `fields` does not even reach the browser; it assembles `documentTypes[].fields` for
+   * the metadata section inside the upload dialogue.
+   */
+  const needsDialogData = canCreate || canBulk.edit;
+
+  /**
+   * Two groups, because a failure means two different things.
+   *
+   * **Render-critical**, and deliberately still fail-fast: without the libraries there is no
+   * workspace to draw, and a thrown read is the honest answer — the error boundary rather than a
+   * page pretending the tenant has none.
+   *
+   * **Dialogue-only**, and requested only when a dialogue can be opened. Every one of the six is an
+   * administrative resource: `/admin/document-types`, `/admin/categories`,
+   * `/admin/confidentiality-levels` and `/admin/fields` require `settings:manage`, `/admin/users`
+   * requires `user:manage`, `/admin/departments` requires `org:manage`. A reader holds none of
+   * them, so all six answered 403 — and because they sat in the same `Promise.all` as the
+   * libraries, one refusal took the whole workspace down with it. The document controller failed
+   * the same way, which is why this was never a purely auditor-shaped problem.
+   *
+   * The fix is the dependency, not the authorization. Nothing here is granted, widened or
+   * softened: a caller who cannot open the dialogue simply stops asking for the data that fills it,
+   * which is strictly less access than before. A caller who *can* open it asks exactly as it always
+   * did, and a 403 they receive is still thrown rather than swallowed — see the note on the
+   * document controller in `docs/reports`.
+   */
+  const libraries = await adminOptions<Library>('/admin/libraries', 'name');
+
+  const [types, categories, levels, users, departments, fields] = needsDialogData
+    ? await Promise.all([
+        adminOptions<DocumentType>('/admin/document-types', 'name'),
+        adminOptions<Category>('/admin/categories', 'path'),
+        adminOptions<ConfidentialityLevel>('/admin/confidentiality-levels', 'name'),
+        adminOptions<User>('/admin/users', 'displayName'),
+        adminOptions<Department>('/admin/departments', 'path'),
+        adminOptions<MetadataField>('/admin/fields', 'name'),
+      ])
+    : [
+        { data: [] as DocumentType[] },
+        { data: [] as Category[] },
+        { data: [] as ConfidentialityLevel[] },
+        { data: [] as User[] },
+        { data: [] as Department[] },
+        { data: [] as MetadataField[] },
+      ];
 
   // The library the URL names, or the first one. A landing page that showed nothing until somebody
   // picked a library would be a landing page nobody's first visit works on.
@@ -164,15 +225,14 @@ export default async function DocumentsPage({
         value: department.id,
         label: department.name,
       }))}
-      canCreate={access.permissions.includes(Permission.DOCUMENT_CREATE)}
+      canCreate={canCreate}
       // 16 §5's *"bulk actions gated by `capabilities`"*, resolved on the server from the caller's
       // own grants. The tenant-wide floor only: whether they reach a *particular* document is the
       // API's per-object answer, and the result dialogue is where they learn it.
-      canBulk={{
-        edit: access.permissions.includes(Permission.DOCUMENT_EDIT),
-        restore: access.permissions.includes(Permission.DOCUMENT_RESTORE),
-        download: access.permissions.includes(Permission.DOCUMENT_DOWNLOAD),
-      }}
+      //
+      // Computed above rather than here, because the same two answers now decide whether the
+      // dialogues' configuration is fetched at all. One resolution, two uses.
+      canBulk={canBulk}
     />
   );
 }
