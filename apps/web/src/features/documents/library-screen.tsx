@@ -33,6 +33,7 @@ import {
 import { deleteDocument, requestDownload, restoreDocument, setFavorite } from './actions';
 import { bulkExport, bulkRestore } from './bulk-actions';
 import { BulkMetadataDialog, BulkResultDialog } from './bulk-panel';
+import type { DocumentsView } from './documents-view';
 import { FolderTree } from './folder-tree';
 import { folderTrail } from './folder-trail';
 import { DocumentStatusBadge } from './status-badge';
@@ -67,6 +68,7 @@ export function LibraryScreen({
   departments,
   canCreate,
   canBulk,
+  view,
 }: {
   readonly rows: readonly DocumentSummary[];
   readonly total: number;
@@ -95,6 +97,12 @@ export function LibraryScreen({
     readonly restore: boolean;
     readonly download: boolean;
   };
+  /**
+   * Which question this page is answering — resolved on the server, from the URL the list was
+   * fetched with. See `documents-view.ts`; the header reads it so it cannot describe a scope the
+   * API was never asked for.
+   */
+  readonly view: DocumentsView;
 }): ReactNode {
   const translate = useTranslate();
   const router = useRouter();
@@ -121,28 +129,34 @@ export function LibraryScreen({
    * the crumb comes from the same rows the trail does rather than from a second lookup.
    */
   const selectedFolder = folders.find((entry) => entry.id === selectedFolderId) ?? null;
-  const trail = folderTrail(folders, selectedFolderId);
+  const trail = view === 'folder' ? folderTrail(folders, selectedFolderId) : [];
   const rootFolderId = libraries.find((entry) => entry.id === selectedLibraryId)?.rootFolderId;
   const libraryName = trail[0]?.libraryName;
 
   const crumbs: WorkspaceCrumb[] = [
     { label: translate('nav.documents'), href: '/documents' },
-    ...(libraryName === undefined || rootFolderId === undefined
-      ? []
+    ...(view === 'filtered'
+      ? // `Documents › Favourites`. No library and no folder, because favourites belong to neither
+        // — the whole point of this view is that it crosses both.
+        [{ label: translate('documents.nav.favorites') }]
       : [
-          {
-            label: libraryName,
-            href: `/documents?libraryId=${String(selectedLibraryId)}&folderId=${rootFolderId}` as Route,
-          },
+          ...(libraryName === undefined || rootFolderId === undefined
+            ? []
+            : [
+                {
+                  label: libraryName,
+                  href: `/documents?libraryId=${String(selectedLibraryId)}&folderId=${rootFolderId}` as Route,
+                },
+              ]),
+          // The root is already spoken for by the library crumb above; repeating it would name the
+          // same place twice in a row.
+          ...trail
+            .filter((entry) => !entry.isRoot)
+            .map((entry) => ({
+              label: entry.name,
+              href: `/documents?libraryId=${String(selectedLibraryId)}&folderId=${entry.id}` as Route,
+            })),
         ]),
-    // The root is already spoken for by the library crumb above; repeating it would name the same
-    // place twice in a row.
-    ...trail
-      .filter((entry) => !entry.isRoot)
-      .map((entry) => ({
-        label: entry.name,
-        href: `/documents?libraryId=${String(selectedLibraryId)}&folderId=${entry.id}` as Route,
-      })),
   ];
   // The page you are already on is not a link — `WorkspacePage`'s own rule, applied to whichever
   // crumb ended up last rather than to a fixed position.
@@ -151,20 +165,49 @@ export function LibraryScreen({
   );
 
   /**
-   * Two counts rather than the standing sentence, when there is a folder to count.
+   * The folder being read, named — Slice 2.
    *
-   * Both are the server's own figures — `meta.total` for the documents, `Folder.childCount` for the
-   * subfolders — so neither is this screen counting the rows it happens to be holding. A folder
-   * missing from the fetched page (the API caps folders at 100) leaves `selectedFolder` null and
-   * the generic description stands, because "0 folders" would be a claim rather than an absence.
+   * The heading said "Documents" on every folder of every library, so the one element a screen
+   * reader reaches first, and the one a person's eye lands on, never said where they were. The
+   * breadcrumb knew; the heading did not.
+   *
+   * It is the folder's *own* name and therefore user data, not a translated string — which is why
+   * the fallbacks matter. `selectedFolderName` already resolves folder → library → empty on the
+   * server, and an empty result falls back to the route's name rather than rendering an empty
+   * heading.
+   */
+  const title =
+    view === 'filtered'
+      ? translate('documents.nav.favorites')
+      : view === 'folder' && selectedFolderName !== ''
+        ? selectedFolderName
+        : translate('documents.title');
+
+  /**
+   * What is here, counted at the scope the list was actually fetched at.
+   *
+   * Both figures are the server's own — `meta.total` for the documents, `Folder.childCount` for the
+   * subfolders — so neither is this screen counting rows it happens to be holding.
+   *
+   * **The subfolder count is withheld on a filtered view, and that is the defect Slice 2 exists to
+   * remove.** Favourites are collected across the tenant, so no folder's subfolder count is true of
+   * them; printing the selected folder's beside a tenant-wide document total put two numbers of
+   * different scopes in one sentence. The document total stays, because it does describe the rows on
+   * screen.
+   *
+   * A folder missing from the fetched page (the API caps folders at 100) leaves `selectedFolder`
+   * null and the generic description stands, because "0 folders" would be a claim where the truth is
+   * an absence.
    */
   const description =
-    selectedFolder === null
-      ? translate('documents.description')
-      : [
-          translate('documents.count.documents', { count: total }),
-          translate('documents.count.folders', { count: selectedFolder.childCount }),
-        ].join(' · ');
+    view === 'filtered'
+      ? translate('documents.count.documents', { count: total })
+      : selectedFolder === null
+        ? translate('documents.description')
+        : [
+            translate('documents.count.documents', { count: total }),
+            translate('documents.count.folders', { count: selectedFolder.childCount }),
+          ].join(' · ');
 
   /**
    * How many columns this viewport can actually carry — Phase 7.1.
@@ -203,7 +246,7 @@ export function LibraryScreen({
 
   return (
     <WorkspacePage
-      title={translate('documents.title')}
+      title={title}
       description={description}
       // Where you are, said once at the top rather than only by which node the tree has
       // highlighted — Phase 7. The library and the folder are how somebody describes a location out

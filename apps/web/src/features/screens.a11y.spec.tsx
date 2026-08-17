@@ -58,6 +58,8 @@ describe('document library', () => {
     departments: [],
     canCreate: true,
     canBulk: { edit: true, restore: true, download: true },
+    // A folder's contents — the view every one of these fixtures describes.
+    view: 'folder' as const,
   };
 
   it('is accessible with rows', async () => {

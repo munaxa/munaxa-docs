@@ -159,6 +159,7 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
       <LibraryScreen
         rows={[documentSummary()]}
         total={1}
+        view="folder"
         state={listState()}
         libraries={[library()]}
         folders={[folder()]}
@@ -485,6 +486,7 @@ function libraryWith(rowCount: number): ReactElement {
     <LibraryScreen
       rows={rows}
       total={rowCount}
+      view="folder"
       state={listState()}
       libraries={[library()]}
       folders={[folder()]}

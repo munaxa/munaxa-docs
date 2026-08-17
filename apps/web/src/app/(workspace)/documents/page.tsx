@@ -14,6 +14,10 @@ import type {
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../features/admin-shared';
+import {
+  documentsView,
+  suppliesDefaultFolderScope,
+} from '../../../features/documents/documents-view';
 import { LibraryScreen } from '../../../features/documents/library-screen';
 import { adminAccess, adminList, adminOptions } from '../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../lib/admin/list-state';
@@ -91,9 +95,13 @@ export default async function DocumentsPage({
       ...state.filters,
       // The URL may say only which library; a list with no folder filter at all is the whole
       // tenant, which is not what a library page means.
-      ...(state.filters.folderId === undefined &&
-        state.filters.underFolderId === undefined &&
-        state.filters.favorite === undefined &&
+      //
+      // The condition is `suppliesDefaultFolderScope` rather than the three comparisons that used
+      // to be written here. Identical filters — the same booleans, extracted and named — but now
+      // the screen's header reads the *same* predicate to decide whether it may name a folder.
+      // Written twice, the two drifted, and the favourites view ended up counting one folder's
+      // subfolders beside a tenant-wide document total.
+      ...(suppliesDefaultFolderScope(state.filters) &&
         selectedFolderId !== null && { folderId: selectedFolderId }),
     },
   });
@@ -114,6 +122,9 @@ export default async function DocumentsPage({
         selectedLibrary?.name ??
         ''
       }
+      // Resolved here, on the server, from the same URL the query above was built from — so the
+      // header cannot describe a scope the list was never asked for.
+      view={documentsView(state.filters, selectedLibraryId !== null)}
       documentTypes={types.data
         .filter((type) => type.isActive)
         .map((type) => ({
