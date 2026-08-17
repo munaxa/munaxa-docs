@@ -98,6 +98,7 @@ describe('folder tree', () => {
         selectedLibraryId={library().id}
         selectedFolderId={folder().id}
         documentCounts={{}}
+        view="folder"
       />,
     );
   });
@@ -110,6 +111,7 @@ describe('folder tree', () => {
         selectedLibraryId={null}
         selectedFolderId={null}
         documentCounts={{}}
+        view="empty"
       />,
     );
   });

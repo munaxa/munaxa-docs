@@ -185,6 +185,7 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
         selectedLibraryId={library().id}
         selectedFolderId={folder().id}
         documentCounts={{}}
+        view="folder"
       />
     ),
   },
