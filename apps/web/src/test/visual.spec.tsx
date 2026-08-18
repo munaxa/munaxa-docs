@@ -514,7 +514,7 @@ function arabicMarkup(ui: ReactElement): string {
 }
 
 /**
- * These ten baselines are generated on CI, not locally, and that is deliberate.
+ * These baselines are generated on CI, not locally, and that is deliberate.
  *
  * Nothing in this repository pins a font: the built stylesheet has no `@font-face`, so every glyph
  * comes from whatever the host machine offers. Latin survives that because every environment here
@@ -523,9 +523,18 @@ function arabicMarkup(ui: ReactElement): string {
  * different advance widths, so text wraps and truncates at different points. The rendering is
  * correct in both; it is simply not the *same* rendering, and a screenshot gate cannot average two.
  *
- * So the baseline is the one from the environment that gates: CI. The cost is that these ten fail
- * on a developer machine whose Arabic fallback differs, and the failure looks like a regression
- * when it is a font. Regenerating them locally is the wrong repair — it moves the failure to CI.
+ * So the baseline is the one from the environment that gates: CI. The cost is that these fail on a
+ * developer machine whose Arabic fallback differs, and the failure looks like a regression when it
+ * is a font. Regenerating them locally is the wrong repair — it moves the failure to CI.
+ *
+ * **Where it fails is the diagnosis, and reading it wrong cost five slices.** A failure *only* on a
+ * developer machine is the font above. A failure *on CI* is not: it means the baseline no longer
+ * matches what the product renders, and the repair is to take the run's `screenshots` artifact and
+ * commit its `.actual.png`. The ten `ar-document-list-*` images were stale from Slice 2 onward —
+ * they still showed the heading that never named the folder, the breadcrumb without its library,
+ * three bordered panels and a folder with no disclosure column — and every one of those CI failures
+ * was waved through as "the Arabic font". It was not. The required `Lint · Typecheck · Test · Build`
+ * check stayed red for five accepted slices because of it.
  *
  * The real fix is font determinism (vendor the face, point fontconfig at it for the visual run),
  * which would also close the same latent gap for Latin. That is a change to the harness rather
