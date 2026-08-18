@@ -884,6 +884,21 @@ export const en = {
       favorites: 'Favourites',
       recent: 'Recently opened',
       noLibraries: 'No libraries have been set up yet.',
+      /**
+       * What the rail is holding, against what the library has — Slice 7.
+       *
+       * `/documents` fetches folders one page at a time, at the API's maximum of a hundred, and a
+       * library with more than that showed a hundred of them and claimed nothing. Both numbers are
+       * named because only one of them is a fact about the screen: `shown` is what the reader can
+       * see and reach, `count` is what exists.
+       *
+       * Counted on the total rather than on the remainder, because the noun is "folders in this
+       * library" — which is what the sentence is about, and what the Arabic forms agree with.
+       */
+      foldersTruncated: plural({
+        one: 'Showing {shown} of {count} folder',
+        other: 'Showing {shown} of {count} folders',
+      }),
     },
     list: {
       searchPlaceholder: 'Search titles, numbers and descriptions',

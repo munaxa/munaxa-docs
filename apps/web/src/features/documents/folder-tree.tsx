@@ -82,6 +82,7 @@ export function FolderTree({
   selectedLibraryId,
   selectedFolderId,
   documentCounts,
+  folderPage,
   view,
 }: {
   readonly libraries: readonly Library[];
@@ -91,6 +92,23 @@ export function FolderTree({
   readonly selectedFolderId: string | null;
   /** Documents directly in each folder, where the server counted them. */
   readonly documentCounts?: Readonly<Record<string, number>> | undefined;
+  /**
+   * How much of the library's structure this is — Slice 7.
+   *
+   * The rail draws the folders it was handed and, until this existed, said nothing about the ones
+   * it was not: `/documents` fetches a page of a hundred and the API's `meta.hasMore` went straight
+   * in the bin. A library of a thousand folders showed a hundred and looked complete.
+   *
+   * Optional, so the component still renders from a fixture that has nothing to say about paging —
+   * an absent value means "no claim", which is the only honest default.
+   */
+  readonly folderPage?:
+    | {
+        readonly shown: number;
+        readonly total: number;
+        readonly hasMore: boolean;
+      }
+    | undefined;
   /**
    * Which question the page is answering — the same value the header reads.
    *
@@ -219,43 +237,74 @@ export function FolderTree({
               translate('documents.nav.folders'),
             ),
             body: (
-              <TreeView<FolderNode>
-                nodes={nodes}
-                expanded={[...expanded]}
-                onExpandedChange={setExpanded}
-                /*
-                 * The tree's own accessible name, reusing the group's word rather than inventing a
-                 * string. `Section` names the region; this names the widget inside it, and a screen
-                 * reader announcing "Folders, tree" is exactly what the rail means.
-                 */
-                aria-label={translate('documents.nav.folders')}
-                className="-mx-2 gap-0.5"
-                renderItem={({ node, treeItemProps, depth }) => (
-                  <Link
-                    href={`/documents?libraryId=${selectedLibraryId}&folderId=${node.id}` as Route}
-                    /*
-                     * Spread *before* `aria-current`, so the two cannot fight: `treeItemProps`
-                     * carries the role, the level, the position, the tab stop and the focus
-                     * handler, and the line below is this component's own claim about where the
-                     * reader is. `TreeView` never emits `aria-current`, and emits `aria-selected`
-                     * only when given a `selectedId` — which is why one is not passed.
-                     */
-                    {...treeItemProps}
-                    aria-current={inFolderView && node.id === selectedFolderId ? 'true' : undefined}
-                    className={`flex flex-1 items-center gap-2 truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium${
-                      // The head of the tree, given the weight of one — so the levels below it read
-                      // *from* somewhere. `depth` comes from the tree rather than from a path split
-                      // here; this is typography keyed on Platform's answer, not a second hierarchy.
-                      depth === 0 ? ' font-medium' : ''
-                    }`}
-                  >
-                    <span className="flex-1 truncate">{node.name}</span>
-                    {documentCounts?.[node.id] !== undefined && (
-                      <Badge tone="muted">{String(documentCounts[node.id])}</Badge>
-                    )}
-                  </Link>
-                )}
-              />
+              <>
+                <TreeView<FolderNode>
+                  nodes={nodes}
+                  expanded={[...expanded]}
+                  onExpandedChange={setExpanded}
+                  /*
+                   * The tree's own accessible name, reusing the group's word rather than inventing a
+                   * string. `Section` names the region; this names the widget inside it, and a screen
+                   * reader announcing "Folders, tree" is exactly what the rail means.
+                   */
+                  aria-label={translate('documents.nav.folders')}
+                  className="-mx-2 gap-0.5"
+                  renderItem={({ node, treeItemProps, depth }) => (
+                    <Link
+                      href={
+                        `/documents?libraryId=${selectedLibraryId}&folderId=${node.id}` as Route
+                      }
+                      /*
+                       * Spread *before* `aria-current`, so the two cannot fight: `treeItemProps`
+                       * carries the role, the level, the position, the tab stop and the focus
+                       * handler, and the line below is this component's own claim about where the
+                       * reader is. `TreeView` never emits `aria-current`, and emits `aria-selected`
+                       * only when given a `selectedId` — which is why one is not passed.
+                       */
+                      {...treeItemProps}
+                      aria-current={
+                        inFolderView && node.id === selectedFolderId ? 'true' : undefined
+                      }
+                      className={`flex flex-1 items-center gap-2 truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium${
+                        // The head of the tree, given the weight of one — so the levels below it read
+                        // *from* somewhere. `depth` comes from the tree rather than from a path split
+                        // here; this is typography keyed on Platform's answer, not a second hierarchy.
+                        depth === 0 ? ' font-medium' : ''
+                      }`}
+                    >
+                      <span className="flex-1 truncate">{node.name}</span>
+                      {documentCounts?.[node.id] !== undefined && (
+                        <Badge tone="muted">{String(documentCounts[node.id])}</Badge>
+                      )}
+                    </Link>
+                  )}
+                />
+                {/*
+                  What the rail is not showing.
+
+                  Rendered on `hasMore` — the server's word for "the first page is not all of
+                  them" — and not on whether the reader's own folder happened to fall outside it,
+                  because the list is incomplete either way. The extra `shown < total` guard is for
+                  the one arithmetic that would otherwise read as a contradiction: recovering a
+                  chain can bring a rail of a hundred up to the library's whole hundred-and-one, and
+                  "101 of 101" is not an incompleteness notice.
+
+                  A plain sentence rather than a control, because there is nothing yet to press:
+                  loading the rest is a lazy-loading problem with its own design, and a button that
+                  did nothing would be a worse claim than the sentence. It sits inside the
+                  `Folders` region, so it is reached with the thing it describes.
+                */}
+                {folderPage !== undefined &&
+                  folderPage.hasMore &&
+                  folderPage.shown < folderPage.total && (
+                    <p className="px-2 text-xs text-muted-foreground">
+                      {translate('documents.nav.foldersTruncated', {
+                        count: folderPage.total,
+                        shown: folderPage.shown,
+                      })}
+                    </p>
+                  )}
+              </>
             ),
           },
         ]),

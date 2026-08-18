@@ -17,8 +17,9 @@ import {
   documentsView,
   suppliesDefaultFolderScope,
 } from '../../../features/documents/documents-view';
+import { recoverSelectedFolderChain } from '../../../features/documents/folder-recovery';
 import { LibraryScreen } from '../../../features/documents/library-screen';
-import { adminAccess, adminList, adminOptions } from '../../../lib/admin/api';
+import { adminAccess, adminList, adminOptions, adminRead } from '../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../lib/admin/list-state';
 import { DOCUMENT_FILTER_KEYS, DOCUMENT_SORT_FIELDS } from '../../../lib/admin/list-keys';
 
@@ -167,9 +168,9 @@ export default async function DocumentsPage({
         ? state.filters.underFolderId
         : (selectedLibrary?.rootFolderId ?? null);
 
-  const folders =
+  const folderPage =
     selectedLibraryId === null
-      ? { data: [] as Folder[] }
+      ? { data: [] as Folder[], meta: { page: 1, pageSize: 100, total: 0, hasMore: false } }
       : await adminList<Folder>('/admin/folders', {
           page: 1,
           // The API's maximum, and it has to be: `MAX_PAGE_SIZE` is 100 and the pagination schema
@@ -177,12 +178,54 @@ export default async function DocumentsPage({
           // request 422'd and the screen threw before rendering — a page nobody could open. Found by
           // Phase 6.6's browser suite, which is the first thing in this repository to load it.
           pageSize: 100,
+          /**
+           * Load-bearing, and not merely a nicety — Slice 7.
+           *
+           * `TreeView` builds the hierarchy from `parentId` and promotes any row whose parent is
+           * missing from the list to a **root**. Whether that ever fires depends entirely on
+           * whether this page is closed under the ancestor relation, and a materialised path is
+           * what makes it so: an ancestor's path is a proper prefix of its descendant's, and a
+           * proper prefix sorts first, so every row's parent is also in the hundred.
+           *
+           * Measured against the running stack on a 149-folder library: `sortBy=path` gave **0**
+           * rows with a missing parent; `sortBy=name` gave **100 out of 100**, every one of which
+           * `TreeView` would have announced at `aria-level="1"`. Sorting this list by anything but
+           * the path turns a truncated tree into a false one.
+           *
+           * `page.spec.ts` fails if this changes.
+           */
           sortBy: 'path',
           sortDirection: 'asc',
           search: '',
           deleted: 'live',
           filters: { libraryId: selectedLibraryId },
         });
+
+  /**
+   * The folder the URL names, even when the hundred above does not contain it — Slice 7.
+   *
+   * A library with more than a hundred folders returns a prefix of its structure, and a deep link
+   * to anything past the cut used to produce a page headed with the *library's* name, a breadcrumb
+   * collapsed to `Documents`, a rail of one row and no `aria-current` — over a document list that
+   * was correctly scoped to the folder all along. `recoverSelectedFolderChain` reads that folder
+   * and whatever ancestors are needed to attach it, through the same guarded endpoint, and hands
+   * the rest of the screen a folder set in which the selection exists.
+   *
+   * `adminRead` rather than `adminGet`: a refusal here is a *result*. `adminGet` throws, which
+   * would turn a page that renders today into the route's error boundary — a regression dressed as
+   * a fix. The guards are untouched either way; `AclGuard` still decides, and its answer is simply
+   * carried rather than raised.
+   *
+   * Zero requests when the folder is already held, which is every library under a hundred folders
+   * and — because the page is closed under the ancestor relation — usually one request when it is
+   * not.
+   */
+  const folders = await recoverSelectedFolderChain({
+    selectedFolderId,
+    libraryId: selectedLibraryId,
+    folders: folderPage.data,
+    read: (id) => adminRead<Folder>(`/admin/folders/${id}`),
+  });
 
   const documents = await adminList<DocumentSummary>('/documents', {
     ...state,
@@ -207,14 +250,38 @@ export default async function DocumentsPage({
       total={documents.meta.total}
       state={state}
       libraries={libraries.data}
-      folders={folders.data}
+      folders={folders.folders}
       selectedLibraryId={selectedLibraryId}
       selectedFolderId={selectedFolderId}
-      selectedFolderName={
-        folders.data.find((folder) => folder.id === selectedFolderId)?.name ??
-        selectedLibrary?.name ??
-        ''
-      }
+      /**
+       * The folder's own name, or nothing — Slice 7.
+       *
+       * This used to read `folder?.name ?? selectedLibrary?.name ?? ''`, and that middle term was
+       * the defect. A folder past the hundred-row cut is *unknown*, not *the library*, and naming
+       * the library instead put a confident false statement in the one element a screen reader
+       * reaches first and a reader's eye lands on. `LibraryScreen` already falls back to the
+       * route's own title on an empty string, which is the honest answer to "which folder is
+       * this" when the answer could not be established.
+       *
+       * It is now empty only when the folder genuinely could not be read — refused, absent, or in
+       * another library. A folder whose *ancestors* could not be recovered still has its name
+       * here, because that name was read legitimately and the heading is the one thing the page
+       * can still say truthfully about it.
+       */
+      selectedFolderName={folders.selected?.name ?? ''}
+      /**
+       * What the rail is holding against what the library has.
+       *
+       * `meta.hasMore` was fetched and discarded from the day this page was written, so a library
+       * of a thousand folders showed a hundred and claimed nothing. The rail says so now.
+       * `shown` counts the folders actually handed to the tree — the page plus anything recovered
+       * — rather than the page size, so the sentence describes what is on screen.
+       */
+      folderPage={{
+        shown: folders.folders.length,
+        total: folderPage.meta.total,
+        hasMore: folderPage.meta.hasMore,
+      }}
       // Resolved here, on the server, from the same URL the query above was built from — so the
       // header cannot describe a scope the list was never asked for.
       view={documentsView(state.filters, selectedLibraryId !== null)}

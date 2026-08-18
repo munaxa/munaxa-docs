@@ -876,6 +876,25 @@ export const ar: Catalogue = {
       favorites: 'المفضلة',
       recent: 'فُتحت مؤخرًا',
       noLibraries: 'لم يتم إعداد أي مكتبة بعد.',
+      /**
+       * The noun forms are `documents.count.folders` above, unchanged, inside a frame that needs no
+       * verb agreement — so the dual still reads `مجلدين` and still carries no numeral, which is
+       * the Phase 7.4C rule this catalogue already follows.
+       *
+       * `{shown}` survives every form because it is a different number from the one selecting the
+       * form: how many are on screen, against how many the library has.
+       *
+       * NOT YET REVIEWED BY A NATIVE SPEAKER, on the same terms as `documents.count` above: the
+       * pattern is copied from the catalogue's existing standalone counts rather than invented.
+       */
+      foldersTruncated: plural({
+        zero: 'يظهر {shown} من أصل {count} مجلدات',
+        one: 'يظهر {shown} من أصل {count} مجلد',
+        two: 'يظهر {shown} من أصل مجلدين',
+        few: 'يظهر {shown} من أصل {count} مجلدات',
+        many: 'يظهر {shown} من أصل {count} مجلدًا',
+        other: 'يظهر {shown} من أصل {count} مجلد',
+      }),
     },
     list: {
       searchPlaceholder: 'ابحث في العناوين والأرقام والأوصاف',

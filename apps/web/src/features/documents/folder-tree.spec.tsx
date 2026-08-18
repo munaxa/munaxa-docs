@@ -1,4 +1,4 @@
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
@@ -555,5 +555,191 @@ describe('libraries and views stay flat', () => {
   it('leaves exactly one tree on the rail', () => {
     deepTree('l2');
     expect(screen.getAllByRole('tree')).toHaveLength(1);
+  });
+});
+
+/**
+ * What the rail is *not* showing — Slice 7.
+ *
+ * `/documents` fetches folders one page at a time, at the API's maximum of a hundred, and the
+ * `meta.hasMore` that came back with them went straight in the bin. A library of a hundred and
+ * forty-nine folders drew a hundred of them and looked complete — measured on the running stack,
+ * where forty-eight of the root's own children were absent with nothing on screen to say so.
+ *
+ * The notice is keyed on `hasMore` rather than on whether the reader's own folder fell outside the
+ * page, because the list is incomplete either way.
+ */
+
+function pagedTree(
+  folderPage: { readonly shown: number; readonly total: number; readonly hasMore: boolean },
+  locale?: 'ar',
+): void {
+  renderWithProviders(
+    <FolderTree
+      libraries={[library()]}
+      folders={DEEP}
+      selectedLibraryId={library().id}
+      selectedFolderId="l2"
+      documentCounts={{}}
+      folderPage={folderPage}
+      view="folder"
+    />,
+    locale,
+  );
+}
+
+/**
+ * The Folders region's text, which is where a notice about folders has to be to be found.
+ *
+ * Named by the catalogue rather than by the English literal, so the Arabic cases below read the
+ * same region rather than a differently-labelled one.
+ */
+const foldersRegion = (name: string | RegExp = 'Folders'): string =>
+  screen.getByRole('region', { name }).textContent ?? '';
+
+describe('the rail says how much of the library it is holding', () => {
+  it('names both numbers when the page is not all of them', () => {
+    // Both, because only one of them is a fact about the screen: what the reader can see and reach,
+    // against what exists. A bare "some folders are hidden" would say neither.
+    pagedTree({ shown: 100, total: 149, hasMore: true });
+    expect(foldersRegion()).toContain('Showing 100 of 149 folders');
+  });
+
+  it('says nothing at all when the page is the whole library', () => {
+    pagedTree({ shown: 5, total: 5, hasMore: false });
+    expect(foldersRegion()).not.toMatch(/showing/i);
+  });
+
+  it('says nothing when the component was told nothing about paging', () => {
+    // The prop is optional, and absent means "no claim" — the only honest default for a fixture
+    // that has nothing to say about how its folders were fetched.
+    deepTree('l2');
+    expect(foldersRegion()).not.toMatch(/showing/i);
+  });
+
+  it('makes no incompleteness claim once recovery has caught the rail up', () => {
+    /*
+     * The one arithmetic that would read as a contradiction. `hasMore` describes the *initial*
+     * page, and recovering a chain can bring a rail of a hundred up to a library's whole
+     * hundred-and-one — at which point "101 of 101 folders" is not an incompleteness notice.
+     */
+    pagedTree({ shown: 101, total: 101, hasMore: true });
+    expect(foldersRegion()).not.toMatch(/showing/i);
+  });
+
+  it('sits inside the Folders region rather than loose on the rail', () => {
+    // So it is reached with the thing it describes, by a screen reader walking regions as much as
+    // by an eye.
+    pagedTree({ shown: 100, total: 149, hasMore: true });
+    const region = screen.getByRole('region', { name: 'Folders' });
+    expect(region.textContent).toContain('Showing 100 of 149 folders');
+    // And it is text, not a control: there is nothing yet to press, and a dead button would be a
+    // worse claim than a sentence.
+    expect(within(region).queryByRole('button', { name: /showing/i })).toBeNull();
+  });
+
+  it('is a translated string, not an assembled one', () => {
+    /*
+     * Arabic selects between six plural categories, so a sentence built by concatenating a number
+     * onto a translated fragment is a sentence no translator ever saw. The catalogue owns the whole
+     * message; this asserts the Arabic form appears rather than the English one leaking through.
+     */
+    pagedTree({ shown: 100, total: 149, hasMore: true }, 'ar');
+    const text = foldersRegion('المجلدات');
+    expect(text).not.toMatch(/showing/i);
+    expect(text).toContain('مجلد');
+    expect(text).toContain('100');
+    expect(text).toContain('149');
+  });
+
+  it('agrees with the dual, which carries no numeral', () => {
+    // The catalogue's own rule for standalone counted nouns — `صفان`, `مجلدان` — followed rather
+    // than re-decided here. Two folders in the library, one on the rail.
+    pagedTree({ shown: 1, total: 2, hasMore: true }, 'ar');
+    expect(foldersRegion('المجلدات')).toContain('مجلدين');
+  });
+});
+
+/**
+ * The Slice 6 contract, frozen.
+ *
+ * Every line below is a one-line change somebody could make in good faith, and each one would
+ * quietly undo something the tree was rebuilt to get. None of them shows up in a screenshot, and
+ * none of them fails a render test, so they are asserted against the rendered ARIA instead.
+ */
+describe('the accepted TreeView contract', () => {
+  it('leaves Enter to the anchor, so no onActivate is needed or wanted', async () => {
+    // Passing `onActivate` makes `@munaxa/platform` cancel Enter again — the defect `1.6.1` fixed.
+    const user = userEvent.setup();
+    deepTree('l2');
+    const focused = focusTree();
+    expect(focused.tagName).toBe('A');
+
+    let prevented: boolean | null = null;
+    const record = (event: KeyboardEvent): void => {
+      prevented = event.defaultPrevented;
+    };
+    document.addEventListener('keydown', record);
+    try {
+      await user.keyboard('{Enter}');
+    } finally {
+      document.removeEventListener('keydown', record);
+    }
+    expect(prevented).toBe(false);
+  });
+
+  it('emits aria-current and never aria-selected, on every row', () => {
+    // Passing `selectedId` would produce both on one element: `aria-selected` describes a selection
+    // control's value, `aria-current` describes the page you are on. This rail means the second.
+    deepTree('l2');
+    for (const item of screen.getAllByRole('treeitem')) {
+      expect(item.hasAttribute('aria-selected')).toBe(false);
+    }
+    expect(screen.getByRole('treeitem', { name: 'SOP' }).getAttribute('aria-current')).toBe('true');
+  });
+
+  it('keeps expansion controlled, so a hundred folders do not arrive unfolded', () => {
+    // Dropping the `expanded` prop returns `TreeView` to its uncontrolled default, which expands
+    // everything — the flat list this replaced.
+    deepTree('l2');
+    expect(visible()).toStrictEqual(['Quality Management', 'Manuals', 'SOP', 'Records']);
+    expect(visible()).not.toContain('Reports');
+  });
+
+  it('takes depth from the tree, never from the folder’s own path or depth column', () => {
+    /*
+     * The rail used to indent by `path.split('.').length - 1`. `Folder` still carries both `path`
+     * and a server-side `depth`, and either would be an easy thing to reach for again — so the
+     * fixture sets `depth` to a value that disagrees with the parent chain, and the assertion is
+     * that `aria-level` follows the chain.
+     */
+    renderWithProviders(
+      <FolderTree
+        libraries={[library()]}
+        folders={[
+          folder({ id: 'r', parentId: null, name: 'Root', path: 'a', depth: 9, isRoot: true }),
+          folder({ id: 'k', parentId: 'r', name: 'Kid', path: 'a.b.c.d.e', depth: 1 }),
+        ]}
+        selectedLibraryId={library().id}
+        selectedFolderId="k"
+        documentCounts={{}}
+        view="folder"
+      />,
+    );
+    expect(screen.getByRole('treeitem', { name: 'Root' }).getAttribute('aria-level')).toBe('1');
+    expect(screen.getByRole('treeitem', { name: 'Kid' }).getAttribute('aria-level')).toBe('2');
+  });
+
+  it('renders one tree, and the folders are the only thing in it', () => {
+    // A Docs-local hierarchy — a nested `<ul>`, a second `role="tree"`, libraries folded in —
+    // fails here.
+    deepTree('l2');
+    expect(screen.getAllByRole('tree')).toHaveLength(1);
+    const inTree = screen.getAllByRole('treeitem').map((item) => item.getAttribute('aria-label'));
+    expect(inTree).not.toContain(library().name);
+    expect(inTree).not.toContain('Favourites');
+    for (const item of screen.getAllByRole('treeitem')) {
+      expect(item.querySelector('ul')).toBeNull();
+    }
   });
 });

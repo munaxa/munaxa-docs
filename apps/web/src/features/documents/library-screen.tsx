@@ -61,6 +61,7 @@ export function LibraryScreen({
   selectedLibraryId,
   selectedFolderId,
   selectedFolderName,
+  folderPage,
   documentTypes,
   categories,
   confidentialityLevels,
@@ -78,6 +79,21 @@ export function LibraryScreen({
   readonly selectedLibraryId: string | null;
   readonly selectedFolderId: string | null;
   readonly selectedFolderName: string;
+  /**
+   * How much of the library's structure the rail is actually holding — Slice 7.
+   *
+   * Passed through rather than counted here, because only the server knows the difference between
+   * "these are all the folders" and "these are the first hundred of them". `hasMore` is the
+   * server's own word for the second, and it describes the *initial page*: it stays true whether or
+   * not the selected folder happened to be in it.
+   */
+  readonly folderPage: {
+    /** Folders handed to the tree — the page, plus any recovered chain. */
+    readonly shown: number;
+    /** Folders the library has, counted by the API rather than by this screen. */
+    readonly total: number;
+    readonly hasMore: boolean;
+  };
   readonly documentTypes: readonly DocumentTypeChoice[];
   readonly categories: readonly Choice[];
   readonly confidentialityLevels: readonly Choice[];
@@ -308,6 +324,7 @@ export function LibraryScreen({
             folders={folders}
             selectedLibraryId={selectedLibraryId}
             selectedFolderId={selectedFolderId}
+            folderPage={folderPage}
             // The same value the heading, the counts and the breadcrumb read. One resolution of
             // "which view is this", consumed four times.
             view={view}

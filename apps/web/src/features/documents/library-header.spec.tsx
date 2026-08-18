@@ -77,6 +77,9 @@ function render({
       state={listState()}
       libraries={[library()]}
       folders={folders}
+      // Complete by construction: this fixture's folders are the library's folders, so the
+      // rail has nothing to disclaim.
+      folderPage={{ shown: folders.length, total: folders.length, hasMore: false }}
       selectedLibraryId={selectedLibraryId}
       selectedFolderId={selectedFolderId}
       selectedFolderName={selectedFolderName}
@@ -134,26 +137,73 @@ describe('folder view', () => {
 
   it('keeps the generic description when the folder is not in the fetched page', () => {
     /*
-     * Folders are fetched a hundred at a time, so the selected one can genuinely be missing from the
-     * list this screen was handed. The counts go rather than reading "0 folders", which would be a
-     * claim where the truth is an absence.
-     *
-     * `selectedFolderName` is the library's name here, not the folder's, because that is what
-     * `page.tsx` resolves when its own lookup misses — `folder?.name ?? library?.name ?? ''`. So the
-     * heading degrades to the library rather than to nothing, and the breadcrumb loses the trail it
-     * cannot walk.
+     * Folders are fetched a hundred at a time, so the selected one can be missing from the list
+     * this screen was handed — after Slice 7 that means it was refused or is genuinely gone, since
+     * anything readable is recovered before the screen renders. The counts go rather than reading
+     * "0 folders", which would be a claim where the truth is an absence.
      */
     render({
       view: 'folder',
       folders: [],
       selectedFolderId: 'absent-id',
-      selectedFolderName: 'Quality Management',
+      selectedFolderName: '',
     });
-    expect(heading()).toBe('Quality Management');
     expect(crumbs()).toStrictEqual(['Documents']);
     expect(
       screen.getByText('Everything filed in this organisation, and where it sits.'),
     ).toBeTruthy();
+  });
+
+  it('does not name the library when the folder could not be established', () => {
+    /*
+     * **The defect Slice 7 removes, stated as the thing that must never come back.**
+     *
+     * `page.tsx` resolved `folder?.name ?? selectedLibrary?.name ?? ''`, so a folder past the
+     * hundred-row cut produced a page headed with the *library's* name — a confident false
+     * statement in the one element a screen reader reaches first, over a document list that was
+     * correctly scoped to the folder all along.
+     *
+     * Unknown is now unknown: the heading falls back to the route's own title, which claims
+     * nothing about which folder this is. Restoring the `?? selectedLibrary?.name` term fails here.
+     */
+    render({
+      view: 'folder',
+      folders: [],
+      selectedFolderId: 'absent-id',
+      selectedFolderName: '',
+    });
+    expect(heading()).toBe('Documents');
+    expect(heading()).not.toBe(library().name);
+    expect(heading()).not.toBe('Quality Management');
+  });
+
+  it('names a recovered folder even when its ancestors could not be', () => {
+    /*
+     * The partial-ACL case, which is the one that decides whether "no false fallback" was worth
+     * writing. `AclGuard` said yes to this folder and no to its parent, so `page.tsx` has the
+     * folder's own name and no chain to place it on: the heading is the folder, and the breadcrumb
+     * stops rather than inventing the route to it.
+     */
+    render({
+      view: 'folder',
+      folders: [],
+      selectedFolderId: 'off-page-id',
+      selectedFolderName: 'Department 133',
+    });
+    expect(heading()).toBe('Department 133');
+    expect(crumbs()).toStrictEqual(['Documents']);
+  });
+
+  it('reads exactly like an on-page folder once the chain has been recovered', () => {
+    /*
+     * The whole point of the recovery, from the screen's side: it hands `LibraryScreen` a folder
+     * set in which the selection exists, and everything downstream — heading, trail, counts —
+     * works unchanged. Nothing in this file knows the folders arrived by two different routes.
+     */
+    render({ view: 'folder', folders: [ROOT, QUALITY, SOP], selectedFolderId: SOP.id });
+    expect(heading()).toBe('SOP');
+    expect(crumbs()).toStrictEqual(['Documents', 'Quality Management', 'Quality', 'SOP']);
+    expect(screen.getByText('18 documents · 0 folders')).toBeTruthy();
   });
 });
 
