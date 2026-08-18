@@ -2,9 +2,9 @@
 
 import type { Route } from 'next';
 import Link from 'next/link';
-import { Fragment, type ReactNode, useMemo } from 'react';
+import { Fragment, type ReactNode, useMemo, useState } from 'react';
 
-import { Badge, Section, Separator, Stack, Surface } from '@munaxa/ui';
+import { Badge, Section, Separator, Stack, Surface, TreeView } from '@munaxa/ui';
 // `Library` is also a contract type in this file, and `FolderTree` is this module's own component —
 // both icons are aliased so the names cannot collide.
 import { FolderTree as FolderTreeIcon, Library as LibraryIcon, Star } from '@munaxa/icons';
@@ -13,6 +13,7 @@ import type { Folder, Library } from '@edms/contracts';
 
 import { useTranslate } from '../../app/providers';
 import type { DocumentsView } from './documents-view';
+import { folderTrail } from './folder-trail';
 
 /**
  * A group's heading: its glyph, then its name.
@@ -31,18 +32,49 @@ function heading(icon: ReactNode, label: string): ReactNode {
 }
 
 /**
+ * A folder as `TreeView` needs it: the row it already had, plus the name under the key the tree
+ * reads.
+ *
+ * Spread rather than mapped into a second model, so `renderItem` still receives the `Folder` this
+ * product's code already knows — `childCount`, `isRoot`, `libraryName` and the rest are all still
+ * there if a later slice needs them.
+ */
+type FolderNode = Folder & { readonly label: string };
+
+/**
  * Library and folder navigation — the left-hand side of the workspace.
  *
- * The tree is rendered from the folders' **materialised paths**, not from a recursive fetch. One
- * flat list arrives, sorted by path, and nesting is derived from it: a folder's depth is how many
- * separators its path has, and its children are the folders whose path starts with its own. That is
- * the same arithmetic the ACL resolver walks (ADR-0014), and doing it here means a library of two
- * hundred folders is one request rather than one per expanded node.
+ * ## The folders are a tree, and the tree is Platform's
  *
- * **Every destination is a link, and every link is the URL.** Selecting a folder navigates rather
- * than setting state, so a filtered view of a folder is shareable, survives a reload and works with
- * the browser's own back button — which is the rule the frontend architecture states and the one a
- * tree is most often built in violation of.
+ * They used to be a flat list that *looked* nested: the rows were sorted by materialised path, the
+ * depth was `path.split('.').length - 1`, and the indentation was a `paddingInlineStart` computed
+ * from it. That drew a hierarchy without being one. Nothing collapsed, every folder in the page was
+ * always on screen, and a keyboard user tabbed through all of them one stop at a time — a hundred
+ * tab stops in a library with a hundred folders, none of them announcing a level, a position or a
+ * parent.
+ *
+ * `TreeView` is the APG `tree` pattern, and it owns everything structural now: the hierarchy from
+ * `parentId`, the depth, the indentation, the disclosure controls, one tab stop with roving focus,
+ * the arrow keys, Home and End, typeahead, and the direction mirroring that makes the horizontal
+ * keys mean "outward" and "inward" rather than left and right. None of that is reimplemented here;
+ * Slice 5 extracted it into the platform precisely so it would not have to be.
+ *
+ * ## What stays here
+ *
+ * The navigation. Every folder is still a real `<Link>` to the URL it always had, and the link
+ * *is* the treeitem — `treeItemProps` goes onto the anchor rather than onto a wrapper around it,
+ * which is what keeps one tab stop per row and lets a middle click, a context menu and the status
+ * bar all behave as they do for any other link.
+ *
+ * **No `onActivate`.** `TreeView` cancels Enter only when something is listening for it
+ * (`@munaxa/platform@1.6.1`), so an anchor keeps its own activation — Enter follows the href
+ * through Next's router exactly as a click does. Passing a handler here would mean building the
+ * same URL a second time and navigating by a different mechanism than the click, which is two
+ * definitions of one destination.
+ *
+ * **No `selectedId`.** That would emit `aria-selected`, which describes a selection *control* — a
+ * listbox's value. This rail is navigation: `aria-current` is the right answer, it is this
+ * component's to set, and the two must not both appear on one item.
  */
 export function FolderTree({
   libraries,
@@ -53,7 +85,7 @@ export function FolderTree({
   view,
 }: {
   readonly libraries: readonly Library[];
-  /** Every folder of the selected library, in path order. Empty when no library is selected. */
+  /** Every folder of the selected library. Empty when no library is selected. */
   readonly folders: readonly Folder[];
   readonly selectedLibraryId: string | null;
   readonly selectedFolderId: string | null;
@@ -82,18 +114,60 @@ export function FolderTree({
    */
   const inFolderView = view === 'folder';
 
-  const nodes = useMemo(
-    () =>
-      [...folders]
-        .sort((left, right) => left.path.localeCompare(right.path))
-        .map((folder) => ({
-          folder,
-          // The root sits at depth zero however deep its path is, so the tree is indented relative
-          // to what is shown rather than to the database's numbering.
-          indent: folder.path.split('.').length - 1,
-        })),
+  /** The adapter, and the whole of it. `parentId` travels untouched; the tree reads it. */
+  const nodes = useMemo<FolderNode[]>(
+    () => folders.map((folder) => ({ ...folder, label: folder.name })),
     [folders],
   );
+
+  /**
+   * The chain from the library's root down to the folder the URL names.
+   *
+   * `folderTrail` already walks it for the breadcrumb, so this is the same answer read twice rather
+   * than a second traversal written to a different set of rules — and its cycle guard and its
+   * "stop where the chain breaks" behaviour come along for free. A library beyond the API's
+   * hundred-folder page can genuinely be missing an ancestor; a partial trail expands what it can
+   * establish, which is the same graceful degradation the breadcrumb already shows.
+   *
+   * Derived on *every* view rather than only in `folder`, and deliberately: `selectedFolderId` is
+   * the library's root on a filtered view, so this opens the root and keeps its children on screen.
+   * They are how a reader leaves a filtered view, and hiding them would strand them there.
+   */
+  const ancestors = useMemo(
+    () => folderTrail(folders, selectedFolderId).map((folder) => folder.id),
+    [folders, selectedFolderId],
+  );
+
+  /**
+   * Which branches are open — ancestors of the selection, plus whatever the reader opened.
+   *
+   * `TreeView` expands everything when told nothing, which is right for a chart and wrong for a
+   * rail: a library of a hundred folders would arrive fully unfolded, the disclosure controls would
+   * all point down, and the tree would be the flat list it replaced. So the expansion is controlled
+   * here — but only the *set*; the walking, the toggling and the keyboard remain the tree's.
+   *
+   * Seeded from the ancestors and then owned by the reader, so a deep link arrives with its folder
+   * visible and a refresh reconstructs the same chain from the URL alone. Nothing about expansion
+   * is written to the URL: it is where you can see, not where you are, and a shared link should
+   * carry the second without the first.
+   */
+  const [expanded, setExpanded] = useState<readonly string[]>(ancestors);
+
+  /*
+   * Re-seed when the selection moves.
+   *
+   * Navigating between folders re-renders this component rather than remounting it, so
+   * `useState`'s initial value is read once and never again — a deep link followed *within* the
+   * session would otherwise arrive with its ancestors shut. Adjusting state during render is
+   * React's own answer to "a prop changed and some state derives from it", and it is a union rather
+   * than a replacement so a branch the reader opened by hand survives the move.
+   */
+  const trailKey = ancestors.join('>');
+  const [seenTrail, setSeenTrail] = useState(trailKey);
+  if (trailKey !== seenTrail) {
+    setSeenTrail(trailKey);
+    setExpanded((open) => [...new Set([...open, ...ancestors])]);
+  }
 
   /**
    * The rail's three groups, assembled before rendering so the rules between them can be placed.
@@ -145,45 +219,43 @@ export function FolderTree({
               translate('documents.nav.folders'),
             ),
             body: (
-              <ul className="-mx-2 flex flex-col gap-0.5">
-                {nodes.map(({ folder, indent }) => (
-                  <li key={folder.id}>
-                    <Link
-                      href={
-                        `/documents?libraryId=${selectedLibraryId}&folderId=${folder.id}` as Route
-                      }
-                      aria-current={
-                        inFolderView && folder.id === selectedFolderId ? 'true' : undefined
-                      }
-                      className={`flex items-center gap-2 truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium${
-                        // The head of the tree, given the weight of one — so the indentation below
-                        // it reads *from* somewhere. Typography rather than a connector line: the
-                        // rule this slice works under is that whitespace, type and indentation
-                        // carry the hierarchy, and a guide-line system is the tree component's job
-                        // rather than this composition's.
-                        indent === 0 ? ' font-medium' : ''
-                      }`}
-                      /*
-                       * A whole spacing step per level, not three quarters of one.
-                       *
-                       * Twelve pixels was not enough to order two rows whose names are different
-                       * lengths — a short name at depth two and a long one at depth one read as
-                       * the same level. Sixteen is the scale's own step and separates three levels
-                       * legibly.
-                       *
-                       * `paddingInlineStart`, so the indentation grows away from the reading edge
-                       * in both directions rather than always to the left.
-                       */
-                      style={{ paddingInlineStart: `${String(0.5 + indent)}rem` }}
-                    >
-                      <span className="flex-1 truncate">{folder.name}</span>
-                      {documentCounts?.[folder.id] !== undefined && (
-                        <Badge tone="muted">{String(documentCounts[folder.id])}</Badge>
-                      )}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
+              <TreeView<FolderNode>
+                nodes={nodes}
+                expanded={[...expanded]}
+                onExpandedChange={setExpanded}
+                /*
+                 * The tree's own accessible name, reusing the group's word rather than inventing a
+                 * string. `Section` names the region; this names the widget inside it, and a screen
+                 * reader announcing "Folders, tree" is exactly what the rail means.
+                 */
+                aria-label={translate('documents.nav.folders')}
+                className="-mx-2 gap-0.5"
+                renderItem={({ node, treeItemProps, depth }) => (
+                  <Link
+                    href={`/documents?libraryId=${selectedLibraryId}&folderId=${node.id}` as Route}
+                    /*
+                     * Spread *before* `aria-current`, so the two cannot fight: `treeItemProps`
+                     * carries the role, the level, the position, the tab stop and the focus
+                     * handler, and the line below is this component's own claim about where the
+                     * reader is. `TreeView` never emits `aria-current`, and emits `aria-selected`
+                     * only when given a `selectedId` — which is why one is not passed.
+                     */
+                    {...treeItemProps}
+                    aria-current={inFolderView && node.id === selectedFolderId ? 'true' : undefined}
+                    className={`flex flex-1 items-center gap-2 truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium${
+                      // The head of the tree, given the weight of one — so the levels below it read
+                      // *from* somewhere. `depth` comes from the tree rather than from a path split
+                      // here; this is typography keyed on Platform's answer, not a second hierarchy.
+                      depth === 0 ? ' font-medium' : ''
+                    }`}
+                  >
+                    <span className="flex-1 truncate">{node.name}</span>
+                    {documentCounts?.[node.id] !== undefined && (
+                      <Badge tone="muted">{String(documentCounts[node.id])}</Badge>
+                    )}
+                  </Link>
+                )}
+              />
             ),
           },
         ]),
@@ -228,7 +300,7 @@ export function FolderTree({
 
   return (
     /*
-      One surface, three groups — Slice 4.
+      One surface, three groups — Slice 4, unchanged by Slice 6.
 
       ## What this replaces, and why
 
