@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 
 import { ALL_PERMISSIONS, Permission } from '../packages/domain/dist/index.js';
+import roleSeed from '../apps/api/dist/modules/identity/domain/role-seed.js';
 
 /*
  * The curated deletion order, at module top level because `--cleanup` runs at top level too: a
@@ -222,6 +223,7 @@ async function seed() {
   const slug = `e2e${tenantId.replaceAll('-', '').slice(-10)}`;
   const signerId = randomUUID();
   const readerId = randomUUID();
+  const auditorId = randomUUID();
   const documentId = randomUUID();
   const revisionId = randomUUID();
 
@@ -253,9 +255,24 @@ async function seed() {
   const readerPermissions = signerPermissions.filter(
     (permission) => permission !== Permission.DOCUMENT_SIGN,
   );
+  /*
+   * And a third, who is the opposite of the other two — Slice 10.
+   *
+   * The signer and the reader differ in one permission and hold every other key in the catalogue,
+   * which is deliberate for the signing case and useless for an authorization one: a suite whose
+   * only callers are superusers cannot notice a screen that needs a permission it should not. It
+   * did not notice — `/search` was the route error boundary for two of the three seeded roles that
+   * can open it, through twenty-five green search tests.
+   *
+   * So this one holds the *product's* auditor grants, imported rather than typed: whatever
+   * `role-seed.ts` says `AUDITOR` is, this is. Nothing is added for the test's convenience, which
+   * is the only way the test can be evidence about the shipped role.
+   */
+  const auditorPermissions = [...roleSeed.DEFAULT_ROLE_PERMISSIONS.AUDITOR];
   const roles = [
     { id: randomUUID(), key: 'E2E_SIGNER', permissions: signerPermissions },
     { id: randomUUID(), key: 'E2E_READER', permissions: readerPermissions },
+    { id: randomUUID(), key: 'E2E_AUDITOR', permissions: auditorPermissions },
   ];
   for (const role of roles) {
     await client.role.create({
@@ -275,6 +292,7 @@ async function seed() {
   const people = [
     { id: signerId, email: 'signer@e2e.test', name: 'Ada Lovelace', roleId: roles[0].id },
     { id: readerId, email: 'reader@e2e.test', name: 'Bob Reader', roleId: roles[1].id },
+    { id: auditorId, email: 'auditor@e2e.test', name: 'Cleo Auditor', roleId: roles[2].id },
   ];
   for (const person of people) {
     await client.user.create({
@@ -538,6 +556,7 @@ async function seed() {
     password,
     signer: { id: signerId, email: 'signer@e2e.test', name: 'Ada Lovelace' },
     reader: { id: readerId, email: 'reader@e2e.test' },
+    auditor: { id: auditorId, email: 'auditor@e2e.test' },
     documentId,
     revisionId,
     revisionLabel: 'Rev 0',
