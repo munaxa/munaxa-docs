@@ -55,6 +55,15 @@ export interface Fixture {
   readonly password: string;
   readonly signer: { readonly id: string; readonly email: string; readonly name: string };
   readonly reader: { readonly id: string; readonly email: string };
+  /**
+   * The product's own auditor, holding `DEFAULT_ROLE_PERMISSIONS.AUDITOR` and nothing else.
+   *
+   * The signer and the reader both hold effectively the whole catalogue, which makes them useless
+   * for an authorization question: a suite whose only callers are superusers cannot notice a screen
+   * that depends on a permission it should not. It did not notice — `/search` was the route error
+   * boundary for two of the three seeded roles that can open it, through twenty-five green tests.
+   */
+  readonly auditor: { readonly id: string; readonly email: string };
   readonly documentId: string;
   readonly revisionId: string;
   readonly revisionLabel: string;

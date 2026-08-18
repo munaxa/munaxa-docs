@@ -529,6 +529,216 @@ describe('search bar in the running application', () => {
 });
 
 /**
+ * The same workspace, opened by somebody who is not an administrator — Slice 10.
+ *
+ * ## Why this suite needed a second persona
+ *
+ * Every test above signs in as `fixture.signer`, whose role is seeded with `ALL_PERMISSIONS`. That
+ * is right for the signing case it was written for and blind to an authorization one: twenty-five
+ * green search tests ran, and none of them could have noticed that `/search` fetched four
+ * administrative datasets to caption its facets and threw the whole render when they were refused.
+ *
+ * Measured on the running stack before the fix: the seeded **auditor** and **document controller**
+ * both got the route error boundary — no heading, no search box, no results — while `/search`,
+ * `/search/saved` and `/search/recent` all answered 200 for them. The workspace was unusable for
+ * two of the three roles that can open it, and the search API was never the problem.
+ *
+ * So this signs in as the product's own auditor — `DEFAULT_ROLE_PERMISSIONS.AUDITOR`, imported by
+ * the fixture rather than typed out, with nothing added for the test's convenience — and does what
+ * an auditor comes here to do.
+ */
+describe('search as the seeded auditor, who administers nothing', () => {
+  let fixture: Fixture;
+  let servers: Servers | null = null;
+  let browser: Browser;
+  let context: BrowserContext;
+  let page: Page;
+
+  beforeAll(async () => {
+    fixture = seedFixture();
+    servers = await startServers(fixture);
+    browser = await chromium.launch(
+      existsSync(CHROMIUM_PATH) ? { executablePath: CHROMIUM_PATH } : {},
+    );
+    const state = await signInAndCapture(
+      browser,
+      WEB_URL,
+      fixture.auditor.email,
+      fixture.password,
+      fixture.slug,
+    );
+    context = await browser.newContext({
+      storageState: state,
+      viewport: { width: 1440, height: 900 },
+    });
+    page = await context.newPage();
+
+    /*
+     * The index is built by an administrator, and searched by everybody else.
+     *
+     * The fixture writes its documents straight into the database, so nothing has been indexed yet
+     * — the suite above reindexes for exactly this reason. It is done here as the **signer**, who
+     * holds `settings:manage`, because that is who does it in production: `POST /search/rebuild`
+     * is the one operator act on the search controller and it is gated accordingly. The auditor's
+     * own grants are not touched, which is the whole point of this block.
+     */
+    const operator = await browser.newContext({
+      storageState: await signInAndCapture(
+        browser,
+        WEB_URL,
+        fixture.signer.email,
+        fixture.password,
+        fixture.slug,
+      ),
+    });
+    const operatorPage = await operator.newPage();
+    const token = (await operator.cookies()).find((cookie) => cookie.name === 'edms_at')?.value;
+    const api = `http://127.0.0.1:${String(API_PORT)}/api/v1`;
+    const headers = { Authorization: `Bearer ${token ?? ''}` };
+    const started = await operatorPage.request.post(`${api}/search/rebuild`, { headers });
+    if (!started.ok()) {
+      throw new Error(`the operator reindex was refused: ${String(started.status())}`);
+    }
+    // Polled through the product's own status endpoint rather than slept on. `expect.poll` belongs
+    // to a test body, and this is setup.
+    const deadline = Date.now() + 90_000;
+    let rebuildState = 'RUNNING';
+    while (rebuildState === 'RUNNING' && Date.now() < deadline) {
+      const status = await operatorPage.request.get(`${api}/search/rebuild`, { headers });
+      rebuildState = status.ok()
+        ? (((await status.json()) as { state?: string }).state ?? 'unknown')
+        : 'unknown';
+      if (rebuildState === 'RUNNING') {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    if (rebuildState === 'RUNNING') {
+      throw new Error('the search index never finished rebuilding');
+    }
+    await operator.close();
+  }, 300_000);
+
+  afterAll(async () => {
+    await context?.close();
+    await browser?.close();
+    stopServers(servers);
+    cleanUpFixtures();
+  });
+
+  it('opens the workspace rather than the route error boundary', async () => {
+    await page.goto(`${WEB_URL}/search`, { waitUntil: 'networkidle' });
+    const body = await page.locator('body').innerText();
+
+    expect(body, 'the auditor got the error boundary').not.toMatch(/something went wrong/i);
+    await page
+      .getByRole('heading', { name: en.search.title, level: 1 })
+      .waitFor({ state: 'visible' });
+  });
+
+  it('runs a real search and gets results back', async () => {
+    await gotoPopulated(page, fixture.documentNumber);
+    const body = await page.locator('body').innerText();
+
+    expect(body).not.toMatch(/something went wrong/i);
+    expect(body, 'the auditor’s search returned nothing').toContain(fixture.documentNumber);
+  });
+
+  it('keeps the facet controls usable, labels or no labels', async () => {
+    /*
+     * The auditor holds neither `configuration:view` nor `directory:view`, so no label read is
+     * issued at all and every bucket falls back to its raw value through `labels?.[value] ?? value`.
+     * A caption is what degrades; the control is not allowed to.
+     */
+    await gotoPopulated(page, fixture.documentNumber);
+    // The workspace first: a page that fell over has no facets either, and "no facets" must never
+    // be how this test passes.
+    expect(await page.locator('body').innerText()).not.toMatch(/something went wrong/i);
+    await page
+      .getByRole('heading', { name: en.search.title, level: 1 })
+      .waitFor({ state: 'visible' });
+
+    const facets = page.locator('aside button[aria-pressed]');
+    const count = await facets.count();
+    if (count === 0) {
+      // A single-hit corpus can legitimately produce no bucket worth showing; the assertion that
+      // matters then is the one above, that the page rendered at all.
+      return;
+    }
+    for (let index = 0; index < count; index += 1) {
+      const facet = facets.nth(index);
+      expect(await facet.isVisible()).toBe(true);
+      expect(await facet.isEnabled()).toBe(true);
+      // A raw identifier is an acceptable caption; an empty one is not — that would be a bucket
+      // nobody could read or aim at.
+      expect((await facet.innerText()).trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('opens a result, which is what a search is for', async () => {
+    await gotoPopulated(page, fixture.documentNumber);
+    await page.locator(`main a[href^="/documents/"]`).first().click();
+    await page.waitForURL(/\/documents\/[0-9a-f-]+/, { timeout: 30_000 });
+
+    const body = await page.locator('body').innerText();
+    expect(body).not.toMatch(/something went wrong/i);
+  });
+
+  it('is still refused every administrative dataset, at the API', async () => {
+    /*
+     * The security half, and it is asserted through the API rather than the browser because that is
+     * where the guard is. This slice removed a *dependency*; it must not have moved a boundary.
+     */
+    const login = await fetch(`http://127.0.0.1:${String(API_PORT)}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: fixture.auditor.email,
+        password: fixture.password,
+        tenant: fixture.slug,
+      }),
+    });
+    const { accessToken } = (await login.json()) as { accessToken: string };
+
+    for (const path of [
+      '/admin/document-types',
+      '/admin/categories',
+      '/admin/departments',
+      '/admin/entities',
+      '/configuration/document-types',
+      '/configuration/categories',
+      '/directory/departments',
+    ]) {
+      const refused = await fetch(
+        `http://127.0.0.1:${String(API_PORT)}/api/v1${path}?pageSize=100`,
+        { headers: { authorization: `Bearer ${accessToken}` } },
+      );
+      expect(refused.status, `${path} must still refuse the auditor`).toBe(403);
+    }
+  });
+
+  it('can still reach the search API itself', async () => {
+    // The other half of the same claim: nothing the auditor legitimately holds was taken away.
+    const login = await fetch(`http://127.0.0.1:${String(API_PORT)}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: fixture.auditor.email,
+        password: fixture.password,
+        tenant: fixture.slug,
+      }),
+    });
+    const { accessToken } = (await login.json()) as { accessToken: string };
+
+    for (const path of ['/search?sort=relevance&q=quality', '/search/saved', '/search/recent']) {
+      const allowed = await fetch(`http://127.0.0.1:${String(API_PORT)}/api/v1${path}`, {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      expect(allowed.status, `${path} must remain open to the auditor`).toBe(200);
+    }
+  });
+});
+
+/**
  * The populated screen, reached the way a link would reach it.
  *
  * The URL *is* this screen's state — `search-screen.tsx` says so and the server renders the first
