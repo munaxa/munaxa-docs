@@ -163,6 +163,7 @@ const SURFACES: readonly { readonly name: string; readonly ui: () => ReactElemen
         state={listState()}
         libraries={[library()]}
         folders={[folder()]}
+        folderPage={{ shown: 1, total: 1, hasMore: false }}
         selectedLibraryId={library().id}
         selectedFolderId={folder().id}
         selectedFolderName="Procedures"
@@ -491,6 +492,7 @@ function libraryWith(rowCount: number): ReactElement {
       state={listState()}
       libraries={[library()]}
       folders={[folder()]}
+      folderPage={{ shown: 1, total: 1, hasMore: false }}
       selectedLibraryId={library().id}
       selectedFolderId={folder().id}
       selectedFolderName="Procedures"

@@ -48,6 +48,9 @@ describe('document library', () => {
     state: listState(),
     libraries: [library()],
     folders: [folder()],
+    // One folder, and it is the library's only one — so `hasMore` is false and the rail says
+    // nothing about folders beyond the page.
+    folderPage: { shown: 1, total: 1, hasMore: false },
     selectedLibraryId: library().id,
     selectedFolderId: folder().id,
     selectedFolderName: 'Procedures',
