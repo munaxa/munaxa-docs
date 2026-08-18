@@ -1,4 +1,5 @@
-import { screen } from '@testing-library/react';
+import { cleanup, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
 import { renderWithProviders } from '../../test/a11y';
@@ -53,12 +54,28 @@ function tree(
   );
 }
 
-/** Every link the rail currently claims the reader is on, by accessible name. */
+/**
+ * Every destination the rail draws, in document order — libraries, folders and views alike.
+ *
+ * Two roles rather than one, and that is Slice 6's doing: an explicit `role="treeitem"` on an
+ * anchor **replaces** its implicit `link` role, so `getAllByRole('link')` now stops at the
+ * libraries and the views and never sees a folder. The folders are still anchors, still carry an
+ * `href` and still navigate — only the name ARIA gives them changed — so a query describing the
+ * whole rail has to ask for both.
+ *
+ * Sorted by position rather than concatenated, because the assertions below are about *order*: the
+ * library above its folders, the folders above the views.
+ */
+const anchors = (): HTMLElement[] =>
+  [...screen.queryAllByRole('link'), ...screen.queryAllByRole('treeitem')].sort((a, b) =>
+    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) === 0 ? 1 : -1,
+  );
+
+/** Every destination the rail currently claims the reader is on, by accessible name. */
 const current = (): string[] =>
-  screen
-    .getAllByRole('link')
-    .filter((link) => link.getAttribute('aria-current') !== null)
-    .map((link) => link.textContent?.trim() ?? '');
+  anchors()
+    .filter((anchor) => anchor.getAttribute('aria-current') !== null)
+    .map((anchor) => anchor.textContent?.trim() ?? '');
 
 /**
  * The library's own name, read from the fixture rather than repeated as a literal.
@@ -91,12 +108,16 @@ describe('the three groups', () => {
     expect(screen.getAllByRole('navigation')).toHaveLength(1);
   });
 
-  it('keeps every link, in order, with its href', () => {
+  it('keeps every visible link, in order, with its href', () => {
+    /*
+     * "Every link" used to mean every folder, because the rail drew them all. It is a tree now, so
+     * the set is every *visible* one — the selection's ancestors are open and anything else is
+     * behind a disclosure. That is the whole behavioural difference this slice introduces, and the
+     * hrefs either side of the folders are unchanged, which is the half that must not move.
+     */
     tree('folder', undefined, PROCEDURES.id);
     expect(
-      screen
-        .getAllByRole('link')
-        .map((link) => [link.textContent?.trim(), link.getAttribute('href')]),
+      anchors().map((anchor) => [anchor.textContent?.trim(), anchor.getAttribute('href')]),
     ).toStrictEqual([
       [library().name, `/documents?libraryId=${library().id}&folderId=${library().rootFolderId}`],
       ['Quality Management', `/documents?libraryId=${library().id}&folderId=${ROOT.id}`],
@@ -144,40 +165,6 @@ describe('the three groups', () => {
   });
 });
 
-describe('folder hierarchy', () => {
-  it('indents a whole spacing step per level, logically', () => {
-    /*
-     * Measured in a real browser at `8, 24, 40, 56` from the reading edge, in **both** directions —
-     * the step was three quarters of a step (12px) before Slice 4, which could not order a short name
-     * at depth two against a long one at depth one.
-     *
-     * Asserted as `paddingInlineStart` rather than as a rendered offset because that is the contract
-     * that makes the RTL half true: a `paddingLeft` here would measure identically in this jsdom test
-     * and indent from the wrong edge in Arabic.
-     */
-    renderWithProviders(
-      <FolderTree
-        libraries={[library()]}
-        folders={[
-          folder({ id: 'd0', parentId: null, name: 'L0', path: 'a', isRoot: true }),
-          folder({ id: 'd1', parentId: 'd0', name: 'L1', path: 'a.b' }),
-          folder({ id: 'd2', parentId: 'd1', name: 'L2', path: 'a.b.c' }),
-          folder({ id: 'd3', parentId: 'd2', name: 'L3', path: 'a.b.c.d' }),
-        ]}
-        selectedLibraryId={library().id}
-        selectedFolderId="d2"
-        documentCounts={{}}
-        view="folder"
-      />,
-    );
-
-    const ladder = ['L0', 'L1', 'L2', 'L3'].map(
-      (name) => screen.getByRole('link', { name }).style.paddingInlineStart,
-    );
-    expect(ladder).toStrictEqual(['0.5rem', '1.5rem', '2.5rem', '3.5rem']);
-  });
-});
-
 describe('folder view', () => {
   it('marks the folder the reader is in, and no view', () => {
     tree('folder', undefined, PROCEDURES.id);
@@ -219,7 +206,12 @@ describe('filtered view', () => {
 
   it('still shows the folders, because they are how the reader leaves this view', () => {
     tree('filtered');
-    expect(screen.getByRole('link', { name: 'Procedures' })).toBeTruthy();
+    // A treeitem now rather than a link, and still an anchor with the folder's own href — the rail
+    // being a tree must not have cost the reader the way out of a filtered view.
+    const procedures = screen.getByRole('treeitem', { name: 'Procedures' });
+    expect(procedures.getAttribute('href')).toBe(
+      `/documents?libraryId=${library().id}&folderId=${PROCEDURES.id}`,
+    );
   });
 });
 
@@ -245,5 +237,323 @@ describe('Arabic', () => {
     expect(current()).toStrictEqual([LIBRARY, 'Procedures']);
     // And the Arabic favourites entry stays unmarked on a folder view.
     expect(current()).not.toContain('المفضلة');
+  });
+});
+
+/**
+ * The folders are a Platform tree now — Slice 6.
+ *
+ * ## What these protect that the assertions above cannot
+ *
+ * Everything above would pass against the flat list this slice replaced. The rail rendered every
+ * folder as a link, marked the current one, and read correctly in Arabic long before it was a tree.
+ * So the tests here are about the things that only became true when `TreeView` took the hierarchy:
+ * that the widget *is* a tree, that the anchor *is* the treeitem, that there is one tab stop rather
+ * than one per folder, and that `parentId` decides the shape.
+ *
+ * Two of them are about what must **not** appear. `aria-selected` describes a selection control and
+ * would arrive the moment somebody passed `selectedId`; `onActivate` would arrive the moment
+ * somebody decided Enter needed help. Both are one-line mistakes that look like improvements, and
+ * neither shows up in a screenshot.
+ */
+
+/*
+ * Three levels down one branch, two down another.
+ *
+ * No folder here is called `Quality`, and that is deliberate rather than incidental: the library
+ * fixture is, and a folder sharing its name would make "no library appears inside the tree" pass or
+ * fail on a coincidence of strings instead of on what is in the tree.
+ *
+ * `Records` has a child so that it has a disclosure control — a leaf gets a spacer, and the branch
+ * that must stay shut has to be one the reader could actually open.
+ */
+const DEEP = [
+  folder({ id: 'l0', parentId: null, name: 'Quality Management', path: 'a', isRoot: true }),
+  folder({ id: 'l1', parentId: 'l0', name: 'Manuals', path: 'a.b' }),
+  folder({ id: 'l2', parentId: 'l1', name: 'SOP', path: 'a.b.c' }),
+  // A sibling of the selection's parent — the branch that must stay shut until somebody opens it.
+  folder({ id: 'other', parentId: 'l0', name: 'Records', path: 'a.z' }),
+  folder({ id: 'other-child', parentId: 'other', name: 'Reports', path: 'a.z.r' }),
+];
+
+function deepTree(selectedFolderId: string | null, locale?: 'ar'): void {
+  renderWithProviders(
+    <FolderTree
+      libraries={[library()]}
+      folders={DEEP}
+      selectedLibraryId={library().id}
+      selectedFolderId={selectedFolderId}
+      documentCounts={{}}
+      view="folder"
+    />,
+    locale,
+  );
+}
+
+/** The folder rows on screen, by accessible name, in visual order. */
+const visible = (): string[] =>
+  screen.getAllByRole('treeitem').map((item) => item.getAttribute('aria-label') ?? '');
+
+/**
+ * Put focus where a keyboard arriving at the tree puts it, and say which element that is.
+ *
+ * Not `user.tab()`. The rail's first stop is the *library* link one group above the folders, so a
+ * tab from the document lands outside the tree and every arrow key afterwards is a page keystroke —
+ * which is a green test asserting nothing. The tree has exactly one stop of its own (the assertion
+ * above is what guarantees it), so this finds that stop and focuses it: the same element tabbing
+ * would eventually reach, without depending on how many links happen to precede it.
+ *
+ * The return value is the point. Every caller asserts against it, so a change that moved the tab
+ * stop off the tree — or off an anchor — fails here rather than passing quietly.
+ */
+const focusTree = (): HTMLElement => {
+  const stop = screen
+    .getAllByRole('treeitem')
+    .find((item) => item.getAttribute('tabindex') === '0');
+  if (!stop) throw new Error('the tree has no tab stop to focus');
+  stop.focus();
+  expect(document.activeElement).toBe(stop);
+  return stop;
+};
+
+describe('the folders are a tree', () => {
+  it('renders a real tree, named by the group it sits in', () => {
+    deepTree('l2');
+    expect(screen.getByRole('tree', { name: 'Folders' })).toBeTruthy();
+  });
+
+  it('makes each folder link the treeitem itself', () => {
+    /*
+     * The contract `TreeItemProps` exists for. A `role="treeitem"` wrapper around a focusable link
+     * would look identical and be a different widget: two tab stops per row, and a screen reader
+     * announcing the focused element with none of the level, position or expanded state that make a
+     * tree a tree.
+     */
+    deepTree('l2');
+    const sop = screen.getByRole('treeitem', { name: 'SOP' });
+    expect(sop.tagName).toBe('A');
+    expect(sop.getAttribute('href')).toBe(`/documents?libraryId=${library().id}&folderId=l2`);
+    // Nothing nested either way round.
+    expect(sop.querySelector('a')).toBeNull();
+    expect(sop.querySelector('[role="treeitem"]')).toBeNull();
+    expect(sop.parentElement?.getAttribute('role')).not.toBe('treeitem');
+  });
+
+  it('carries the tree ARIA the platform computes', () => {
+    deepTree('l2');
+    const sop = screen.getByRole('treeitem', { name: 'SOP' });
+    expect(sop.getAttribute('aria-level')).toBe('3');
+    expect(sop.getAttribute('aria-posinset')).toBe('1');
+    expect(sop.getAttribute('aria-setsize')).toBe('1');
+    // The root has two children in this fixture, so its own set is the two roots' worth of one.
+    expect(screen.getByRole('treeitem', { name: 'Manuals' }).getAttribute('aria-setsize')).toBe(
+      '2',
+    );
+  });
+
+  it('takes its hierarchy from parentId, not from the path', () => {
+    /*
+     * The paths here are deliberately at odds with the parents: `Records` sits at `a.z`, one
+     * separator deep, and is a child of the root exactly as `Manuals` at `a.b` is. A `path.split`
+     * depth would agree with `parentId` by accident on this fixture — so the assertion that
+     * distinguishes them is the *level*, which the tree computes by walking parents.
+     */
+    deepTree('l2');
+    expect(
+      screen.getByRole('treeitem', { name: 'Quality Management' }).getAttribute('aria-level'),
+    ).toBe('1');
+    expect(screen.getByRole('treeitem', { name: 'Manuals' }).getAttribute('aria-level')).toBe('2');
+    expect(screen.getByRole('treeitem', { name: 'SOP' }).getAttribute('aria-level')).toBe('3');
+    expect(screen.getByRole('treeitem', { name: 'Records' }).getAttribute('aria-level')).toBe('2');
+  });
+
+  it('gives the tree exactly one tab stop', () => {
+    // The flat list gave a keyboard user one stop per folder. A tree gives one, and moves focus
+    // within it with the arrow keys — which is the single largest thing this slice buys.
+    deepTree('l2');
+    const tabbable = screen
+      .getAllByRole('treeitem')
+      .filter((item) => item.getAttribute('tabindex') === '0');
+    expect(tabbable).toHaveLength(1);
+  });
+
+  it('never emits aria-selected', () => {
+    /*
+     * `TreeView` emits it only when handed a `selectedId`, and this rail must never hand one over:
+     * `aria-selected` says "this is the value of this control" and `aria-current` says "this is the
+     * page you are on". A navigation tree means the second. Passing `selectedId` would produce both
+     * on the same element, and this is what fails if somebody does.
+     */
+    deepTree('l2');
+    for (const item of screen.getAllByRole('treeitem')) {
+      expect(item.hasAttribute('aria-selected')).toBe(false);
+    }
+  });
+
+  it('keeps aria-current on the folder the reader is in', () => {
+    deepTree('l2');
+    expect(screen.getByRole('treeitem', { name: 'SOP' }).getAttribute('aria-current')).toBe('true');
+    expect(screen.getByRole('treeitem', { name: 'Manuals' }).hasAttribute('aria-current')).toBe(
+      false,
+    );
+  });
+});
+
+describe('expansion', () => {
+  it('opens the selected folder’s ancestors and nothing else', () => {
+    /*
+     * A deep link is the case this exists for: arriving at `SOP` three levels down must show it,
+     * without the reader opening two branches by hand to find where they already are. `Records` is
+     * the control — a sibling branch nobody asked for, which stays shut.
+     */
+    deepTree('l2');
+    expect(visible()).toStrictEqual(['Quality Management', 'Manuals', 'SOP', 'Records']);
+    // Closed rather than absent: `Records` has a child, so it announces a state, and the state is
+    // shut. Its child is the row missing from the list above.
+    expect(screen.getByRole('treeitem', { name: 'Records' }).getAttribute('aria-expanded')).toBe(
+      'false',
+    );
+  });
+
+  it('does not open every branch when nothing is selected', () => {
+    /*
+     * `TreeView` expands everything when told nothing, which is right for a chart and wrong for a
+     * rail — a hundred-folder library would arrive fully unfolded and be the flat list this slice
+     * replaced. With no selection there is no trail, so only the roots show.
+     */
+    deepTree(null);
+    expect(visible()).toStrictEqual(['Quality Management']);
+  });
+
+  it('reconstructs the same expansion on a fresh render of the same URL', () => {
+    // What a refresh is: the component mounts again with the same `selectedFolderId` and derives
+    // the chain from the folder rows, so nothing about expansion needs to be in the URL.
+    deepTree('l2');
+    const first = visible();
+    cleanup();
+    deepTree('l2');
+    expect(visible()).toStrictEqual(first);
+  });
+
+  it('lets the reader open a branch nobody navigated to, and close it again', async () => {
+    const user = userEvent.setup();
+    deepTree('l2');
+    expect(visible()).not.toContain('Reports');
+
+    // The disclosure beside `Records`. It is `aria-hidden` by design — `aria-expanded` on the item
+    // is the accessible control — so it is reached as a title rather than as a named button.
+    await user.click(screen.getByTitle(/Records/));
+    expect(screen.getByRole('treeitem', { name: 'Records' }).getAttribute('aria-expanded')).toBe(
+      'true',
+    );
+
+    await user.click(screen.getByTitle(/Records/));
+    expect(screen.getByRole('treeitem', { name: 'Records' }).getAttribute('aria-expanded')).toBe(
+      'false',
+    );
+  });
+
+  it('writes nothing about expansion into any href', () => {
+    // Expansion is where you can see; selection is where you are. Only the second belongs in a URL
+    // somebody might share, so no folder link may carry an expansion parameter.
+    deepTree('l2');
+    for (const link of screen.getAllByRole('treeitem')) {
+      expect(link.getAttribute('href')).not.toMatch(/expand/i);
+    }
+  });
+});
+
+describe('keyboard', () => {
+  it('moves focus with the arrow keys rather than the tab key', async () => {
+    const user = userEvent.setup();
+    deepTree('l2');
+    expect(focusTree().getAttribute('aria-label')).toBe('Quality Management');
+    // Focus is on the tree's single stop; the arrows walk the visible items from there.
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Manuals');
+    await user.keyboard('{End}');
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Records');
+    await user.keyboard('{Home}');
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Quality Management');
+  });
+
+  it('collapses and expands with the horizontal keys', async () => {
+    const user = userEvent.setup();
+    deepTree('l2');
+    focusTree();
+    await user.keyboard('{ArrowLeft}');
+    // The root closed, so its whole subtree left the visible set.
+    expect(visible()).toStrictEqual(['Quality Management']);
+    await user.keyboard('{ArrowRight}');
+    expect(visible()).toContain('Manuals');
+  });
+
+  it('activates the folder link itself, with no onActivate anywhere', async () => {
+    /*
+     * The reason `@munaxa/platform@1.6.1` exists. `TreeView` used to cancel Enter unconditionally,
+     * so an anchor treeitem announced itself as a link and did nothing when a keyboard reached it —
+     * and the workaround was for this component to pass `onActivate` and navigate programmatically,
+     * building the same URL a second time.
+     *
+     * This asserts the fixed contract from the consumer's side: the keystroke is not cancelled, so
+     * the browser performs the anchor's own activation. If somebody adds `onActivate` to make
+     * navigation "work", `TreeView` starts cancelling Enter again and this fails.
+     */
+    const user = userEvent.setup();
+    deepTree('l2');
+
+    // The keystroke has to reach a folder anchor for this to mean anything, so the element under
+    // test is named before it is pressed.
+    const focused = focusTree();
+    expect(focused.tagName).toBe('A');
+    expect(focused.getAttribute('role')).toBe('treeitem');
+    expect(focused.getAttribute('href')).toBe(`/documents?libraryId=${library().id}&folderId=l0`);
+
+    /*
+     * Listened for on `document`, in the bubble phase, so it runs *after* React's own handler on
+     * the tree — a listener on the item itself sees the event at target, before `TreeView` has had
+     * the chance to cancel it, and would report `false` however broken the tree was.
+     */
+    let prevented: boolean | null = null;
+    const record = (event: KeyboardEvent): void => {
+      prevented = event.defaultPrevented;
+    };
+    document.addEventListener('keydown', record);
+    try {
+      await user.keyboard('{Enter}');
+    } finally {
+      document.removeEventListener('keydown', record);
+    }
+    expect(prevented).toBe(false);
+  });
+});
+
+describe('libraries and views stay flat', () => {
+  it('puts no library or view inside the tree', () => {
+    /*
+     * Only the folders became a tree. A library is a sibling destination and a view is a saved
+     * question; neither has a hierarchy, and wrapping them in one would announce a structure that
+     * does not exist.
+     */
+    deepTree('l2');
+    const inTree = screen.getAllByRole('treeitem').map((item) => item.getAttribute('aria-label'));
+    expect(inTree).not.toContain(library().name);
+    expect(inTree).not.toContain('Favourites');
+    expect(inTree).not.toContain('Recently opened');
+    // They are still links, and still exactly where they were.
+    expect(screen.getByRole('link', { name: library().name }).getAttribute('href')).toContain(
+      '/documents?libraryId=',
+    );
+    expect(screen.getByRole('link', { name: 'Favourites' }).getAttribute('href')).toBe(
+      '/documents?favorite=true',
+    );
+    expect(screen.getByRole('link', { name: 'Recently opened' }).getAttribute('href')).toBe(
+      '/documents/recent',
+    );
+  });
+
+  it('leaves exactly one tree on the rail', () => {
+    deepTree('l2');
+    expect(screen.getAllByRole('tree')).toHaveLength(1);
   });
 });
