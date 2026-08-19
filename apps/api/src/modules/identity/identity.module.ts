@@ -70,6 +70,7 @@ import { RandomRefreshTokenFactory } from './infrastructure/random-refresh-token
 import { ScryptPasswordHasher } from './infrastructure/scrypt-password-hasher';
 import { MfaController } from './presentation/mfa.controller';
 import { AuthController } from './presentation/auth.controller';
+import { AclSubjectsController } from './presentation/acl-subjects.controller';
 import { DelegationController } from './presentation/delegation.controller';
 import { RoleAdminController, UserAdminController } from './presentation/identity-admin.controller';
 import { DirectoryPeopleController } from './presentation/directory-read.controller';
@@ -120,6 +121,9 @@ import {
     // from `UserAdminController` because it is a separate permission and a far narrower response.
     DirectoryPeopleController,
     RoleAdminController,
+    // Slice 12: the roles an ACL entry may name, behind `document:permission:manage` rather than
+    // `role:manage` — see the controller for why the operation's own key is the right one.
+    AclSubjectsController,
     DelegationController,
     // Phase 17. Machine credentials and the tenant's identity provider are *authentication*, which
     // is this module's own question, so they live here rather than in `IntegrationModule` — see

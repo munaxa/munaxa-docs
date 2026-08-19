@@ -102,6 +102,7 @@ export * from './admin/settings';
 export * from './operations/option-query';
 export * from './operations/configuration-read';
 export * from './operations/directory-read';
+export * from './operations/acl-subjects';
 export * from './documents/upload';
 export * from './documents/document';
 export * from './documents/revision-control';

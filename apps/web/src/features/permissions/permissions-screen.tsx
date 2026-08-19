@@ -129,7 +129,21 @@ export function PermissionsScreen({
         ? departments
         : roles;
 
+  /**
+   * What to call the subject of an entry — Slice 12.
+   *
+   * The server's answer first, and it is the only one that is always available: `subjectName` comes
+   * back on the entry, resolved for the subjects already written on this node. The pools behind it
+   * are the *pickers*, which a caller may legitimately be unable to fill — so reading a name out of
+   * them was the reason this screen needed three administrative catalogues, and the reason it was
+   * the route error boundary for the document controller.
+   *
+   * The pool lookup survives as the second step for one case only: an entry added in this session,
+   * before `router.refresh()` brings back the server's copy. The identifier is the last resort, and
+   * it is the honest one — an entry can name a subject that has been deleted, or never existed.
+   */
   const nameOf = (entry: StoredAclEntry): string =>
+    entry.subjectName ??
     poolFor(entry.subjectType).find((candidate) => candidate.id === entry.subjectId)?.name ??
     entry.subjectId;
 

@@ -6,6 +6,7 @@ import {
   documentTypeOptionSchema,
   typeFieldOptionSchema,
 } from './configuration-read';
+import { roleOptionSchema } from './acl-subjects';
 import { departmentOptionSchema, personOptionSchema } from './directory-read';
 import { optionListQuerySchema } from './option-query';
 
@@ -115,6 +116,43 @@ describe('a department, as a picker sees it', () => {
     ['memberCount', 'headcount per organisational unit is not a picker’s business'],
     ['entityName', 'the corporate structure is Organization’s to administer'],
     ['branchName', 'the corporate structure is Organization’s to administer'],
+  ])('never carries %s — %s', (field) => {
+    expect(parsed.has(field)).toBe(false);
+  });
+});
+
+describe('a role, as the permission editor that names one sees it', () => {
+  const parsed = keysOf(roleOptionSchema, {
+    id: '019489f0-0000-7000-8000-0000000000d4',
+    name: 'Document controller',
+    // Everything the administrative role adds, offered and expected to be dropped.
+    key: 'DOCUMENT_CONTROLLER',
+    description: 'Owns numbering, document types, retention and libraries.',
+    isSystem: true,
+    permissions: ['document:view', 'document:delete', 'document:permission:manage'],
+    memberCount: 4,
+    version: 3,
+    createdAt: '2026-08-17T00:00:00.000Z',
+    updatedAt: '2026-08-17T00:00:00.000Z',
+    deletedAt: null,
+  });
+
+  it('is an identifier and a label', () => {
+    expect([...parsed].sort()).toEqual(['id', 'name']);
+  });
+
+  it.each([
+    [
+      'permissions',
+      'what each role grants is the tenant’s authority map, and the point of this shape is that naming a role in an entry does not require reading it',
+    ],
+    ['memberCount', 'how many people hold an authority is a security report, not a dropdown label'],
+    [
+      'isSystem',
+      'whether a role is seeded matters to the screen that edits roles, not to this one',
+    ],
+    ['key', 'the stable key is for the administration screen; an entry is written against the id'],
+    ['description', 'a sentence about the role is Identity’s to show where roles are administered'],
   ])('never carries %s — %s', (field) => {
     expect(parsed.has(field)).toBe(false);
   });
