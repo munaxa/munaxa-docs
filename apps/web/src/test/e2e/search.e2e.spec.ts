@@ -684,6 +684,20 @@ describe('search as each role that can open it', () => {
         expect(railText).not.toMatch(
           /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/,
         );
+        /*
+         * What this does *not* cover, recorded rather than left to look covered — Slice 14.
+         *
+         * The `entity` facet is empty here and the assertion above is vacuous for it. The
+         * projection writes `entity_id` only for a library owned by an `ENTITY` scope, or by a
+         * `DEPARTMENT` belonging to one, and this fixture's library is owned by `TENANT` — as is
+         * every other fixture in the repository. Changing that would alter the placement three
+         * suites resolve their ACLs through, for a facet whose labelling is better proved where the
+         * caller's permissions can be stated exactly.
+         *
+         * So it is proved in `search.integration.spec.ts`'s `the entity facet` block instead:
+         * against two real tenants, with an entity-owned library, for a caller holding
+         * `permissions: []` — no `org:manage`, nothing.
+         */
       });
 
       it('filters by the facet it just read', async () => {
