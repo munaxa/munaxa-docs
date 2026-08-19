@@ -9,8 +9,14 @@ import {
 import { FolderContentsRegistry } from './application/folder-contents.port';
 import { LibraryAdminService } from './application/library-admin.service';
 import { DefaultPermissionService } from './application/permission.service';
-import { ACL_REPOSITORY, PERMISSION_SERVICE, SCOPE_CHAIN_READER } from './application/ports';
+import {
+  ACL_REPOSITORY,
+  ACL_SUBJECT_NAME_READER,
+  PERMISSION_SERVICE,
+  SCOPE_CHAIN_READER,
+} from './application/ports';
 import { PrismaAclRepository } from './infrastructure/prisma-acl.repository';
+import { PrismaAclSubjectNameReader } from './infrastructure/prisma-acl-subject-name.reader';
 import { PrismaAclResolver } from './infrastructure/prisma-acl.resolver';
 import { PrismaLibraryAdminRepository } from './infrastructure/prisma-library-admin.repository';
 import { PrismaScopeChainReader } from './infrastructure/prisma-scope-chain.reader';
@@ -58,6 +64,7 @@ import { PermissionsController } from './presentation/permissions.controller';
     // Phase 14: the entries the resolver has been walking a chain of since Phase 8 without ever
     // finding one, the reader that assembles the chain, and the service that edits both.
     { provide: ACL_REPOSITORY, useClass: PrismaAclRepository },
+    { provide: ACL_SUBJECT_NAME_READER, useClass: PrismaAclSubjectNameReader },
     { provide: SCOPE_CHAIN_READER, useClass: PrismaScopeChainReader },
     { provide: PERMISSION_SERVICE, useClass: DefaultPermissionService },
     // Phase 10: the slot the folder-delete cascade reaches its documents through. Declared here,

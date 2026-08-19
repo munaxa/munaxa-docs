@@ -141,6 +141,15 @@ function toScope(scopeType: string, scopeId: string): ScopeRef {
   return { type: parsed.data, id: asId<AnyId>(scopeId) };
 }
 
+/**
+ * One entry on the wire, plus the name of whoever it names — Slice 12.
+ *
+ * `subjectName` is written only when the service resolved one, so an entry whose subject has been
+ * deleted, or which names an identifier that was never anything, carries the nine fields it always
+ * carried and the screen falls back to the identifier. `subjectId` is untouched: it is what the
+ * entry *means* and what a write posts back, and a consumer that ignores the caption cannot tell
+ * this changed.
+ */
 function toStored(entry: StoredEntry, scope: ScopeRef): StoredAclEntry {
   return {
     id: String(entry.id),
@@ -152,6 +161,7 @@ function toStored(entry: StoredEntry, scope: ScopeRef): StoredAclEntry {
     effect: entry.effect,
     createdAt: entry.createdAt.toISOString(),
     createdBy: entry.createdBy,
+    ...(entry.subjectName === undefined ? {} : { subjectName: entry.subjectName }),
   };
 }
 

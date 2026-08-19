@@ -172,6 +172,7 @@ import { BulkExportService } from '../modules/document/application/bulk-export.s
 import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
 import { DefaultPermissionService } from '../modules/library/application/permission.service';
 import { PrismaAclRepository } from '../modules/library/infrastructure/prisma-acl.repository';
+import { PrismaAclSubjectNameReader } from '../modules/library/infrastructure/prisma-acl-subject-name.reader';
 import { PrismaScopeChainReader } from '../modules/library/infrastructure/prisma-scope-chain.reader';
 import { DefaultSearchService } from '../modules/search/application/search.service';
 import { SavedSearchService } from '../modules/search/application/saved-search.service';
@@ -711,6 +712,9 @@ export function realPermissions(options: {
   return {
     permissions: new DefaultPermissionService(
       new PrismaAclRepository(stamps),
+      // The real reader, like every other collaborator here: a suite exercising the permission
+      // service exercises the subject-name projection too, tenant clause and all.
+      new PrismaAclSubjectNameReader(),
       chains,
       resolver,
       cache,

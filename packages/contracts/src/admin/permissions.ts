@@ -46,6 +46,27 @@ export const storedAclEntrySchema = aclEntrySchema.extend({
   scopeId: uuidSchema,
   createdAt: z.string(),
   createdBy: uuidSchema.nullable(),
+  /**
+   * What the subject is called — Slice 12, and the same move `decidedAtName` made above.
+   *
+   * **Additive, and never the identifier.** `subjectId` is what the entry means and what a write
+   * posts back; this is presentation beside it. A client that ignores the field renders the
+   * identifier exactly as it always did.
+   *
+   * Before this, the screen captioned its entries by fetching every user, every role and every
+   * department in the tenant — `user:manage`, `role:manage` and `org:manage` — so the one seeded
+   * role that holds `document:permission:manage` and none of those three got three refusals and an
+   * error boundary. The names were never the problem; asking for three administrative catalogues
+   * to find a handful of them was.
+   *
+   * The server resolves them for the subjects **already on this node's entries** and no others, so
+   * a caller learns the name of nothing they were not already being shown.
+   *
+   * Absent rather than empty when there is no name to give: a subject whose row has since been
+   * deleted, or which never existed — `validate` accepts any identifier — has no name, and the
+   * screen falls back to the identifier rather than to a blank.
+   */
+  subjectName: z.string().optional(),
 });
 
 /**

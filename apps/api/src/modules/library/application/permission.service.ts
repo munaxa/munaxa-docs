@@ -5,6 +5,7 @@ import {
   type AnyId,
   AclEffect,
   AclSubjectType,
+  type AclSubjectTypeKey,
   AuditSubjectType,
   type AuditSubjectTypeKey,
   type FolderId,
@@ -33,15 +34,18 @@ import { LibraryAudit } from '../domain/audit-actions';
 import { aclChangedEvent } from '../domain/events';
 import {
   ACL_REPOSITORY,
+  ACL_SUBJECT_NAME_READER,
   SCOPE_CHAIN_READER,
   type AclEntryDraft,
   type AclEntryRecord,
   type AclRepository,
+  type AclSubjectNameReader,
   type EffectivePermission,
   type EffectivePermissions,
   type ExplicitAcl,
   type PermissionService,
   type ScopeChainReader,
+  type StoredAclEntry,
 } from './ports';
 
 /**
@@ -83,6 +87,7 @@ import {
 export class DefaultPermissionService implements PermissionService {
   constructor(
     @Inject(ACL_REPOSITORY) private readonly entries: AclRepository,
+    @Inject(ACL_SUBJECT_NAME_READER) private readonly subjectNames: AclSubjectNameReader,
     @Inject(SCOPE_CHAIN_READER) private readonly chains: ScopeChainReader,
     @Inject(ACL_RESOLVER) private readonly resolver: AclResolver,
     @Inject(CACHE_PORT) private readonly cache: CachePort,
@@ -274,12 +279,49 @@ export class DefaultPermissionService implements PermissionService {
     // folder it is the folder itself. That is the node whose flag the screen offers to change.
     const folder = [...chain].reverse().find((node) => node.scope.type === ScopeType.FOLDER);
     return {
-      entries,
+      entries: await this.named(entries),
       chain,
       inheritanceBroken: chain.some((node) => node.breaksInheritance),
       folderId: folder === undefined ? null : asId<FolderId>(String(folder.scope.id)),
       folderInheritsAcl: folder === undefined ? null : !folder.breaksInheritance,
     };
+  }
+
+  /**
+   * The same entries, captioned — Slice 12.
+   *
+   * ## Why the names are resolved here rather than fetched by the screen
+   *
+   * They used to be fetched by the screen, from `/admin/users`, `/admin/roles` and
+   * `/admin/departments` — `user:manage`, `role:manage` and `org:manage`. The seeded document
+   * controller holds `document:permission:manage` and none of those three, so the one role this
+   * controller's own docstring names as an intended user got three refusals and an error boundary
+   * on the screen it is meant to operate.
+   *
+   * Asking the other way round costs nothing and discloses nothing. `entries` is what is written on
+   * a node the caller has already been allowed to read, so every identifier here is one they are
+   * being shown; resolving those and only those means a subject the caller cannot see has no name,
+   * because it has no entry. The reach decision stays exactly where it was — in `requireReachable`
+   * and `requireManagePermission`, above — and this never gets an opportunity to widen it.
+   *
+   * Shared by the read and the write for the reason `explicitWithin` gives: the body a `PUT`
+   * returns is the body a `GET` would return, captions included.
+   */
+  private async named(entries: readonly StoredAclEntry[]): Promise<readonly StoredAclEntry[]> {
+    if (entries.length === 0) {
+      return entries;
+    }
+    const wanted: Partial<Record<AclSubjectTypeKey, string[]>> = {};
+    for (const entry of entries) {
+      (wanted[entry.subjectType] ??= []).push(entry.subjectId);
+    }
+    const names = await this.subjectNames.namesFor(wanted);
+    return entries.map((entry) => {
+      const name = names[entry.subjectType]?.[entry.subjectId];
+      // Spread rather than `subjectName: name`, so an unresolved subject carries no key at all —
+      // `undefined` and "absent" serialise the same, but the shape stays honest in the repository.
+      return name === undefined ? entry : { ...entry, subjectName: name };
+    });
   }
 
   /**

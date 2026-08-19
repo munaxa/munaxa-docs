@@ -61,6 +61,47 @@ export interface StoredAclEntry extends AclEntryRecord {
   readonly id: AnyId;
   readonly createdAt: Date;
   readonly createdBy: string | null;
+  /** What the subject is called, when it still has a name — Slice 12. */
+  readonly subjectName?: string;
+}
+
+export const ACL_SUBJECT_NAME_READER = Symbol('AclSubjectNameReader');
+
+/**
+ * Names for ACL subjects the caller is already being shown — Slice 12.
+ *
+ * ## Why a port of its own rather than a call into Identity and Organization
+ *
+ * Because of what it must *not* be able to do. The administrative readers behind these three tables
+ * list a tenant's whole staff, its whole authority map and its whole organisation chart, and return
+ * an operations view of each row — MFA enrolment, last sign-in, every permission a role grants, a
+ * department's headcount. Captioning a handful of entries needs two columns, and the moment the
+ * permissions screen borrows an administrative reader to get them, "could this screen show me
+ * something I may not reach" stops having a short answer.
+ *
+ * So the contract is narrow in both directions. It takes **identifiers already written on the node
+ * being read** — every one comes off an entry the caller is being shown — and returns **names**.
+ * There is no list, no filter and no paging, so there is no way to ask it about a subject that is
+ * not already on screen.
+ *
+ * ## What the implementation must guarantee
+ *
+ * The tenant in the query itself rather than only in the policy around it; one round trip per
+ * subject type rather than one per entry; and silence for an identifier it cannot resolve. A name it
+ * cannot find is an absent entry — never fabricated, never an error. `validate` accepts an
+ * identifier that names nothing, so an entry with no subject behind it is a state the product can
+ * actually be in.
+ */
+export interface AclSubjectNameReader {
+  /**
+   * Names for exactly these identifiers, per subject type.
+   *
+   * Keyed by identifier. One that resolved to nothing — deleted, never existing, or belonging to
+   * another tenant — is simply absent.
+   */
+  namesFor(
+    request: Readonly<Partial<Record<AclSubjectTypeKey, readonly string[]>>>,
+  ): Promise<Readonly<Partial<Record<AclSubjectTypeKey, Readonly<Record<string, string>>>>>>;
 }
 
 export interface AclRepository {

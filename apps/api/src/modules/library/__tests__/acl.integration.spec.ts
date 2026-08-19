@@ -26,11 +26,13 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
+import { requireTransaction } from '../../../core/prisma';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { AccessDenialRecorder } from '../../../core/authorization/access-denial.recorder';
 import { RecordingMetrics } from '../../../testing/fake-ports';
 import { seedRoleGrant } from '../../../testing/acl-seed';
+import { PrismaAclSubjectNameReader } from '../infrastructure/prisma-acl-subject-name.reader';
 import {
   type DocumentLibraryStack,
   realAuditWriter,
@@ -812,5 +814,271 @@ describe('the role representation the ACL subject accepts', () => {
     );
 
     expect(decision.allowed).toBe(false);
+  });
+});
+
+/**
+ * The names beside the entries — Slice 12, against two real tenants.
+ *
+ * ## What is being proved, and why a double could not
+ *
+ * The permissions screen used to caption its entries by fetching `/admin/users`, `/admin/roles` and
+ * `/admin/departments`, so it needed `user:manage`, `role:manage` and `org:manage` — three keys the
+ * seeded document controller does not hold, on a screen it is seeded to operate. The names now come
+ * back on the entries, resolved for the subjects already written on the node.
+ *
+ * Every claim that makes that safe is a database claim: that the lookup is confined to the subjects
+ * on the node, that the tenant is in the query rather than only in the policy around it, that a
+ * deleted subject resolves to nothing, and that three round trips are three rather than one per
+ * entry. A double would be written from the same belief as the reader it stood in for.
+ */
+describe('subject names', () => {
+  const scope = () => documentScope(closedDocumentId);
+
+  /** A department to name, which needs a company and an entity above it. */
+  let departmentId: string;
+  /** A role in a *second* tenant — a well-formed identifier this tenant must not resolve. */
+  let foreignRoleId: string;
+  /** A user of this tenant who is then soft-deleted, exactly as an administrator would leave one. */
+  let departedId: string;
+
+  beforeAll(async () => {
+    const companyId = uuidv7();
+    const entityId = uuidv7();
+    departmentId = uuidv7();
+    await owner.company.create({
+      data: { id: companyId, tenantId: TENANT, code: 'ACME', name: 'Acme', updatedAt: FIXED_NOW },
+    });
+    await owner.entity.create({
+      data: {
+        id: entityId,
+        tenantId: TENANT,
+        companyId,
+        code: 'ACME-UK',
+        name: 'Acme UK',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.department.create({
+      data: {
+        id: departmentId,
+        tenantId: TENANT,
+        entityId,
+        code: 'QA',
+        name: 'Quality Assurance',
+        path: departmentId,
+        updatedAt: FIXED_NOW,
+      },
+    });
+
+    departedId = uuidv7();
+    await owner.user.create({
+      data: {
+        id: departedId,
+        tenantId: TENANT,
+        email: 'departed@acl.test',
+        emailNormalized: 'departed@acl.test',
+        displayName: 'Someone Who Left',
+        status: 'DISABLED',
+        deletedAt: FIXED_NOW,
+        updatedAt: FIXED_NOW,
+      },
+    });
+
+    const foreignTenant = asId<TenantId>(uuidv7());
+    foreignRoleId = uuidv7();
+    await owner.tenant.create({
+      data: {
+        id: foreignTenant,
+        slug: `rival-${foreignTenant.replaceAll('-', '').slice(-16)}`,
+        name: 'Rival',
+        status: 'ACTIVE',
+      },
+    });
+    await owner.role.create({
+      data: {
+        id: foreignRoleId,
+        tenantId: foreignTenant,
+        key: 'RIVAL_SECRET',
+        name: 'A role nobody here may read',
+        isSystem: false,
+        updatedAt: FIXED_NOW,
+      },
+    });
+  }, 60_000);
+
+  it('names the user, the role and the department an entry points at', async () => {
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(scope(), [
+        entry(AclSubjectType.USER, ALICE, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+        entry(AclSubjectType.ROLE, READER_ROLE, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+        entry(AclSubjectType.DEPARTMENT, departmentId, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+
+    const explicit = await asAdmin(() => permissions.permissions.explicitFor(scope()));
+    const named = new Map(explicit.entries.map((row) => [row.subjectId, row.subjectName]));
+
+    expect(named.get(ALICE)).toBe('alice');
+    expect(named.get(READER_ROLE)).toBe('READER');
+    expect(named.get(departmentId)).toBe('Quality Assurance');
+  });
+
+  it('returns the same captions from the write as from the read', async () => {
+    // `explicitWithin` is shared by `PUT` and `GET` so that a screen re-rendering from what it just
+    // saved cannot disagree with itself one refresh later. That property has to include the names.
+    const written = await asAdmin(() =>
+      permissions.permissions.replaceFor(scope(), [
+        entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+    const read = await asAdmin(() => permissions.permissions.explicitFor(scope()));
+
+    expect(written.entries.map((row) => row.subjectName)).toStrictEqual(['bob']);
+    expect(read.entries.map((row) => row.subjectName)).toStrictEqual(['bob']);
+  });
+
+  it('says nothing about a subject that has since been deleted', async () => {
+    /*
+     * An entry outlives its subject: `validate` checks the subject *type* and never that the
+     * identifier names anything. Resolving deleted rows would keep a departed employee's name on a
+     * permissions screen after the account was removed — and a stale entry showing a raw identifier
+     * is exactly what an administrator should notice and revoke.
+     */
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(scope(), [
+        entry(AclSubjectType.USER, departedId, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+
+    const explicit = await asAdmin(() => permissions.permissions.explicitFor(scope()));
+
+    expect(explicit.entries).toHaveLength(1);
+    expect(explicit.entries[0]?.subjectId).toBe(departedId);
+    expect(explicit.entries[0]?.subjectName).toBeUndefined();
+  });
+
+  it('says nothing about an identifier that never existed, rather than failing', async () => {
+    const nobody = uuidv7();
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(scope(), [
+        entry(AclSubjectType.USER, nobody, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+
+    const explicit = await asAdmin(() => permissions.permissions.explicitFor(scope()));
+
+    expect(explicit.entries[0]?.subjectName).toBeUndefined();
+  });
+
+  it('cannot resolve an identifier belonging to another tenant', async () => {
+    // The identifier is real and names a role — in a tenant this caller has nothing to do with.
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(scope(), [
+        entry(AclSubjectType.ROLE, foreignRoleId, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+
+    const explicit = await asAdmin(() => permissions.permissions.explicitFor(scope()));
+
+    expect(explicit.entries[0]?.subjectName).toBeUndefined();
+    expect(JSON.stringify(explicit)).not.toContain('A role nobody here may read');
+  });
+
+  it('asks once per subject type, never once per entry', async () => {
+    /*
+     * Five entries naming two users across four permissions is one query for users, one for roles,
+     * and none at all for departments — not five. The spy is on the transaction client the reader
+     * actually uses, because the count is the claim.
+     */
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(scope(), [
+        entry(AclSubjectType.USER, ALICE, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+        entry(AclSubjectType.USER, ALICE, Permission.DOCUMENT_DOWNLOAD, AclEffect.ALLOW),
+        entry(AclSubjectType.USER, ALICE, Permission.DOCUMENT_PRINT, AclEffect.ALLOW),
+        entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+        entry(AclSubjectType.ROLE, READER_ROLE, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+
+    const counts = { user: 0, role: 0, department: 0 };
+    await asAdmin(() =>
+      unitOfWork.run(async () => {
+        const tx = requireTransaction();
+        for (const table of ['user', 'role', 'department'] as const) {
+          const model = tx[table] as unknown as {
+            findMany: (args: unknown) => Promise<unknown>;
+          };
+          const original = model.findMany.bind(model);
+          model.findMany = (args: unknown) => {
+            counts[table] += 1;
+            return original(args);
+          };
+        }
+        return new PrismaAclSubjectNameReader().namesFor({
+          USER: [ALICE, ALICE, ALICE, BOB],
+          ROLE: [READER_ROLE],
+        });
+      }),
+    );
+
+    expect(counts).toStrictEqual({ user: 1, role: 1, department: 0 });
+  });
+
+  it('puts the tenant in the query itself, not only in the policy around it', async () => {
+    /*
+     * White-box, and deliberately so — the same argument Slice 11 recorded for the facet reader.
+     * Row-level security plus a database per tenant means that removing `tenantId` from this
+     * lookup changes **no observable behaviour**: the cross-tenant test above still passes, because
+     * the policy catches what the query stopped catching. The clause is a second, independent
+     * boundary, and the only way to assert it is to read the argument handed to Prisma.
+     */
+    const seen: unknown[] = [];
+    await asAdmin(() =>
+      unitOfWork.run(async () => {
+        const tx = requireTransaction();
+        for (const table of ['user', 'role', 'department'] as const) {
+          const model = tx[table] as unknown as {
+            findMany: (args: { where: unknown }) => Promise<unknown>;
+          };
+          model.findMany = (args: { where: unknown }) => {
+            seen.push(args.where);
+            return Promise.resolve([]);
+          };
+        }
+        return new PrismaAclSubjectNameReader().namesFor({
+          USER: [ALICE],
+          ROLE: [READER_ROLE],
+          DEPARTMENT: [departmentId],
+        });
+      }),
+    );
+
+    expect(seen).toHaveLength(3);
+    for (const where of seen) {
+      expect(where).toMatchObject({ tenantId: TENANT, deletedAt: null });
+    }
+  });
+
+  it('asks for nothing at all when the node has no entries', async () => {
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), []));
+
+    let asked = 0;
+    const explicit = await asAdmin(() =>
+      unitOfWork.run(async () => {
+        const tx = requireTransaction();
+        for (const table of ['user', 'role', 'department'] as const) {
+          const model = tx[table] as unknown as { findMany: () => Promise<unknown> };
+          model.findMany = () => {
+            asked += 1;
+            return Promise.resolve([]);
+          };
+        }
+        return permissions.permissions.explicitFor(scope());
+      }),
+    );
+
+    expect(explicit.entries).toStrictEqual([]);
+    expect(asked).toBe(0);
   });
 });
