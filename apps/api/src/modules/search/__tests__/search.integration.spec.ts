@@ -1080,3 +1080,222 @@ describe('facet labels', () => {
     expect(await resolve({})).toStrictEqual({});
   });
 });
+
+/**
+ * The entity facet, which nothing had ever produced — Slice 14.
+ *
+ * ## Why this block exists
+ *
+ * Slice 11 resolves names for four facets, and three of them are proved above through `type`. The
+ * fourth is `entity`, and it was proved by nothing at all: `entity_id` is written by the projection
+ * only when a library is owned by an `ENTITY` scope, or by a `DEPARTMENT` that belongs to one, and
+ * every library in every fixture in this repository is owned by `TENANT`. So no search has ever
+ * produced an entity bucket, no entity label has ever been resolved, and the end-to-end assertion
+ * that the facet rail carries "no bare identifier" was vacuously true for this facet.
+ *
+ * That matters more for `entity` than for the other three. Slice 10 recorded the entity name as the
+ * one caption it could not obtain — *"entity labels remain unavailable below `org:manage`"* — and an
+ * entity is the organisation's own structure rather than filing vocabulary. The claim that a caller
+ * holding **no tenant-wide permission at all** now reads an entity's name, without `org:manage` and
+ * without `/admin/entities`, is the sharpest claim this design makes. It should not rest on a test
+ * that never ran.
+ *
+ * `asAlice` holds `permissions: []`. Every reach she has comes from an ACL role grant, which is
+ * precisely the caller the claim is about.
+ */
+describe('the entity facet', () => {
+  const labelReader = new PrismaFacetLabelReader();
+  const ENTITY_NAME = 'Acme Manufacturing UK';
+  const UNFILED_ENTITY_NAME = 'An entity nothing is filed under';
+
+  let entityId: string;
+  /** Exists, in this tenant, with nothing filed under it — so it must never be named. */
+  let unfiledEntityId: string;
+  /** Exists in the *other* tenant, under a name that must never cross. */
+  let foreignEntityId: string;
+
+  const searchWithEntity = (runner: <T>(work: () => Promise<T>) => Promise<T>, text: string) =>
+    runner(() =>
+      search.search.search({
+        text,
+        filters: {},
+        facets: ['type', 'entity'],
+        sort: 'RELEVANCE',
+        cursor: null,
+        limit: 25,
+      }),
+    );
+
+  beforeAll(async () => {
+    const companyId = uuidv7();
+    entityId = uuidv7();
+    unfiledEntityId = uuidv7();
+    foreignEntityId = uuidv7();
+
+    await owner.company.create({
+      data: {
+        id: companyId,
+        tenantId: TENANT,
+        code: unique('CO'),
+        name: 'Acme',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    for (const [id, name] of [
+      [entityId, ENTITY_NAME],
+      [unfiledEntityId, UNFILED_ENTITY_NAME],
+    ] as const) {
+      await owner.entity.create({
+        data: {
+          id,
+          tenantId: TENANT,
+          companyId,
+          code: unique('E'),
+          name,
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+
+    // The other tenant's own company and entity, so a cross-tenant identifier is a real row.
+    const foreignCompanyId = uuidv7();
+    await owner.company.create({
+      data: {
+        id: foreignCompanyId,
+        tenantId: TENANT_B,
+        code: unique('CO'),
+        name: 'Rival',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.entity.create({
+      data: {
+        id: foreignEntityId,
+        tenantId: TENANT_B,
+        companyId: foreignCompanyId,
+        code: unique('E'),
+        name: 'A name from another tenant',
+        updatedAt: FIXED_NOW,
+      },
+    });
+
+    // A library the *entity* owns — the placement that makes `entity_id` non-null at all.
+    const owned = await asAlice(() =>
+      library.libraries.createLibrary({
+        code: unique('ENT'),
+        name: 'Manufacturing',
+        ownerScopeType: 'ENTITY',
+        ownerScopeId: entityId,
+      }),
+    );
+
+    // Two documents, so the "one query however many share it" claim has something to be about.
+    for (const title of ['Entity filed casting report', 'Entity filed welding report']) {
+      const fileObjectId = await upload(Buffer.from(`${title} body`), 'report.txt', 'text/plain');
+      await owner.fileObject.update({
+        where: { id: fileObjectId },
+        data: { scanStatus: ScanStatus.CLEAN, scanner: 'integration-suite', scannedAt: FIXED_NOW },
+      });
+      const created = await asAlice(() =>
+        library.documents.create({
+          folderId: owned.rootFolderId,
+          documentTypeId,
+          title,
+          fileObjectId,
+          filename: 'report.txt',
+          origin: 'UPLOAD',
+          acknowledgeDuplicate: false,
+        }),
+      );
+      await project(asId<DocumentId>(created.id));
+    }
+  }, 120_000);
+
+  it('produces an entity bucket at all, which nothing had done before', async () => {
+    // The precondition, asserted rather than assumed: every other fixture owns its libraries at
+    // `TENANT`, where the projection writes `entity_id` as null and this facet is always empty.
+    const found = await searchWithEntity(asAlice, 'entity filed');
+
+    expect(found.results.facets['entity']?.map((bucket) => bucket.value)).toContain(entityId);
+  });
+
+  it('names the entity for a caller holding no tenant-wide permission at all', async () => {
+    /*
+     * The claim Slice 10 could not make. Alice holds `permissions: []` — no `org:manage`, no
+     * `settings:manage`, nothing. Her reach is an ACL role grant, and the name arrives anyway,
+     * because it is resolved for a bucket the predicate already gave her.
+     */
+    const found = await searchWithEntity(asAlice, 'entity filed');
+
+    expect(found.facetLabels.entity?.[entityId]).toBe(ENTITY_NAME);
+  });
+
+  it('never names an entity the caller has no bucket for', async () => {
+    // Two entities in this tenant, one filed against. The label map is the facet, not the chart.
+    const found = await searchWithEntity(asAlice, 'entity filed');
+
+    expect(found.facetLabels.entity?.[unfiledEntityId]).toBeUndefined();
+    expect(Object.values(found.facetLabels.entity ?? {})).not.toContain(UNFILED_ENTITY_NAME);
+    expect(Object.keys(found.facetLabels.entity ?? {})).toStrictEqual([entityId]);
+  });
+
+  it('gives a caller the ACL refuses no entity label, because it gives them no bucket', async () => {
+    const refused = await searchWithEntity(asBob, 'entity filed');
+
+    expect(refused.results.facets['entity']).toHaveLength(0);
+    expect(refused.facetLabels.entity).toBeUndefined();
+  });
+
+  it('cannot resolve an entity belonging to another tenant', async () => {
+    const named = await asAlice(() =>
+      unitOfWork.run(() => labelReader.labelsFor({ entity: [foreignEntityId] })),
+    );
+
+    expect(named.entity).toBeUndefined();
+    expect(JSON.stringify(named)).not.toContain('A name from another tenant');
+  });
+
+  it('says nothing about an entity that has since been deleted', async () => {
+    /*
+     * An entity can be retired while documents remain filed under it, so its identifier keeps
+     * appearing in facets. The caller sees the value it already had rather than a withdrawn name.
+     */
+    await owner.entity.update({
+      where: { id: unfiledEntityId },
+      data: { deletedAt: FIXED_NOW },
+    });
+
+    const named = await asAlice(() =>
+      unitOfWork.run(() => labelReader.labelsFor({ entity: [unfiledEntityId] })),
+    );
+
+    expect(named.entity).toBeUndefined();
+  });
+
+  it('asks once for the entity facet, however many documents share it', async () => {
+    // Two indexed documents, one entity, one query — and the identifier de-duplicated before it
+    // reaches the `IN`.
+    let calls = 0;
+    const seen: unknown[] = [];
+    await asAlice(() =>
+      unitOfWork.run(async () => {
+        const tx = requireTransaction();
+        const model = tx.entity as unknown as {
+          findMany: (args: { where: unknown }) => Promise<unknown>;
+        };
+        const original = model.findMany.bind(model);
+        model.findMany = (args: { where: unknown }) => {
+          calls += 1;
+          seen.push(args.where);
+          return original(args);
+        };
+        return labelReader.labelsFor({ entity: [entityId, entityId, entityId] });
+      }),
+    );
+
+    expect(calls).toBe(1);
+    // And the tenant is in the query itself, not only in the policy around it — the same white-box
+    // assertion the other facets carry, for the same reason: RLS would hide its removal.
+    expect(seen[0]).toMatchObject({ tenantId: TENANT, deletedAt: null });
+  });
+});
