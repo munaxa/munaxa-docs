@@ -119,18 +119,26 @@ describe('document permissions as each role', () => {
          * The role picker, which is the half that needed `/acl/roles`. Its options come from a
          * projection carrying an identifier and a label, on `document:permission:manage` — so this
          * asserts a *name* is on offer rather than that the control merely exists.
+         *
+         * Slice 13 made it a `Combobox`, so the options live in a portalled listbox that opens on
+         * click rather than as `<option>` children of the control. The claim is unchanged.
          */
         await page.goto(url(), { waitUntil: 'networkidle' });
 
-        const subject = page.getByLabel('Subject', { exact: false }).first();
+        const subject = page.getByRole('combobox', { name: 'Subject' });
         expect(await subject.isVisible(), 'the subject picker was not rendered').toBe(true);
-        const options: readonly string[] = await subject.locator('option').allInnerTexts();
+        await subject.click();
 
-        expect(options.length, 'the subject picker offered nothing to choose').toBeGreaterThan(1);
+        const options = page.getByRole('option');
+        await options.first().waitFor({ state: 'visible', timeout: 30_000 });
+        const names = await options.allInnerTexts();
+
+        expect(names.length, 'the subject picker offered nothing to choose').toBeGreaterThan(0);
         expect(
-          options.some((text) => /^[0-9a-f-]{36}$/i.test(text.trim())),
+          names.some((text) => /^[0-9a-f-]{36}$/i.test(text.trim())),
           'a bare identifier reached the picker',
         ).toBe(false);
+        await page.keyboard.press('Escape');
       });
 
       it('resolves the effective table for a named person', async () => {
@@ -247,6 +255,22 @@ describe('document permissions as each role', () => {
       expect(body.data.map((row) => row.displayName)).not.toContain(BEYOND);
     });
 
+    it('says so plainly when nothing matches', async () => {
+      /*
+       * Before anything is chosen, deliberately. The chosen option is pinned into the list so the
+       * trigger keeps its label across searches, which means that once somebody *is* selected the
+       * list is never empty and this message correctly stops appearing. The empty state is the
+       * answer to "I searched and there is nothing", which is a question you ask before choosing.
+       */
+      await page.getByRole('combobox', { name: 'Subject' }).click();
+      await page.getByPlaceholder('Search').fill('nobody by that name at all');
+
+      const empty = page.getByText('Nothing matches that search');
+      await empty.waitFor({ state: 'visible', timeout: 30_000 });
+      expect(await empty.isVisible()).toBe(true);
+      await page.keyboard.press('Escape');
+    });
+
     it('is found by typing their name, and can be granted a permission', async () => {
       await page.getByLabel('Kind', { exact: false }).selectOption('USER');
 
@@ -274,16 +298,6 @@ describe('document permissions as each role', () => {
         await page.getByRole('combobox', { name: 'Subject' }).innerText(),
         'the chosen person lost their name when the search changed',
       ).toContain(BEYOND);
-    });
-
-    it('says so plainly when nothing matches', async () => {
-      await page.getByRole('combobox', { name: 'Subject' }).click();
-      const box = page.getByPlaceholder('Search');
-      await box.fill('');
-      await box.fill('nobody by that name at all');
-
-      expect(await page.getByText('Nothing matches that search').isVisible()).toBe(true);
-      await page.keyboard.press('Escape');
     });
   });
 
