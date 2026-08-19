@@ -2,7 +2,7 @@
 
 import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   Badge,
@@ -570,38 +570,47 @@ function SubjectPicker({
     };
   }, []);
 
-  const search = (term: string): void => {
-    /*
-     * `Combobox` runs its debounce on mount as well as on input, so it announces an empty query
-     * once per picker as soon as the screen renders. That first announcement is not a search: the
-     * page already fetched this exact list on the server and handed it over as `initial`, and
-     * honouring it would mean two round trips per page load to arrive back where we started.
-     *
-     * Only the *first* empty term is ignored. Clearing the box after searching is a real request
-     * again — it means "show me the beginning of the list", which is a different thing from never
-     * having typed.
-     */
-    if (term.trim() === '' && !touched.current) {
-      touched.current = true;
-      return;
-    }
-    touched.current = true;
-
-    const ticket = (sequence.current += 1);
-    setLoading(true);
-    void searchAclSubjects(subjectType, term).then((result) => {
-      if (ticket !== sequence.current) {
+  /*
+   * Memoised, and not as a micro-optimisation — `Combobox`'s debounce effect lists `onSearch` in
+   * its dependencies, so a new closure every render re-arms the timer on every render. Combined
+   * with this function setting state, that is a loop: search, re-render, re-arm, search. A stable
+   * identity means the timer is armed by what somebody typed and by nothing else.
+   */
+  const search = useCallback(
+    (term: string): void => {
+      /*
+       * `Combobox` runs its debounce on mount as well as on input, so it announces an empty query
+       * once per picker as soon as the screen renders. That first announcement is not a search: the
+       * page already fetched this exact list on the server and handed it over as `initial`, and
+       * honouring it would mean two round trips per page load to arrive back where we started.
+       *
+       * Only the *first* empty term is ignored. Clearing the box after searching is a real request
+       * again — it means "show me the beginning of the list", which is a different thing from never
+       * having typed.
+       */
+      if (term.trim() === '' && !touched.current) {
+        touched.current = true;
         return;
       }
-      setLoading(false);
-      // A refused or failed search leaves the list as it was. It is a *narrowing* of something the
-      // caller can already see, so the honest degradation is "no new matches", not an empty picker
-      // that reads as "this tenant has nobody".
-      if (result.ok) {
-        setMatches(result.value);
-      }
-    });
-  };
+      touched.current = true;
+
+      const ticket = (sequence.current += 1);
+      setLoading(true);
+      void searchAclSubjects(subjectType, term).then((result) => {
+        if (ticket !== sequence.current) {
+          return;
+        }
+        setLoading(false);
+        // A refused or failed search leaves the list as it was. It is a *narrowing* of something the
+        // caller can already see, so the honest degradation is "no new matches", not an empty picker
+        // that reads as "this tenant has nobody".
+        if (result.ok) {
+          setMatches(result.value);
+        }
+      });
+    },
+    [subjectType],
+  );
 
   /*
    * The chosen option, kept alive across searches, plus a last resort.
