@@ -1111,8 +1111,6 @@ describe('the entity facet', () => {
   let entityId: string;
   /** Exists, in this tenant, with nothing filed under it — so it must never be named. */
   let unfiledEntityId: string;
-  /** Exists in the *other* tenant, under a name that must never cross. */
-  let foreignEntityId: string;
 
   const searchWithEntity = (runner: <T>(work: () => Promise<T>) => Promise<T>, text: string) =>
     runner(() =>
@@ -1130,7 +1128,6 @@ describe('the entity facet', () => {
     const companyId = uuidv7();
     entityId = uuidv7();
     unfiledEntityId = uuidv7();
-    foreignEntityId = uuidv7();
 
     await owner.company.create({
       data: {
@@ -1156,28 +1153,6 @@ describe('the entity facet', () => {
         },
       });
     }
-
-    // The other tenant's own company and entity, so a cross-tenant identifier is a real row.
-    const foreignCompanyId = uuidv7();
-    await owner.company.create({
-      data: {
-        id: foreignCompanyId,
-        tenantId: TENANT_B,
-        code: unique('CO'),
-        name: 'Rival',
-        updatedAt: FIXED_NOW,
-      },
-    });
-    await owner.entity.create({
-      data: {
-        id: foreignEntityId,
-        tenantId: TENANT_B,
-        companyId: foreignCompanyId,
-        code: unique('E'),
-        name: 'A name from another tenant',
-        updatedAt: FIXED_NOW,
-      },
-    });
 
     // A library the *entity* owns — the placement that makes `entity_id` non-null at all.
     const owned = await asAlice(() =>
@@ -1246,13 +1221,21 @@ describe('the entity facet', () => {
     expect(refused.facetLabels.entity).toBeUndefined();
   });
 
-  it('cannot resolve an entity belonging to another tenant', async () => {
-    const named = await asAlice(() =>
-      unitOfWork.run(() => labelReader.labelsFor({ entity: [foreignEntityId] })),
+  it('cannot resolve this entity from another tenant', async () => {
+    /*
+     * Asked the way the `type` facet asks it above, and for the same reason: tenants live in
+     * separate databases, so a "foreign" row cannot be seeded here at all — `company_tenant_id_fkey`
+     * refuses it. What can be proved in one database is the clause itself: a real entity of this
+     * tenant, looked up under a different ambient tenant, resolves to nothing because the `WHERE`
+     * says so rather than because the row was somewhere else.
+     */
+    const underTenantB = await runWithContext(
+      { ...contextFor(ALICE, [VIEWER_ROLE]), tenantId: TENANT_B },
+      () => unitOfWork.run(() => labelReader.labelsFor({ entity: [entityId] })),
     );
 
-    expect(named.entity).toBeUndefined();
-    expect(JSON.stringify(named)).not.toContain('A name from another tenant');
+    expect(underTenantB.entity).toBeUndefined();
+    expect(JSON.stringify(underTenantB)).not.toContain(ENTITY_NAME);
   });
 
   it('says nothing about an entity that has since been deleted', async () => {
