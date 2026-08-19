@@ -26,8 +26,12 @@ import {
 import { SearchAudit } from '../domain/audit-actions';
 import { parseSearchQuery } from '../domain/query-parser';
 import {
+  FACET_LABEL_READER,
+  LABELLED_FACETS,
   RECENT_SEARCH_REPOSITORY,
   SEARCH_SOURCE,
+  type FacetLabelReader,
+  type LabelledFacet,
   type RecentSearchRepository,
   type SearchOutcome,
   type SearchRequest,
@@ -56,6 +60,7 @@ export class DefaultSearchService implements SearchService {
     @Inject(SEARCH_PORT) private readonly engine: SearchPort,
     @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
     @Inject(SEARCH_SOURCE) private readonly source: SearchSource,
+    @Inject(FACET_LABEL_READER) private readonly facetLabels: FacetLabelReader,
     @Inject(RECENT_SEARCH_REPOSITORY) private readonly recents: RecentSearchRepository,
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
@@ -92,8 +97,36 @@ export class DefaultSearchService implements SearchService {
         limit: request.limit,
       });
       await this.recordAftermath(request, results, unrestricted);
-      return { results, unrestricted };
+      return { results, unrestricted, facetLabels: await this.labelsFor(results) };
     });
+  }
+
+  /**
+   * Names for the facet values this search produced — Slice 11.
+   *
+   * ## Why it reads from the results rather than from the tenant
+   *
+   * `/search` used to render facet captions from four administrative lists the page fetched
+   * itself — every document type, every category, every department, every entity in the tenant —
+   * which needed `settings:manage` and `org:manage` and made the workspace unopenable for the two
+   * seeded roles that hold neither. The names were never the problem; asking for the *catalogue*
+   * to find four of them was.
+   *
+   * This asks the other way round. `results.facets` is what the engine counted **inside** the ACL
+   * predicate, so every identifier here is one the caller has already been shown. Resolving those
+   * and only those means a facet the caller cannot see has no label — because it has no bucket.
+   * The visibility decision stays exactly where it was, in the engine's `WHERE`, and this never
+   * gets an opportunity to widen it.
+   */
+  private async labelsFor(results: SearchResults): Promise<SearchOutcome['facetLabels']> {
+    const wanted: Partial<Record<LabelledFacet, readonly string[]>> = {};
+    for (const facet of LABELLED_FACETS) {
+      const buckets = results.facets[facet] ?? [];
+      if (buckets.length > 0) {
+        wanted[facet] = buckets.map((bucket) => bucket.value);
+      }
+    }
+    return Object.keys(wanted).length === 0 ? {} : this.facetLabels.labelsFor(wanted);
   }
 
   /**

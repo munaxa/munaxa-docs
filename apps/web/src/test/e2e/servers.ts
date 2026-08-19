@@ -64,6 +64,12 @@ export interface Fixture {
    * boundary for two of the three seeded roles that can open it, through twenty-five green tests.
    */
   readonly auditor: { readonly id: string; readonly email: string };
+  /**
+   * The seeded document controller, plus the two operational read keys the shipped migration
+   * grants it — and nothing else. Between this and the auditor, the two roles the `/search`
+   * defect actually locked out are both represented by their real permission sets.
+   */
+  readonly controller: { readonly id: string; readonly email: string };
   readonly documentId: string;
   readonly revisionId: string;
   readonly revisionLabel: string;

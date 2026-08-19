@@ -177,6 +177,7 @@ import { DefaultSearchService } from '../modules/search/application/search.servi
 import { SavedSearchService } from '../modules/search/application/saved-search.service';
 import { SearchProjectionService } from '../modules/search/application/search-projection.service';
 import { SearchRebuildService } from '../modules/search/application/search-rebuild.service';
+import { PrismaFacetLabelReader } from '../modules/search/infrastructure/prisma-facet-label.reader';
 import { PrismaSearchSourceReader } from '../modules/search/infrastructure/prisma-search-source.reader';
 import {
   PrismaRecentSearchRepository,
@@ -1118,6 +1119,9 @@ export function realSearchStack(options: SearchStackOptions): SearchStack {
       engine,
       acl,
       source,
+      // The real reader, like every other collaborator here: a suite exercising search exercises
+      // the label projection too, tenant clause and all.
+      new PrismaFacetLabelReader(),
       new PrismaRecentSearchRepository(),
       audit,
       options.unitOfWork,

@@ -109,6 +109,23 @@ export type SearchHit = z.infer<typeof searchHitSchema>;
 export const facetBucketSchema = z.object({
   value: z.string(),
   count: z.number().int(),
+  /**
+   * What to show instead of the value — Slice 11, and optional for two different reasons.
+   *
+   * **Additive.** `value` is the filter and stays exactly what it was; this is presentation beside
+   * it. A client that ignores the field behaves as it always did, which is why it is a new optional
+   * property rather than a change to `value`.
+   *
+   * **Sometimes there genuinely is no name.** A `status` or a `year` bucket is its own label and
+   * the catalogue translates it; a type, category, department or entity whose row has since been
+   * deleted has no name left to give. Both cases arrive as an absent `label`, and the client falls
+   * back to the value it already had.
+   *
+   * The security property is in *where* it comes from: the server resolves names only for the
+   * values already present in the caller's own ACL-filtered facet result. A bucket the caller
+   * cannot see has no label here because it has no bucket here.
+   */
+  label: z.string().optional(),
 });
 
 export type FacetBucket = z.infer<typeof facetBucketSchema>;

@@ -1,22 +1,12 @@
 import type { ReactNode } from 'react';
 
-import type {
-  CategoryOption,
-  Collection,
-  DepartmentOption,
-  DocumentTypeOption,
-  Entity,
-  RecentSearch,
-  SavedSearch,
-  SearchResults,
-} from '@edms/contracts';
+import type { RecentSearch, SavedSearch, SearchResults } from '@edms/contracts';
 import { SEARCH_FILTER_KEYS } from '@edms/contracts';
-import { Permission, type PermissionKey } from '@edms/domain';
+import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../features/admin-shared';
 import { SearchScreen } from '../../../features/search/search-screen';
-import { adminAccess, adminGet, adminRead } from '../../../lib/admin/api';
-import { listQueryString } from '../../../lib/admin/list-state';
+import { adminAccess, adminGet } from '../../../lib/admin/api';
 
 type RawSearchParams = Readonly<Record<string, string | readonly string[] | undefined>>;
 
@@ -63,17 +53,21 @@ export default async function SearchPage({
   const shouldSearch = queryText !== '' || Object.keys(filters).length > 0;
 
   /**
-   * The workspace itself — Slice 10.
+   * The whole of it — Slices 10 and 11.
    *
    * Three reads, and a refusal from any of them still throws: without results there is nothing to
-   * show, and an error boundary is the honest answer. All three carry `document:view`, the same
-   * key this page gated on above, so a caller who got past the gate can reach all three.
+   * show, and an error boundary is the honest answer. All three carry `document:view`, the same key
+   * this page gated on above, so a caller who got past the gate can reach all three.
    *
-   * The four label reads used to share this `Promise.all`, and that is the whole defect. They are
-   * behind `settings:manage` and `org:manage` — keys the seeded document controller and auditor do
-   * not hold — so all four answered 403, one rejection discarded the render, and `/search` was the
-   * route error boundary for two of the three roles that can open it. Measured on the running
-   * stack, not inferred: only a tenant administrator could search at all.
+   * Four more used to share this `Promise.all`, fetching the tenant's document types, categories,
+   * departments and entities to caption the facets. Every one sat behind `settings:manage` or
+   * `org:manage`, so all four answered 403 for the seeded document controller and auditor, one
+   * rejection discarded the render, and `/search` was the route error boundary for two of the three
+   * roles that can open it. Measured on the running stack, not inferred.
+   *
+   * Slice 10 made them conditional and optional. Slice 11 removed them: the names come back with
+   * the results, resolved server-side for the facet values the ACL predicate had already counted.
+   * The list above is now the complete set of requests this page makes.
    */
   const [results, saved, recent] = await Promise.all([
     shouldSearch
@@ -82,8 +76,6 @@ export default async function SearchPage({
     adminGet<{ data: SavedSearch[] }>('/search/saved'),
     adminGet<{ data: RecentSearch[] }>('/search/recent'),
   ]);
-
-  const labels = await facetLabels(results, access.permissions);
 
   return (
     <SearchScreen
@@ -95,138 +87,50 @@ export default async function SearchPage({
       initialResults={results}
       saved={saved.data}
       recent={recent.data}
-      typeLabels={labels.type}
-      categoryLabels={labels.category}
-      departmentLabels={labels.department}
-      entityLabels={labels.entity}
+      typeLabels={labelsFrom(results, 'type')}
+      categoryLabels={labelsFrom(results, 'category')}
+      departmentLabels={labelsFrom(results, 'department')}
+      entityLabels={labelsFrom(results, 'entity')}
     />
   );
 }
 
-/** One id-to-name map per facet that has names. Empty is a valid answer for every one of them. */
-interface FacetLabels {
-  readonly type: Readonly<Record<string, string>>;
-  readonly category: Readonly<Record<string, string>>;
-  readonly department: Readonly<Record<string, string>>;
-  readonly entity: Readonly<Record<string, string>>;
-}
-
-const NO_LABELS: Readonly<Record<string, string>> = {};
-const NOTHING_TO_LABEL: FacetLabels = {
-  type: NO_LABELS,
-  category: NO_LABELS,
-  department: NO_LABELS,
-  entity: NO_LABELS,
-};
-
 /**
- * The names behind the facet values — presentation, and never the page.
+ * The names the search response already carries, in the shape the screen takes — Slice 11.
  *
- * ## Why these are a second tier rather than four more entries in the `Promise.all`
+ * ## Why there is nothing to fetch here any more
  *
- * Because of what they are for. `facetLabel` in `search-screen.tsx` ends `labels?.[value] ?? value`
- * and `ResultCard` renders its type chip only `{typeLabel !== undefined && …}` — the screen has
- * always been able to draw itself without a single one of these. They decide whether a facet reads
- * `Quality Manual` or a UUID, and a page that refuses to render because it could not resolve a
- * caption is a page with its priorities inverted.
+ * There used to be. `/search` read the tenant's document types, categories, departments and
+ * entities to caption its facets, and every one of those sits behind `settings:manage` or
+ * `org:manage` — so the workspace was the route error boundary for the two seeded roles that hold
+ * neither. Slice 10 made the four reads optional and conditional, which fixed the page and left
+ * the auditor reading raw identifiers.
  *
- * Sharing the render-critical `Promise.all` made that inversion structural: one 403 from a label
- * read rejected the whole thing. Splitting the graph is what removes it, and it is deliberately a
- * split rather than a `try`/`catch` around the original — a catch would have swallowed a failed
- * *search* just as readily.
+ * The server answers it properly now. `SearchService` resolves names for the facet values it just
+ * counted **inside the ACL predicate**, so the labels arrive with the results, restricted to
+ * exactly what the caller was already shown. Every role gets the same captions, and the page asks
+ * for nothing to get them.
  *
- * ## Three conditions, and each is a different question
+ * ## Why this is a projection and not a lookup
  *
- * **Did a search run?** No search, no facets and no result cards, so nothing to label. This is the
- * landing page, and it now reads nothing at all.
+ * It reads `bucket.label` out of the response and keys it by `bucket.value`. There is no request,
+ * no catalogue and no second source of truth — the screen's existing `labels?.[value] ?? value`
+ * fallback still covers a bucket the server could not name, which is now the only way a raw value
+ * reaches the eye.
  *
- * **Is this facet on screen?** A search whose results carry no `department` bucket has no use for
- * the department names. Asked per dataset rather than once, because the facets a query produces
- * differ by query.
- *
- * **May this caller read it?** The same capability question `/documents` asks, from the same
- * `access.permissions` — "cannot use it, so do not ask for it". The seeded auditor holds none of
- * these keys and now issues no label request at all rather than four refused ones.
- *
- * ## Why a refusal still degrades rather than throws
- *
- * The capability check means a refusal should not happen. `permission_version` makes it possible
- * anyway: a role edit lands in the database while an outstanding access token still carries the
- * grants it was minted with, so for up to `JWT_ACCESS_TTL_SECONDS` a caller can believe it holds a
- * key the API has already taken away. `adminRead` is the repository's own answer to a read whose
- * failure is a *result* — it redirects an expired session to `/login` and otherwise reports the
- * code — so that window costs a caption rather than the workspace.
- *
- * This is not hiding an authorization failure: nothing is fabricated, the endpoint is untouched,
- * the guard still decides, and the facet shows the raw value it always falls back to.
- *
- * ## Why entities are still read administratively
- *
- * There is no operational read model for them, and this slice does not add one. `/admin/entities`
- * keeps `org:manage` and is asked for only by a caller who holds it, so a tenant administrator
- * keeps the entity names it has always had and nobody else gains a byte. The endpoint returns
- * `legalName`, the department and branch counts and the owning company alongside the two fields
- * used here, which is why widening it was never the answer — the right fix is for the search
- * response to carry its own bucket labels, and that is an API change and a later slice.
+ * The maps are per facet because that is the shape `SearchScreen` has always taken; keeping it
+ * means this slice changes no component, no markup and no baseline.
  */
-async function facetLabels(
+function labelsFrom(
   results: SearchResults | null,
-  permissions: readonly PermissionKey[],
-): Promise<FacetLabels> {
-  if (results === null) {
-    return NOTHING_TO_LABEL;
-  }
-
-  const holds = (permission: PermissionKey): boolean => permissions.includes(permission);
-  const bucketed = (facet: string): boolean => (results.facets[facet]?.length ?? 0) > 0;
-  const canRead = holds(Permission.CONFIGURATION_VIEW);
-
-  const [type, category, department, entity] = await Promise.all([
-    // Types name the chip on every result card as well as their own facet, so they are worth
-    // resolving whenever there is anything on screen at all. No `isActive` filter: a document
-    // filed under a since-retired type is still a result, and its type still has a name.
-    canRead && (results.data.length > 0 || bucketed('type'))
-      ? namesFrom<DocumentTypeOption>('/configuration/document-types', 'name')
-      : NO_LABELS,
-    canRead && bucketed('category')
-      ? namesFrom<CategoryOption>('/configuration/categories', 'path')
-      : NO_LABELS,
-    holds(Permission.DIRECTORY_VIEW) && bucketed('department')
-      ? namesFrom<DepartmentOption>('/directory/departments', 'path')
-      : NO_LABELS,
-    holds(Permission.ORG_MANAGE) && bucketed('entity')
-      ? namesFrom<Entity>('/admin/entities', 'name')
-      : NO_LABELS,
-  ]);
-
-  return { type, category, department, entity };
-}
-
-/**
- * One page of a list, as an id-to-name map, and an empty map when it could not be read.
- *
- * `adminRead` rather than `adminOptions`, which is the whole point: `adminOptions` throws, and a
- * caption is not worth a screen. The query is the one `adminOptions` builds — the API's maximum
- * page, ascending, live rows only — so the request on the wire is unchanged from the caller's side.
- */
-async function namesFrom<TItem extends { readonly id: string; readonly name: string }>(
-  path: string,
-  sortBy: string,
-): Promise<Readonly<Record<string, string>>> {
-  const page = await adminRead<Collection<TItem>>(
-    `${path}${listQueryString({
-      page: 1,
-      pageSize: 100,
-      sortBy,
-      sortDirection: 'asc',
-      search: '',
-      deleted: 'live',
-      filters: {},
-    })}`,
+  facet: string,
+): Readonly<Record<string, string>> {
+  const buckets = results?.facets[facet] ?? [];
+  return Object.fromEntries(
+    buckets
+      .filter((bucket) => bucket.label !== undefined)
+      .map((bucket) => [bucket.value, bucket.label as string]),
   );
-  return page.ok
-    ? Object.fromEntries(page.value.data.map((item) => [item.id, item.name]))
-    : NO_LABELS;
 }
 
 function searchQueryString(

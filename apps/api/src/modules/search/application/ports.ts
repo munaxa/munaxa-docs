@@ -174,6 +174,48 @@ export interface SearchProjection {
   remove(documentId: DocumentId): Promise<void>;
 }
 
+export const FACET_LABEL_READER = Symbol('FacetLabelReader');
+
+/** The facets whose values are identifiers, and therefore the only ones with a name to look up. */
+export const LABELLED_FACETS = ['type', 'category', 'department', 'entity'] as const;
+
+export type LabelledFacet = (typeof LABELLED_FACETS)[number];
+
+/**
+ * Names for facet values the caller has already been shown — Slice 11.
+ *
+ * ## Why this is a port of its own rather than a call into Administration
+ *
+ * Because of what it must *not* be able to do. The administrative readers behind these four tables
+ * list a tenant's whole catalogue and return an operations view of each row — an entity's
+ * registered legal name, its branch and department counts, the company it belongs to. Search needs
+ * two columns for a handful of identifiers, and the moment it borrows an administrative reader to
+ * get them, the question "could search show me something I cannot reach" stops having a short
+ * answer.
+ *
+ * So the contract is deliberately narrow in both directions. It takes **identifiers the caller has
+ * already seen** — every one comes out of a facet computed inside the ACL predicate — and it
+ * returns **names**. There is no "list", no filter, no paging and no way to ask for a row that was
+ * not already on screen.
+ *
+ * ## What the implementation must guarantee
+ *
+ * Tenant scoping in the query itself, not merely by row-level security; one round trip per facet
+ * rather than one per value; and silence for an identifier it cannot resolve. A name it cannot
+ * find is an absent entry, never a fabricated one and never an error.
+ */
+export interface FacetLabelReader {
+  /**
+   * Names for exactly these identifiers, per facet.
+   *
+   * The result is a map per facet, keyed by identifier. An identifier that resolved to nothing —
+   * deleted, or belonging to another tenant — is simply absent from it.
+   */
+  labelsFor(
+    request: Readonly<Partial<Record<LabelledFacet, readonly string[]>>>,
+  ): Promise<Readonly<Partial<Record<LabelledFacet, Readonly<Record<string, string>>>>>>;
+}
+
 export const SEARCH_SERVICE = Symbol('SearchService');
 
 export interface SearchRequest {
@@ -190,6 +232,14 @@ export interface SearchOutcome {
   readonly results: SearchResults;
   /** True when `search:all` widened this query past the caller's own reach — and was audited. */
   readonly unrestricted: boolean;
+  /**
+   * Names for the facet values in `results`, and for nothing else.
+   *
+   * Beside the results rather than inside them, because the engine port has no business knowing
+   * what a document type is called: an external engine would return identifiers and counts exactly
+   * as this one does. Resolving the names is the application's job, and this is where it puts them.
+   */
+  readonly facetLabels: Readonly<Partial<Record<LabelledFacet, Readonly<Record<string, string>>>>>;
 }
 
 export interface SearchService {

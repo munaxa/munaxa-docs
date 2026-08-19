@@ -40,6 +40,8 @@ import {
   type SavedSearchRecord,
   type SearchRebuildRecord,
   type SearchRebuildRepository,
+  type LabelledFacet,
+  type SearchOutcome,
   type SearchService,
 } from '../application/ports';
 import { SavedSearchService } from '../application/saved-search.service';
@@ -83,7 +85,7 @@ export class SearchController {
       cursor: query.cursor ?? null,
       limit: query.limit,
     });
-    return toResults(outcome.results, outcome.unrestricted);
+    return toResults(outcome.results, outcome.unrestricted, outcome.facetLabels);
   }
 
   @Get('saved')
@@ -168,14 +170,36 @@ const SORT_KEYS = {
   title: 'TITLE',
 } as const;
 
-function toResults(results: SearchResults, unrestricted: boolean): WireSearchResults {
+/**
+ * The wire shape, plus the names for the values it already contains — Slice 11.
+ *
+ * `label` is written only when one was resolved, so a bucket with no name — a status, a year, a
+ * type whose row has since been deleted — carries the two fields it always carried and the client
+ * falls back to the value. `value` and `count` are untouched: the filter and the arithmetic are
+ * what they were, and a consumer that ignores `label` cannot tell this changed.
+ *
+ * The walk is over the **buckets**, not over the label map, so a name for something the facets do
+ * not contain has nowhere to land even if one were ever produced.
+ */
+function toResults(
+  results: SearchResults,
+  unrestricted: boolean,
+  facetLabels: SearchOutcome['facetLabels'],
+): WireSearchResults {
   return {
     data: results.hits.map(toHit),
     meta: { total: results.total, unrestricted },
     facets: Object.fromEntries(
       Object.entries(results.facets).map(([facet, buckets]) => [
         facet,
-        buckets.map((bucket) => ({ value: bucket.value, count: bucket.count })),
+        buckets.map((bucket) => {
+          const label = facetLabels[facet as LabelledFacet]?.[bucket.value];
+          return {
+            value: bucket.value,
+            count: bucket.count,
+            ...(label === undefined ? {} : { label }),
+          };
+        }),
       ]),
     ),
     nextCursor: results.nextCursor,
