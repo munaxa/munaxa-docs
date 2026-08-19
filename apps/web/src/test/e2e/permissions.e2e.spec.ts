@@ -129,7 +129,9 @@ describe('document permissions as each role', () => {
         expect(await subject.isVisible(), 'the subject picker was not rendered').toBe(true);
         await subject.click();
 
-        const options = page.getByRole('option');
+        // Scoped to the open panel: the "Kind" control beside it is a native `<select>`, so a
+        // document-wide `option` query resolves to its hidden `<option>` children first.
+        const options = page.getByRole('listbox').getByRole('option');
         await options.first().waitFor({ state: 'visible', timeout: 30_000 });
         const names = await options.allInnerTexts();
 
