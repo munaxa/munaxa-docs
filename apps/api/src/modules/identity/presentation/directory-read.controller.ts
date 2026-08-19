@@ -34,6 +34,12 @@ import { toCollection } from './identity-admin.view';
  * disabled account offers an assignment that resolves to nobody. Managing an account and choosing
  * a person are different questions, and the administration screens keep their status filter for
  * the first one.
+ *
+ * **Search matches the label and nothing else** — Slice 13. `listUsers` searches `displayName` and
+ * `email` by default, which is right for the screen that administers accounts and wrong here: an
+ * endpoint that matches a column it does not return is an existence oracle, and a caller could type
+ * a guessed address and learn from the row coming back that it belongs to this tenant. This route
+ * can only search what it already shows.
  */
 @Controller({ path: 'directory', version: '1' })
 @RequirePermission(Permission.DIRECTORY_VIEW)
@@ -50,6 +56,7 @@ export class DirectoryPeopleController {
         ...query,
         deleted: 'live',
         status: UserStatus.ACTIVE,
+        searchFields: ['displayName'],
       }),
       toPersonOption,
     );

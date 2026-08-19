@@ -332,6 +332,30 @@ async function seed() {
     });
   }
 
+  /*
+   * Enough people to push one past the picker's page — Slice 13.
+   *
+   * `/directory/people` is fetched as a single page of a hundred sorted by display name ascending,
+   * so a tenant with more than that has people the subject picker cannot offer at all. These 110
+   * exist to make that true in the running product rather than only in a unit test: `Zz Picker 110`
+   * sorts last of everybody and is therefore absent from the first page by construction.
+   *
+   * No password and no role — they are never signed in as. They are somebody to *find*.
+   */
+  for (let index = 1; index <= 110; index += 1) {
+    const suffix = String(index).padStart(3, '0');
+    await client.user.create({
+      data: {
+        id: randomUUID(),
+        tenantId,
+        email: `picker-${suffix}@e2e.test`,
+        emailNormalized: `picker-${suffix}@e2e.test`,
+        displayName: `Zz Picker ${suffix}`,
+        status: 'ACTIVE',
+      },
+    });
+  }
+
   const confidentialityId = randomUUID();
   const numberingRuleId = randomUUID();
   const documentTypeId = randomUUID();

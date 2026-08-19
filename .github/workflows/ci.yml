@@ -343,7 +343,7 @@ jobs:
     #
     #   signing   — signing 5, faded-text 1, search 1        =  7
     #   recovery  — recovery 7, datagrid-keyboard 1          =  8
-    #   screens   — consistency 1, shell 1, dashboard 1, recent-empty 1, permissions 3 = 7
+    #   screens   — consistency 1, shell 1, dashboard 1, recent-empty 1, permissions 4 = 8
     #
     # Every shard stays under ten with room to spare, and the product's security boundary is
     # untouched. If a file's sign-in count grows, the shard it lives in is where that shows up.

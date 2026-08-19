@@ -194,6 +194,99 @@ describe('document permissions as each role', () => {
     });
   });
 
+  /**
+   * Choosing somebody the picker was never given — Slice 13, in the running product.
+   *
+   * The fixture seeds 110 extra people, so `Zz Picker 110` sorts last of everybody and is **not** on
+   * the page of a hundred the server hands the screen. Before this slice the picker was a
+   * `<select>` filled from exactly that page, so this person could not be granted a permission at
+   * all. The integration suite proves the arithmetic against 150 rows; this proves the browser can
+   * actually reach them.
+   */
+  describe('a person beyond the first page', () => {
+    const BEYOND = 'Zz Picker 110';
+    let context: BrowserContext;
+    let page: Page;
+
+    beforeAll(async () => {
+      context = await browser.newContext({
+        storageState: await signInAndCapture(
+          browser,
+          WEB_URL,
+          fixture.controller.email,
+          fixture.password,
+          fixture.slug,
+        ),
+        viewport: { width: 1440, height: 900 },
+      });
+      page = await context.newPage();
+      await page.goto(url(), { waitUntil: 'networkidle' });
+    }, 180_000);
+
+    afterAll(async () => {
+      await context?.close();
+    });
+
+    it('is not on the page the server hands the screen', async () => {
+      // The precondition, asserted rather than assumed: if the fixture ever shrank below a hundred
+      // people this test would start passing for the wrong reason, and the one below with it.
+      const token = await bearerFor(fixture.controller.email);
+      const answer = await fetch(
+        `${api()}/directory/people?page=1&pageSize=100&sortBy=displayName&sortDirection=asc`,
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+      const body = (await answer.json()) as {
+        data: { displayName: string }[];
+        meta: { total: number; hasMore: boolean };
+      };
+
+      expect(body.data).toHaveLength(100);
+      expect(body.meta.hasMore, 'the fixture no longer has more than one page of people').toBe(
+        true,
+      );
+      expect(body.data.map((row) => row.displayName)).not.toContain(BEYOND);
+    });
+
+    it('is found by typing their name, and can be granted a permission', async () => {
+      await page.getByLabel('Kind', { exact: false }).selectOption('USER');
+
+      await page.getByRole('combobox', { name: 'Subject' }).click();
+      await page.getByPlaceholder('Search').fill('Zz Picker 110');
+
+      const option = page.getByRole('option', { name: BEYOND });
+      await option.waitFor({ state: 'visible', timeout: 30_000 });
+      await option.click();
+
+      // Chosen, named, and the Add button live — which is the whole of "this person is reachable".
+      expect(await page.getByRole('combobox', { name: 'Subject' }).innerText()).toContain(BEYOND);
+      expect(await page.getByRole('button', { name: 'Add' }).isEnabled()).toBe(true);
+    });
+
+    it('keeps them named when the search moves on', async () => {
+      await page.getByRole('combobox', { name: 'Subject' }).click();
+      const box = page.getByPlaceholder('Search');
+      await box.fill('');
+      await box.fill('Zz Picker 001');
+      await page.getByRole('option', { name: 'Zz Picker 001' }).waitFor({ timeout: 30_000 });
+      await page.keyboard.press('Escape');
+
+      expect(
+        await page.getByRole('combobox', { name: 'Subject' }).innerText(),
+        'the chosen person lost their name when the search changed',
+      ).toContain(BEYOND);
+    });
+
+    it('says so plainly when nothing matches', async () => {
+      await page.getByRole('combobox', { name: 'Subject' }).click();
+      const box = page.getByPlaceholder('Search');
+      await box.fill('');
+      await box.fill('nobody by that name at all');
+
+      expect(await page.getByText('Nothing matches that search').isVisible()).toBe(true);
+      await page.keyboard.press('Escape');
+    });
+  });
+
   describe('the boundaries this slice did not move', () => {
     it('still refuses the document controller every administrative catalogue', async () => {
       /*
