@@ -53,7 +53,7 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
       ...(request.departmentId !== undefined && {
         departments: { some: { departmentId: request.departmentId } },
       }),
-      OR: searchConditions(request.search, ['displayName', 'email']),
+      OR: searchConditions(request.search, request.searchFields ?? ['displayName', 'email']),
     };
 
     const [rows, total] = await Promise.all([
@@ -247,7 +247,7 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
       ...(request.permission !== undefined && {
         permissions: { some: { permission: request.permission } },
       }),
-      OR: searchConditions(request.search, ['name', 'key', 'description']),
+      OR: searchConditions(request.search, request.searchFields ?? ['name', 'key', 'description']),
     };
 
     const [rows, total] = await Promise.all([

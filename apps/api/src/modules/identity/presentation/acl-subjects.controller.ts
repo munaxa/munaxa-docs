@@ -54,7 +54,17 @@ export class AclSubjectsController {
     @Query(new ZodValidationPipe(roleOptionQuerySchema))
     query: ReturnType<typeof roleOptionQuerySchema.parse>,
   ): Promise<Collection<RoleOption>> {
-    return toCollection(await this.roles.list({ ...query, deleted: 'live' }), toRoleOption);
+    return toCollection(
+      await this.roles.list({
+        ...query,
+        deleted: 'live',
+        // Slice 13: `listRoles` also searches `key` and `description` by default. Neither is on
+        // `RoleOption`, and an endpoint that matches a column it does not return lets a caller
+        // probe for one. This searches the name it shows.
+        searchFields: ['name'],
+      }),
+      toRoleOption,
+    );
   }
 }
 

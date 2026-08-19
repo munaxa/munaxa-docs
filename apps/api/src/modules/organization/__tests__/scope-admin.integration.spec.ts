@@ -650,3 +650,98 @@ describe('a suspended tenant', () => {
     ).resolves.toMatchObject({ data: [] });
   });
 });
+
+/**
+ * Finding a department past the first page — Slice 13, against a real PostgreSQL and 150 rows.
+ *
+ * The counterpart to the people case in `identity-admin.integration.spec.ts`, and the same
+ * arithmetic: `/directory/departments` is fetched as one page of a hundred sorted ascending, so a
+ * department at position 101 or beyond was simply not offered and a native `<select>` had no way to
+ * ask for more. Departments are ACL subjects, so that is a unit of the organisation nobody could
+ * grant a permission to.
+ *
+ * Departments needed no search-field narrowing: `listDepartments` matches `name` and `code`, and
+ * `DepartmentOption` carries both, so it can only be probed for what it already shows.
+ */
+describe('a picker with more departments than one page', () => {
+  const PREFIX = 'Zz Unit';
+  const LAST = `${PREFIX} 150`;
+  const ONE_PAGE = {
+    page: 1,
+    pageSize: 100,
+    sortBy: 'name',
+    sortDirection: 'asc',
+    deleted: 'live',
+  } as const;
+
+  let deletedName: string;
+
+  beforeAll(async () => {
+    const { entityId } = fixture(ACME);
+    for (let index = 1; index <= 150; index += 1) {
+      const suffix = String(index).padStart(3, '0');
+      await asTenant(ACME, () =>
+        service.createDepartment({ entityId, code: `ZZU${suffix}`, name: `${PREFIX} ${suffix}` }),
+      );
+    }
+
+    deletedName = `${PREFIX} 077`;
+    const page = await asTenant(ACME, () =>
+      service.listDepartments({ ...ONE_PAGE, search: deletedName }),
+    );
+    const departed = page.data[0];
+    if (departed !== undefined) {
+      await asTenant(ACME, () =>
+        service.delete(OrganizationNodeKind.DEPARTMENT, departed.id, departed.version),
+      );
+    }
+  }, 180_000);
+
+  it('cannot offer the department at all without a search', async () => {
+    const page = await asTenant(ACME, () => service.listDepartments({ ...ONE_PAGE }));
+
+    expect(page.data).toHaveLength(100);
+    expect(page.data.map((row) => row.name)).not.toContain(LAST);
+    expect(page.meta.hasMore).toBe(true);
+  });
+
+  it('returns exactly that department when it is searched for', async () => {
+    const page = await asTenant(ACME, () => service.listDepartments({ ...ONE_PAGE, search: LAST }));
+
+    expect(page.data.map((row) => row.name)).toStrictEqual([LAST]);
+  });
+
+  it('matches by code as well, which is what the option carries beside the name', async () => {
+    const page = await asTenant(ACME, () =>
+      service.listDepartments({ ...ONE_PAGE, search: 'zzu150' }),
+    );
+
+    expect(page.data.map((row) => row.name)).toStrictEqual([LAST]);
+  });
+
+  it('never returns a deleted department, however precisely it is named', async () => {
+    const page = await asTenant(ACME, () =>
+      service.listDepartments({ ...ONE_PAGE, search: deletedName }),
+    );
+
+    expect(page.data).toStrictEqual([]);
+  });
+
+  it('answers an empty list when nothing matches', async () => {
+    const page = await asTenant(ACME, () =>
+      service.listDepartments({ ...ONE_PAGE, search: 'no such unit anywhere' }),
+    );
+
+    expect(page.data).toStrictEqual([]);
+    expect(page.meta.total).toBe(0);
+  });
+
+  it('cannot search into another tenant', async () => {
+    // The second tenant this suite already runs against, asked the same question.
+    const elsewhere = await asTenant(OTHER, () =>
+      service.listDepartments({ ...ONE_PAGE, search: LAST }),
+    );
+
+    expect(elsewhere.data).toStrictEqual([]);
+  });
+});

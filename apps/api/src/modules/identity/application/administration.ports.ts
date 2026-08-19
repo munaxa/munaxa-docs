@@ -68,10 +68,35 @@ export interface UserListRequest extends IdentityListRequest {
   readonly status?: UserStatusKey | undefined;
   readonly roleId?: string | undefined;
   readonly departmentId?: string | undefined;
+  /**
+   * Which columns free-text `search` may match — Slice 13.
+   *
+   * Absent means the administrative default, `displayName` and `email`, which is right for the
+   * screen that administers accounts: finding somebody by the address you have is the point.
+   *
+   * It is wrong for `/directory/people`, whose whole design is that a picker gets an identifier
+   * and a label and never the address. Searching a column the response does not carry turns the
+   * endpoint into an existence oracle: type a guessed address, and a row coming back confirms it
+   * belongs to this tenant. So the operational route passes `['displayName']` and can only search
+   * what it can already see.
+   *
+   * A typed union rather than a string list, for the reason `sortBy` is allow-listed per endpoint:
+   * a free-text column name reaching the database is an injection surface
+   * (`17-security-architecture.md` §6).
+   */
+  readonly searchFields?: readonly ('displayName' | 'email')[] | undefined;
 }
 
 export interface RoleListRequest extends IdentityListRequest {
   readonly permission?: PermissionKey | undefined;
+  /**
+   * As `UserListRequest.searchFields`, and for the same reason — Slice 13.
+   *
+   * The administrative default is `name`, `key` and `description`. `/acl/roles` returns an
+   * identifier and a name, so it passes `['name']`: a role's stable key and its description are
+   * not things a permission editor is shown, and they should not be things it can probe for.
+   */
+  readonly searchFields?: readonly ('name' | 'key' | 'description')[] | undefined;
 }
 
 export interface DepartmentMembership {

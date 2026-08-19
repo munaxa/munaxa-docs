@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { Permission, SystemRole, type TenantId, type UserId } from '@edms/domain';
+import { Permission, SystemRole, type TenantId, type UserId, UserStatus } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
@@ -18,6 +18,8 @@ import { PrismaIdentityAdminRepository } from '../infrastructure/prisma-identity
 import { PrismaProvisioningRepository } from '../infrastructure/prisma-provisioning.repository';
 import { ProvisioningService } from '../application/provisioning.service';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
+import { personOptionQuerySchema } from '@edms/contracts';
+
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 /**
@@ -603,5 +605,291 @@ describe('the permission catalogue', () => {
 
   it('lists exactly what the catalogue defines, so the editor cannot invent one', () => {
     expect(roles.catalogue()).toHaveLength(Object.keys(Permission).length);
+  });
+});
+
+/**
+ * Finding somebody past the first page — Slice 13, against a real PostgreSQL and 150 real rows.
+ *
+ * ## The defect, stated as arithmetic
+ *
+ * The permission subject pickers were `<select>` elements filled from one page of a hundred
+ * options, sorted by display name ascending, with `search` never sent. A person sorting at position
+ * 101 or beyond is therefore *not in the list*, and a native `<select>` has no way to ask for more:
+ * they cannot be granted a permission at all.
+ *
+ * That is not a hypothesis about scale, it is `LIMIT 100 OFFSET 0` over an ordered set, so it is
+ * proved here the only way worth proving it — by putting 150 people in a database and looking.
+ *
+ * ## Why the search-field assertions are here too
+ *
+ * `listUsers` searches `displayName` **and `email`** by default, which is right for the screen that
+ * administers accounts. `/directory/people` returns an identifier and a label and never the
+ * address, so matching on a column it does not return would make it an existence oracle: type a
+ * guessed address, and a row coming back confirms it belongs to this tenant. The operational route
+ * passes `searchFields: ['displayName']`, and both halves of that are asserted — the administrative
+ * default still finds by email, and the operational one does not.
+ */
+describe('a picker with more people than one page', () => {
+  /** Sorts after everything else this suite creates, so position is a property of the data. */
+  const PREFIX = 'Zz Picker';
+  const LAST = `${PREFIX} 150`;
+  /** One page, at `MAX_PAGE_SIZE` — the largest request the API will accept at all. */
+  const ONE_PAGE = {
+    page: 1,
+    pageSize: 100,
+    sortBy: 'displayName',
+    sortDirection: 'asc',
+    deleted: 'live',
+  } as const;
+
+  let deletedPersonName: string;
+
+  beforeAll(async () => {
+    for (let index = 1; index <= 150; index += 1) {
+      await owner.user.create({
+        data: {
+          id: uuidv7(),
+          tenantId,
+          email: `picker-${String(index).padStart(3, '0')}@identity-admin.test`,
+          emailNormalized: `picker-${String(index).padStart(3, '0')}@identity-admin.test`,
+          displayName: `${PREFIX} ${String(index).padStart(3, '0')}`,
+          status: 'ACTIVE',
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+    // `Zz Picker 150` is the one the picker must be able to reach: the 149 siblings sorting before
+    // it guarantee it sits beyond a hundred rows whatever else this suite has created.
+
+    deletedPersonName = `${PREFIX} 077`;
+    const departed = await owner.user.findFirstOrThrow({
+      where: { tenantId, displayName: deletedPersonName },
+    });
+    await owner.user.update({
+      where: { id: departed.id },
+      data: { deletedAt: FIXED_NOW },
+    });
+  }, 120_000);
+
+  it('cannot offer the person at all without a search', async () => {
+    const page = await asAdmin(() =>
+      users.list({ ...ONE_PAGE, status: UserStatus.ACTIVE, searchFields: ['displayName'] }),
+    );
+
+    expect(page.data).toHaveLength(100);
+    expect(page.data.map((row) => row.displayName)).not.toContain(LAST);
+    // And it says so, which is what lets a client know the list is a page rather than the tenant.
+    expect(page.meta.hasMore).toBe(true);
+    expect(page.meta.total).toBeGreaterThan(100);
+  });
+
+  it('returns exactly that person when they are searched for', async () => {
+    const page = await asAdmin(() =>
+      users.list({
+        ...ONE_PAGE,
+        status: UserStatus.ACTIVE,
+        searchFields: ['displayName'],
+        search: LAST,
+      }),
+    );
+
+    expect(page.data.map((row) => row.displayName)).toStrictEqual([LAST]);
+    expect(page.meta.hasMore).toBe(false);
+  });
+
+  it('matches case-insensitively, because nobody types a name the way it is stored', async () => {
+    const page = await asAdmin(() =>
+      users.list({
+        ...ONE_PAGE,
+        status: UserStatus.ACTIVE,
+        searchFields: ['displayName'],
+        search: 'zz picker 150',
+      }),
+    );
+
+    expect(page.data.map((row) => row.displayName)).toStrictEqual([LAST]);
+  });
+
+  it('returns several when several match, still bounded to one page', async () => {
+    const page = await asAdmin(() =>
+      users.list({
+        ...ONE_PAGE,
+        status: UserStatus.ACTIVE,
+        searchFields: ['displayName'],
+        search: PREFIX,
+      }),
+    );
+
+    expect(page.data.length).toBeLessThanOrEqual(100);
+    expect(page.meta.total).toBe(149); // 150 seeded, one soft-deleted below.
+  });
+
+  it('answers an empty list when nothing matches, rather than failing', async () => {
+    const page = await asAdmin(() =>
+      users.list({
+        ...ONE_PAGE,
+        status: UserStatus.ACTIVE,
+        searchFields: ['displayName'],
+        search: 'nobody by that name at all',
+      }),
+    );
+
+    expect(page.data).toStrictEqual([]);
+    expect(page.meta.total).toBe(0);
+    expect(page.meta.hasMore).toBe(false);
+  });
+
+  it('never returns a deleted person, however precisely they are named', async () => {
+    // The operational route has no word for `deleted` — `optionListQuerySchema` omits the parameter
+    // — so this is what the controller always sends, and searching cannot reach past it.
+    const page = await asAdmin(() =>
+      users.list({
+        ...ONE_PAGE,
+        status: UserStatus.ACTIVE,
+        searchFields: ['displayName'],
+        search: deletedPersonName,
+      }),
+    );
+
+    expect(page.data).toStrictEqual([]);
+  });
+
+  it('cannot search into another tenant', async () => {
+    /*
+     * `listUsers` scopes to the ambient tenant, so the same term run under a different tenant finds
+     * nothing — the boundary is the query's, not the term's.
+     */
+    const elsewhere = await runWithContext(
+      { ...contextFor(adminId), tenantId: uuidv7() as TenantId },
+      () =>
+        users.list({
+          ...ONE_PAGE,
+          status: UserStatus.ACTIVE,
+          searchFields: ['displayName'],
+          search: LAST,
+        }),
+    );
+
+    expect(elsewhere.data).toStrictEqual([]);
+  });
+
+  it('searches only the label the picker shows, never the address behind it', async () => {
+    /*
+     * The disclosure this narrowing closes. `/directory/people` returns `{id, displayName}`; if it
+     * matched `email` as well, a caller holding `directory:view` could type a guessed address and
+     * learn from a row coming back that it belongs to this tenant — an existence oracle for a field
+     * the endpoint deliberately withholds.
+     */
+    const operational = await asAdmin(() =>
+      users.list({
+        ...ONE_PAGE,
+        status: UserStatus.ACTIVE,
+        searchFields: ['displayName'],
+        search: 'picker-150@identity-admin.test',
+      }),
+    );
+
+    expect(operational.data).toStrictEqual([]);
+  });
+
+  it('still finds by email for the screen that administers accounts', async () => {
+    // The other half: the administrative default is unchanged, because finding somebody by the
+    // address you have is the whole point of the users screen.
+    const administrative = await asAdmin(() =>
+      users.list({ ...ONE_PAGE, search: 'picker-150@identity-admin.test' }),
+    );
+
+    expect(administrative.data.map((row) => row.displayName)).toStrictEqual([LAST]);
+  });
+
+  it('refuses to be asked for the whole catalogue', () => {
+    /*
+     * `pageQuerySchema` **rejects** a page size above `MAX_PAGE_SIZE` rather than clamping it, so
+     * "give me everything" is not a request any client can spell. Asserted at the schema, because
+     * that is where the bound lives.
+     */
+    expect(() => personOptionQuerySchema.parse({ page: '1', pageSize: '5000' })).toThrow();
+    expect(personOptionQuerySchema.parse({ page: '1', pageSize: '100' }).pageSize).toBe(100);
+  });
+});
+
+/**
+ * Searching the roles an ACL entry may name — Slice 13.
+ *
+ * ## Why this fixture is small on purpose
+ *
+ * The people and department cases above seed 150 rows, because a tenant with more than a hundred
+ * staff or organisational units is ordinary and the >100 failure is a thing customers actually hit.
+ * A role catalogue is not that kind of list: the product seeds eight, they are a deliberately
+ * curated statement of who does what, and a tenant with more than a hundred of them has a different
+ * problem than pagination. Seeding 150 to make a point about `LIMIT 100` would be inventing a
+ * scenario to test rather than testing one.
+ *
+ * The code path is the same `searchConditions` over the same `orderByFor` and `pageArgs`, already
+ * proved against 150 rows twice. What is genuinely worth asserting for roles is the *narrowing*:
+ * `listRoles` matches `name`, `key` **and `description`** by default, and `/acl/roles` returns an
+ * identifier and a name — so matching the other two would let a permission editor probe for fields
+ * it is never shown.
+ */
+describe('the roles an ACL entry may name', () => {
+  const ONE_PAGE = {
+    page: 1,
+    pageSize: 100,
+    sortBy: 'name',
+    sortDirection: 'asc',
+    deleted: 'live',
+  } as const;
+
+  beforeAll(async () => {
+    await asAdmin(() =>
+      roles.create({
+        key: 'ZZ_PICKER_ROLE',
+        name: 'Zz Findable Reviewer',
+        description: 'A description nobody choosing a subject is shown.',
+        permissions: [],
+      }),
+    );
+  }, 60_000);
+
+  it('finds a role by the name it shows', async () => {
+    const page = await asAdmin(() =>
+      roles.list({ ...ONE_PAGE, searchFields: ['name'], search: 'findable' }),
+    );
+
+    expect(page.data.map((row) => row.name)).toStrictEqual(['Zz Findable Reviewer']);
+  });
+
+  it('does not let a permission editor search the stable key', async () => {
+    const page = await asAdmin(() =>
+      roles.list({ ...ONE_PAGE, searchFields: ['name'], search: 'ZZ_PICKER_ROLE' }),
+    );
+
+    expect(page.data).toStrictEqual([]);
+  });
+
+  it('does not let a permission editor search the description', async () => {
+    const page = await asAdmin(() =>
+      roles.list({ ...ONE_PAGE, searchFields: ['name'], search: 'nobody choosing a subject' }),
+    );
+
+    expect(page.data).toStrictEqual([]);
+  });
+
+  it('still searches all three for the screen that administers roles', async () => {
+    // The administrative default is unchanged: an administrator editing roles searches the key and
+    // the description because both are on the screen in front of them.
+    const byKey = await asAdmin(() => roles.list({ ...ONE_PAGE, search: 'ZZ_PICKER_ROLE' }));
+
+    expect(byKey.data.map((row) => row.name)).toStrictEqual(['Zz Findable Reviewer']);
+  });
+
+  it('cannot search into another tenant', async () => {
+    const elsewhere = await runWithContext(
+      { ...contextFor(adminId), tenantId: uuidv7() as TenantId },
+      () => roles.list({ ...ONE_PAGE, searchFields: ['name'], search: 'findable' }),
+    );
+
+    expect(elsewhere.data).toStrictEqual([]);
   });
 });

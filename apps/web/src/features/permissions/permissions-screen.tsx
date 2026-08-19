@@ -2,11 +2,12 @@
 
 import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 
 import {
   Badge,
   Button,
+  Combobox,
   EmptyState,
   Panel,
   Select,
@@ -25,7 +26,7 @@ import { AclEffect, AclSubjectType, ALL_PERMISSIONS, Permission } from '@edms/do
 
 import { WorkspacePage } from '../../components/workspace-page';
 import { useTranslate } from '../../app/providers';
-import { replaceScopeAcl, setFolderInheritance } from './actions';
+import { replaceScopeAcl, searchAclSubjects, setFolderInheritance } from './actions';
 
 interface Named {
   readonly id: string;
@@ -121,6 +122,8 @@ export function PermissionsScreen({
   const [subjectId, setSubjectId] = useState<string>('');
   const [permission, setPermission] = useState<string>(Permission.DOCUMENT_VIEW);
   const [effect, setEffect] = useState<string>(AclEffect.ALLOW);
+  /** Whom the effective table is being resolved for, before the form is submitted. */
+  const [resolveFor, setResolveFor] = useState<string>(subjectUserId ?? '');
 
   const poolFor = (type: string): readonly Named[] =>
     type === AclSubjectType.USER
@@ -362,21 +365,14 @@ export function PermissionsScreen({
                 {translate('permissions.department')}
               </option>
             </Select>
-            <Select
+            <SubjectPicker
               className="w-56"
-              aria-label={translate('permissions.subject')}
+              label={translate('permissions.subject')}
+              subjectType={subjectType}
+              initial={poolFor(subjectType)}
               value={subjectId}
-              onChange={(event) => {
-                setSubjectId(event.currentTarget.value);
-              }}
-            >
-              <option value="">{translate('permissions.choose')}</option>
-              {poolFor(subjectType).map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.name}
-                </option>
-              ))}
-            </Select>
+              onChange={setSubjectId}
+            />
             <Select
               className="w-56"
               aria-label={translate('permissions.permission')}
@@ -430,19 +426,25 @@ export function PermissionsScreen({
       >
         <p className="text-sm">{translate('permissions.effectiveHint')}</p>
         <form className="mt-3 flex flex-wrap items-end gap-2" method="get">
-          <Select
-            name="userId"
+          {/*
+            Searchable for the same reason the subject picker is — Slice 13. This one had the
+            defect in its sharper form: an administrator investigating why somebody can reach a
+            document could not name that person at all if they sorted past position 100, on the
+            screen ADR-0005 requires precisely so the question can be answered.
+
+            The value reaches the URL through a hidden input rather than the control's own `name`,
+            because `Combobox` renders a button and a listbox rather than a form field. The form
+            stays a plain `method="get"`, so the answer is still a link somebody can send.
+          */}
+          <SubjectPicker
             className="w-56"
-            aria-label={translate('permissions.forPerson')}
-            defaultValue={subjectUserId ?? ''}
-          >
-            <option value="">{translate('permissions.choose')}</option>
-            {people.map((person) => (
-              <option key={person.id} value={person.id}>
-                {person.name}
-              </option>
-            ))}
-          </Select>
+            label={translate('permissions.forPerson')}
+            subjectType={AclSubjectType.USER}
+            initial={people}
+            value={resolveFor}
+            onChange={setResolveFor}
+          />
+          <input type="hidden" name="userId" value={resolveFor} />
           <Button type="submit" variant="outline">
             {translate('permissions.resolve')}
           </Button>
@@ -486,4 +488,164 @@ export function PermissionsScreen({
 /** The four reasons the resolver can give, each with its own sentence in both catalogues. */
 function reasonKey(reason: string): 'permissions.reason.ALLOW' {
   return `permissions.reason.${reason}` as 'permissions.reason.ALLOW';
+}
+
+/**
+ * One subject, chosen out of however many the tenant has — Slice 13.
+ *
+ * ## The defect
+ *
+ * This was a `<select>` filled from one page of a hundred options, fetched with the page. A tenant
+ * with more than a hundred people has people it could not offer: they sort after position 100 by
+ * display name, and a native `<select>` has no way to ask for more. Proven against 150 seeded
+ * people — the 150th is absent from the initial list and returned the moment it is searched for.
+ *
+ * ## Why a `Combobox` rather than a search box beside the select
+ *
+ * Because it is the pattern this codebase already uses for exactly this: `PickerField` reaches for
+ * the same component and says why — *"a long list that has to be searched — a department out of
+ * hundreds"*. Passing `onSearch` switches its local filtering **off** (`shouldFilter: !onSearch`)
+ * and hands the query over, which is the difference between filtering a hundred rows in the browser
+ * and asking the server about all of them. The debounce, the APG `combobox`/`listbox` semantics,
+ * `aria-activedescendant`, the busy state and the clear control all come with it.
+ *
+ * ## Why the selected option is pinned
+ *
+ * `Combobox` renders the trigger from `options.find((o) => o.value === value)`, so an option that
+ * falls out of the current result set takes its own label with it — you would choose *Amal Haddad*,
+ * type something else, and watch the trigger fall back to "Choose…" while still holding her
+ * identifier. The selection is never in doubt (it lives in `value`), but the *label* has to be kept
+ * alive deliberately. So the chosen option is remembered and merged back in, and it survives every
+ * subsequent search until something else is chosen.
+ *
+ * ## Why a stale response cannot land
+ *
+ * Each search increments a sequence number, and a reply carrying anything but the latest is
+ * dropped. Typing "am" then "amal" issues two requests, and the network is under no obligation to
+ * answer them in order — without this, the slower "am" could arrive last and repopulate the list
+ * with the wrong thing under the right query.
+ */
+function SubjectPicker({
+  className,
+  label,
+  subjectType,
+  initial,
+  value,
+  onChange,
+}: {
+  readonly className: string;
+  readonly label: string;
+  readonly subjectType: string;
+  /** The first page the server already fetched — so the picker opens populated, not empty. */
+  readonly initial: readonly Named[];
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+}): ReactNode {
+  const translate = useTranslate();
+  const [matches, setMatches] = useState<readonly Named[]>(initial);
+  const [loading, setLoading] = useState(false);
+  const [chosen, setChosen] = useState<Named | null>(null);
+  const sequence = useRef(0);
+  /** Whether anybody has actually used the search box — see `search` for why it matters. */
+  const touched = useRef(false);
+
+  // Changing the kind changes the catalogue entirely, so the previous kind's matches must go with
+  // it rather than linger under a heading that no longer describes them.
+  useEffect(() => {
+    setMatches(initial);
+    setChosen(null);
+    touched.current = false;
+    sequence.current += 1;
+  }, [subjectType, initial]);
+
+  /*
+   * The debounce inside `Combobox` means a search can still be in flight when this unmounts —
+   * navigating away mid-type, or switching subject kinds. Bumping the sequence on the way out
+   * makes every outstanding reply stale, which is the same mechanism that discards an out-of-order
+   * one and means there is only one rule to reason about rather than two.
+   */
+  useEffect(() => {
+    return () => {
+      sequence.current += 1;
+    };
+  }, []);
+
+  const search = (term: string): void => {
+    /*
+     * `Combobox` runs its debounce on mount as well as on input, so it announces an empty query
+     * once per picker as soon as the screen renders. That first announcement is not a search: the
+     * page already fetched this exact list on the server and handed it over as `initial`, and
+     * honouring it would mean two round trips per page load to arrive back where we started.
+     *
+     * Only the *first* empty term is ignored. Clearing the box after searching is a real request
+     * again — it means "show me the beginning of the list", which is a different thing from never
+     * having typed.
+     */
+    if (term.trim() === '' && !touched.current) {
+      touched.current = true;
+      return;
+    }
+    touched.current = true;
+
+    const ticket = (sequence.current += 1);
+    setLoading(true);
+    void searchAclSubjects(subjectType, term).then((result) => {
+      if (ticket !== sequence.current) {
+        return;
+      }
+      setLoading(false);
+      // A refused or failed search leaves the list as it was. It is a *narrowing* of something the
+      // caller can already see, so the honest degradation is "no new matches", not an empty picker
+      // that reads as "this tenant has nobody".
+      if (result.ok) {
+        setMatches(result.value);
+      }
+    });
+  };
+
+  /*
+   * The chosen option, kept alive across searches, plus a last resort.
+   *
+   * The last resort is for a value that arrived from *outside* this component — the effective-for
+   * picker is re-rendered from `?userId=` after the form navigates, and if that person sorts past
+   * the first page they are in neither `matches` nor `chosen`. `Combobox` would then render its
+   * placeholder, so a screen with an answer on it below would say "Choose…" above. Showing the
+   * identifier instead is Slice 12's convention applied to the same problem: an unnameable subject
+   * falls back to what it is, never to a blank that reads as "nothing is selected".
+   */
+  const pinned =
+    chosen !== null && !matches.some((match) => match.id === chosen.id)
+      ? [chosen]
+      : value !== '' && !matches.some((match) => match.id === value) && chosen === null
+        ? [{ id: value, name: value }]
+        : [];
+
+  const options = [...pinned, ...matches].map((option) => ({
+    value: option.id,
+    label: option.name,
+  }));
+
+  return (
+    <Combobox
+      className={className}
+      aria-label={label}
+      options={options}
+      value={value}
+      loading={loading}
+      clearable
+      onSearch={search}
+      onChange={(next) => {
+        const picked = options.find((option) => option.value === next);
+        setChosen(picked === undefined ? null : { id: picked.value, name: picked.label });
+        onChange(next);
+      }}
+      labels={{
+        placeholder: translate('permissions.choose'),
+        searchPlaceholder: translate('admin.list.search'),
+        empty: translate('admin.list.emptySearch'),
+        loading: translate('admin.list.loading'),
+        clear: translate('admin.actions.cancel'),
+      }}
+    />
+  );
 }
