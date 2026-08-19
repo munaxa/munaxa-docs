@@ -24,8 +24,10 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
+import { requireTransaction } from '../../../core/prisma';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
+import { PrismaFacetLabelReader } from '../infrastructure/prisma-facet-label.reader';
 import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
@@ -863,5 +865,218 @@ describe('keyset pagination', () => {
         ),
       ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
     }
+  });
+});
+
+describe('facet labels', () => {
+  /**
+   * Names for the values a caller has already been shown, and for nothing else — Slice 11.
+   *
+   * `/search` used to caption its facets from four administrative lists the page fetched itself:
+   * every document type, every category, every department, every entity in the tenant. Those need
+   * `settings:manage` and `org:manage`, so the workspace was the route error boundary for the two
+   * seeded roles that hold neither. The names were never the problem; asking for the *catalogue* to
+   * find four of them was.
+   *
+   * The server answers it now, and what makes that safe is arithmetic rather than intention:
+   * `countFacet` runs the same `WHERE` the hits run — tenant first, then the ACL overlap — so an
+   * identifier reaching the label reader is one the caller has already been given a count for.
+   * These tests are about that boundary.
+   */
+
+  const labelReader = new PrismaFacetLabelReader();
+
+  /** A type nothing is filed under: present in the tenant, absent from anybody's facets. */
+  const unusedTypeId = uuidv7();
+  const UNUSED_NAME = 'Nobody files anything as this';
+
+  beforeAll(async () => {
+    // Written directly, for the reason the metadata field above is: what is under test is the
+    // reader's view of the rows, not the administration service that edits them.
+    const existing = await owner.documentType.findUniqueOrThrow({ where: { id: documentTypeId } });
+    await owner.documentType.create({
+      data: {
+        id: unusedTypeId,
+        tenantId: TENANT,
+        code: unique('T'),
+        name: UNUSED_NAME,
+        numberingRuleId: existing.numberingRuleId,
+        defaultConfidentialityId: existing.defaultConfidentialityId,
+        revisionLabelStyle: existing.revisionLabelStyle,
+        isActive: true,
+        updatedAt: FIXED_NOW,
+      },
+    });
+  }, 60_000);
+
+  const resolve = (
+    request: Parameters<PrismaFacetLabelReader['labelsFor']>[0],
+    runner: <T>(work: () => Promise<T>) => Promise<T> = asAlice,
+  ) => runner(() => unitOfWork.run(() => labelReader.labelsFor(request)));
+
+  it('names the values in the caller’s own facets', async () => {
+    const found = await searchAs(asAlice, 'pump maintenance');
+
+    expect(found.results.facets['type']?.map((entry) => entry.value)).toContain(documentTypeId);
+    expect(found.facetLabels.type?.[documentTypeId]).toBe('Procedure');
+  });
+
+  it('never names a row the caller has no bucket for', async () => {
+    /*
+     * The disclosure question, made concrete. The tenant holds two document types; one is filed
+     * against and one is not. A caller searching sees a bucket for the first and none for the
+     * second — so the label map carries the first name and must not carry the second, though both
+     * rows sit in the same table one query away.
+     */
+    const found = await searchAs(asAlice, 'pump maintenance');
+
+    expect(found.facetLabels.type?.[unusedTypeId]).toBeUndefined();
+    expect(Object.values(found.facetLabels.type ?? {})).not.toContain(UNUSED_NAME);
+    // The map is the facet, not the catalogue.
+    expect(Object.keys(found.facetLabels.type ?? {})).toStrictEqual([documentTypeId]);
+  });
+
+  it('gives a caller the ACL refuses no labels, because it gives them no buckets', async () => {
+    // Bob's roles do not hold `document:view`. The predicate empties the facets, and an empty facet
+    // has nothing to resolve — the reader is never handed an identifier at all.
+    const refused = await searchAs(asBob, 'pump maintenance');
+
+    expect(refused.results.facets['type']).toHaveLength(0);
+    expect(refused.facetLabels.type).toBeUndefined();
+  });
+
+  it('labels a `search:all` caller’s wider facets, and still only those', async () => {
+    // `search:all` drops the ACL clause and nothing else, so the rule is unchanged: whatever the
+    // facets contain gets named, and what is not in them does not.
+    const wide = await searchAs(asCarol, 'pump maintenance');
+
+    expect(wide.unrestricted).toBe(true);
+    expect(wide.facetLabels.type?.[documentTypeId]).toBe('Procedure');
+    expect(wide.facetLabels.type?.[unusedTypeId]).toBeUndefined();
+  });
+
+  it('leaves the values and the counts exactly as the engine computed them', async () => {
+    const found = await searchAs(asAlice, 'pump maintenance');
+    const buckets = found.results.facets['type'] ?? [];
+
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]?.value).toBe(documentTypeId);
+    expect(buckets[0]?.count).toBeGreaterThanOrEqual(1);
+    // The engine's own bucket carries no label; labelling happens beside it, in the application.
+    expect('label' in (buckets[0] ?? {})).toBe(false);
+  });
+
+  it('says nothing about a type that has since been deleted', async () => {
+    /*
+     * A soft-deleted type still has documents filed under it, so its identifier can legitimately
+     * reach a facet. The reader returns no name and the client renders the value — the honest
+     * answer to "what is this called" when the answer has been withdrawn.
+     */
+    expect((await resolve({ type: [documentTypeId] })).type?.[documentTypeId]).toBe('Procedure');
+
+    await owner.documentType.update({
+      where: { id: documentTypeId },
+      data: { deletedAt: FIXED_NOW },
+    });
+    try {
+      expect((await resolve({ type: [documentTypeId] })).type?.[documentTypeId]).toBeUndefined();
+    } finally {
+      await owner.documentType.update({ where: { id: documentTypeId }, data: { deletedAt: null } });
+    }
+  });
+
+  it('says nothing about an identifier that never existed, rather than failing', async () => {
+    const missing = uuidv7();
+    const labels = await resolve({ type: [documentTypeId, missing] });
+
+    expect(labels.type?.[documentTypeId]).toBe('Procedure');
+    expect(labels.type?.[missing]).toBeUndefined();
+  });
+
+  it('cannot resolve an identifier belonging to another tenant', async () => {
+    /*
+     * The tenant clause is in the query rather than left to row-level security, and this is why: an
+     * identifier from tenant A must resolve to nothing under tenant B because the `WHERE` says so.
+     */
+    const underTenantB = await runWithContext(
+      { ...contextFor(ALICE, [VIEWER_ROLE]), tenantId: TENANT_B },
+      () => unitOfWork.run(() => labelReader.labelsFor({ type: [documentTypeId] })),
+    );
+
+    expect(underTenantB.type).toBeUndefined();
+  });
+
+  it('asks once per facet, never once per value', async () => {
+    /*
+     * A facet is capped at twenty buckets and four facets carry identifiers, so the difference
+     * between batching and not is eighty round trips against four. Counted on the transactional
+     * client the reader actually uses, rather than asserted about the shape of the code.
+     */
+    const ids = [documentTypeId, unusedTypeId, uuidv7(), uuidv7(), uuidv7()];
+    let calls = 0;
+
+    const labels = await asAlice(() =>
+      unitOfWork.run(async () => {
+        const tx = requireTransaction();
+        const findMany = tx.documentType.findMany.bind(tx.documentType);
+        (tx.documentType as { findMany: typeof findMany }).findMany = ((
+          ...args: Parameters<typeof findMany>
+        ) => {
+          calls += 1;
+          return findMany(...args);
+        }) as typeof findMany;
+        try {
+          return await labelReader.labelsFor({ type: ids });
+        } finally {
+          (tx.documentType as { findMany: typeof findMany }).findMany = findMany;
+        }
+      }),
+    );
+
+    expect(Object.keys(labels.type ?? {}).sort()).toStrictEqual(
+      [documentTypeId, unusedTypeId].sort(),
+    );
+    // Five identifiers, one query.
+    expect(calls).toBe(1);
+  });
+
+  it('puts the tenant in the query itself, not only in the policy around it', async () => {
+    /*
+     * Row-level security is on these tables and would very likely catch a missing clause on its
+     * own — and under ADR-0015 each tenant has its own database besides, so a cross-tenant
+     * identifier has two reasons to resolve to nothing before this one. That is exactly why a
+     * black-box test cannot prove this clause exists: remove it and every behavioural assertion
+     * still passes.
+     *
+     * So this reads the argument the reader hands Prisma. It is a white-box assertion on purpose:
+     * the requirement is that the boundary is *written down here*, where somebody reading the
+     * query can see it, rather than inherited from configuration two layers away.
+     */
+    const seen: unknown[] = [];
+
+    await asAlice(() =>
+      unitOfWork.run(async () => {
+        const tx = requireTransaction();
+        const findMany = tx.documentType.findMany.bind(tx.documentType);
+        (tx.documentType as { findMany: typeof findMany }).findMany = ((
+          ...args: Parameters<typeof findMany>
+        ) => {
+          seen.push(args[0]?.where);
+          return findMany(...args);
+        }) as typeof findMany;
+        try {
+          return await labelReader.labelsFor({ type: [documentTypeId] });
+        } finally {
+          (tx.documentType as { findMany: typeof findMany }).findMany = findMany;
+        }
+      }),
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ tenantId: TENANT, deletedAt: null });
+  });
+
+  it('asks for nothing at all when no facet produced a bucket', async () => {
+    expect(await resolve({})).toStrictEqual({});
   });
 });

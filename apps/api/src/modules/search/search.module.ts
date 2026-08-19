@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { PreviewModule } from '../preview/preview.module';
 import {
+  FACET_LABEL_READER,
   RECENT_SEARCH_REPOSITORY,
   SAVED_SEARCH_REPOSITORY,
   SEARCH_PROJECTION,
@@ -13,6 +14,7 @@ import { DefaultSearchService } from './application/search.service';
 import { SavedSearchService } from './application/saved-search.service';
 import { SearchProjectionService } from './application/search-projection.service';
 import { SearchRebuildService } from './application/search-rebuild.service';
+import { PrismaFacetLabelReader } from './infrastructure/prisma-facet-label.reader';
 import { PrismaSearchSourceReader } from './infrastructure/prisma-search-source.reader';
 import {
   PrismaRecentSearchRepository,
@@ -45,6 +47,7 @@ import { SearchController } from './presentation/search.controller';
   controllers: [SearchController],
   providers: [
     { provide: SEARCH_SOURCE, useClass: PrismaSearchSourceReader },
+    { provide: FACET_LABEL_READER, useClass: PrismaFacetLabelReader },
     { provide: SAVED_SEARCH_REPOSITORY, useClass: PrismaSavedSearchRepository },
     { provide: RECENT_SEARCH_REPOSITORY, useClass: PrismaRecentSearchRepository },
     { provide: SEARCH_REBUILD_REPOSITORY, useClass: PrismaSearchRebuildRepository },

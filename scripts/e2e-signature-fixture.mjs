@@ -224,6 +224,7 @@ async function seed() {
   const signerId = randomUUID();
   const readerId = randomUUID();
   const auditorId = randomUUID();
+  const controllerId = randomUUID();
   const documentId = randomUUID();
   const revisionId = randomUUID();
 
@@ -269,10 +270,25 @@ async function seed() {
    * is the only way the test can be evidence about the shipped role.
    */
   const auditorPermissions = [...roleSeed.DEFAULT_ROLE_PERMISSIONS.AUDITOR];
+  /*
+   * And the document controller, on the same terms — Slice 11.
+   *
+   * Its seeded set plus `configuration:view` and `directory:view`, which is exactly where the
+   * shipped migration `20260817120000_operational_read_permissions` grants them: to the tenant
+   * administrator and to this role, and to no other. Nothing here is chosen for the test.
+   */
+  const controllerPermissions = [
+    ...new Set([
+      ...roleSeed.DEFAULT_ROLE_PERMISSIONS.DOCUMENT_CONTROLLER,
+      'configuration:view',
+      'directory:view',
+    ]),
+  ];
   const roles = [
     { id: randomUUID(), key: 'E2E_SIGNER', permissions: signerPermissions },
     { id: randomUUID(), key: 'E2E_READER', permissions: readerPermissions },
     { id: randomUUID(), key: 'E2E_AUDITOR', permissions: auditorPermissions },
+    { id: randomUUID(), key: 'E2E_CONTROLLER', permissions: controllerPermissions },
   ];
   for (const role of roles) {
     await client.role.create({
@@ -293,6 +309,12 @@ async function seed() {
     { id: signerId, email: 'signer@e2e.test', name: 'Ada Lovelace', roleId: roles[0].id },
     { id: readerId, email: 'reader@e2e.test', name: 'Bob Reader', roleId: roles[1].id },
     { id: auditorId, email: 'auditor@e2e.test', name: 'Cleo Auditor', roleId: roles[2].id },
+    {
+      id: controllerId,
+      email: 'controller@e2e.test',
+      name: 'Dana Controller',
+      roleId: roles[3].id,
+    },
   ];
   for (const person of people) {
     await client.user.create({
@@ -557,6 +579,7 @@ async function seed() {
     signer: { id: signerId, email: 'signer@e2e.test', name: 'Ada Lovelace' },
     reader: { id: readerId, email: 'reader@e2e.test' },
     auditor: { id: auditorId, email: 'auditor@e2e.test' },
+    controller: { id: controllerId, email: 'controller@e2e.test' },
     documentId,
     revisionId,
     revisionLabel: 'Rev 0',
