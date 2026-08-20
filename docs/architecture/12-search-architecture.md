@@ -48,7 +48,7 @@ the entire boundary.
 | `tsv tsvector` | Weighted text: number and title (A), tags and metadata (B), summary (C), body/OCR text (D) |
 | `number_exact`, `title_raw` | Exact and prefix matching, unaffected by stemming |
 | `metadata jsonb` | Typed values for filtering and faceting |
-| `type_id`, `category_id`, `status`, `confidentiality_rank`, `entity_id`, `branch_id`, `department_id`, `folder_path`, `owner_id`, `approver_ids[]`, `revision_ordinal`, dates | Filters and facets |
+| `type_id`, `category_id`, `status`, `confidentiality_rank`, `entity_id`, `branch_id`, `department_id`, `folder_path`, `owner_id`, `approver_ids[]`, `revision_ordinal`, dates | Filter columns. **A subset of these is also counted as facets — see §5.** Not every filter column is a facet, and `branch_id` is the one to know about |
 | `acl_subjects text[]` | The subject ids allowed to view, materialised for filtering |
 | `acl_deny_subjects text[]` | Subjects explicitly denied |
 | `indexed_at`, `source_version` | Staleness detection and safe re-projection |
@@ -100,11 +100,37 @@ than per tenant.
 | Simple query | `websearch_to_tsquery` — quotes, `OR`, `-` exclusion |
 | Field query | `number:QMS-*`, `type:PROC`, `status:PUBLISHED`, `approver:me`, `updated:>2026-01-01` — parsed into structured filters, never into raw SQL |
 | Facets | Type, category, status, department, entity, year, confidentiality, tag — counted post-filter, so counts never leak |
+| Filters that are not facets | `branch`, `folder`, `owner`, `approver`, `number` — accepted and applied, never counted. See "Filtering by branch" below |
 | Sorting | Relevance (`ts_rank_cd`), recency, number, title |
 | Pagination | Keyset (`(rank, document_id)`) — offsets degrade badly at depth |
 | Saved searches | Stored per user, shareable by ACL |
 | Highlighting | `ts_headline` over the stored text, permission-checked |
 | Did-you-mean | Trigram similarity (`pg_trgm`) on titles and numbers |
+
+### Filtering by branch
+
+`branch` is a **filter and not a facet**, and the distinction is worth stating because the two are
+otherwise easy to conflate: `branch_id` sits on the index beside `entity_id` and `department_id`,
+and those two *are* facets.
+
+What that means in practice:
+
+- `branch` is in the search contract's filter keys, so `?branch=<id>` is accepted and applied.
+- It is never counted, so it comes back in no bucket and carries no label. There is no branch entry
+  in the facet columns and none in the labelled facets.
+- Nothing in the web client offers a branch to choose. The search page forwards the key when a URL
+  already carries it, so the filter is reachable by an API consumer or by a hand-built link, and by
+  nothing else today.
+
+It is written by placement rather than by filing. `branch_id` is populated only for a library owned
+by a `DEPARTMENT` scope, from that department's own branch — a library owned by an entity, a company
+or the tenant carries none — so the filter narrows to documents whose *department* sits at that
+branch.
+
+The visibility rules are the ordinary ones and are not softened by any of the above. Every filter is
+a conjunct of the one predicate §3 describes, shared by the hits, the total and every facet count, so
+a branch filter can only narrow what the caller could already see: it cannot widen a result set, and
+it cannot be used to probe for a document the ACL refuses or for another tenant's.
 
 ## 6. Freshness
 
