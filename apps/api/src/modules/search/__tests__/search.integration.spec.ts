@@ -1864,10 +1864,23 @@ describe('the company placement and the branch filter', () => {
   });
 
   it('returns nothing for a branch belonging to another tenant', async () => {
-    // The tenant clause is the first conjunct in the same predicate, so a real branch of this
-    // tenant returns nothing once the ambient tenant is somebody else's.
+    /*
+     * The tenant clause is the first conjunct in the same predicate, so a real branch of this
+     * tenant returns nothing once the ambient tenant is somebody else's.
+     *
+     * Run the way the `tenant isolation` block above runs its search, and for two reasons.
+     * `userId: null` because a *successful* search records a recent-search row for the ambient
+     * tenant, and `TENANT_B` has no `tenant` row in this database to hang one off —
+     * `recordAftermath` skips the write when there is no user. And `search:all` because it drops
+     * the ACL conjunct, which leaves the tenant clause as the only thing that can exclude these
+     * rows: the assertion then isolates exactly the boundary it claims to be about.
+     */
     const elsewhere = await runWithContext(
-      { ...contextFor(ALICE, [VIEWER_ROLE]), tenantId: TENANT_B },
+      {
+        ...contextFor(ALICE, [VIEWER_ROLE], [Permission.SEARCH_ALL]),
+        tenantId: TENANT_B,
+        userId: null,
+      },
       () =>
         search.search.search({
           text: 'placement procedure',
