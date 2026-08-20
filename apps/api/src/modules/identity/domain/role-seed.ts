@@ -108,6 +108,23 @@ const DOCUMENT_CONTROLLER_PERMISSIONS: readonly PermissionKey[] = Object.freeze(
    */
   Permission.CONFIGURATION_VIEW,
   Permission.DIRECTORY_VIEW,
+  /*
+   * Its own inbox, and its own authenticator — Slice 21.
+   *
+   * `08-permission-model.md` §6 marks `notification:manage` **`own` for every column**, and calls
+   * that the only row granted to everybody where that is not a mistake. This column and the
+   * auditor's were the two that did not have it, and both are defined as named constants above the
+   * map while the six that did have it are spelled inline — which is how the gap survived.
+   *
+   * What it cost is not a missing menu item. `NotificationEventService.retentionDue` resolves its
+   * recipients as `holdersOfPermission(RETENTION_MANAGE)` and `chainBroken` as
+   * `holdersOfPermission(AUDIT_VIEW)`; this role holds both, so the product was writing it
+   * retention reviews and audit-chain-broken alerts into an inbox it was then refused. 18 §3 makes
+   * the in-app inbox authoritative, which is what makes that a compliance defect rather than an
+   * inconvenience. `MfaController` carries the same key for the reason its docstring gives, so the
+   * role could not enrol a second factor either.
+   */
+  Permission.NOTIFICATION_MANAGE,
 ]);
 
 /** Reads everything in scope plus the trail, and may never mutate anything, at any scope (§6). */
@@ -121,6 +138,17 @@ const AUDITOR_PERMISSIONS: readonly PermissionKey[] = Object.freeze([
   Permission.AUDIT_EXPORT,
   Permission.SEARCH_ALL,
   Permission.REPORT_VIEW,
+  /*
+   * The one grant on this row that is not a read of the tenant's, and therefore not an exception
+   * to "never mutates anything" — Slice 21.
+   *
+   * Marking a notification read and enrolling an authenticator are acts on the auditor's own
+   * account, not on anything of the tenant's, and the `own` scope is enforced by absence: no route
+   * under `/notifications` or `/auth/mfa` takes a recipient or a user identifier. The alternative
+   * was an auditor who receives `chainBroken` — which goes to `holdersOfPermission(AUDIT_VIEW)`,
+   * this row's own key — and cannot open the inbox it lands in.
+   */
+  Permission.NOTIFICATION_MANAGE,
 ]);
 
 export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<SystemRoleKey, readonly PermissionKey[]>> =
@@ -129,8 +157,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<SystemRoleKey, readonly P
     [SystemRole.DOCUMENT_CONTROLLER]: DOCUMENT_CONTROLLER_PERMISSIONS,
     // Every cell in this column is `S`, `T` or `—`. Reach comes from ACL entries on the libraries
     // this role is responsible for; nothing is conferred tenant-wide — except `notification:manage`,
-    // which every role below holds for the reason its catalogue entry gives: everybody who can
-    // receive a notification must be able to read it, and its scope is their own inbox.
+    // which **every one of the eight** holds for the reason its catalogue entry gives: everybody who
+    // can receive a notification must be able to read it, and its scope is their own inbox. It used
+    // to say "every role below", which was true of the four spelled out beneath it and quietly
+    // false of the two hoisted into constants above; `role-seed.spec.ts` now asserts the row rather
+    // than a comment describing it.
     [SystemRole.LIBRARY_MANAGER]: Object.freeze([Permission.NOTIFICATION_MANAGE]),
     // `delegation:manage` is `own`: an author may delegate their own approvals, and the use case
     // enforces the subject. Everything else in the column is `S`.
