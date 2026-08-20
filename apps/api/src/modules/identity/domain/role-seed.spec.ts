@@ -34,8 +34,16 @@ describe('the auditor seed, which is what makes library:view meaningful', () => 
   it('holds no permission that ends in :manage except its own inbox', () => {
     // The invariant behind the row above, stated once rather than per key — a mutating grant
     // arriving in this set is the thing worth failing a build over.
+    //
+    // The exception this test has been *named* for since it was written is `notification:manage`,
+    // and until Slice 21 the body allowed for none: it asserted the empty list, which passed only
+    // because the seed had the hole §6 says it must not have. The name was the intent and the
+    // assertion was the accident. Marking your own notification read is not a mutation of anything
+    // of the tenant's — the scope is `own` and enforced by there being no route under
+    // `/notifications` or `/auth/mfa` that takes anybody's identifier — so it belongs on this row
+    // and every other one, and the suffix is what makes it need saying out loud here.
     const managing = [...auditor].filter((permission) => permission.endsWith(':manage'));
-    expect(managing).toEqual([]);
+    expect(managing).toEqual([Permission.NOTIFICATION_MANAGE]);
   });
 });
 
@@ -116,5 +124,89 @@ describe('no other seeded role receives the read keys', () => {
     const held = new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]);
     expect(held.has(Permission.CONFIGURATION_VIEW)).toBe(false);
     expect(held.has(Permission.DIRECTORY_VIEW)).toBe(false);
+  });
+});
+
+/**
+ * The one row `08-permission-model.md` §6 marks `own` in every column — Slice 21.
+ *
+ * ## Why this is asserted as a row rather than per role
+ *
+ * Because the defect was a row with two holes in it, and every per-role assertion in this file
+ * passed while it was there. Six of the eight are spelled inline in the map below
+ * `DEFAULT_ROLE_PERMISSIONS`; the document controller's and the auditor's are named constants
+ * hoisted above it, and those two were the ones that missed out. A comment on the library manager
+ * said "every role below holds it", which was true of the four beneath it and quietly false of the
+ * two above — the shape of an omission that reads as a decision.
+ *
+ * ## What it cost, which is why the row matters
+ *
+ * `MfaController` declares this key, for the reason its own docstring gives: it is the only
+ * existing permission meaning "this person's own arrangements about their own account, held by
+ * everybody including `GUEST`", and *everybody who can sign in must be able to secure their
+ * sign-in*. So the two roles without it could not enrol a second factor.
+ *
+ * Worse, both are notification *recipients* the product resolves by permission rather than by role.
+ * `NotificationEventService.chainBroken` sends the audit-chain-broken alert to
+ * `holdersOfPermission(AUDIT_VIEW)` — the administrator, the controller and the auditor — and
+ * `retentionDue` sends to `holdersOfPermission(RETENTION_MANAGE)`. Rows were being written to two
+ * inboxes whose owners were refused `/notifications`, and 18 §3 makes the in-app inbox the
+ * authoritative one.
+ *
+ * The assertion is `it.each` over **every** member of `SystemRole` rather than a list typed out
+ * here, so a ninth seeded role cannot be added without either holding this key or failing.
+ */
+describe('every seeded role can read its own inbox and secure its own sign-in', () => {
+  it.each(Object.values(SystemRole))('%s holds notification:manage', (role) => {
+    expect(
+      new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]).has(Permission.NOTIFICATION_MANAGE),
+    ).toBe(true);
+  });
+
+  it('is the only permission every one of them holds', () => {
+    /*
+     * Stated as a property rather than left implicit, because "grant it to everybody" is a habit
+     * rather than a rule and this is the one row where it is right. If a second key ever appears in
+     * every column, that is either a new deliberate row — in which case §6 names it and this test
+     * is updated with the reasoning — or somebody widening the seed to make a screen work, which is
+     * the move Slices 12 and 20 both refused.
+     */
+    const everywhere = Object.values(Permission).filter((permission) =>
+      Object.values(SystemRole).every((role) =>
+        new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]).has(permission),
+      ),
+    );
+
+    expect(everywhere).toEqual([Permission.NOTIFICATION_MANAGE]);
+  });
+
+  it('does not make the auditor or the controller an administrator on the way past', () => {
+    // The grant is `own`-scoped and enforced by absence — no route under `/notifications` or
+    // `/auth/mfa` takes a recipient or a user identifier. `/admin/notifications`, which edits the
+    // tenant's templates and suppressions, is a different controller on `settings:manage`, and
+    // neither role holds that. Asserted so a future reading of "notification:manage" as
+    // "administers notifications" fails here rather than in production.
+    for (const role of [SystemRole.AUDITOR, SystemRole.DOCUMENT_CONTROLLER]) {
+      const held = new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]);
+      expect(held.has(Permission.SETTINGS_MANAGE)).toBe(false);
+      expect(held.has(Permission.USER_MANAGE)).toBe(false);
+    }
+  });
+
+  it('leaves the auditor mutating nothing of the tenant’s', () => {
+    // The row this file already guards for that column, restated against the new grant. An inbox
+    // and an authenticator are the auditor's own; everything below is the tenant's.
+    const auditor = new Set<string>(DEFAULT_ROLE_PERMISSIONS[SystemRole.AUDITOR]);
+    for (const key of [
+      Permission.DOCUMENT_CREATE,
+      Permission.DOCUMENT_EDIT,
+      Permission.DOCUMENT_DELETE,
+      Permission.LIBRARY_MANAGE,
+      Permission.FOLDER_MANAGE,
+      Permission.DOCUMENT_PERMISSION_MANAGE,
+      Permission.DELEGATION_MANAGE,
+    ]) {
+      expect(auditor.has(key)).toBe(false);
+    }
   });
 });
