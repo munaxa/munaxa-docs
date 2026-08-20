@@ -36,11 +36,14 @@ const CHROMIUM_PATH =
  * repository signed in as a fixture holding effectively the whole catalogue, and a suite of
  * superusers cannot notice a screen that depends on a permission it should not.
  *
- * ## Two sign-ins
+ * ## Four sign-ins, and its own shard
  *
- * `auth.login` allows ten per five minutes per identity, and the shard comment in `ci.yml` tracks
- * the budget by browser sign-in. Each persona signs in once and the state is reused, which is also
- * what a person does. The API-level assertions share one token each rather than logging in again.
+ * `auth.login` allows ten per five minutes, and `rate-limit.guard.ts` pushes one key per declared
+ * dimension rather than one per combination — so the `ip` dimension is a single bucket for the whole
+ * runner and every `POST /auth/login` spends from it, the `fetch` ones below included. This file
+ * costs four: two browser sign-ins, and two tokens, cached so the six tests below mint each once.
+ * It runs in a shard of its own because those four did not fit beside the signing suite, which
+ * `ci.yml` records along with what that failure did and did not prove.
  */
 describe('arranging cover, as the roles that may arrange it', () => {
   let fixture: Fixture;
