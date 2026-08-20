@@ -1619,3 +1619,293 @@ describe('the department placement', () => {
     expect(seen[0]).toMatchObject({ tenantId: TENANT, deletedAt: null });
   });
 });
+
+/**
+ * The company placement, and the branch filter — Slice 16.
+ *
+ * ## Company: an absence, asserted
+ *
+ * `LIBRARY_OWNER_SCOPES` permits four owners and `placementOf` handles them in three ways: `ENTITY`
+ * writes the scope id, `DEPARTMENT` reads the row and writes all three columns, and everything else
+ * falls through to `none`. `COMPANY` is in that last group, deliberately — *"TENANT and COMPANY
+ * owners place a library above the entity level"* — because a library a company owns spans that
+ * company's entities and is not attributable to one of them.
+ *
+ * It was the only row of the placement matrix with no test, and an absence is exactly the kind of
+ * claim that rots quietly: nothing fails when a null starts being written, it just starts appearing
+ * in somebody's facet rail. So the projection row is read directly rather than inferred from the
+ * facets, and the facets are checked as well — because those are two different ways to be wrong.
+ *
+ * **Company is not a facet and not a filter.** It appears nowhere in `FACET_COLUMNS`,
+ * `SEARCH_FILTER_KEYS` or the index. Company ownership is represented *only* by the absence of the
+ * three placement columns, which is not the same as the documents being invisible: they are found by
+ * text, type, category, status, year, folder and everything else the engine offers.
+ *
+ * ## Branch: a filter that no control offers
+ *
+ * `branch` is in `SEARCH_FILTER_KEYS`, so `?branch=<uuid>` on `/search` is accepted and the web page
+ * forwards it — but nothing in the product renders a branch to choose, and there is no
+ * `FACET_COLUMNS` entry, so it never comes back as a bucket. Slice 15 proved the clause narrows;
+ * what it did not prove is that it narrows to the *right* branch, which needs two of them.
+ *
+ * The security question has a structural answer rather than an ordering one. `whereClauses` builds
+ * the tenant clause, then the ACL clauses, then every filter, and `AND`-joins the lot into a single
+ * predicate that the hits query, the total query and every `countFacet` all share. A branch filter
+ * is a conjunct: there is no path on which it is evaluated without the ACL clauses beside it, so it
+ * can only ever narrow what the caller could already see. That is asserted below from Bob's seat.
+ */
+describe('the company placement and the branch filter', () => {
+  const labelReader = new PrismaFacetLabelReader();
+
+  let companyId: string;
+  let companyDocumentId: string;
+  /** Two real branches under one entity, so "the right branch" is a question with an answer. */
+  let branchA: string;
+  let branchB: string;
+  let departmentB: string;
+
+  const searchPlaced = (
+    runner: <T>(work: () => Promise<T>) => Promise<T>,
+    text: string,
+    filters: Record<string, readonly string[]> = {},
+  ) =>
+    runner(() =>
+      search.search.search({
+        text,
+        filters,
+        facets: ['department', 'entity', 'type'],
+        sort: 'RELEVANCE',
+        cursor: null,
+        limit: 25,
+      }),
+    );
+
+  async function fileUnder(rootFolderId: string, title: string): Promise<string> {
+    const fileObjectId = await upload(Buffer.from(`${title} body`), 'doc.txt', 'text/plain');
+    await owner.fileObject.update({
+      where: { id: fileObjectId },
+      data: { scanStatus: ScanStatus.CLEAN, scanner: 'integration-suite', scannedAt: FIXED_NOW },
+    });
+    const created = await asAlice(() =>
+      library.documents.create({
+        folderId: rootFolderId,
+        documentTypeId,
+        title,
+        fileObjectId,
+        filename: 'doc.txt',
+        origin: 'UPLOAD',
+        acknowledgeDuplicate: false,
+      }),
+    );
+    await project(asId<DocumentId>(created.id));
+    return created.id;
+  }
+
+  beforeAll(async () => {
+    companyId = uuidv7();
+    const entityId = uuidv7();
+    branchA = uuidv7();
+    branchB = uuidv7();
+    const departmentA = uuidv7();
+    departmentB = uuidv7();
+
+    await owner.company.create({
+      data: {
+        id: companyId,
+        tenantId: TENANT,
+        code: unique('CO'),
+        name: 'Acme Holdings',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.entity.create({
+      data: {
+        id: entityId,
+        tenantId: TENANT,
+        companyId,
+        code: unique('E'),
+        name: 'Acme Holdings NL',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    for (const [id, name] of [
+      [branchA, 'Rotterdam'],
+      [branchB, 'Eindhoven'],
+    ] as const) {
+      await owner.branch.create({
+        data: {
+          id,
+          tenantId: TENANT,
+          entityId,
+          code: unique('B'),
+          name,
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+    for (const [id, branchId] of [
+      [departmentA, branchA],
+      [departmentB, branchB],
+    ] as const) {
+      await owner.department.create({
+        data: {
+          id,
+          tenantId: TENANT,
+          entityId,
+          branchId,
+          code: unique('D'),
+          name: `Unit ${id.slice(0, 6)}`,
+          path: id,
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+
+    // The company-owned library: the untested row of the placement matrix.
+    const companyOwned = await asAlice(() =>
+      library.libraries.createLibrary({
+        code: unique('COM'),
+        name: 'Group',
+        ownerScopeType: 'COMPANY',
+        ownerScopeId: companyId,
+      }),
+    );
+    companyDocumentId = await fileUnder(companyOwned.rootFolderId, 'Placement group policy');
+
+    // One department-owned library per branch, so a branch filter has two candidates to choose
+    // between rather than one to find.
+    for (const [department, title] of [
+      [departmentA, 'Placement rotterdam procedure'],
+      [departmentB, 'Placement eindhoven procedure'],
+    ] as const) {
+      const owned = await asAlice(() =>
+        library.libraries.createLibrary({
+          code: unique('DEP'),
+          name: `Site ${department.slice(0, 6)}`,
+          ownerScopeType: 'DEPARTMENT',
+          ownerScopeId: department,
+        }),
+      );
+      await fileUnder(owned.rootFolderId, title);
+    }
+  }, 180_000);
+
+  it('writes no placement at all for a company-owned library', async () => {
+    /*
+     * Read off the projection row rather than inferred from the facets, because the two can
+     * disagree: a written `entity_id` that no requested facet happens to count would pass every
+     * bucket assertion below while being exactly the regression this test exists to catch.
+     */
+    const row = await owner.searchIndexEntry.findUniqueOrThrow({
+      where: { documentId: companyDocumentId },
+      select: { entityId: true, departmentId: true, branchId: true },
+    });
+
+    expect(row).toStrictEqual({ entityId: null, departmentId: null, branchId: null });
+  });
+
+  it('contributes nothing to the entity or department facets', async () => {
+    // The same claim from the other side. A company-owned document is above the entity level, so it
+    // belongs in neither rail — and `HAVING ... IS NOT NULL` in `countFacet` is what keeps a null
+    // out of a bucket of its own.
+    const found = await searchPlaced(asAlice, 'placement group policy');
+
+    expect(found.results.total).toBe(1);
+    expect(found.results.facets['entity']).toStrictEqual([]);
+    expect(found.results.facets['department']).toStrictEqual([]);
+  });
+
+  it('leaves the document findable by everything that is not a placement', async () => {
+    // "No placement" is not "not indexed". The document answers to text and to its type exactly as
+    // any other, which is the half a reader would otherwise have to take on trust.
+    const byType = await searchPlaced(asAlice, 'placement group policy', {
+      type: [documentTypeId],
+    });
+
+    expect(byType.results.hits.map((hit) => hit.documentId)).toContain(companyDocumentId);
+    expect(byType.results.facets['type']?.map((bucket) => bucket.value)).toContain(documentTypeId);
+  });
+
+  it('narrows to the branch asked for, and not to the other one', async () => {
+    /*
+     * Two branches under one entity, one document each. Slice 15 proved the clause narrows by
+     * pairing a real branch against a random identifier, which a filter that matched *any*
+     * non-empty branch would also survive. This does not.
+     */
+    const inA = await searchPlaced(asAlice, 'placement procedure', { branch: [branchA] });
+    const inB = await searchPlaced(asAlice, 'placement procedure', { branch: [branchB] });
+
+    expect(inA.results.hits.map((hit) => hit.summary.title)).toStrictEqual([
+      'Placement rotterdam procedure',
+    ]);
+    expect(inB.results.hits.map((hit) => hit.summary.title)).toStrictEqual([
+      'Placement eindhoven procedure',
+    ]);
+  });
+
+  it('leaves both reachable when no branch is named', async () => {
+    const unfiltered = await searchPlaced(asAlice, 'placement procedure');
+
+    expect(unfiltered.results.total).toBe(2);
+  });
+
+  it('cannot be used to reach a document the ACL refuses', async () => {
+    /*
+     * The invariant, from the seat of somebody who holds no `document:view`. `whereClauses` puts the
+     * tenant clause, the ACL clauses and every filter into one `AND`-joined predicate shared by the
+     * hits, the total and every facet count — so a branch filter is a conjunct and cannot widen.
+     * Naming the branch precisely returns nothing, and the total agrees, which is the half that
+     * would betray a fetch-then-filter.
+     */
+    const refused = await searchPlaced(asBob, 'placement procedure', { branch: [branchA] });
+
+    expect(refused.results.hits).toStrictEqual([]);
+    expect(refused.results.total).toBe(0);
+  });
+
+  it('returns nothing for a branch belonging to another tenant', async () => {
+    // The tenant clause is the first conjunct in the same predicate, so a real branch of this
+    // tenant returns nothing once the ambient tenant is somebody else's.
+    const elsewhere = await runWithContext(
+      { ...contextFor(ALICE, [VIEWER_ROLE]), tenantId: TENANT_B },
+      () =>
+        search.search.search({
+          text: 'placement procedure',
+          filters: { branch: [branchA] },
+          facets: [],
+          sort: 'RELEVANCE',
+          cursor: null,
+          limit: 25,
+        }),
+    );
+
+    expect(elsewhere.results.hits).toStrictEqual([]);
+    expect(elsewhere.results.total).toBe(0);
+  });
+
+  it('keeps filtering by a branch that has since been retired', async () => {
+    /*
+     * The same rule the department follows, and worth stating because it is the opposite of what a
+     * reader might guess. `branch_id` is a column on the index, not a join, so retiring the branch
+     * row changes nothing about which documents carry it: they stay findable, which is what an
+     * auditor asking "what was filed at Eindhoven" needs. There is no branch facet and no branch
+     * label, so nothing announces the retired name either way.
+     */
+    await owner.branch.update({ where: { id: branchB }, data: { deletedAt: FIXED_NOW } });
+
+    const stillThere = await searchPlaced(asAlice, 'placement procedure', { branch: [branchB] });
+
+    expect(stillThere.results.total).toBe(1);
+  });
+
+  it('has no branch label to resolve, because branch is not a labelled facet', async () => {
+    // `LABELLED_FACETS` is type, category, department and entity. Branch is a filter, so the reader
+    // has no branch key at all — asserted so that adding one becomes a deliberate act rather than a
+    // side effect of extending the map.
+    const named = await asAlice(() =>
+      unitOfWork.run(() => labelReader.labelsFor({ department: [departmentB] })),
+    );
+
+    expect(Object.keys(named)).toStrictEqual(['department']);
+  });
+});
