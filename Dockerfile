@@ -62,7 +62,19 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
     pnpm install --frozen-lockfile
 
 COPY . .
-RUN pnpm prisma:generate && pnpm build
+
+# `turbo` by its own path rather than through `pnpm build`, and the reason is a race rather than a
+# preference. pnpm exports its resolved configuration to child processes as `pnpm_config_*`
+# environment variables, and it serialises them as strings — so `verify-deps-before-run`, whose
+# default is the boolean `false`, reaches every nested pnpm as the string `"false"`, which is
+# truthy. Each of those children therefore re-runs `checkDepsStatus`, which reads
+# `node_modules/.pnpm-workspace-state-v1.json` with `readFileSync` + `JSON.parse` and rewrites it
+# with a non-atomic `writeFile`. Turbo builds nine packages concurrently, so a reader can observe a
+# half-written file and the build dies with `Unexpected end of JSON input` — intermittently, which
+# is the worst way for a required check to fail. Invoking turbo directly means no pnpm parent, so
+# no child inherits the setting and nothing touches the file. `apps/web`'s `prebuild` hook was the
+# other source of a nested pnpm and now calls its binary directly for the same reason.
+RUN pnpm prisma:generate && ./node_modules/.bin/turbo run build
 
 # ## The image carries its development dependencies, and that is a stated cost
 #

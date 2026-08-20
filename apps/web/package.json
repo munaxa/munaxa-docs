@@ -5,9 +5,9 @@
   "description": "Munaxa Docs web workspace \u2014 Next.js 15 App Router, consuming the shared platform with the docs theme.",
   "license": "UNLICENSED",
   "scripts": {
-    "prebuild": "pnpm run sync:brand",
+    "prebuild": "munaxa-sync-brand docs public",
     "build": "next build",
-    "predev": "pnpm run sync:brand",
+    "predev": "munaxa-sync-brand docs public",
     "sync:brand": "munaxa-sync-brand docs public",
     "verify:styles": "node scripts/verify-platform-styles.mjs",
     "typegen": "next typegen",
