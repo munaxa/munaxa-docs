@@ -94,6 +94,23 @@ administrative one. So `/admin/*` is untouched and keeps its management keys, an
 form was measured to consume. `packages/contracts`' `operations/read-models.spec.ts` asserts every
 exclusion above by name.
 
+**A narrow read model does not always need a new key, and twice it took the operation's own.**
+`/v1/acl/roles` carries `document:permission:manage` and `/v1/delegations/delegates` carries
+`delegation:manage` — in both cases the key that authorises the *write* the picker exists to fill
+in. The test is whether the read is strictly less than the write the same caller could already
+perform: `PermissionService.validate` accepts any identifier as an ACL subject, and `POST
+/v1/delegations` accepts any `delegateId` and answers *"that person cannot be delegated to"* when it
+names no active account, so in both cases whoever may write can already probe for what the picker
+lists. Where that holds, the operation's key is both the honest gate and the tightest one, and it
+introduces no permission and widens none.
+
+The alternative was worse in each case, which is the point. Roles are capability rather than
+directory, so folding them into `directory:view` would broaden a key past what its own entry above
+promises. And the delegate picker *is* a people list, so `/directory/people` would have fitted — but
+`delegation:manage` is `own` for `AUTHOR` and `APPROVER`, neither of which holds `directory:view`,
+so reaching it meant seeding two roles a key that also opens the organisation chart. Widening the
+seed to suit a picker is the move this section exists to refuse.
+
 **Two keys, not one and not six.** Document types reference categories, confidentiality levels and
 metadata fields by id and echo their names; a role that may read types but not the fields attached
 to them renders a type picker whose metadata section is empty. That is one decision. The tenant's

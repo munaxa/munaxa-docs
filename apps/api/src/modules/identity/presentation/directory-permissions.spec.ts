@@ -2,10 +2,12 @@ import 'reflect-metadata';
 
 import { describe, expect, it } from 'vitest';
 
-import { Permission, type PermissionKey } from '@edms/domain';
+import { Permission, type PermissionKey, SystemRole } from '@edms/domain';
 
 import { REQUIRED_PERMISSIONS } from '../../../core/authorization/permission.decorator';
+import { DEFAULT_ROLE_PERMISSIONS } from '../domain/role-seed';
 import { AclSubjectsController } from './acl-subjects.controller';
+import { DelegationController } from './delegation.controller';
 import { DirectoryPeopleController } from './directory-read.controller';
 import { RoleAdminController, UserAdminController } from './identity-admin.controller';
 
@@ -118,5 +120,94 @@ describe('naming a role in an ACL entry requires the permission that writes one'
     // Asserted as an absence rather than left unsaid: the cheap way to "fix" a future picker is to
     // add this key, and that is the broadening the catalogue entry forbids in words.
     expect(declaredOn(acl, 'roleOptions')).not.toContain(Permission.DIRECTORY_VIEW);
+  });
+});
+
+/**
+ * The same follow-up one screen further on — Slice 20.
+ *
+ * `/delegations` read `/admin/users` to fill its delegate picker. `delegation:manage` is seeded to
+ * `AUTHOR`, `APPROVER` and `DOCUMENT_CONTROLLER` — the three roles `08-permission-model.md` §6
+ * marks `own` for it — and **none of them holds `user:manage`**, so the screen that exists to
+ * exercise the permission was openable only by the tenant administrator, the one role the matrix
+ * does not mark `own`.
+ *
+ * The obvious repair was `/directory/people`, which returns the right shape already. It is the
+ * wrong door, and `role-seed.spec.ts`'s *"no other seeded role receives the read keys"* is why:
+ * reaching it means seeding `AUTHOR` and `APPROVER` a key that also opens `/directory/departments`,
+ * which is a wider grant than delegation needs and a reversal of the previous slice's decision.
+ *
+ * So the guard is the operation's own key, and both halves are asserted — the key that is there,
+ * and the four whose presence would put the picker back behind the tenant administrator.
+ */
+describe('naming a delegate requires the permission that writes a delegation', () => {
+  const delegations = DelegationController.prototype;
+
+  it('gates the delegate options on delegation:manage', () => {
+    // Declared on the class rather than the handler, which `declaredOn` falls back to — the whole
+    // controller carries the key, and the picker is inside that boundary rather than beside it.
+    expect(declaredOn(delegations, 'delegates')).toEqual([Permission.DELEGATION_MANAGE]);
+  });
+
+  it('demands no management grant, which is the whole point', () => {
+    const declared = declaredOn(delegations, 'delegates');
+    for (const key of [
+      Permission.USER_MANAGE,
+      Permission.ROLE_MANAGE,
+      Permission.ORG_MANAGE,
+      Permission.SETTINGS_MANAGE,
+    ]) {
+      expect(declared).not.toContain(key);
+    }
+  });
+
+  it('does not reach for directory:view either', () => {
+    // Asserted as an absence rather than left unsaid: adding this key is the cheap way to "fix" a
+    // future picker, and here it would also have needed two seeded roles widened to hold it.
+    expect(declaredOn(delegations, 'delegates')).not.toContain(Permission.DIRECTORY_VIEW);
+  });
+
+  it('leaves the delegation writes on exactly the same key', () => {
+    // The read is not a new boundary beside the writes; it is inside the one they already share.
+    for (const method of ['list', 'request', 'declareEmergency', 'approve', 'decline', 'revoke']) {
+      expect(declaredOn(delegations, method)).toEqual([Permission.DELEGATION_MANAGE]);
+    }
+  });
+});
+
+/**
+ * The seeded roles this route has to be reachable by, read from the product's own seed.
+ *
+ * A declaration test proves what the guard asks for; this proves the three roles the matrix marks
+ * `own` actually hold it, and that none of them holds what the route deliberately does not ask for.
+ * Together they are the whole claim: the screen opens for `AUTHOR`, `APPROVER` and
+ * `DOCUMENT_CONTROLLER` without any of them gaining a key.
+ */
+describe('the roles the delegation matrix marks own can reach the picker', () => {
+  it.each([SystemRole.AUTHOR, SystemRole.APPROVER, SystemRole.DOCUMENT_CONTROLLER])(
+    '%s holds delegation:manage and not user:manage',
+    (role) => {
+      const held = new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]);
+      expect(held.has(Permission.DELEGATION_MANAGE)).toBe(true);
+      expect(held.has(Permission.USER_MANAGE)).toBe(false);
+    },
+  );
+
+  it.each([SystemRole.AUTHOR, SystemRole.APPROVER])(
+    '%s still holds no directory:view, so the picker must not need one',
+    (role) => {
+      // The line that decides between the two possible fixes. If this ever becomes true, it will be
+      // because somebody widened the seed rather than because the picker moved.
+      expect(new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]).has(Permission.DIRECTORY_VIEW)).toBe(
+        false,
+      );
+    },
+  );
+
+  it('leaves the auditor unable to reach it at all', () => {
+    // It never held `delegation:manage` and gains nothing here; `/delegations` refuses it at the
+    // page's own gate, and would refuse it at the route's.
+    const auditor = new Set<string>(DEFAULT_ROLE_PERMISSIONS[SystemRole.AUDITOR]);
+    expect(auditor.has(Permission.DELEGATION_MANAGE)).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import type { Collection, Delegation, DelegationDirection, User } from '@edms/contracts';
+import type { Collection, Delegation, DelegationDirection, PersonOption } from '@edms/contracts';
 import { Permission } from '@edms/domain';
 
 import { AdminForbidden } from '../../../features/admin-shared';
@@ -50,12 +50,25 @@ export default async function DelegationsPage({
 
   const [delegations, people] = await Promise.all([
     adminGet<Collection<Delegation>>(`/delegations?${query.toString()}`),
-    // Who this person could delegate to. Read from the same administered list the workflow
-    // screens use, rather than a directory endpoint of its own.
-    // 100, the API's maximum. This asked for 200, which the pagination schema *rejects*, so the
-    // request 422'd and the page threw before rendering — the third screen with this defect, after
-    // the two Phase 6.6 found. Nothing caught it because nothing had opened the built application.
-    adminGet<Collection<User>>('/admin/users?page=1&pageSize=100&status=ACTIVE'),
+    /**
+     * Who this person could delegate to — Slice 20.
+     *
+     * This asked `/admin/users`, behind `user:manage`. `delegation:manage` is seeded to `AUTHOR`,
+     * `APPROVER` and `DOCUMENT_CONTROLLER` and none of the three holds it, so all three got a 403
+     * through a wrapper that throws and this route was their error boundary: the screen that exists
+     * to exercise an `own`-scoped permission was openable only by the tenant administrator, who is
+     * the one role the matrix does not mark `own` for it.
+     *
+     * `/delegations/delegates` carries `delegation:manage` — the key this page already gated on
+     * above, and the key that writes the delegation the picker fills in. It is `adminGet` and still
+     * throws, deliberately: every caller who reaches this line holds the permission the route
+     * declares, so a refusal here is a real defect rather than a dropdown that ought to degrade.
+     *
+     * 100, the API's maximum. This asked for 200, which the pagination schema *rejects*, so the
+     * request 422'd and the page threw before rendering — the third screen with this defect, after
+     * the two Phase 6.6 found. Nothing caught it because nothing had opened the built application.
+     */
+    adminGet<Collection<PersonOption>>(`/delegations/delegates?${DELEGATES}`),
   ]);
 
   return (
@@ -67,3 +80,14 @@ export default async function DelegationsPage({
     />
   );
 }
+
+/**
+ * One page of people, by name, ascending.
+ *
+ * Spelled out rather than reused from `adminOptions` because this is an `optionListQuerySchema`
+ * route, and that schema deliberately has no `deleted` parameter: a picker has no recycle bin to
+ * offer, so a request that cannot be spelled cannot be made. `adminOptions` would send
+ * `deleted=live` and be rejected by the validation pipe. `status` is absent for the same kind of
+ * reason — active accounts are the endpoint's behaviour, not a filter the caller may turn off.
+ */
+const DELEGATES = 'page=1&pageSize=100&sortBy=displayName&sortDirection=asc';

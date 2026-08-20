@@ -11,27 +11,34 @@ import {
 } from '@nestjs/common';
 
 import {
+  type Collection,
   type Delegation as WireDelegation,
   type DelegationQuery,
   type DelegationUse as WireDelegationUse,
   type DeclareEmergencyDelegationBody,
   type DeclineDelegationBody,
+  type PersonOption,
   type RequestDelegationBody,
   type RevokeDelegationBody,
   declareEmergencyDelegationSchema,
   declineDelegationSchema,
   delegationQuerySchema,
+  personOptionQuerySchema,
   requestDelegationSchema,
   revokeDelegationSchema,
 } from '@edms/contracts';
-import { type DelegationId, Permission, type UserId, asId } from '@edms/domain';
+import { type DelegationId, Permission, type UserId, UserStatus, asId } from '@edms/domain';
 import { normalizePageRequest } from '@edms/utils';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
+import { USER_ADMIN_SERVICE } from '../application/administration.ports';
+import type { UserAdminRow } from '../application/administration.ports';
 import { DELEGATION_SERVICE } from '../application/ports';
 import type { DefaultDelegationService } from '../application/delegation.service';
 import type { DelegationUseRecord, DelegationView } from '../application/ports';
+import type { UserAdminService } from '../application/user-admin.service';
+import { toCollection } from './identity-admin.view';
 
 interface PageMeta {
   readonly page: number;
@@ -62,7 +69,10 @@ interface PageMeta {
 @Controller({ path: 'delegations', version: '1' })
 @RequirePermission(Permission.DELEGATION_MANAGE)
 export class DelegationController {
-  constructor(@Inject(DELEGATION_SERVICE) private readonly delegations: DefaultDelegationService) {}
+  constructor(
+    @Inject(DELEGATION_SERVICE) private readonly delegations: DefaultDelegationService,
+    @Inject(USER_ADMIN_SERVICE) private readonly users: UserAdminService,
+  ) {}
 
   @Get()
   async list(
@@ -75,6 +85,54 @@ export class DelegationController {
       ...(query.status !== undefined && { status: query.status }),
     });
     return { data: page.data.map(toDelegation), meta: page.meta };
+  }
+
+  /**
+   * The people a delegation may name, as somebody arranging cover sees them — Slice 20.
+   *
+   * ## Why this is not `/admin/users` and not `/directory/people`
+   *
+   * The screen needs a list of people to pick a delegate from, and it read `/admin/users` — behind
+   * `user:manage`, the tenant administrator alone. `delegation:manage` is seeded to `AUTHOR`,
+   * `APPROVER` and `DOCUMENT_CONTROLLER`, none of which holds `user:manage`, so `adminGet` threw on
+   * a 403 and `/delegations` was the route error boundary for every role the matrix marks `own` for
+   * the permission the page exists to exercise. Only the tenant administrator could open it.
+   *
+   * `/directory/people` returns exactly the right shape and is the wrong door: it is gated on
+   * `directory:view`, which `role-seed.spec.ts` asserts by name that `AUTHOR` and `APPROVER` do
+   * **not** hold. Reaching it would have meant seeding those two roles a key that also opens the
+   * organisation chart at `/directory/departments` — a wider grant than delegation needs, made for
+   * a picker's convenience, and a reversal of a decision the previous slice took deliberately.
+   *
+   * So the guard is the operation's own key, exactly as `/acl/roles` is, and for the same reason it
+   * gives up nothing: `POST /delegations` already takes any `delegateId` and answers *"that person
+   * cannot be delegated to"* when it names no active account, so whoever may write a delegation can
+   * already probe membership one identifier at a time. Reading the names of the people they may
+   * delegate to is strictly less than the write they could already perform.
+   *
+   * **Active accounts only**, like `/directory/people` and not as a filter the caller may turn off:
+   * `refuseUnlessDelegable` refuses a delegation to a disabled account, so offering one would offer
+   * cover that cannot be arranged. The projection is `PersonOption` — an identifier and a name —
+   * rather than the account record, which carries the address, the status, MFA enrolment, last
+   * sign-in, password state, every role held and every department joined.
+   */
+  @Get('delegates')
+  async delegates(
+    @Query(new ZodValidationPipe(personOptionQuerySchema))
+    query: ReturnType<typeof personOptionQuerySchema.parse>,
+  ): Promise<Collection<PersonOption>> {
+    return toCollection(
+      await this.users.list({
+        ...query,
+        deleted: 'live',
+        status: UserStatus.ACTIVE,
+        // `listUsers` searches `email` as well by default, and an endpoint that matches a column it
+        // does not return is an existence oracle — a caller could type a guessed address and learn
+        // from the row coming back that it belongs to this tenant. This searches the name it shows.
+        searchFields: ['displayName'],
+      }),
+      toPersonOption,
+    );
   }
 
   /**
@@ -184,6 +242,15 @@ function toDelegation(view: DelegationView): WireDelegation {
     useCount: view.useCount,
     version: view.version,
   };
+}
+
+/**
+ * Named field by field rather than built by omission — the same rule `/directory/people` and
+ * `/acl/roles` follow. A projection that spreads the administrative row and deletes keys grows a
+ * new field every time that row does, silently and in the direction that matters.
+ */
+function toPersonOption(row: UserAdminRow): PersonOption {
+  return { id: row.id, displayName: row.displayName };
 }
 
 function toUse(use: DelegationUseRecord): WireDelegationUse {

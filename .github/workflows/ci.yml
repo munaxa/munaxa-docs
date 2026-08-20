@@ -341,18 +341,20 @@ jobs:
     # and its own API instance, so each gets its own budget, and the shards are split by **login
     # cost** rather than by file count:
     #
-    #   signing   — signing 5, faded-text 1, search 1        =  7
+    #   signing   — signing 5, faded-text 1, search 1, delegations 2 = 9
     #   recovery  — recovery 7, datagrid-keyboard 1          =  8
     #   screens   — consistency 1, shell 1, dashboard 1, recent-empty 1, permissions 4 = 8
     #
-    # Every shard stays under ten with room to spare, and the product's security boundary is
-    # untouched. If a file's sign-in count grows, the shard it lives in is where that shows up.
+    # Every shard stays under ten, and the product's security boundary is untouched. If a file's
+    # sign-in count grows, the shard it lives in is where that shows up. The shard *names* below are
+    # check names that branch protection matches on, so a file joins the shard with the budget for
+    # it rather than the shard whose title reads best — `files:` is the list that says what runs.
     strategy:
       fail-fast: false
       matrix:
         shard:
           - name: 'signing, faded text and search'
-            files: 'src/test/e2e/signing.e2e.spec.ts src/test/e2e/faded-text.e2e.spec.ts src/test/e2e/search.e2e.spec.ts'
+            files: 'src/test/e2e/signing.e2e.spec.ts src/test/e2e/faded-text.e2e.spec.ts src/test/e2e/search.e2e.spec.ts src/test/e2e/delegations.e2e.spec.ts'
           - name: 'recovery and the data grid'
             files: 'src/test/e2e/recovery.e2e.spec.ts src/test/e2e/datagrid-keyboard.e2e.spec.ts'
           - name: 'the screens'
