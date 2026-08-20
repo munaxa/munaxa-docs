@@ -1106,9 +1106,12 @@ describe('facet labels', () => {
 describe('the entity facet', () => {
   const labelReader = new PrismaFacetLabelReader();
   const ENTITY_NAME = 'Acme Manufacturing UK';
+  const OTHER_ENTITY_NAME = 'Acme Manufacturing IE';
   const UNFILED_ENTITY_NAME = 'An entity nothing is filed under';
 
   let entityId: string;
+  /** A second entity with its own library and its own document — Slice 15. */
+  let otherEntityId: string;
   /** Exists, in this tenant, with nothing filed under it — so it must never be named. */
   let unfiledEntityId: string;
 
@@ -1127,6 +1130,7 @@ describe('the entity facet', () => {
   beforeAll(async () => {
     const companyId = uuidv7();
     entityId = uuidv7();
+    otherEntityId = uuidv7();
     unfiledEntityId = uuidv7();
 
     await owner.company.create({
@@ -1140,6 +1144,7 @@ describe('the entity facet', () => {
     });
     for (const [id, name] of [
       [entityId, ENTITY_NAME],
+      [otherEntityId, OTHER_ENTITY_NAME],
       [unfiledEntityId, UNFILED_ENTITY_NAME],
     ] as const) {
       await owner.entity.create({
@@ -1184,6 +1189,38 @@ describe('the entity facet', () => {
       );
       await project(asId<DocumentId>(created.id));
     }
+
+    // A second entity-owned library with a single document, so the two entities can be told apart
+    // by their counts as well as by their identifiers.
+    const otherOwned = await asAlice(() =>
+      library.libraries.createLibrary({
+        code: unique('ENT'),
+        name: 'Assembly',
+        ownerScopeType: 'ENTITY',
+        ownerScopeId: otherEntityId,
+      }),
+    );
+    const otherFileId = await upload(
+      Buffer.from('Entity filed assembly report body'),
+      'report.txt',
+      'text/plain',
+    );
+    await owner.fileObject.update({
+      where: { id: otherFileId },
+      data: { scanStatus: ScanStatus.CLEAN, scanner: 'integration-suite', scannedAt: FIXED_NOW },
+    });
+    const otherDocument = await asAlice(() =>
+      library.documents.create({
+        folderId: otherOwned.rootFolderId,
+        documentTypeId,
+        title: 'Entity filed assembly report',
+        fileObjectId: otherFileId,
+        filename: 'report.txt',
+        origin: 'UPLOAD',
+        acknowledgeDuplicate: false,
+      }),
+    );
+    await project(asId<DocumentId>(otherDocument.id));
   }, 120_000);
 
   it('produces an entity bucket at all, which nothing had done before', async () => {
@@ -1211,7 +1248,38 @@ describe('the entity facet', () => {
 
     expect(found.facetLabels.entity?.[unfiledEntityId]).toBeUndefined();
     expect(Object.values(found.facetLabels.entity ?? {})).not.toContain(UNFILED_ENTITY_NAME);
-    expect(Object.keys(found.facetLabels.entity ?? {})).toStrictEqual([entityId]);
+    expect(Object.keys(found.facetLabels.entity ?? {}).sort()).toStrictEqual(
+      [entityId, otherEntityId].sort(),
+    );
+  });
+
+  it('counts two documents into one entity bucket', async () => {
+    // One bucket, not two. A projection writing the library id or the folder id instead of the
+    // placement would produce two buckets of one and pass every label assertion above.
+    const found = await searchWithEntity(asAlice, 'entity filed');
+    const mine = (found.results.facets['entity'] ?? []).filter(
+      (bucket) => bucket.value === entityId,
+    );
+
+    expect(mine).toHaveLength(1);
+    expect(mine[0]?.count).toBe(2);
+  });
+
+  it('keeps a second entity in its own bucket, named separately', async () => {
+    /*
+     * Two entities, three documents, two buckets — and the smaller one is not folded into the
+     * larger. Worth asserting because every failure mode that merges placements (writing the
+     * company, writing the tenant, writing null) still yields *a* bucket with *a* name.
+     */
+    const found = await searchWithEntity(asAlice, 'entity filed');
+    const buckets = new Map(
+      (found.results.facets['entity'] ?? []).map((bucket) => [bucket.value, bucket.count]),
+    );
+
+    expect(buckets.get(entityId)).toBe(2);
+    expect(buckets.get(otherEntityId)).toBe(1);
+    expect(found.facetLabels.entity?.[entityId]).toBe(ENTITY_NAME);
+    expect(found.facetLabels.entity?.[otherEntityId]).toBe(OTHER_ENTITY_NAME);
   });
 
   it('gives a caller the ACL refuses no entity label, because it gives them no bucket', async () => {
@@ -1279,6 +1347,275 @@ describe('the entity facet', () => {
     expect(calls).toBe(1);
     // And the tenant is in the query itself, not only in the policy around it — the same white-box
     // assertion the other facets carry, for the same reason: RLS would hide its removal.
+    expect(seen[0]).toMatchObject({ tenantId: TENANT, deletedAt: null });
+  });
+});
+
+/**
+ * The department placement, and the two facets one library produces — Slice 15.
+ *
+ * ## What was unexercised
+ *
+ * Slice 14 proved the entity facet by giving one library an `ENTITY` owner. It left the other
+ * placement untested and said so: every other library in the repository is owned by `TENANT`, where
+ * `placementOf` writes `entity_id`, `department_id` and `branch_id` as null and all three paths stay
+ * dark. A `DEPARTMENT`-owned library is the only thing that writes the last two.
+ *
+ * ## The behaviour that is worth a test rather than a glance
+ *
+ * A department-owned library contributes to **two** facets, not one. `placementOf` reads the
+ * department row and returns its `entityId` and `branchId` alongside its own id, so a document filed
+ * in a departmental library is findable by the department *and* by the entity that department
+ * belongs to, without anybody having filed it against the entity. That is a real inference the
+ * projection makes on the tenant's behalf, and it is the kind of thing that quietly stops working.
+ *
+ * `branch_id` is written by the same read. It is a **filter** (`SEARCH_FILTER_KEYS` includes
+ * `branch`, and the adapter matches it) and deliberately **not a facet** — there is no
+ * `FACET_COLUMNS` entry for it — so it is proved here by filtering rather than by counting buckets.
+ */
+describe('the department placement', () => {
+  const labelReader = new PrismaFacetLabelReader();
+  const DEPARTMENT_NAME = 'Quality Assurance';
+  const PARENT_ENTITY_NAME = 'Acme Manufacturing DE';
+  const UNFILED_DEPARTMENT_NAME = 'A unit nothing is filed under';
+
+  let departmentId: string;
+  let parentEntityId: string;
+  let branchId: string;
+  /** Exists in this tenant with nothing filed under it — so it must never be named. */
+  let unfiledDepartmentId: string;
+
+  const searchPlacement = (
+    runner: <T>(work: () => Promise<T>) => Promise<T>,
+    text: string,
+    filters: Record<string, readonly string[]> = {},
+  ) =>
+    runner(() =>
+      search.search.search({
+        text,
+        filters,
+        facets: ['department', 'entity'],
+        sort: 'RELEVANCE',
+        cursor: null,
+        limit: 25,
+      }),
+    );
+
+  beforeAll(async () => {
+    const companyId = uuidv7();
+    parentEntityId = uuidv7();
+    branchId = uuidv7();
+    departmentId = uuidv7();
+    unfiledDepartmentId = uuidv7();
+
+    await owner.company.create({
+      data: {
+        id: companyId,
+        tenantId: TENANT,
+        code: unique('CO'),
+        name: 'Acme Group',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.entity.create({
+      data: {
+        id: parentEntityId,
+        tenantId: TENANT,
+        companyId,
+        code: unique('E'),
+        name: PARENT_ENTITY_NAME,
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.branch.create({
+      data: {
+        id: branchId,
+        tenantId: TENANT,
+        entityId: parentEntityId,
+        code: unique('B'),
+        name: 'Stuttgart',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    for (const [id, name, withBranch] of [
+      [departmentId, DEPARTMENT_NAME, true],
+      [unfiledDepartmentId, UNFILED_DEPARTMENT_NAME, false],
+    ] as const) {
+      await owner.department.create({
+        data: {
+          id,
+          tenantId: TENANT,
+          entityId: parentEntityId,
+          ...(withBranch ? { branchId } : {}),
+          code: unique('D'),
+          name,
+          path: id,
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+
+    const owned = await asAlice(() =>
+      library.libraries.createLibrary({
+        code: unique('DEP'),
+        name: 'Departmental',
+        ownerScopeType: 'DEPARTMENT',
+        ownerScopeId: departmentId,
+      }),
+    );
+
+    for (const title of ['Departmental calibration record', 'Departmental cleaning record']) {
+      const fileObjectId = await upload(Buffer.from(`${title} body`), 'record.txt', 'text/plain');
+      await owner.fileObject.update({
+        where: { id: fileObjectId },
+        data: { scanStatus: ScanStatus.CLEAN, scanner: 'integration-suite', scannedAt: FIXED_NOW },
+      });
+      const created = await asAlice(() =>
+        library.documents.create({
+          folderId: owned.rootFolderId,
+          documentTypeId,
+          title,
+          fileObjectId,
+          filename: 'record.txt',
+          origin: 'UPLOAD',
+          acknowledgeDuplicate: false,
+        }),
+      );
+      await project(asId<DocumentId>(created.id));
+    }
+  }, 120_000);
+
+  it('writes the department the library belongs to', async () => {
+    const found = await searchPlacement(asAlice, 'departmental record');
+
+    expect(found.results.facets['department']?.map((bucket) => bucket.value)).toContain(
+      departmentId,
+    );
+  });
+
+  it('names it, for a caller holding no tenant-wide permission at all', async () => {
+    // Alice holds `permissions: []`; her whole reach is an ACL role grant. The name arrives because
+    // the bucket did.
+    const found = await searchPlacement(asAlice, 'departmental record');
+
+    expect(found.facetLabels.department?.[departmentId]).toBe(DEPARTMENT_NAME);
+  });
+
+  it('also attributes the document to the entity that department belongs to', async () => {
+    /*
+     * The inference worth pinning down. Nobody filed these documents against an entity — they were
+     * filed in a departmental library, and `placementOf` read the department's `entityId` and wrote
+     * it too. So a search by entity finds departmental documents, which is the behaviour an
+     * organisation would expect and the one nothing was checking.
+     */
+    const found = await searchPlacement(asAlice, 'departmental record');
+
+    expect(found.results.facets['entity']?.map((bucket) => bucket.value)).toContain(parentEntityId);
+    expect(found.facetLabels.entity?.[parentEntityId]).toBe(PARENT_ENTITY_NAME);
+  });
+
+  it('counts two documents into one department bucket', async () => {
+    // One bucket, not two — and the count is the arithmetic, so a projection that wrote the
+    // library id or the folder id instead would produce two buckets of one.
+    const found = await searchPlacement(asAlice, 'departmental record');
+    const buckets = (found.results.facets['department'] ?? []).filter(
+      (bucket) => bucket.value === departmentId,
+    );
+
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]?.count).toBe(2);
+  });
+
+  it('writes the branch the department sits in, which is a filter rather than a facet', async () => {
+    /*
+     * `branch` is in `SEARCH_FILTER_KEYS` and the adapter matches `"branch_id" = ANY(...)`, but
+     * there is no `FACET_COLUMNS` entry for it — so it is proved by narrowing rather than by
+     * counting. Filtering to the branch returns the departmental documents; filtering to a branch
+     * identifier that names nothing returns none of them.
+     */
+    const inBranch = await searchPlacement(asAlice, 'departmental record', { branch: [branchId] });
+    const elsewhere = await searchPlacement(asAlice, 'departmental record', { branch: [uuidv7()] });
+
+    expect(inBranch.results.total).toBe(2);
+    expect(elsewhere.results.total).toBe(0);
+  });
+
+  it('never names a department the caller has no bucket for', async () => {
+    const found = await searchPlacement(asAlice, 'departmental record');
+
+    expect(found.facetLabels.department?.[unfiledDepartmentId]).toBeUndefined();
+    expect(Object.values(found.facetLabels.department ?? {})).not.toContain(
+      UNFILED_DEPARTMENT_NAME,
+    );
+    expect(Object.keys(found.facetLabels.department ?? {})).toStrictEqual([departmentId]);
+  });
+
+  it('gives a caller the ACL refuses no placement facet at all', async () => {
+    // Bob's roles do not hold `document:view`. The predicate empties the facets before they are
+    // counted, so neither placement survives to be named.
+    const refused = await searchPlacement(asBob, 'departmental record');
+
+    expect(refused.results.facets['department']).toHaveLength(0);
+    expect(refused.results.facets['entity']).toHaveLength(0);
+    expect(refused.facetLabels.department).toBeUndefined();
+  });
+
+  it('cannot resolve this department from another tenant', async () => {
+    // Tenants live in separate databases, so what one database proves is the clause: a real
+    // department of this tenant, looked up under a different ambient tenant, resolves to nothing.
+    const underTenantB = await runWithContext(
+      { ...contextFor(ALICE, [VIEWER_ROLE]), tenantId: TENANT_B },
+      () => unitOfWork.run(() => labelReader.labelsFor({ department: [departmentId] })),
+    );
+
+    expect(underTenantB.department).toBeUndefined();
+    expect(JSON.stringify(underTenantB)).not.toContain(DEPARTMENT_NAME);
+  });
+
+  it('keeps the bucket but drops the name when the department is retired', async () => {
+    /*
+     * The honest half of a soft delete. `placementOf` does not filter `deletedAt` — the library
+     * still belongs to that unit, so the identifier keeps being written and the documents stay
+     * findable. The *label* reader does filter it, so the facet shows the value rather than a name
+     * that has been withdrawn. Both halves are asserted, because a change to either would be a
+     * change in what a retired unit still says about itself.
+     */
+    await owner.department.update({
+      where: { id: unfiledDepartmentId },
+      data: { deletedAt: FIXED_NOW },
+    });
+
+    const named = await asAlice(() =>
+      unitOfWork.run(() => labelReader.labelsFor({ department: [unfiledDepartmentId] })),
+    );
+    const stillFound = await searchPlacement(asAlice, 'departmental record');
+
+    expect(named.department).toBeUndefined();
+    expect(stillFound.results.facets['department']?.map((bucket) => bucket.value)).toContain(
+      departmentId,
+    );
+  });
+
+  it('asks once for the department facet, with the tenant in the query', async () => {
+    let calls = 0;
+    const seen: unknown[] = [];
+    await asAlice(() =>
+      unitOfWork.run(async () => {
+        const tx = requireTransaction();
+        const model = tx.department as unknown as {
+          findMany: (args: { where: unknown }) => Promise<unknown>;
+        };
+        const original = model.findMany.bind(model);
+        model.findMany = (args: { where: unknown }) => {
+          calls += 1;
+          seen.push(args.where);
+          return original(args);
+        };
+        return labelReader.labelsFor({ department: [departmentId, departmentId] });
+      }),
+    );
+
+    expect(calls).toBe(1);
     expect(seen[0]).toMatchObject({ tenantId: TENANT, deletedAt: null });
   });
 });
