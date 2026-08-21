@@ -450,9 +450,31 @@ export class PrismaAclResolver implements AclResolver {
    * rather than by walking, so a ten-deep department costs one read.
    */
   private async departmentsOf(subject: AuthorizationSubject): Promise<readonly AnyId[]> {
-    if (subject.departmentIds.length > 0) {
-      return subject.departmentIds;
-    }
+    /*
+     * Always computed here, never taken from the subject — Slice 24.
+     *
+     * This used to return `subject.departmentIds` verbatim when the caller supplied any, and that
+     * branch is what produced Slice 23's defect: `RecipientVisibilityService` passed raw
+     * `user_department` rows, so it skipped both the `deletedAt` filter and the path expansion
+     * below and answered a different question than `AclGuard` asked for the same person.
+     *
+     * Slice 23 fixed the one caller. This removes the thing it fell into. A supplied list is an
+     * **unvalidated authorization input**: nothing checked that the caller was a member of the
+     * departments they named, so a future caller populating it from a request would have handed
+     * out reach on entries naming any department whose id could be guessed. That it was not
+     * reachable from production made it a trap rather than a hole, and a trap in the resolver that
+     * decides ACL reach is worth closing at the source rather than by convention at fourteen call
+     * sites.
+     *
+     * Behaviour is unchanged for every existing caller: all of them already pass `[]`. What changes
+     * is that supplying a list can no longer widen anything — asserted, because "no caller does
+     * this today" is not a property a test can rely on tomorrow.
+     *
+     * It also makes `decisionKey` honest. That key is built from the tenant, the user, the roles,
+     * the scope and the permission and omits the departments; with departments derived from the
+     * user rather than supplied beside them, two subjects sharing a key can no longer differ in
+     * the reach they resolve to.
+     */
     if (subject.userId === '') {
       return [];
     }

@@ -438,7 +438,6 @@ export interface UserDirectory {
    */
   authorizationSubjectFor(userId: UserId): Promise<{
     readonly roleIds: readonly RoleId[];
-    readonly departmentIds: readonly AnyId[];
   } | null>;
 }
 
