@@ -1549,6 +1549,7 @@ export const ar: Catalogue = {
   signatures: {
     title: 'التوقيعات',
     empty: 'لم يوقّع أحد على هذه المراجعة.',
+    unavailable: 'تعذّر قراءة التوقيعات على هذه المراجعة.',
     open: 'توقيع',
     sign: 'وقّع هذه المراجعة',
     field: {

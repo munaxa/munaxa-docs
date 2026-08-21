@@ -2,6 +2,8 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { DocumentSignature } from '@edms/contracts';
+
 import { succeeded } from '../../lib/admin/action-result';
 import { expectNoViolations, renderWithProviders } from '../../test/a11y';
 import { document, signature } from '../../test/fixtures';
@@ -89,12 +91,18 @@ afterEach(() => {
  * ask axe about a page this product never serves, and the violation it reported would be about the
  * test rather than about the panel.
  */
-function renderPanel(options: { canSign?: boolean; mfaEnrolled?: boolean } = {}): void {
+function renderPanel(
+  options: {
+    canSign?: boolean;
+    mfaEnrolled?: boolean;
+    signatures?: readonly DocumentSignature[] | null;
+  } = {},
+): void {
   renderWithProviders(
     <main>
       <SignaturePanel
         document={document()}
-        signatures={[]}
+        signatures={options.signatures === undefined ? [] : options.signatures}
         canSign={options.canSign ?? true}
         mfaEnrolled={options.mfaEnrolled ?? false}
       />
@@ -520,5 +528,35 @@ describe('sensitive data', () => {
       expect(screen.queryByLabelText(/Your password/i)).toBeNull();
     });
     expect(screen.getByText(/Your signature on revision Rev 0 is recorded/)).toBeTruthy();
+  });
+});
+
+/**
+ * What the panel says when it does not know — Slice 25.
+ *
+ * `documents/[documentId]/page.tsx` reads `GET /documents/:id/signatures` and used to swallow a
+ * failure into `[]`. The panel renders `[]` as **"Nobody has signed this revision."**, which is a
+ * statement about a controlled document's attestation under ADR-0017 — asserted, on an outage, to
+ * a reader with no way to tell. It is the same mistake `documents-read-dependency.md` recorded when
+ * a refused permission read rendered `entries: []`, and the same line the layout's unread badge
+ * draws when it renders `null` rather than zero.
+ *
+ * The read now yields `null`, and these two tests are the difference between the two facts.
+ */
+describe('an unread signature list is not an unsigned revision', () => {
+  it('says nobody has signed when the record says so', () => {
+    // The positive half first. Without it the assertion below would pass just as well if the panel
+    // had stopped rendering either sentence.
+    renderPanel({ signatures: [] });
+
+    expect(screen.getByText('Nobody has signed this revision.')).toBeTruthy();
+    expect(screen.queryByText('The signatures on this revision could not be read.')).toBeNull();
+  });
+
+  it('says it could not read them when the read did not answer', () => {
+    renderPanel({ signatures: null });
+
+    expect(screen.getByText('The signatures on this revision could not be read.')).toBeTruthy();
+    expect(screen.queryByText('Nobody has signed this revision.')).toBeNull();
   });
 });
