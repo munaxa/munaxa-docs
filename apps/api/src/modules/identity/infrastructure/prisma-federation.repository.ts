@@ -175,14 +175,28 @@ export class PrismaFederatedUserRepository implements FederatedUserRepository {
     const transaction = requireTransaction();
     const context = requireContext();
 
-    // Resolved against this tenant's roles, and a key matching none is **dropped**. A provider
-    // that could bring a role into existence would be a provider that decides this tenant's
-    // permission model — which is exactly what "pre-mapped" in 17 §2 rules out.
+    /*
+     * Resolved against this tenant's **live** roles, and a key matching none is **dropped**. A
+     * provider that could bring a role into existence would be a provider that decides this
+     * tenant's permission model — which is exactly what "pre-mapped" in 17 §2 rules out.
+     *
+     * `deletedAt: null` is the whole of Slice 22 and it is not defensive dressing. A withdrawn role
+     * keeps its `role_permission` rows — `setRoleDeleted` stamps the role and nothing else — and
+     * `uq_role_tenant_key` is a **partial** index (`WHERE "deleted_at" IS NULL`), so a tenant may
+     * delete a role and create a new one under the same key. Without this clause a mapping naming
+     * that key resolved *both* rows, and the person who signed in was granted the union of a role
+     * this tenant deliberately withdrew and the one that replaced it.
+     *
+     * Nothing forces an administrator to edit the provider's mapping when they delete a role —
+     * this service drops unmatched keys silently by design — so "the mapping still names it" is the
+     * expected state rather than a misconfiguration, which is what makes the recycle bin a way back
+     * in rather than an edge case.
+     */
     const roles =
       input.roleKeys.length === 0
         ? []
         : await transaction.role.findMany({
-            where: { key: { in: [...input.roleKeys] } },
+            where: { key: { in: [...input.roleKeys] }, deletedAt: null },
             select: { id: true },
           });
 
