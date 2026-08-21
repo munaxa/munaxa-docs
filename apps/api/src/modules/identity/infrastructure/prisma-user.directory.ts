@@ -1,13 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
-import {
-  type PermissionKey,
-  type RoleId,
-  type UserId,
-  UserStatus,
-  asId,
-} from '@edms/domain';
+import { type PermissionKey, type RoleId, type UserId, UserStatus, asId } from '@edms/domain';
 
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
