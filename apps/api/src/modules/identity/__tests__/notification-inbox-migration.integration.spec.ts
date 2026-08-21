@@ -60,6 +60,21 @@ const AUDITOR = uuidv7();
 const READER = uuidv7();
 /** Seeded, keyed, and withdrawn. Restoring a role restores what it had. */
 const DELETED_AUDITOR = uuidv7();
+/**
+ * A second tenant, whose seeded `AUDITOR` is withdrawn and whose own live `AUDITOR` replaced it.
+ *
+ * `uq_role_tenant_key` is partial (`WHERE "deleted_at" IS NULL`), so it reserves a key only among
+ * live roles, and `roleKeyTaken` filters the same way on purpose: a role in the recycle bin does
+ * not hold its name hostage. A customer may therefore withdraw a seeded role and take its key.
+ *
+ * It needs a tenant of its own precisely *because* the index works: the tenant above keeps its
+ * seeded `AUDITOR` live, and a second live `AUDITOR` beside it is the one thing PostgreSQL refuses.
+ * The migration's `WHERE` is not tenant-scoped — it sweeps the database — so both tenants are in
+ * range of one statement, and this is the only fixture for which `is_system = true` does any work.
+ */
+const OTHER_TENANT = asId<TenantId>(uuidv7());
+const OTHER_DELETED_AUDITOR = uuidv7();
+const CUSTOM_KEYED_AUDITOR = uuidv7();
 /** The tenant's own, shaped like the controller. Theirs. */
 const CUSTOM_CONTROLLER = uuidv7();
 
@@ -67,6 +82,7 @@ const CONTROLLER_HOLDER = uuidv7();
 const AUDITOR_HOLDER = uuidv7();
 const READER_HOLDER = uuidv7();
 const CUSTOM_HOLDER = uuidv7();
+const CUSTOM_KEYED_HOLDER = uuidv7();
 
 const INBOX = 'notification:manage';
 
@@ -179,6 +195,55 @@ beforeAll(async () => {
       },
     });
   }
+
+  // The second tenant: its seeded `AUDITOR` withdrawn, its own `AUDITOR` live in the key that
+  // freed. Only the partial index makes this pair storable, and only `is_system` keeps the
+  // statement off the customer's row.
+  await owner.tenant.create({
+    data: {
+      id: OTHER_TENANT,
+      slug: `inbox2-${OTHER_TENANT.replaceAll('-', '').slice(-16)}`,
+      name: 'Inbox migration fixture — key reuse',
+      status: 'ACTIVE',
+    },
+  });
+
+  for (const role of [
+    {
+      id: OTHER_DELETED_AUDITOR,
+      isSystem: true,
+      deletedAt: new Date('2026-01-01T00:00:00.000Z'),
+      grants: ['document:view'],
+    },
+    { id: CUSTOM_KEYED_AUDITOR, isSystem: false, deletedAt: null, grants: ['report:view'] },
+  ]) {
+    await owner.role.create({
+      data: {
+        id: role.id,
+        tenantId: OTHER_TENANT,
+        key: 'AUDITOR',
+        name: role.id,
+        isSystem: role.isSystem,
+        ...(role.deletedAt === null ? {} : { deletedAt: role.deletedAt }),
+        permissions: {
+          create: role.grants.map((permission) => ({ tenantId: OTHER_TENANT, permission })),
+        },
+      },
+    });
+  }
+
+  const email = `${CUSTOM_KEYED_HOLDER}@inbox-migration.test`;
+  await owner.user.create({
+    data: {
+      id: CUSTOM_KEYED_HOLDER,
+      tenantId: OTHER_TENANT,
+      email,
+      emailNormalized: email,
+      displayName: CUSTOM_KEYED_HOLDER,
+      status: 'ACTIVE',
+      roles: { create: [{ tenantId: OTHER_TENANT, roleId: CUSTOM_KEYED_AUDITOR }] },
+    },
+  });
 }, 120_000);
 
 afterAll(async () => {
@@ -220,16 +285,46 @@ describe('the seeded inbox backfill', () => {
      * A role a customer built and named for themselves carries the permission set they chose —
      * even for a row the product grants to all of its own.
      *
-     * What excludes it is the **key**, and that is worth stating rather than leaving to the reader,
-     * because the `is_system = true` clause beside it looks like the thing doing the work and is
-     * not. `20260803162912_identity` creates `uq_role_tenant_key` — a plain unique index on
-     * `(tenant_id, key)`, unconditional, so soft-deleted rows occupy it too — which means the two
-     * seeded keys can only ever name the product's own rows. Deleting the `is_system` clause
-     * therefore fails nothing here, and no fixture in this file can make it fail: it is
-     * belt-and-braces carried over from `20260817120000_operational_read_permissions`, where the
-     * third rule needed it because a *shape* rather than a key was being matched.
+     * What excludes *this* one is the key: `DOCUMENT_CONTROLLER_COPY` is not `DOCUMENT_CONTROLLER`.
+     * The `is_system` clause is exercised by `CUSTOM_KEYED_AUDITOR` below, which takes a seeded key
+     * a withdrawn role has freed.
      */
     expect(await permissionsOf(CUSTOM_CONTROLLER)).toEqual(['document:create', 'retention:manage']);
+  });
+
+  it('leaves a tenant-authored role alone even when it carries a seeded key', async () => {
+    /*
+     * The assertion `is_system` exists for, and — corrected in Slice 22 — the one this file
+     * previously said could not be written.
+     *
+     * It said so on a false premise, and the migration's own header still carries it: that
+     * `20260803162912_identity` creates `uq_role_tenant_key` as a plain unconditional unique index,
+     * so the two seeded keys could only ever name the product's own rows and `is_system = true` was
+     * belt-and-braces. It creates it as a **partial** index:
+     *
+     *     CREATE UNIQUE INDEX "uq_role_tenant_key" ON "role" ("tenant_id", "key")
+     *       WHERE "deleted_at" IS NULL;
+     *
+     * so a key is reserved only among *live* roles — `roleKeyTaken` filters the same way on
+     * purpose, because a role in the recycle bin does not hold its name hostage. A customer may
+     * therefore withdraw a seeded role and create their own under its key, and in that state
+     * `key IN ('DOCUMENT_CONTROLLER', 'AUDITOR')` alone reaches a role they authored and chose the
+     * permissions for. `is_system` is the only clause between the statement and that row.
+     *
+     * **The correction lives here rather than in the migration**, deliberately. That file has been
+     * applied, and an applied migration is immutable: `scripts/migrate-tenants.mjs` runs
+     * `prisma migrate deploy` across one database per tenant in sequence and fails fast, so a
+     * checksum this repository edited after the fact is the last thing to introduce there. Prisma
+     * 6.19 happens not to verify the checksum of an already-applied migration on `deploy` or on
+     * `status` — measured, not assumed — but the deprecation warning it prints on every run is
+     * about Prisma 7, and "the current version tolerates it" is not a property to build on.
+     *
+     * So the migration keeps a stale sentence and this keeps the truth, with the fixture below
+     * making the clause it describes fail loudly if anybody acts on that sentence.
+     */
+    expect(await permissionsOf(CUSTOM_KEYED_AUDITOR)).toEqual(['report:view']);
+    // And the withdrawn seeded row beside it is left where it is, by `deleted_at IS NULL`.
+    expect(await permissionsOf(OTHER_DELETED_AUDITOR)).toEqual(['document:view']);
   });
 
   it('removes nothing', async () => {
@@ -254,6 +349,7 @@ describe('permission versions', () => {
     // session would be a cost paid for a grant that did not move.
     expect(await versionOf(READER_HOLDER)).toBe(1);
     expect(await versionOf(CUSTOM_HOLDER)).toBe(1);
+    expect(await versionOf(CUSTOM_KEYED_HOLDER)).toBe(1);
   });
 });
 
@@ -268,6 +364,7 @@ describe('running it again', () => {
     ]);
     expect(await permissionsOf(AUDITOR)).toEqual(['audit:view', 'document:view', INBOX]);
     expect(await permissionsOf(CUSTOM_CONTROLLER)).toEqual(['document:create', 'retention:manage']);
+    expect(await permissionsOf(CUSTOM_KEYED_AUDITOR)).toEqual(['report:view']);
   });
 
   it('moves no permission version', async () => {

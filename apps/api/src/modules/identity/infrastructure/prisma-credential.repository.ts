@@ -26,7 +26,7 @@ export class PrismaCredentialRepository implements CredentialRepository {
   async findByEmail(email: string): Promise<UserCredentialRecord | null> {
     const row = await requireTransaction().user.findFirst({
       where: { emailNormalized: email, deletedAt: null },
-      include: { roles: { include: { role: { include: { permissions: true } } } } },
+      include: { roles: LIVE_ROLES },
     });
     return row ? toRecord(row) : null;
   }
@@ -34,7 +34,7 @@ export class PrismaCredentialRepository implements CredentialRepository {
   async findById(id: UserId): Promise<UserCredentialRecord | null> {
     const row = await requireTransaction().user.findFirst({
       where: { id, deletedAt: null },
-      include: { roles: { include: { role: { include: { permissions: true } } } } },
+      include: { roles: LIVE_ROLES },
     });
     return row ? toRecord(row) : null;
   }
@@ -54,6 +54,28 @@ export class PrismaCredentialRepository implements CredentialRepository {
     await requireTransaction().user.update({ where: { id }, data: { lastLoginAt: at } });
   }
 }
+
+/**
+ * The roles a credential actually carries: the live ones — Slice 22.
+ *
+ * This is the sign-in and refresh query, and it is where a withdrawn role stopped granting
+ * anything. `setRoleDeleted` stamps the role and leaves its `role_permission` rows and its
+ * `user_role` rows exactly where they were, so without this filter every permission of a deleted
+ * role was still unioned into `permissions` below and into the access token minted from it.
+ *
+ * Filtering here rather than only at the writers is deliberate. `RoleAdminService.delete` refuses
+ * while `memberCount > 0`, so the administrative path cannot leave a holder behind — but
+ * `PrismaFederatedUserRepository.provision` could, and any future writer of `user_role` can. This is
+ * the one place every path passes through, so it is where "a role the tenant withdrew grants
+ * nothing" is worth enforcing rather than assuming.
+ *
+ * A restore is unaffected and needs no compensation: `setRoleDeleted(false)` clears the stamp, the
+ * role is live again, and the next refresh resolves its permissions exactly as before.
+ */
+const LIVE_ROLES = {
+  where: { role: { deletedAt: null } },
+  include: { role: { include: { permissions: true } } },
+} as const;
 
 /** The shape the include above produces. Named so the mapper below reads as a mapper. */
 interface UserRow {
