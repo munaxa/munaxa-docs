@@ -47,7 +47,14 @@ export function SignaturePanel({
   mfaEnrolled,
 }: {
   readonly document: Document;
-  readonly signatures: readonly DocumentSignature[];
+  /**
+   * The signatures on this revision, or `null` when the read did not answer — Slice 25.
+   *
+   * The two are different facts and the panel says different sentences for them. An empty list is
+   * the record stating nobody has signed; `null` is nobody having been able to ask, which on
+   * ADR-0017 evidence is not a thing to assert on a reader's behalf.
+   */
+  readonly signatures: readonly DocumentSignature[] | null;
   /** `document:sign` — ADR-0017 §5's `S`, seeded to no role and granted by an ACL entry. */
   readonly canSign: boolean;
   /** This caller's own factor status, from `GET /auth/mfa`. Never anybody else's. */
@@ -58,7 +65,9 @@ export function SignaturePanel({
   const toast = useToast();
   const session = useSession();
 
-  const [signatures, setSignatures] = useState<readonly DocumentSignature[]>(initial);
+  // Nullable for the same reason the prop is: a reload that fails must not turn "we could not
+  // ask" into "nobody has signed". `reload` below keeps the previous value on failure anyway.
+  const [signatures, setSignatures] = useState<readonly DocumentSignature[] | null>(initial);
   const [signing, setSigning] = useState(false);
   const [withdrawing, setWithdrawing] = useState<DocumentSignature | null>(null);
 
@@ -106,7 +115,9 @@ export function SignaturePanel({
         )
       }
     >
-      {signatures.length === 0 ? (
+      {signatures === null ? (
+        <p className="text-muted-foreground text-sm">{translate('signatures.unavailable')}</p>
+      ) : signatures.length === 0 ? (
         <p className="text-muted-foreground text-sm">{translate('signatures.empty')}</p>
       ) : (
         <ol className="flex flex-col gap-3">

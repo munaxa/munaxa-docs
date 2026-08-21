@@ -1567,6 +1567,15 @@ export const en = {
     title: 'Signatures',
     empty: 'Nobody has signed this revision.',
     /**
+     * Not the same sentence as `empty`, and that is the whole point — Slice 25.
+     *
+     * "Nobody has signed this revision" is a claim about the record. Saying it because the read
+     * failed tells a reader a controlled document carries no attestation when in fact nobody was
+     * able to ask, which is the mistake `documents-read-dependency.md` recorded on the permissions
+     * screen and the one the unread badge avoids by rendering `null` rather than zero.
+     */
+    unavailable: 'The signatures on this revision could not be read.',
+    /**
      * Two different acts, two different names — and the difference is deliberate.
      *
      * `open` starts a *review*: it shows the statement and signs nothing. `ceremony.submit`

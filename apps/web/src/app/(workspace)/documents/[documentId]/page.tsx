@@ -105,10 +105,19 @@ async function documentPage(documentId: string): Promise<ReactNode> {
     // The viewer's manifest. Absent — a document with no content yet, or an API refusal — the
     // panel is simply not rendered, which is the same posture as the history above.
     adminGet<PreviewManifest>(`/documents/${documentId}/preview`).catch(() => null),
-    // Signatures are part of the record and are read with `document:view`, like the timeline
-    // above. A refusal or an outage leaves the panel with an empty list rather than taking the
-    // whole page down — the same posture the preview manifest takes.
-    adminGet<readonly DocumentSignature[]>(`/documents/${documentId}/signatures`).catch(() => []),
+    /*
+     * Signatures are part of the record and are read with `document:view`, like the timeline above.
+     * A refusal or an outage leaves the panel saying so rather than taking the whole page down —
+     * the same posture the preview manifest takes, and `null` rather than `[]` — Slice 25.
+     *
+     * The distinction is the point. `[]` renders "Nobody has signed this revision", which is a
+     * statement about a controlled document's attestation under ADR-0017; asserting it because the
+     * read failed is the mistake `documents-read-dependency.md` recorded when a refused permission
+     * read rendered `entries: []` and the screen said a document had no explicit permissions. The
+     * layout's unread badge draws the same line for the same reason — "a failure yields `null`, not
+     * `0`. Zero is an answer."
+     */
+    adminGet<readonly DocumentSignature[]>(`/documents/${documentId}/signatures`).catch(() => null),
     // Whether *this* caller owes a second factor when they sign. Their own status and nobody
     // else's: there is no request in this product by which one person could ask about another's,
     // which is what keeps the ceremony from becoming an enrolment oracle.
