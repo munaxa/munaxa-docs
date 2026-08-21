@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
 import {
-  type AnyId,
   type PermissionKey,
   type RoleId,
   type UserId,
@@ -108,23 +107,28 @@ export class PrismaUserDirectory implements UserDirectory {
    * "no roles" — it is "there is nobody to decide about", and a caller that treated the two the
    * same would silently refuse rather than skip.
    */
-  async authorizationSubjectFor(
-    userId: UserId,
-  ): Promise<{ roleIds: readonly RoleId[]; departmentIds: readonly AnyId[] } | null> {
+  async authorizationSubjectFor(userId: UserId): Promise<{ roleIds: readonly RoleId[] } | null> {
+    /*
+     * The roles, and deliberately not the departments — Slice 24.
+     *
+     * This used to return `user_department` rows as well, and `RecipientVisibilityService` passed
+     * them into the ACL resolver, which took them verbatim: no `deletedAt` filter and no expansion
+     * of the materialised path, so a member of `Quality/Audit` did not carry `Quality` and was
+     * refused reach a caller with the same membership is granted. Slice 23 stopped passing them and
+     * Slice 24 stopped the resolver trusting them; nothing reads this field any more, so computing
+     * it is a read per recipient per notification that buys a value nobody may use.
+     *
+     * The resolver derives departments from the user itself, which is the only source that can be
+     * trusted, and this returns what it cannot derive: which roles a token-less subject holds.
+     */
     const row = await requireTransaction().user.findFirst({
       where: { ...this.live(), id: userId },
-      select: {
-        roles: { select: { roleId: true } },
-        departments: { select: { departmentId: true } },
-      },
+      select: { roles: { select: { roleId: true } } },
     });
     if (row === null) {
       return null;
     }
-    return {
-      roleIds: row.roles.map((entry) => asId<RoleId>(entry.roleId)),
-      departmentIds: row.departments.map((entry) => asId<AnyId>(entry.departmentId)),
-    };
+    return { roleIds: row.roles.map((entry) => asId<RoleId>(entry.roleId)) };
   }
 
   async membersOfDepartment(

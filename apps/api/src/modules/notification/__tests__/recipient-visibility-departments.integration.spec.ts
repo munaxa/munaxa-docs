@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  type AnyId,
   type DocumentId,
   Permission,
   ScopeType,
@@ -150,6 +151,16 @@ function inUnitOfWork<T>(work: () => Promise<T>): Promise<T> {
 /** Exactly the subject `AclGuard.subjectFor` builds: no departments, resolver computes them. */
 function asCaller(userId: UserId): AuthorizationSubject {
   return { userId, roleIds: [], departmentIds: [], delegationIds: [] };
+}
+
+/** A subject that names departments it was never given, the way a compromised caller would. */
+function claiming(userId: UserId, departmentIds: readonly string[]): AuthorizationSubject {
+  return {
+    userId,
+    roleIds: [],
+    departmentIds: departmentIds.map((id) => asId<AnyId>(id)),
+    delegationIds: [],
+  };
 }
 
 beforeAll(async () => {
@@ -371,6 +382,42 @@ describe('a member of a sub-department, granted through its parent', () => {
 
     expect(decision.allowed).toBe(false);
     expect(permitted).toEqual([]);
+  });
+
+  it('ignores a department list the subject claims, rather than trusting it — Slice 24', async () => {
+    /*
+     * The invariant Slice 24 establishes, and the reason Slice 23's defect was possible at all.
+     *
+     * `departmentsOf` used to return a supplied list verbatim. Nothing checked that the caller was
+     * a member of what they named, so a subject built from a request could have claimed the parent
+     * department and taken the reach its ACL entry grants. No production caller populated the
+     * field — which made it a trap rather than a hole — and the resolver now derives departments
+     * from the user instead of believing the subject.
+     *
+     * The outsider is in no department. Claiming the one that *is* granted must change nothing.
+     */
+    const claimed = await inTenant(() =>
+      stack.aclResolver.resolve(
+        claiming(OUTSIDER, [parentDepartmentId, childDepartmentId]),
+        { type: ScopeType.DOCUMENT, id: DOCUMENT },
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+
+    expect(claimed.allowed, 'a claimed department granted reach the caller never had').toBe(false);
+  });
+
+  it('still reaches the real member when the same list is claimed, so this is not a blanket refusal', async () => {
+    // The other half: ignoring the supplied list must not cost the person whose membership is real.
+    const member = await inTenant(() =>
+      stack.aclResolver.resolve(
+        claiming(AUDITOR_IN_CHILD, [parentDepartmentId]),
+        { type: ScopeType.DOCUMENT, id: DOCUMENT },
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+
+    expect(member.allowed).toBe(true);
   });
 
   it('agrees with the resolver for both people asked together', async () => {
