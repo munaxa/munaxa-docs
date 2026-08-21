@@ -1486,6 +1486,21 @@ export interface NotificationStack {
   readonly transport: RecordingTransport;
   /** Phase 6.4's delivery-failure counter, so a suite can assert what an operator would see. */
   readonly metrics: RecordingMetrics;
+  /**
+   * 18 §4's disclosure filter, exposed so a suite can ask it directly — Slice 23.
+   *
+   * It reaches Identity's `USER_DIRECTORY` and Library's ACL resolver, and the boundary lint quite
+   * rightly refuses a Notification spec that imports either. This factory already builds all three
+   * and lives outside the module boundaries, so exposing the one it composes is what keeps
+   * "recipient and caller get the same answer" testable without a spec reaching across modules.
+   */
+  readonly visibility: RecipientVisibilityService;
+  /**
+   * The very resolver `visibility` was given, so a suite can ask it the same question directly and
+   * compare the two answers. That comparison *is* 18 §4's invariant: a recipient is judged by the
+   * rule a caller is judged by, and nothing else.
+   */
+  readonly aclResolver: PrismaAclResolver;
 }
 
 /**
@@ -1503,6 +1518,13 @@ export function realNotifications(options: {
   readonly config: AppConfig;
   readonly documents: DocumentService;
   readonly settings?: Readonly<Record<string, unknown>>;
+  /**
+   * Passed through to the ACL resolver. `decisionKey` is built from the tenant, the user, the
+   * roles, the scope and the permission and **not** from the departments, so two subjects for one
+   * person that differ only there share an entry — a suite comparing those two answers measures
+   * the cache unless it supplies one that stores nothing.
+   */
+  readonly cache?: CachePort;
 }): NotificationStack {
   const { writer } = realWriteStack(options.clock, options.unitOfWork);
   const settings = settingsReaderFor(options.settings ?? {});
@@ -1549,7 +1571,11 @@ export function realNotifications(options: {
     options.unitOfWork,
     logger,
   );
-  const visibility = new RecipientVisibilityService(realAclResolver(options), directory, logger);
+  const aclResolver = realAclResolver({
+    ...options,
+    ...(options.cache === undefined ? {} : { cache: options.cache }),
+  });
+  const visibility = new RecipientVisibilityService(aclResolver, directory, logger);
   const events = new NotificationEventService(
     notifications,
     batches,
@@ -1582,6 +1608,8 @@ export function realNotifications(options: {
     batches,
     transport,
     metrics,
+    visibility,
+    aclResolver,
   };
 }
 

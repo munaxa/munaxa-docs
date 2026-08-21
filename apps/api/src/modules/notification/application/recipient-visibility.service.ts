@@ -128,7 +128,29 @@ export class RecipientVisibilityService {
     return {
       userId,
       roleIds: subject.roleIds.map((role) => asId<AnyId>(role)),
-      departmentIds: subject.departmentIds,
+      /*
+       * Empty, so the resolver works the recipient's departments out itself — Slice 23.
+       *
+       * This used to pass `subject.departmentIds`, read straight from `user_department`, and that
+       * one field was the whole of the divergence this file exists to prevent.
+       * `PrismaAclResolver.departmentsOf` has two branches: handed a non-empty list it returns it
+       * verbatim, and handed an empty one it queries the department table and expands the
+       * **materialised path**, so a member of `Quality/Audit` also carries `Quality`.
+       *
+       * `AclGuard.subjectFor` passes `[]`, and so does every other construction of an
+       * `AuthorizationSubject` in the product. This was the only caller that did not, so it was the
+       * only one taking the branch without the ancestry — and a recipient whose reach comes from an
+       * entry on a *parent* department resolved to a refusal and was silently dropped from a
+       * notification about a document they can open. 18 §4 says those people must be told.
+       *
+       * There is a second reason, and it is why the first went unnoticed. `decisionKey` is built
+       * from the tenant, the user, the roles, the scope and the permission — **not** the
+       * departments. Two subjects for one person that differ only in their departments share a
+       * cache entry, so whichever path ran first decided for both and the disagreement showed up
+       * only on a cold cache. Passing `[]` here leaves no caller supplying departments at all,
+       * which makes the key complete for every subject the product actually builds.
+       */
+      departmentIds: [],
       // Empty, deliberately. 08 §3 lost its "active delegations" clause in Phase 11 rather than
       // the resolver gaining a subject, and a recipient's visibility must not depend on cover
       // they were given — which would make a delegation the permission grant 07 §4 forbids.
