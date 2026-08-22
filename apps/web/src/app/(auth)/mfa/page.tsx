@@ -35,12 +35,20 @@ export default async function MfaPage(): Promise<ReactNode> {
     redirect('/login');
   }
 
+  /*
+   * `null` when the read did not answer, never a fabricated posture — Slice 26.
+   *
+   * This used to fall back to `{ enrolled: false, pending: false, recoveryCodesRemaining: 0 }`,
+   * which the screen renders as "Add an authenticator app so a stolen password is not enough" — a
+   * statement that this account has no second factor, made on the one screen somebody opens to
+   * check exactly that, and made because a read failed rather than because it is true. It also
+   * hides `mfaRemove`, so an enrolled caller loses the only control that manages the factor they
+   * do have, and the button it offers instead is refused by `MfaService.begin` with "An
+   * authenticator is already enrolled" — the server contradicting the page.
+   *
+   * The same line `signatures.unavailable` draws, and the one the unread badge draws when it
+   * renders `null` rather than zero: a failure is not an answer.
+   */
   const status = await mfaStatus();
-  return (
-    <MfaScreen
-      status={
-        status.ok ? status.value : { enrolled: false, pending: false, recoveryCodesRemaining: 0 }
-      }
-    />
-  );
+  return <MfaScreen status={status.ok ? status.value : null} />;
 }

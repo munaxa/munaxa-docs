@@ -39,7 +39,7 @@ import {
  * before it shows them, because "copy these now" after the fact is how people end up with a factor
  * and no way past it.
  */
-export function MfaScreen({ status }: { status: MfaStatus }): ReactNode {
+export function MfaScreen({ status }: { status: MfaStatus | null }): ReactNode {
   const translate = useTranslate();
   const toast = useToast();
   const router = useRouter();
@@ -146,7 +146,15 @@ export function MfaScreen({ status }: { status: MfaStatus }): ReactNode {
   return (
     <Card className="flex flex-col gap-4 p-4">
       <h1 className="text-lg font-semibold">{translate('auth.mfaTitle')}</h1>
-      {status.enrolled ? (
+      {status === null ? (
+        /*
+         * Unknown, so neither action is offered — Slice 26. Enrolling and removing are both acts on
+         * a factor whose existence this page could not establish, and the server refuses the first
+         * outright when one is already enrolled. A button that cannot know what it does is worse
+         * than no button.
+         */
+        <p className="text-sm">{translate('auth.mfaStatusUnavailable')}</p>
+      ) : status.enrolled ? (
         <>
           <p className="text-sm">
             {translate('auth.mfaEnrolledHint', { count: status.recoveryCodesRemaining })}
