@@ -94,7 +94,7 @@ afterEach(() => {
 function renderPanel(
   options: {
     canSign?: boolean;
-    mfaEnrolled?: boolean;
+    mfaEnrolled?: boolean | null;
     signatures?: readonly DocumentSignature[] | null;
   } = {},
 ): void {
@@ -104,13 +104,13 @@ function renderPanel(
         document={document()}
         signatures={options.signatures === undefined ? [] : options.signatures}
         canSign={options.canSign ?? true}
-        mfaEnrolled={options.mfaEnrolled ?? false}
+        mfaEnrolled={options.mfaEnrolled === undefined ? false : options.mfaEnrolled}
       />
     </main>,
   );
 }
 
-async function openCeremony(options: { mfaEnrolled?: boolean } = {}): Promise<void> {
+async function openCeremony(options: { mfaEnrolled?: boolean | null } = {}): Promise<void> {
   const user = userEvent.setup();
   renderPanel(options);
   await user.click(screen.getByRole('button', { name: 'Sign' }));
@@ -220,6 +220,71 @@ describe('confirmation', () => {
     // From `GET /auth/mfa`, which answers for the caller alone. Nothing here can be asked about
     // somebody else's factor, which is what stops the ceremony becoming an enrolment oracle.
     expect(screen.getByLabelText(/Authenticator code/i)).toBeTruthy();
+  });
+
+  it('asks for a code, optionally, when nobody could find out — Slice 27', async () => {
+    /*
+     * The defect this closes. `GET /auth/mfa` is swallowed on the record page, and that swallow
+     * used to be `{ enrolled: false }` — so an enrolled signer got *this* ceremony with no code
+     * field, submitted a correct password, and was refused with `sign without proving your
+     * credentials`: one message covering a wrong password too, and no field to put the code in.
+     *
+     * The field is offered for `null` and not required, because the signer may owe no code at all.
+     * The server stays the authority either way.
+     */
+    const user = userEvent.setup();
+    await openCeremony({ mfaEnrolled: null });
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    const field = screen.getByLabelText(/Authenticator code/i);
+    expect(field).toBeTruthy();
+    expect((field as HTMLInputElement).required).toBe(false);
+    expect(
+      screen.getByText(/could not check whether your account uses an authenticator/i),
+    ).toBeTruthy();
+  });
+
+  it('still requires the code when the factor is known to exist', async () => {
+    // The half that must not have loosened: a known-enrolled signer is still made to prove it.
+    const user = userEvent.setup();
+    await openCeremony({ mfaEnrolled: true });
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect((screen.getByLabelText(/Authenticator code/i) as HTMLInputElement).required).toBe(true);
+  });
+
+  it('sends the code an unknown-status signer typed', async () => {
+    const user = userEvent.setup();
+    await openCeremony({ mfaEnrolled: null });
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.type(screen.getByLabelText(/Your password/i), 'correct horse battery staple');
+    await user.type(screen.getByLabelText(/Authenticator code/i), '123456');
+    await user.click(screen.getByRole('button', { name: 'Sign this revision' }));
+
+    await waitFor(() => {
+      expect(signRevision).toHaveBeenCalledTimes(1);
+    });
+    expect(signRevision.mock.calls[0]?.[1]).toMatchObject({ mfaCode: '123456' });
+  });
+
+  it('omits the code rather than sending an empty one', async () => {
+    /*
+     * `signRevisionSchema` bounds `mfaCode` at `min(6)`, so an unenrolled signer who was shown the
+     * optional field and left it blank would have been refused by validation — trading one dead end
+     * for another. Absent means absent.
+     */
+    const user = userEvent.setup();
+    await openCeremony({ mfaEnrolled: null });
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.type(screen.getByLabelText(/Your password/i), 'correct horse battery staple');
+    await user.click(screen.getByRole('button', { name: 'Sign this revision' }));
+
+    await waitFor(() => {
+      expect(signRevision).toHaveBeenCalledTimes(1);
+    });
+    expect(signRevision.mock.calls[0]?.[1]).not.toHaveProperty('mfaCode');
   });
 
   it('signs once the credentials and the acknowledgement are given', async () => {

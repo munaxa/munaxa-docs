@@ -1601,6 +1601,12 @@ export const en = {
       password: 'Your password',
       passwordHint: 'Signing asks for your password again, because a signature is not a click.',
       mfaCode: 'Authenticator code',
+      /**
+       * Shown when the signer's enrolment could not be read — Slice 27. Optional on purpose: they
+       * may not owe a code at all, and the server refuses a missing one from somebody who does.
+       */
+      mfaCodeUnknown:
+        'We could not check whether your account uses an authenticator. Enter your code if you have one.',
     },
     purpose: {
       AUTHORSHIP: 'The author of this content',

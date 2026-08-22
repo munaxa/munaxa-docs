@@ -118,10 +118,18 @@ async function documentPage(documentId: string): Promise<ReactNode> {
      * `0`. Zero is an answer."
      */
     adminGet<readonly DocumentSignature[]>(`/documents/${documentId}/signatures`).catch(() => null),
-    // Whether *this* caller owes a second factor when they sign. Their own status and nobody
-    // else's: there is no request in this product by which one person could ask about another's,
-    // which is what keeps the ceremony from becoming an enrolment oracle.
-    adminGet<{ readonly enrolled: boolean }>('/auth/mfa').catch(() => ({ enrolled: false })),
+    /*
+     * Whether *this* caller owes a second factor when they sign. Their own status and nobody
+     * else's: there is no request in this product by which one person could ask about another's,
+     * which is what keeps the ceremony from becoming an enrolment oracle.
+     *
+     * `null` on failure rather than `{ enrolled: false }` — Slice 27. That fallback hid the
+     * authenticator field, so an enrolled signer submitted a correct password and was refused with
+     * `sign without proving your credentials`, a message that covers a wrong password too and
+     * offers nothing to fix. The ceremony now shows the field for `null` and leaves it optional;
+     * the server decides, as it always did.
+     */
+    adminGet<{ readonly enrolled: boolean }>('/auth/mfa').catch(() => null),
   ]);
 
   return (
@@ -157,7 +165,7 @@ async function documentPage(documentId: string): Promise<ReactNode> {
           document={document}
           signatures={signatures}
           canSign={access.permissions.includes(Permission.DOCUMENT_SIGN)}
-          mfaEnrolled={mfa.enrolled}
+          mfaEnrolled={mfa === null ? null : mfa.enrolled}
         />
       }
       audit={
