@@ -57,8 +57,11 @@ export function SignaturePanel({
   readonly signatures: readonly DocumentSignature[] | null;
   /** `document:sign` — ADR-0017 §5's `S`, seeded to no role and granted by an ACL entry. */
   readonly canSign: boolean;
-  /** This caller's own factor status, from `GET /auth/mfa`. Never anybody else's. */
-  readonly mfaEnrolled: boolean;
+  /**
+   * This caller's own factor status, from `GET /auth/mfa`. Never anybody else's. Three states,
+   * passed straight through to the ceremony — see its own note. `null` is "could not be read".
+   */
+  readonly mfaEnrolled: boolean | null;
 }): ReactNode {
   const translate = useTranslate();
   const router = useRouter();

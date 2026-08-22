@@ -61,14 +61,20 @@ const DOCUMENT = '019489f0-0000-7000-8000-000000000001';
 
 const VIEWER = [Permission.DOCUMENT_VIEW] as const;
 
-/** Renders the page with the signature read behaving as `behaviour` says. */
-async function signaturesProp(behaviour: 'answers' | 'fails'): Promise<unknown> {
+/** Renders the page with the named read behaving as `behaviour` says, and reports both props. */
+async function panelProps(
+  behaviour: 'answers' | 'fails',
+  failing: '/signatures' | '/auth/mfa' = '/signatures',
+): Promise<Record<string, unknown>> {
   adminAccess.mockResolvedValue({ granted: true, permissions: VIEWER });
+  const refuse = (path: string): boolean => behaviour === 'fails' && path.endsWith(failing);
+
   adminGet.mockImplementation((path: string) => {
+    if (refuse(path)) {
+      return Promise.reject(new DomainError(ErrorCode.INTERNAL, 'Upstream is unavailable'));
+    }
     if (path.endsWith('/signatures')) {
-      return behaviour === 'fails'
-        ? Promise.reject(new DomainError(ErrorCode.INTERNAL, 'Upstream is unavailable'))
-        : Promise.resolve([]);
+      return Promise.resolve([]);
     }
     if (path.endsWith('/preview')) {
       return Promise.resolve(null);
@@ -77,7 +83,7 @@ async function signaturesProp(behaviour: 'answers' | 'fails'): Promise<unknown> 
       return Promise.resolve({ stages: [] });
     }
     if (path === '/auth/mfa') {
-      return Promise.resolve({ enrolled: false });
+      return Promise.resolve({ enrolled: true });
     }
     return Promise.resolve({ id: DOCUMENT, title: 'Quality Manual', latestRevision: null });
   });
@@ -91,7 +97,12 @@ async function signaturesProp(behaviour: 'answers' | 'fails'): Promise<unknown> 
     params: Promise.resolve({ documentId: DOCUMENT }),
   })) as { props: { signatures: { props: Record<string, unknown> } } };
 
-  return screen.props.signatures.props['signatures'];
+  return screen.props.signatures.props;
+}
+
+/** The signature list the panel was handed. */
+async function signaturesProp(behaviour: 'answers' | 'fails'): Promise<unknown> {
+  return (await panelProps(behaviour))['signatures'];
 }
 
 beforeEach(() => {
@@ -113,5 +124,31 @@ describe('the signature list the record page hands down', () => {
      * difference. `null` is the panel's cue to say it could not read them instead.
      */
     expect(await signaturesProp('fails')).toBeNull();
+  });
+});
+
+/**
+ * The signer's second-factor status the page hands down — Slice 27.
+ *
+ * Read from `GET /auth/mfa`, swallowed on failure like the signature list beside it, and swallowed
+ * into `{ enrolled: false }` until now. That is not a missing value but a wrong one: the ceremony
+ * renders `false` by omitting the authenticator field, so an enrolled signer submitted a correct
+ * password and was refused with `sign without proving your credentials` — a message that covers a
+ * wrong password too, with nothing on screen to fix.
+ */
+describe('the second-factor status the record page hands down', () => {
+  it('is the answer when the read answers', async () => {
+    // The positive half, and it asserts `true` rather than `false` on purpose: a fixture that
+    // answered `false` would be indistinguishable from the defect it is here to rule out.
+    expect((await panelProps('answers'))['mfaEnrolled']).toBe(true);
+  });
+
+  it('is null when the read did not answer, never false', async () => {
+    expect((await panelProps('fails', '/auth/mfa'))['mfaEnrolled']).toBeNull();
+  });
+
+  it('leaves the signature list alone when it was the factor read that failed', async () => {
+    // The two swallows are independent; one failing must not degrade the other.
+    expect((await panelProps('fails', '/auth/mfa'))['signatures']).toEqual([]);
   });
 });

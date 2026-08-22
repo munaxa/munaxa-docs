@@ -119,7 +119,21 @@ export function SigningCeremony({
    * factor, which is why the field is rendered from a boolean fetched for the caller rather than
    * guessed from a role or a tenant setting.
    */
-  readonly mfaEnrolled: boolean;
+  /**
+   * Whether this signer owes a second factor, or `null` when that could not be read — Slice 27.
+   *
+   * Three states, because the ceremony behaves differently in each and `false` was standing in for
+   * two of them. `GET /auth/mfa` is read on the record page and swallowed on failure; when that
+   * swallow produced `false`, an enrolled signer got a ceremony with **no code field**, submitted a
+   * correct password, and was refused with `sign without proving your credentials` — one message
+   * covering both a wrong password and a missing code, so it reads as "your password is wrong" and
+   * offers nothing to fix. On ADR-0017's ceremony that is a dead end.
+   *
+   * `null` shows the field and does not require it: the server is the authority either way —
+   * `identity-signer.authenticator` reads `mfa.isRequired` from the database, ignores a code from
+   * somebody not enrolled, and refuses a missing one from somebody who is.
+   */
+  readonly mfaEnrolled: boolean | null;
   readonly onClose: () => void;
   readonly onSigned: () => void;
 }): ReactNode {
@@ -186,7 +200,17 @@ export function SigningCeremony({
       purpose,
       ...(comment === '' ? {} : { statement: comment }),
       password: fieldValue(data, 'password'),
-      ...(mfaEnrolled ? { mfaCode: fieldValue(data, 'mfaCode') } : {}),
+      /*
+       * Sent whenever the field was offered and filled — Slice 27.
+       *
+       * Not `mfaEnrolled ?` any more, because the field is offered for `null` too, and not the raw
+       * value either: `signRevisionSchema` bounds `mfaCode` at `min(6)`, so an empty string from an
+       * unenrolled signer who was shown the optional field would be a validation error rather than
+       * the omission it means.
+       */
+      ...(mfaEnrolled === false || fieldValue(data, 'mfaCode') === ''
+        ? {}
+        : { mfaCode: fieldValue(data, 'mfaCode') }),
     });
 
     if (result.ok) {
@@ -324,15 +348,25 @@ export function SigningCeremony({
               />
             </Field>
 
-            {mfaEnrolled && (
-              <Field label={translate('signatures.field.mfaCode')} required>
+            {mfaEnrolled !== false && (
+              /*
+               * Offered when the signer owes a factor **and** when nobody could find out — Slice 27.
+               * Required only in the first case: demanding a code from somebody who may not have one
+               * would trade one dead end for another, and the server refuses a missing code anyway.
+               */
+              <Field
+                label={translate('signatures.field.mfaCode')}
+                {...(mfaEnrolled === true
+                  ? { required: true }
+                  : { hint: translate('signatures.field.mfaCodeUnknown') })}
+              >
                 <Input
                   name="mfaCode"
                   autoComplete="one-time-code"
                   inputMode="numeric"
                   spellCheck={false}
                   disabled={stage === 'signing'}
-                  required
+                  {...(mfaEnrolled === true ? { required: true } : {})}
                 />
               </Field>
             )}
