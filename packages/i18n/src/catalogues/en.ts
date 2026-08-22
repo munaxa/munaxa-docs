@@ -55,6 +55,16 @@ export const en = {
     mfaCodeLabel: 'Authentication code',
     mfaCodeHint: 'Six digits from your authenticator app, or one of your recovery codes.',
     mfaTitle: 'Two-step verification',
+    /**
+     * Neither "you are protected" nor "you are not" — Slice 26.
+     *
+     * `mfaNotEnrolledHint` tells somebody their account has no second factor. Saying it because the
+     * status read failed is a false claim about their security posture, made on the one screen they
+     * open to check it, and it hides the control that removes a factor they do have. The same line
+     * `signatures.unavailable` draws, on a page where being wrong is worse.
+     */
+    mfaStatusUnavailable:
+      'Your two-step verification settings could not be read just now. Reload to try again — nothing has changed.',
     mfaNotEnrolledHint:
       'Add an authenticator app so a stolen password is not enough to reach your documents.',
     mfaEnrolledHint: plural({
