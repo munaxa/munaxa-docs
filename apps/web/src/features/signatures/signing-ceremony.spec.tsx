@@ -250,7 +250,7 @@ describe('confirmation', () => {
     await openCeremony({ mfaEnrolled: true });
     await user.click(screen.getByRole('button', { name: 'Continue' }));
 
-    expect((screen.getByLabelText(/Authenticator code/i) as HTMLInputElement).required).toBe(true);
+    expect(screen.getByLabelText<HTMLInputElement>(/Authenticator code/i).required).toBe(true);
   });
 
   it('sends the code an unknown-status signer typed', async () => {
