@@ -1053,7 +1053,13 @@ describe('changing who is in a department changes who its documents reach', () =
     const entityId = uuidv7();
     departmentId = uuidv7();
     await owner.company.create({
-      data: { id: companyId, tenantId: TENANT, code: 'MEMB', name: 'Members', updatedAt: FIXED_NOW },
+      data: {
+        id: companyId,
+        tenantId: TENANT,
+        code: 'MEMB',
+        name: 'Members',
+        updatedAt: FIXED_NOW,
+      },
     });
     await owner.entity.create({
       data: {
