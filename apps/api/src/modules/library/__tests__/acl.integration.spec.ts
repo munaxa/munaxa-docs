@@ -1230,6 +1230,295 @@ describe('changing who is in a department changes who its documents reach', () =
   });
 });
 
+/**
+ * Slice 39 — a folder's *existence* is an authorization input, and delete/restore moves it.
+ *
+ * `brokenInheritancePaths()` reads `inheritAcl: false, deletedAt: null`, and its result becomes
+ * `excludedFolderPaths` on every allowed region a visibility filter carries. So a folder that
+ * breaks inheritance stops cutting the tree the moment it is deleted and starts cutting it again
+ * the moment it is restored — and `filterKey` is `(tenant, user, roles, permission)`, which says
+ * nothing about the folder tree. The answer cached on one side of either write is served on the
+ * other.
+ *
+ * The two directions are not equally serious, and both are asserted:
+ *
+ * - **Restore is the one that exposes.** A restore only flips `deleted_at`, so the folder comes
+ *   back *still broken*, and with it every document the cascade restores. A filter cached while it
+ *   was deleted has no cut for it, and lists documents behind a break that is once again in force.
+ *   This is `ALLOW` where the current state says `DENY`.
+ * - **Delete is the one that hides.** A filter cached before the delete keeps a cut for a subtree
+ *   now in the recycle bin, and omits its rows from the deleted-documents view. `DENY` where the
+ *   current state says `ALLOW` — wrong, and wrong in the safe direction.
+ *
+ * Asserted through `documents.list`, the read the product performs, rather than through the region
+ * set alone: a warm stack of its own, so this does not repeat Slice 35's mistake of proving a cache
+ * against a resolver configured at `cacheTtlSeconds: 0`.
+ */
+describe('deleting and restoring a folder moves the inheritance boundary with it', () => {
+  /** Reaches documents only through a tenant-wide role grant, so a cut is all that can stop her. */
+  const EVE = asId<UserId>(uuidv7());
+  const VIEWER_ROLE = uuidv7();
+
+  let warmLibrary: DocumentLibraryStack;
+  let openTitle: string;
+
+  beforeAll(async () => {
+    warmLibrary = realDocumentLibrary({
+      clock,
+      unitOfWork,
+      // The one difference from the suite's own stack: a TTL, so the filter it computes survives
+      // to be served again.
+      config: { ...appConfig, acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 } },
+      aclCache: sharedAclCache,
+      registry: everyTenantRegistry(APP_URL),
+      storageRoot: root,
+      signingSecret: 'an-integration-suite-secret-of-at-least-32',
+      antivirus: {
+        scanner: 'unconfigured',
+        scan: () => Promise.reject(new Error('AV_DRIVER is NONE')),
+      },
+      users: { get: () => Promise.resolve(null) } as never,
+    });
+
+    await owner.user.create({
+      data: {
+        id: EVE,
+        tenantId: TENANT,
+        email: `${EVE}@acl.test`,
+        emailNormalized: `${EVE}@acl.test`,
+        displayName: 'eve',
+        status: 'ACTIVE',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: VIEWER_ROLE,
+      key: 'VIEWER_ONLY',
+      userIds: [EVE],
+      permissions: [Permission.DOCUMENT_VIEW],
+      now: FIXED_NOW,
+    });
+
+    // A document nothing in these cases touches, so "denied" can never mean "the list was empty".
+    const open = await folderUnderRoot(true);
+    openTitle = `Always visible ${uuidv7().slice(-8)}`;
+    await seedDocument(open, openTitle);
+  });
+
+  const asEve = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext(contextFor(EVE, [VIEWER_ROLE]), work);
+
+  async function folderUnderRoot(inheritAcl: boolean): Promise<string> {
+    const created = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: `Lifecycle ${uuidv7().slice(-10)}`,
+        inheritAcl,
+      }),
+    );
+    return created.id;
+  }
+
+  /** What Eve's list actually contains, through the warm stack. */
+  const titles = async (deleted: 'live' | 'deleted'): Promise<readonly string[]> => {
+    const rows = await asEve(() => warmLibrary.documents.list({ ...page, deleted }));
+    return rows.data.map((row) => row.title);
+  };
+
+  it('hides a document behind a break from somebody the tenant-wide grant would otherwise reach', async () => {
+    // The positive control, both halves. Without the second the cases below could pass because Eve
+    // reaches nothing at all.
+    const vault = await folderUnderRoot(false);
+    const hidden = `Behind the break ${uuidv7().slice(-8)}`;
+    await seedDocument(vault, hidden);
+
+    const live = await titles('live');
+    expect(live).toContain(openTitle);
+    expect(live).not.toContain(hidden);
+  });
+
+  it('stops hiding it while the folder that broke inheritance is in the bin', async () => {
+    // The delete direction, and the narrower one: the cut is cached, the folder is gone, and the
+    // deleted-documents view keeps excluding a subtree nothing excludes any more.
+    const vault = await folderUnderRoot(false);
+    const buried = `Buried procedure ${uuidv7().slice(-8)}`;
+    await seedDocument(vault, buried);
+
+    // Warm, twice, with the cut in place: the second answer is the cached one.
+    expect(await titles('live')).not.toContain(buried);
+    expect(await titles('live')).not.toContain(buried);
+
+    const row = await owner.folder.findUniqueOrThrow({ where: { id: vault } });
+    await asAdmin(() => library.libraries.deleteFolder(vault, row.version));
+
+    // Cold — the suite's `cacheTtlSeconds: 0` stack — is what the answer ought to be, and `08 §8`
+    // requires the cached one to agree with it.
+    const cold = await asEve(() => library.documents.list({ ...page, deleted: 'deleted' }));
+    expect(cold.data.map((each) => each.title)).toContain(buried);
+
+    expect(await titles('deleted')).toContain(buried);
+  });
+
+  it('starts hiding it again the moment the folder is restored', async () => {
+    // The restore direction, and the one that exposes.
+    const vault = await folderUnderRoot(false);
+    const returning = `Returning procedure ${uuidv7().slice(-8)}`;
+    await seedDocument(vault, returning);
+
+    const deleted = await owner.folder.findUniqueOrThrow({ where: { id: vault } });
+    await asAdmin(() => library.libraries.deleteFolder(vault, deleted.version));
+
+    // Warmed *while the folder is in the bin*, so the cached filter carries no cut for it. Twice,
+    // so the second answer is the cached one.
+    expect(await titles('live')).not.toContain(returning);
+    expect(await titles('deleted')).toContain(returning);
+
+    const buried = await owner.folder.findUniqueOrThrow({ where: { id: vault } });
+    await asAdmin(() => library.libraries.restoreFolder(vault, buried.version));
+
+    // A restore flips `deleted_at` and nothing else, so the folder is live and still broken.
+    const restored = await owner.folder.findUniqueOrThrow({ where: { id: vault } });
+    expect(restored.deletedAt).toBeNull();
+    expect(restored.inheritAcl).toBe(false);
+
+    const cold = await asEve(() => library.documents.list({ ...page, deleted: 'live' }));
+    expect(cold.data.map((each) => each.title)).not.toContain(returning);
+
+    // Without the invalidation this is the filter computed while the folder was in the bin: no cut,
+    // and a document behind a break in force is listed to somebody the break exists to stop.
+    expect(await titles('live')).not.toContain(returning);
+  });
+
+  it('leaves another tenant’s cached answers alone', async () => {
+    const otherTenant = `acl:${uuidv7()}:v:someone:everything`;
+    await sharedAclCache.set(otherTenant, { unrestricted: true }, 60);
+
+    const vault = await folderUnderRoot(false);
+    const row = await owner.folder.findUniqueOrThrow({ where: { id: vault } });
+    await asAdmin(() => library.libraries.deleteFolder(vault, row.version));
+
+    expect(await sharedAclCache.get(otherTenant)).not.toBeNull();
+  });
+});
+
+/**
+ * Slice 39 — role *membership*, which needs no invalidation, asserted rather than argued.
+ *
+ * Slices 37 and 38 both reasoned that gaining or losing a role is separated by the cache key
+ * itself: `decisionKey` and `filterKey` are built from the caller's role identifiers, so a token
+ * minted before an assignment and one minted after it cannot share an entry. That is the reason no
+ * invalidation was added to `replaceRoles` while one was added beside it to `replaceDepartments`,
+ * and it is exactly the kind of reason that is true until somebody edits a key.
+ *
+ * So it is a test. The membership is changed through `UserAdminService.update`, the request path,
+ * and each half is asked with the roles the *next* token would carry — which is what the resolver
+ * receives, since `AclGuard` builds the subject from the context.
+ */
+describe('a role assignment separates itself, because the key names the roles', () => {
+  const FRANK = asId<UserId>(uuidv7());
+  /** Grants nothing at all: what Frank holds before, and what must not reach the document. */
+  const BYSTANDER_ROLE = uuidv7();
+  /** Tenant-wide `document:view`: what he is given, and later loses. */
+  const GRANTING_ROLE = uuidv7();
+
+  let documentId: string;
+  let people: ReturnType<typeof realUserAdmin>;
+
+  beforeAll(async () => {
+    people = realUserAdmin({ clock, unitOfWork, config: appConfig, cache: sharedAclCache });
+
+    await owner.user.create({
+      data: {
+        id: FRANK,
+        tenantId: TENANT,
+        email: `${FRANK}@acl.test`,
+        emailNormalized: `${FRANK}@acl.test`,
+        displayName: 'frank',
+        status: 'ACTIVE',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: BYSTANDER_ROLE,
+      key: 'BYSTANDER',
+      userIds: [FRANK],
+      permissions: [Permission.FOLDER_MANAGE],
+      now: FIXED_NOW,
+    });
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: GRANTING_ROLE,
+      key: 'GRANTING',
+      userIds: [],
+      permissions: [Permission.DOCUMENT_VIEW],
+      now: FIXED_NOW,
+    });
+
+    const folder = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: `Assignment ${uuidv7().slice(-8)}`,
+        inheritAcl: true,
+      }),
+    );
+    documentId = await seedDocument(folder.id, `Assignment procedure ${uuidv7().slice(-8)}`);
+  });
+
+  const cached = (): ReturnType<typeof realPermissions> =>
+    realPermissions({
+      clock,
+      unitOfWork,
+      config: { ...appConfig, acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 } },
+      cache: sharedAclCache,
+    });
+
+  const asksWith = async (roles: readonly string[]): Promise<boolean> =>
+    (
+      await runWithContext(contextFor(FRANK, roles), () =>
+        cached().resolver.resolve(
+          {
+            userId: FRANK,
+            roleIds: roles.map((role) => asId<AnyId>(role)),
+            departmentIds: [],
+            delegationIds: [],
+          },
+          documentScope(documentId),
+          Permission.DOCUMENT_VIEW,
+        ),
+      )
+    ).allowed;
+
+  const setRoles = (roleIds: readonly string[]): Promise<unknown> =>
+    asAdmin(() => people.update(FRANK, { roleIds: [...roleIds] }, undefined));
+
+  it('answers for the roles it was asked about, so a grant is not waiting on a TTL', async () => {
+    // Warm the refusal, twice, so the second answer is the cached one.
+    expect(await asksWith([BYSTANDER_ROLE])).toBe(false);
+    expect(await asksWith([BYSTANDER_ROLE])).toBe(false);
+
+    await setRoles([BYSTANDER_ROLE, GRANTING_ROLE]);
+
+    // Nothing cleared that cache, and nothing needed to: the next token names both roles, and both
+    // keys mention them, so the refusal above is not what this reads.
+    expect(await asksWith([BYSTANDER_ROLE, GRANTING_ROLE])).toBe(true);
+  });
+
+  it('does the same when a role is taken away', async () => {
+    expect(await asksWith([BYSTANDER_ROLE, GRANTING_ROLE])).toBe(true);
+    expect(await asksWith([BYSTANDER_ROLE, GRANTING_ROLE])).toBe(true);
+
+    await setRoles([BYSTANDER_ROLE]);
+
+    // The revocation direction, and the one that would matter: the cached `true` above lives under
+    // a key naming the role he no longer holds, so the token that no longer names it cannot read it.
+    expect(await asksWith([BYSTANDER_ROLE])).toBe(false);
+  });
+});
+
 // --- Fixtures -----------------------------------------------------------------------------
 
 function subject(userId: UserId, roleId: string) {

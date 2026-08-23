@@ -545,6 +545,28 @@ export class LibraryAdminService {
         cascadeId,
       });
 
+      /*
+       * The cut moves with the folder — Slice 39.
+       *
+       * `brokenInheritancePaths()` reads `inheritAcl: false, deletedAt: null`, so a folder that
+       * broke inheritance stops contributing its path to `excludedFolderPaths` the moment it is
+       * deleted, and starts again the moment it is restored. `filterKey` is
+       * `(tenant, user, roles, permission)` and says nothing about the folder tree, so a filter
+       * computed on one side of either write is served on the other.
+       *
+       * This side is the narrower one: a filter cached *before* the delete keeps a cut for a
+       * subtree that is now in the bin, and hides its rows from the deleted-documents view. The
+       * restore below is the direction that widens, and it is the one that matters. Both are
+       * cleared, because `ports/cache.port.ts`'s rule does not distinguish them: a cold cache must
+       * produce the same answer, never a different one.
+       *
+       * Unconditionally, unlike `createFolder` above. That one had the answer in its own argument;
+       * this one would have to count the broken folders inside a subtree it has just rewritten, and
+       * a folder delete is a rare administrative act that already cascades over its contents — the
+       * query is not worth the risk of getting the condition wrong.
+       */
+      await this.acl.invalidateTenant();
+
       return {
         result: removed,
         change: this.folderChanged(
@@ -610,6 +632,22 @@ export class LibraryAdminService {
         // deleted on its own beforehand carries its own cascade identifier and stays deleted.
         documentsRestored = await this.contents.restoreCascade(cascadeId);
       }
+
+      /*
+       * And the cut comes back with it — Slice 39, and the direction that exposes.
+       *
+       * A restore only ever flips `deleted_at`, so a folder that broke inheritance is live again
+       * *still broken*. `brokenInheritancePaths()` sees it once more and every filter computed from
+       * here on excludes its subtree; a filter cached while it was deleted does not, and it covers
+       * documents this restore has just made live again. Slice 35 wrote the same sentence about a
+       * break created after a filter was read — "every list and every search built from it then
+       * reaches into a subtree that was never reachable, until the TTL runs out". A restored break
+       * is a created break.
+       *
+       * Neither this method nor the delete publishes anything, so there is no outbox ordering to
+       * respect; what matters is that this runs inside the transaction that made the change.
+       */
+      await this.acl.invalidateTenant();
 
       return {
         result: restored,
