@@ -11,7 +11,7 @@ import type { Logger } from '../../../core/observability/logger';
 
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
-import { realWriteStack } from '../../../testing/real-collaborators';
+import { realAclResolver, realWriteStack } from '../../../testing/real-collaborators';
 import { RoleAdminService } from '../application/role-admin.service';
 import { UserAdminService } from '../application/user-admin.service';
 import { PrismaIdentityAdminRepository } from '../infrastructure/prisma-identity-admin.repository';
@@ -64,7 +64,18 @@ const passwords = new ScryptPasswordHasher();
 const cache = new FakeCache(clock);
 const repository = new PrismaIdentityAdminRepository(stamps, cache);
 const versions = new CachedPermissionVersionReader(cache, unitOfWork);
-const users = new UserAdminService(repository, passwords, writer);
+/**
+ * The resolver is here only so a membership change can clear the ACL cache — Slice 37. Composed
+ * through the testing module rather than by importing `library/infrastructure/`, which the
+ * cross-module boundary lint forbids from anything under `src/modules/**`. It shares this suite's
+ * `cache`, so what it clears is the same map everything else here reads.
+ */
+const users = new UserAdminService(
+  repository,
+  passwords,
+  writer,
+  realAclResolver({ clock, unitOfWork, config, cache }),
+);
 const roles = new RoleAdminService(repository, writer);
 /** The placement this suite provisions into — declared, because the identifier is configuration now. */
 const PROVISION_SLUG = `identity-admin-${String(Date.now())}`;

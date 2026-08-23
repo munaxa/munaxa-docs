@@ -39,8 +39,10 @@ import {
   realDocumentLibrary,
   realPermissions,
   realScopeAdmin,
+  realUserAdmin,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
+import type { UserAdminService } from '../../identity/application/user-admin.service';
 
 /**
  * Phase 14 against a real PostgreSQL — the ACL model's own questions, which are all database
@@ -999,6 +1001,226 @@ describe('moving a department changes who its members are', () => {
     // longer reaches them. Without an invalidation this is the cached `true` — a grant that
     // outlives the reorganisation that removed it.
     expect(await warm()).toBe(false);
+  });
+});
+
+/**
+ * Slice 37 — a person's departments, and the answers cached under a key that does not name them.
+ *
+ * `moveDepartment` above changes the *department's* place in the tree. This changes the *person's*
+ * place in the department, which is the other half of the same dependency: `departmentsOf` resolves
+ * a caller's ACL subjects from their `user_department` rows expanded along `department.path`, so an
+ * entry naming a department reaches exactly its members and stops when somebody stops being one.
+ *
+ * `UserAdminService.update` has bumped `permission_version` on that write since Phase 2, and the
+ * comment there says why: "department membership is a *subject* the ACL resolver matches on". The
+ * bump refuses the access token, so the next request carries a freshly minted one — and
+ * `decisionKey` is `(tenant, user, roles, scope, permission)`, which names no department, so the
+ * fresh token lands on the entry cached before the change. Token freshness is not cache freshness.
+ *
+ * The mutation is the product's own: `UserAdminService.update`, in a request context, exactly as
+ * `PATCH /users/:id` performs it. Nothing here deletes a cache entry by hand — that would prove
+ * only that deleting an entry works.
+ */
+describe('changing who is in a department changes who its documents reach', () => {
+  /** A member from the start. The revoke direction is his. */
+  const CARL = asId<UserId>(uuidv7());
+  /** Not a member. The grant direction is hers. */
+  const DANA = asId<UserId>(uuidv7());
+  /** `folder:manage` and nothing else, so the department entry is the whole grant — as above. */
+  const MEMBERSHIP_ROLE = uuidv7();
+
+  let departmentId: string;
+  let carlDocumentId: string;
+  let danaDocumentId: string;
+  let people: UserAdminService;
+
+  /** The cache configuration that makes an answer survive: a real TTL, over the shared map. */
+  const warmConfig = {
+    ...appConfig,
+    acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 },
+  } as unknown as AppConfig;
+
+  beforeAll(async () => {
+    people = realUserAdmin({
+      clock,
+      unitOfWork,
+      config: warmConfig,
+      cache: sharedAclCache,
+    });
+
+    const companyId = uuidv7();
+    const entityId = uuidv7();
+    departmentId = uuidv7();
+    await owner.company.create({
+      data: { id: companyId, tenantId: TENANT, code: 'MEMB', name: 'Members', updatedAt: FIXED_NOW },
+    });
+    await owner.entity.create({
+      data: {
+        id: entityId,
+        tenantId: TENANT,
+        companyId,
+        code: 'MEMB-1',
+        name: 'Members One',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.department.create({
+      data: {
+        id: departmentId,
+        tenantId: TENANT,
+        entityId,
+        code: 'MEMB-D',
+        name: 'Registry',
+        path: departmentId,
+        updatedAt: FIXED_NOW,
+      },
+    });
+    for (const [id, name] of [
+      [CARL, 'carl'],
+      [DANA, 'dana'],
+    ] as const) {
+      await owner.user.create({
+        data: {
+          id,
+          tenantId: TENANT,
+          email: `${id}@acl.test`,
+          emailNormalized: `${id}@acl.test`,
+          displayName: name,
+          status: 'ACTIVE',
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: MEMBERSHIP_ROLE,
+      key: 'MEMBERSHIP_ONLY',
+      userIds: [CARL, DANA],
+      permissions: [Permission.FOLDER_MANAGE],
+      now: FIXED_NOW,
+    });
+    // Carl is in the department; Dana is not. Written as a fixture, because this is the state the
+    // cases *start* from — every membership change they assert about goes through the service.
+    await owner.userDepartment.create({
+      data: { tenantId: TENANT, userId: CARL, departmentId, isPrimary: true },
+    });
+
+    /*
+     * Two documents in two folders rather than one of each, so the revoke case and the grant case
+     * cannot decide each other. They share the tenant prefix that `invalidateTenant` clears, which
+     * is the point — but they must not share a *decision*, or the second case would be reading the
+     * first one's invalidation.
+     */
+    const folders = await Promise.all(
+      ['Registry procedures', 'Registry forms'].map((name) =>
+        asAdmin(() =>
+          library.libraries.createFolder({
+            libraryId,
+            parentId: rootFolderId,
+            name: `${name} ${uuidv7().slice(-8)}`,
+            inheritAcl: true,
+          }),
+        ),
+      ),
+    );
+    carlDocumentId = await seedDocument(folders[0]!.id, 'Procedure for the registry');
+    danaDocumentId = await seedDocument(folders[1]!.id, 'Form for the registry');
+    for (const folder of folders) {
+      // The only thing that grants: an entry naming the department.
+      await asAdmin(() =>
+        permissions.permissions.replaceFor(folderScope(folder.id), [
+          entry(AclSubjectType.DEPARTMENT, departmentId, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+        ]),
+      );
+    }
+  });
+
+  const asPerson = <T>(userId: UserId, work: () => Promise<T>): Promise<T> =>
+    runWithContext(contextFor(userId, [MEMBERSHIP_ROLE]), work);
+
+  /** One resolver, warm, shared with the service that performs the write. */
+  const cached = (): ReturnType<typeof realPermissions> =>
+    realPermissions({ clock, unitOfWork, config: warmConfig, cache: sharedAclCache });
+
+  const canView = async (userId: UserId, documentId: string): Promise<boolean> =>
+    (
+      await asPerson(userId, () =>
+        cached().resolver.resolve(
+          subject(userId, MEMBERSHIP_ROLE),
+          documentScope(documentId),
+          Permission.DOCUMENT_VIEW,
+        ),
+      )
+    ).allowed;
+
+  const setDepartments = (userId: UserId, ids: readonly string[]): Promise<unknown> =>
+    asAdmin(() =>
+      people.update(
+        userId,
+        {
+          departments: ids.map((id, index) => ({
+            departmentId: id,
+            isPrimary: index === 0,
+            isManager: false,
+          })),
+        },
+        undefined,
+      ),
+    );
+
+  it('reaches a member and refuses a non-member', async () => {
+    // The positive control, both halves, before either direction is asserted: without the second
+    // half the revoke case could pass because nothing reached anybody, and without the first the
+    // grant case could pass because everybody reached everything.
+    expect(await canView(CARL, carlDocumentId)).toBe(true);
+    expect(await canView(DANA, danaDocumentId)).toBe(false);
+  });
+
+  it('stops reaching them once their membership is removed', async () => {
+    // Warm, and asked twice: the second answer is the cached one, so what follows is about an
+    // entry that exists rather than about a lookup that happens to repeat.
+    expect(await canView(CARL, carlDocumentId)).toBe(true);
+    expect(await canView(CARL, carlDocumentId)).toBe(true);
+
+    const before = await owner.user.findUniqueOrThrow({ where: { id: CARL } });
+    await setDepartments(CARL, []);
+
+    // The bump happened — and on its own it changes nothing here. A refused token is replaced by a
+    // fresh one carrying the same user and the same roles, which is the whole of `decisionKey`.
+    const after = await owner.user.findUniqueOrThrow({ where: { id: CARL } });
+    expect(after.permissionVersion).toBeGreaterThan(before.permissionVersion);
+    expect(await owner.userDepartment.count({ where: { tenantId: TENANT, userId: CARL } })).toBe(0);
+
+    // Without an invalidation this is the cached `true`: a grant surviving the removal that ended
+    // it, for the length of the TTL.
+    expect(await canView(CARL, carlDocumentId)).toBe(false);
+  });
+
+  it('starts reaching them once they are added', async () => {
+    expect(await canView(DANA, danaDocumentId)).toBe(false);
+    expect(await canView(DANA, danaDocumentId)).toBe(false);
+
+    await setDepartments(DANA, [departmentId]);
+
+    // The other direction, and the one an administrator notices: a person added to a department is
+    // told they still may not open its documents.
+    expect(await canView(DANA, danaDocumentId)).toBe(true);
+  });
+
+  it('leaves another tenant’s cached answers alone', async () => {
+    /*
+     * The prefix carries the tenant, and this asserts it from the outside rather than by reading
+     * the key: an entry written under another tenant's prefix is still there after a membership
+     * change in this one. Redis is the one store `ADR-0015`'s database-per-tenant model leaves
+     * shared, so a `deleteByPrefix` that dropped the tenant would be a cross-tenant cache flush.
+     */
+    const otherTenant = `acl:${uuidv7()}:d:someone:everything`;
+    await sharedAclCache.set(otherTenant, { allowed: true }, 60);
+
+    await setDepartments(CARL, [departmentId]);
+
+    expect(await sharedAclCache.get(otherTenant)).not.toBeNull();
   });
 });
 
