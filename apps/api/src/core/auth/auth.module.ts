@@ -4,6 +4,8 @@ import { TOKEN_VERIFIER, type TokenVerifier } from './access-token';
 import { AuthenticationGuard } from './authentication.guard';
 import { AuthenticationMiddleware } from './authentication.middleware';
 import { NoIssuerTokenVerifier } from './no-issuer.token-verifier';
+import { PERMISSION_VERSION_READER, type PermissionVersionReader } from './permission-version';
+import { UnavailablePermissionVersionReader } from './unavailable.permission-version';
 
 /**
  * Authentication wiring.
@@ -36,8 +38,14 @@ import { NoIssuerTokenVerifier } from './no-issuer.token-verifier';
     AuthenticationGuard,
     AuthenticationMiddleware,
     { provide: TOKEN_VERIFIER, useClass: NoIssuerTokenVerifier },
+    { provide: PERMISSION_VERSION_READER, useClass: UnavailablePermissionVersionReader },
   ],
-  exports: [AuthenticationGuard, AuthenticationMiddleware, TOKEN_VERIFIER],
+  exports: [
+    AuthenticationGuard,
+    AuthenticationMiddleware,
+    TOKEN_VERIFIER,
+    PERMISSION_VERSION_READER,
+  ],
 })
 export class AuthModule {
   /**
@@ -48,7 +56,22 @@ export class AuthModule {
    * `TOKEN_VERIFIER` from this module's own scope. A binding added in the composition root
    * instead would be invisible to the one consumer that matters most.
    */
-  static withVerifier(verifier: Type<TokenVerifier>): DynamicModule {
+  static withVerifier(
+    verifier: Type<TokenVerifier>,
+    /**
+     * The authoritative permission generation — Slice 31.
+     *
+     * A parameter for the same reason the verifier is one. `AuthenticationGuard` is declared in
+     * this module and therefore resolves its dependencies from this module's scope, and the real
+     * reader lives in Identity's infrastructure, which `core/` may not import. Passing the class
+     * lets the composition root — the one place that may import both — choose it, while the
+     * registration happens here where the consumer can see it.
+     *
+     * Optional, and the default refuses rather than waves through: see
+     * `UnavailablePermissionVersionReader`.
+     */
+    versions: Type<PermissionVersionReader> = UnavailablePermissionVersionReader,
+  ): DynamicModule {
     return {
       module: AuthModule,
       global: true,
@@ -56,9 +79,16 @@ export class AuthModule {
         AuthenticationGuard,
         AuthenticationMiddleware,
         verifier,
+        versions,
         { provide: TOKEN_VERIFIER, useExisting: verifier },
+        { provide: PERMISSION_VERSION_READER, useExisting: versions },
       ],
-      exports: [AuthenticationGuard, AuthenticationMiddleware, TOKEN_VERIFIER],
+      exports: [
+        AuthenticationGuard,
+        AuthenticationMiddleware,
+        TOKEN_VERIFIER,
+        PERMISSION_VERSION_READER,
+      ],
     };
   }
 }

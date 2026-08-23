@@ -25,7 +25,24 @@
 | MFA | TOTP built (Phase 14). WebAuthn is not, and the role policy below is not enforced — both are limits with named blockers, not omissions |
 | Sessions | Short access token, rotating refresh token in an `httpOnly`, `Secure`, `SameSite=Lax` cookie; reuse detection kills the family |
 | Lockout | Progressive delay then temporary lock, per account **and** per IP; every failure audited |
-| Revocation | Disabling a user, changing a role, or an administrator ending a session invalidates within one access-token lifetime; `permVersion` in the claim forces immediate re-evaluation on the next call |
+| Revocation | A role, permission or department change invalidates every outstanding access token on that person's **next request**: `bumpPermissionVersion` raises `user.permission_version` in the same transaction as the change, and `AuthenticationGuard` refuses a token whose `permVersion` claim disagrees. Disabling or deleting a user revokes their session families outright. Built in Slice 31 — before it the claim was minted and compared nowhere, so every one of these took effect only when the token expired |
+
+### Revocation is now on Redis's critical path — Slice 31
+
+Making `permVersion` authoritative means every authenticated request asks what generation the
+caller's authority is on. That answer is cached per `perm-version:<tenant>:<user>` and cleared
+inside the transaction that raises the number, so the steady state is a Redis `GET` — measured at
+**0.068 ms median, 0.113 ms p95** against a local server, against **2.5 ms median** for the cache
+miss that falls through to the tenant's own database. A miss happens once per person per five
+minutes, or immediately after somebody's permissions change.
+
+Two consequences worth stating plainly. **`@Public` routes are untouched** — the guard returns
+before the lookup, so sign-in and the health probes cost exactly what they did. And **an
+unreachable Redis now fails authenticated requests** rather than serving them from an unverified
+token; that is not new behaviour invented here but the posture `PrismaAclResolver` already had,
+since every list and every permission decision in the product already reads through the same
+cache without catching. The alternative — treating an unreachable cache as "assume the token is
+fine" — is the fail-open the whole change exists to remove.
 
 ### What Phase 17 built from the federation row, and what it did not
 

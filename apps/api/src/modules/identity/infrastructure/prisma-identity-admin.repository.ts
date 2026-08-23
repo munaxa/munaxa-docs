@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
 import { type PermissionKey, isPermissionKey } from '@edms/domain';
@@ -14,6 +14,8 @@ import {
 } from '../../../core/persistence';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
+import { CACHE_PORT, type CachePort } from '../../../ports/cache.port';
+import { permissionVersionKey } from './cached-permission-version.reader';
 import type {
   DepartmentMembership,
   IdentityAdminRepository,
@@ -39,7 +41,10 @@ import type {
  */
 @Injectable()
 export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
-  constructor(private readonly stamps: RecordStamps) {}
+  constructor(
+    private readonly stamps: RecordStamps,
+    @Inject(CACHE_PORT) private readonly cache: CachePort,
+  ) {}
 
   // --- Users -----------------------------------------------------------------------------
 
@@ -197,13 +202,39 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
     if (userIds.length === 0) {
       return;
     }
+    const tenantId = this.tenantId();
     // Not version-guarded, and deliberately: this is not an edit somebody could lose a race over, it
     // is a counter whose only job is to differ from what the outstanding tokens carry. Guarding it
     // would make a role change fail because one of forty holders was edited concurrently.
     await requireTransaction().user.updateMany({
-      where: { tenantId: this.tenantId(), id: { in: [...userIds] } },
+      where: { tenantId, id: { in: [...userIds] } },
       data: { permissionVersion: { increment: 1 } },
     });
+
+    /*
+     * The cached generation goes with it — Slice 31, and here rather than in the three services
+     * that call this so that no future caller can raise the number without clearing the answer.
+     * That is the same reasoning `LIVE_ROLES` was placed in the credential repository for: the one
+     * place every path passes through is where an invariant is worth enforcing.
+     *
+     * **Inside the transaction, before it commits**, which is the ordering `AclPermissionService.
+     * afterChange` established — "invalidating first means the window in which a stale decision
+     * could be read closes before anything downstream reacts". Redis cannot enlist in a PostgreSQL
+     * transaction, so what that ordering buys is a choice of which way the two can disagree:
+     *
+     *   - delete succeeds, transaction rolls back → the entry is merely cold and the next read
+     *     repopulates it from the database with the unchanged number. Nothing is wrong.
+     *   - delete fails → it throws here, the transaction rolls back, and the permission change is
+     *     refused. The administrator sees an error and retries.
+     *
+     * The combination this ordering makes unreachable is the dangerous one: a committed bump whose
+     * cache entry still holds the old number, which would leave every outstanding token valid
+     * until the TTL expired. It is not atomic, and it is not claimed to be — it is arranged so
+     * that the only surviving disagreement is the safe one.
+     */
+    await Promise.all(
+      userIds.map((userId) => this.cache.delete(permissionVersionKey(tenantId, userId))),
+    );
   }
 
   async userIdsWithRole(roleId: string): Promise<readonly string[]> {
