@@ -304,6 +304,8 @@ export interface CascadedDocument {
   readonly id: string;
   readonly documentNumber: string | null;
   readonly retentionPolicyId: string | null;
+  /** What it was before the cascade stamped it — `document.deleted`'s `previousStatus`, Slice 40. */
+  readonly status: string;
 }
 
 export interface DuplicateMatchRow {

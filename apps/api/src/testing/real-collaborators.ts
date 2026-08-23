@@ -588,6 +588,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
         unitOfWork: options.unitOfWork,
         ...(options.retentionSettings !== undefined && { settings: options.retentionSettings }),
       }),
+      outbox,
       stamps,
     ),
   );

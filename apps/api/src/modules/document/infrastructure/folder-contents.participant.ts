@@ -1,9 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type DocumentId, RetentionTrigger, asId } from '@edms/domain';
+import { type AnyId, type DocumentId, RetentionTrigger, asId } from '@edms/domain';
 
-import { LegalHoldError } from '../../../core/errors/application-errors';
+import { ForbiddenError, LegalHoldError } from '../../../core/errors/application-errors';
+import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { RecordStamps } from '../../../core/persistence';
+import { requireContext } from '../../../core/tenancy/tenant-context';
 import type { FolderContentsCascade } from '../../library/application/folder-contents.port';
 import {
   LEGAL_HOLD_SERVICE,
@@ -11,6 +13,7 @@ import {
   type LegalHoldService,
   type RetentionScheduler,
 } from '../../retention/application/ports';
+import { documentDeletedEvent, documentRestoredEvent } from '../domain/events';
 import {
   DOCUMENT_CONTENT_GATE,
   DOCUMENT_REPOSITORY,
@@ -38,6 +41,7 @@ export class DocumentFolderContentsParticipant implements FolderContentsCascade 
     @Inject(DOCUMENT_CONTENT_GATE) private readonly content: DocumentContentGate,
     @Inject(LEGAL_HOLD_SERVICE) private readonly holds: LegalHoldService,
     @Inject(RETENTION_SCHEDULER) private readonly retention: RetentionScheduler,
+    @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     private readonly stamps: RecordStamps,
   ) {}
 
@@ -71,6 +75,40 @@ export class DocumentFolderContentsParticipant implements FolderContentsCascade 
         documentNumber: document.documentNumber,
       });
     }
+
+    /*
+     * The same event a document's own delete publishes — Slice 40.
+     *
+     * "The same rules as a document's own delete, because it *is* a document delete with a
+     * different trigger" is this class's own sentence, and it was true of everything above and of
+     * nothing below. `DocumentService.delete` ends with `documentDeletedEvent`; this path ended
+     * with the retention call, so the search index was never told that a subtree of documents had
+     * gone. `PrismaSearchSourceReader.factsFor` states the invariant it breaks: "Soft-deleted and
+     * purged documents are not findable: the entry is removed, never filtered at query time — an
+     * unfindable row in the index is a leak waiting for a predicate bug." Removal is what nothing
+     * asked for, so the rows stayed, and a caller who could read the document before the folder
+     * was deleted went on finding its title and its body text in search — while the recycle bin
+     * holding it is gated on `document:restore`.
+     *
+     * It looked covered because it usually was: `retention.scheduled` also routes to the search
+     * lane and resolves to the same document. But `proposeSchedule` returns null — and publishes
+     * nothing — for a numbered document with no `ON_DELETE` policy, which is the ordinary
+     * controlled record. The coverage was incidental and inverted: the documents that mattered
+     * most were the ones that missed it.
+     *
+     * One event per document, as the single-document path emits one. The loop above already does
+     * per-document work, so nothing here changes the shape of the cascade's cost.
+     */
+    await this.outbox.publish(
+      taken.map((document) =>
+        documentDeletedEvent(asId<AnyId>(document.id), {
+          documentId: document.id,
+          deletedBy: this.actor(),
+          cascadeId: input.cascadeId,
+          previousStatus: document.status,
+        }),
+      ),
+    );
     return taken.length;
   }
 
@@ -89,6 +127,32 @@ export class DocumentFolderContentsParticipant implements FolderContentsCascade 
       }
       await this.retention.onRestored(asId<DocumentId>(document.id));
     }
+
+    // And the other direction, for the same reason: a restored document that nothing re-projected
+    // would stay out of the index it was removed from, unfindable until some later edit put it
+    // back. `onRestored` publishes nothing at all, so this path had no incidental cover either.
+    await this.outbox.publish(
+      taken.map((document) =>
+        documentRestoredEvent(asId<AnyId>(document.id), {
+          documentId: document.id,
+          restoredTo: document.status,
+          renamedTo: null,
+        }),
+      ),
+    );
     return taken.length;
+  }
+
+  /**
+   * Who is doing this. A folder delete is somebody's act — `LibraryAdminService` is reached through
+   * an administered write — so a null actor here is a bug rather than a case, exactly as it is on
+   * `DocumentService`'s own delete.
+   */
+  private actor(): string {
+    const { userId } = requireContext();
+    if (userId === null) {
+      throw new ForbiddenError('delete a folder without a signed-in user');
+    }
+    return userId;
   }
 }
