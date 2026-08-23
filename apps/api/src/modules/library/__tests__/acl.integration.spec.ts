@@ -90,6 +90,16 @@ const ADMIN = asId<UserId>(uuidv7());
 
 const READER_ROLE = uuidv7();
 const ADMIN_ROLE = uuidv7();
+/**
+ * `folder:manage` and nothing else — Slice 33.
+ *
+ * The two keys travel together in the seeded roles, so the separation the product relies on is
+ * only observable in a tenant that composes its own. That is exactly the configuration role
+ * administration exists to allow, and the one `permissions.controller` has in mind when it says
+ * the inheritance route is gated apart "so somebody who may rename folders cannot silently detach
+ * one from the tenant's grants".
+ */
+const FOLDER_ONLY_ROLE = uuidv7();
 
 let root: string;
 let appConfig: AppConfig;
@@ -126,6 +136,9 @@ const asBob = <T>(work: () => Promise<T>): Promise<T> =>
   runWithContext(contextFor(BOB, [READER_ROLE]), work);
 const asAdmin = <T>(work: () => Promise<T>): Promise<T> =>
   runWithContext(contextFor(ADMIN, [ADMIN_ROLE]), work);
+/** Somebody who may organise the library and may not change who reaches what. */
+const asFolderManager = <T>(work: () => Promise<T>): Promise<T> =>
+  runWithContext(contextFor(BOB, [FOLDER_ONLY_ROLE]), work);
 
 const page = { page: 1, pageSize: 50, deleted: 'live' as const, sortDirection: 'desc' as const };
 
@@ -190,6 +203,14 @@ beforeAll(async () => {
     roleId: ADMIN_ROLE,
     key: 'TENANT_ADMIN',
     userIds: [ADMIN],
+    now: FIXED_NOW,
+  });
+  await seedRoleGrant(owner, {
+    tenantId: TENANT,
+    roleId: FOLDER_ONLY_ROLE,
+    key: 'FOLDER_ONLY',
+    userIds: [BOB],
+    permissions: [Permission.FOLDER_MANAGE],
     now: FIXED_NOW,
   });
 
@@ -543,6 +564,43 @@ describe('the index and a direct read cannot disagree', () => {
   });
 });
 
+/**
+ * Who owns inheritance — Slice 33.
+ *
+ * `PATCH /v1/admin/folders/{id}` used to accept `inheritAcl` and write it, and that route carries
+ * `folder:manage`. The dedicated route carries `document:permission:manage`, and
+ * `permissions.controller` says why the keys are different: "so somebody who may rename folders
+ * cannot silently detach one from the tenant's grants". Slice 33 removed the field from
+ * `updateFolderSchema`; this is the other half of the boundary, asserted on the route that keeps
+ * the operation.
+ */
+describe('breaking inheritance belongs to ACL management', () => {
+  /** The positive control: somebody who holds the key can still do it, in both directions. */
+  it('lets a holder of document:permission:manage change it', async () => {
+    await asAdmin(() =>
+      permissions.permissions.setInheritance(asId<FolderId>(closedFolderId), true),
+    );
+    await asAdmin(() =>
+      permissions.permissions.setInheritance(asId<FolderId>(closedFolderId), false),
+    );
+  });
+
+  it('refuses somebody holding only folder:manage', async () => {
+    // A 404 rather than a 403, which is this resolver's own rule: a caller who may not reach a node
+    // is not told it exists.
+    await expect(
+      asFolderManager(() =>
+        permissions.permissions.setInheritance(asId<FolderId>(closedFolderId), true),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    // And nothing moved: the folder still breaks inheritance, so the refusal was a refusal rather
+    // than a failure after the write.
+    const row = await owner.folder.findUniqueOrThrow({ where: { id: closedFolderId } });
+    expect(row.inheritAcl).toBe(false);
+  });
+});
+
 describe('the cache is an optimisation only', () => {
   it('gives the same answer cold as warm, and an edit invalidates it in the same transaction', async () => {
     // 08 §8's own requirement, asserted rather than asserted-to. This is the one test that runs
@@ -580,6 +638,56 @@ describe('the cache is an optimisation only', () => {
     expect(await warm()).toBe(false);
 
     await asAdmin(() => cached.permissions.replaceFor(folderScope(openFolderId), []));
+    expect(await warm()).toBe(true);
+  });
+
+  /**
+   * The same requirement for the *other* thing that changes reach on this chain — Slice 33.
+   *
+   * An ACL entry write is proved above. Breaking inheritance changes the answer without touching a
+   * single entry: it truncates the chain, so step 6's tenant-wide role grant is never reached. Both
+   * go through `afterChange`, and the point of asserting the second is that the folder route used
+   * to change the same flag through a path that called `afterChange` at all.
+   */
+  it('invalidates a cached decision when inheritance changes', async () => {
+    const cached = realPermissions({
+      clock,
+      unitOfWork,
+      config: { ...appConfig, acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 } },
+    });
+    const scope = documentScope(openDocumentId);
+    const warm = async (): Promise<boolean> =>
+      (
+        await asAlice(() =>
+          cached.resolver.resolve(subject(ALICE, READER_ROLE), scope, Permission.DOCUMENT_VIEW),
+        )
+      ).allowed;
+
+    /*
+     * Every input established here rather than inherited from the cases above.
+     *
+     * Two earlier attempts at this assertion read their starting state from whatever had run
+     * before — the folder's inheritance in one, an ACL entry left on the chain in the other — and
+     * so passed in isolation and failed in the file, for reasons that had nothing to do with the
+     * cache. Clearing the entries and setting the flag is what makes the flip below the only thing
+     * that changes.
+     */
+    await asAdmin(() => cached.permissions.replaceFor(folderScope(openFolderId), []));
+    await asAdmin(() => cached.permissions.setInheritance(asId<FolderId>(openFolderId), true));
+
+    // Inheriting and unencumbered, so the tenant-wide role grant reaches the document. Asked
+    // twice: the second answer is the cached one, and it must agree.
+    expect(await warm()).toBe(true);
+    expect(await warm()).toBe(true);
+
+    await asAdmin(() => cached.permissions.setInheritance(asId<FolderId>(openFolderId), false));
+
+    // The direction that matters: a cached **allow** must not outlive the break that closed it.
+    // Without the invalidation inside that write this is the TTL's leftovers, answering `true`.
+    expect(await warm()).toBe(false);
+
+    // And back, so the folder leaves this file as the rest of it expects to find it.
+    await asAdmin(() => cached.permissions.setInheritance(asId<FolderId>(openFolderId), true));
     expect(await warm()).toBe(true);
   });
 });
