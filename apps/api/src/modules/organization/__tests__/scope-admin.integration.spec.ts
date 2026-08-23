@@ -11,7 +11,7 @@ import type { Logger } from '../../../core/observability/logger';
 
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
-import { realWriteStack } from '../../../testing/real-collaborators';
+import { realAclResolver, realWriteStack } from '../../../testing/real-collaborators';
 import { ScopeAdminService } from '../application/scope-admin.service';
 import { OrganizationNodeKind } from '../domain/node-kind';
 import { PrismaScopeAdminRepository } from '../infrastructure/prisma-scope-admin.repository';
@@ -59,7 +59,13 @@ const unitOfWork = new PrismaUnitOfWork(prisma);
 // of what this suite asserts is that they commit *with* the change, and a double cannot be wrong
 // about that.
 const { stamps, outbox, writer } = realWriteStack(clock, unitOfWork);
-const service = new ScopeAdminService(new PrismaScopeAdminRepository(stamps), outbox, writer);
+const service = new ScopeAdminService(
+  new PrismaScopeAdminRepository(stamps),
+  outbox,
+  // Real, so a move clears real cache entries — this suite just never reads them back.
+  realAclResolver({ clock, unitOfWork }),
+  writer,
+);
 
 const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
 

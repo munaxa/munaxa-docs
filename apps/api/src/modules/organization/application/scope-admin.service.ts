@@ -22,6 +22,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../core/errors/application-errors';
+import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { OrganizationAudit } from '../domain/audit-actions';
 import { OrganizationNodeKind, type OrganizationNodeKindKey } from '../domain/node-kind';
@@ -65,6 +66,8 @@ export class ScopeAdminService {
   constructor(
     @Inject(SCOPE_ADMIN_REPOSITORY) private readonly scopes: ScopeAdminRepository,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
+    /** Only to clear it: a move rewrites the ancestry the resolver reads — see `moveDepartment`. */
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
     private readonly writer: AdministeredWriter,
   ) {}
 
@@ -469,6 +472,30 @@ export class ScopeAdminService {
         parentId,
         paths: [...rewriteSubtree(subtree, current.path, toPath)],
       });
+
+      /*
+       * The cached answers go first — Slice 36.
+       *
+       * The header of this class already said what the move does: it "rewrites derived data the
+       * ACL resolver reads … every ACL granted along the old chain stops applying to it", and it
+       * publishes `organization.department-moved` "so permission caches drop what they know".
+       * Nothing consumed that event — not the search index consumer, which handles
+       * `library.acl-changed` and `library.folder-moved`, and not the outbox dispatcher. The
+       * caches were never told.
+       *
+       * The dependency is one line in the resolver: `departmentsOf` returns `idsInPath(row.path)`,
+       * so a member of a child department carries its ancestors as ACL subjects and an entry
+       * naming an old parent reaches them until the path changes. `decisionKey` is
+       * `(tenant, user, roles, scope, permission)` and does not mention departments, so the answer
+       * cached before the move was served after it under the very same key — a grant outliving the
+       * reorganisation that removed it.
+       *
+       * Cleared here rather than by giving the event a consumer, for the reason the comment below
+       * gives about the queue: an invalidation that depends on a lane being reachable is an
+       * invalidation that can be lost, and the ACL architecture's own rule is "by prefix, in the
+       * transaction that caused it".
+       */
+      await this.acl.invalidateTenant();
 
       // Published because ancestry changed, so inherited permissions changed with it. Through the
       // outbox, inside this transaction: a cache invalidated for a move that then rolled back is

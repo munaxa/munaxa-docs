@@ -38,6 +38,7 @@ import {
   realAuditWriter,
   realDocumentLibrary,
   realPermissions,
+  realScopeAdmin,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
@@ -845,6 +846,158 @@ describe('a move changes the answer, so it must clear the answer', () => {
     const row = await owner.folder.findUniqueOrThrow({ where: { id: branch } });
     await asAdmin(() => library.libraries.moveFolder(branch, vault, row.version));
 
+    expect(await warm()).toBe(false);
+  });
+});
+
+/**
+ * A department's ancestry is an authorization input, and moving one changes it — Slice 36.
+ *
+ * `ScopeAdminService.moveDepartment` says so itself: "A move rewrites derived data the ACL resolver
+ * reads. Re-parenting a department changes the materialised path of its whole subtree, and every
+ * ACL granted along the old chain stops applying to it … it publishes
+ * `organization.department-moved` so permission caches drop what they know."
+ *
+ * Nothing consumes that event. The search index consumer handles `library.acl-changed` and
+ * `library.folder-moved` and nothing else, and the outbox dispatcher handles `document.created` and
+ * `bulk.operation-queued`. So the caches were never told.
+ *
+ * The dependency is real and is one line: `departmentsOf` returns `idsInPath(row.path)`, so a
+ * member of a child department carries its ancestors as ACL subjects. An entry naming the old
+ * parent reaches them until the path changes — and `decisionKey` is
+ * `(tenant, user, roles, scope, permission)`, which does not mention departments, so the answer
+ * cached before the move is served after it under the very same key.
+ *
+ * Its own company, entity, departments, folder, document and member: nothing here is shared with
+ * the rest of the file, so nothing earlier can decide the outcome.
+ */
+describe('moving a department changes who its members are', () => {
+  let parentA: string;
+  let parentB: string;
+  let child: string;
+  let folderId: string;
+  let documentId: string;
+  let scopes: ReturnType<typeof realScopeAdmin>;
+
+  beforeAll(async () => {
+    // The shared cache, so "the move cleared it" is observable from the warm resolver below.
+    scopes = realScopeAdmin({ clock, unitOfWork, config: appConfig, cache: sharedAclCache });
+
+    const companyId = uuidv7();
+    const entityId = uuidv7();
+    parentA = uuidv7();
+    parentB = uuidv7();
+    child = uuidv7();
+    await owner.company.create({
+      data: { id: companyId, tenantId: TENANT, code: 'MOVE', name: 'Movers', updatedAt: FIXED_NOW },
+    });
+    await owner.entity.create({
+      data: {
+        id: entityId,
+        tenantId: TENANT,
+        companyId,
+        code: 'MOVE-1',
+        name: 'Movers One',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    for (const [id, code, path] of [
+      [parentA, 'PA', parentA],
+      [parentB, 'PB', parentB],
+      [child, 'CH', `${parentA}.${child}`],
+    ] as const) {
+      await owner.department.create({
+        data: {
+          id,
+          tenantId: TENANT,
+          entityId,
+          code,
+          name: code,
+          path,
+          ...(id === child && { parentId: parentA }),
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+    // BOB is a member of the child only. His ancestry is what the entry below reaches him through.
+    await owner.userDepartment.create({
+      data: { tenantId: TENANT, userId: BOB, departmentId: child, isPrimary: true },
+    });
+
+    const folder = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: `Departmental ${uuidv7().slice(-8)}`,
+        inheritAcl: true,
+      }),
+    );
+    folderId = folder.id;
+    documentId = await seedDocument(folderId, 'Departmental procedure');
+
+    // The only thing that grants: an entry naming the *parent* department.
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(folderId), [
+        entry(AclSubjectType.DEPARTMENT, parentA, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+  });
+
+  /** `FOLDER_ONLY_ROLE` grants no `document:view`, so the department entry is the whole grant. */
+  const asMember = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext(contextFor(BOB, [FOLDER_ONLY_ROLE]), work);
+
+  it('reaches a member through the parent, and nobody else', async () => {
+    // The positive control, and its negative half: without this the case below could pass because
+    // everybody was denied all along.
+    const member = await asMember(() =>
+      permissions.resolver.resolve(
+        subject(BOB, FOLDER_ONLY_ROLE),
+        documentScope(documentId),
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+    expect(member.allowed).toBe(true);
+
+    // ALICE is not a member of the child, and this role grants her no tenant-wide view either.
+    const stranger = await asAdmin(() =>
+      permissions.resolver.resolve(
+        subject(ALICE, FOLDER_ONLY_ROLE),
+        documentScope(documentId),
+        Permission.DOCUMENT_VIEW,
+      ),
+    );
+    expect(stranger.allowed).toBe(false);
+  });
+
+  it('stops reaching them once the department is moved out from under it', async () => {
+    const cached = realPermissions({
+      clock,
+      unitOfWork,
+      config: { ...appConfig, acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 } },
+      cache: sharedAclCache,
+    });
+    const warm = async (): Promise<boolean> =>
+      (
+        await asMember(() =>
+          cached.resolver.resolve(
+            subject(BOB, FOLDER_ONLY_ROLE),
+            documentScope(documentId),
+            Permission.DOCUMENT_VIEW,
+          ),
+        )
+      ).allowed;
+
+    // Reachable through the parent, and cached. Asked twice: the second answer is the cached one.
+    expect(await warm()).toBe(true);
+    expect(await warm()).toBe(true);
+
+    const row = await owner.department.findUniqueOrThrow({ where: { id: child } });
+    await asAdmin(() => scopes.moveDepartment(child, parentB, row.version));
+
+    // The member's ancestry no longer contains the department the entry names, so the entry no
+    // longer reaches them. Without an invalidation this is the cached `true` — a grant that
+    // outlives the reorganisation that removed it.
     expect(await warm()).toBe(false);
   });
 });
