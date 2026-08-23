@@ -509,7 +509,22 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     writer,
   );
 
-  const documentRepository = realDocumentRepository(options);
+  /*
+   * The suite's cache reaches the *document repository's* resolver too — Slice 39.
+   *
+   * The two collaborators above already map `aclCache` onto the factory's `cache`; this line did
+   * not, and `realAclResolver` falls back to a `FakeCache` of its own when it is absent. So the
+   * resolver behind `documents.list` held a cache no mutation in the stack could clear, and a suite
+   * that warmed a filter through the list and then performed a write saw the write invalidate a
+   * different map. In the container there is one `CACHE_PORT`, and this is what says so.
+   *
+   * Harmless until now only because every suite using this stack runs it at `cacheTtlSeconds: 0`,
+   * where the resolver reads and writes nothing either way.
+   */
+  const documentRepository = realDocumentRepository({
+    ...options,
+    ...(options.aclCache !== undefined && { cache: options.aclCache }),
+  });
   const documents = new DefaultDocumentService(
     documentRepository,
     new PrismaDocumentActivityRepository(documentRepository),

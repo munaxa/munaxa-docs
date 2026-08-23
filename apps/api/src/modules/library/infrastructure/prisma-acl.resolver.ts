@@ -83,8 +83,10 @@ import {
  * - **Cleared through `invalidateTenant`**, by the transaction that made the change: an ACL edit and
  *   an inheritance change (`AclPermissionService.afterChange`), a folder created with inheritance
  *   broken and a folder moved (`LibraryAdminService`), a document moved (`DocumentService.move`), a
- *   department re-parented (`ScopeAdminService.moveDepartment`) and a department membership changed
- *   (`UserAdminService.update`). Only the first of those is followed by `library.acl-changed`; the
+ *   department re-parented (`ScopeAdminService.moveDepartment`), a department membership changed
+ *   (`UserAdminService.update`), and a folder deleted or restored (`LibraryAdminService`, Slice 39 —
+ *   `brokenInheritancePaths()` reads live folders only, so a subtree's cut leaves the tree with it
+ *   and comes back with it). Only the first of those is followed by `library.acl-changed`; the
  *   rest publish their own event or none, and none of them depends on a consumer running.
  *   A role's permission set joins that list in Slice 38 (`RoleAdminService.update`): Slice 37 put
  *   it in the second group below on the strength of a claim about `capabilitiesFor` that was
