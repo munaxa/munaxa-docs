@@ -529,6 +529,12 @@ beforeEach(async () => {
   if (held === 0) {
     await grantRole(ALICE, approverRoleId);
   }
+  // And her account with it. Slice 28's cases disable her, and a delegator left disabled would
+  // silently refuse every decision the cases after them expect to succeed.
+  await owner.user.updateMany({
+    where: { tenantId: TENANT, id: ALICE },
+    data: { status: 'ACTIVE' },
+  });
 });
 
 // --- The central claim -------------------------------------------------------------------------
@@ -715,6 +721,147 @@ describe('the delegator’s own authority', () => {
     );
     const task = await owner.approvalTask.findUniqueOrThrow({ where: { id: taskId } });
     expect(task.delegationId).toBe(delegationId);
+  });
+
+  /**
+   * The same rule, reached by the other route out of holding a permission — Slice 28.
+   *
+   * A delegator can stop holding `document:approve` two ways: the grant is withdrawn, which the
+   * case above covers, or the account itself is switched off. Only the first refused. `findById`
+   * filters a *deleted* user, so deleting Alice already stopped her conferring anything; disabling
+   * her — the reversible action a tenant reaches for on an offboarding or a suspension pending
+   * investigation — left Bob approving in her name until the delegation's end date. The weaker of
+   * the two administrative actions was the stronger of the two revocations, which is backwards.
+   *
+   * Disabled rather than deleted deliberately: deletion has always worked, and asserting it would
+   * assert the half that was never broken.
+   */
+  it('refuses the delegate the moment the delegator’s account is disabled', async () => {
+    const delegationId = await anActiveDelegation(BOB);
+    const { taskId } = await aSubmittedDocument();
+
+    // Alice keeps the role, the delegation keeps the permission and its period, and the row stays
+    // ACTIVE. The only thing that changed is that she can no longer sign in.
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: ALICE },
+      data: { status: 'DISABLED' },
+    });
+
+    await expect(
+      as(
+        () => workflow.engine.decide({ taskId, decision: TaskDecision.APPROVED, comment: null }),
+        BOB,
+      ),
+    ).rejects.toThrow(/DELEGATOR_LACKS_AUTHORITY/);
+
+    // Nothing was cancelled to achieve that. The refusal is a predicate over the world, exactly as
+    // it is for a withdrawn role, which is why neither needs a job to clean up after it.
+    const row = await owner.delegation.findUniqueOrThrow({ where: { id: delegationId } });
+    expect(row.status).toBe(DelegationStatus.ACTIVE);
+    expect(row.permissions).toContain(Permission.DOCUMENT_APPROVE);
+    const untouched = await owner.approvalTask.findUniqueOrThrow({ where: { id: taskId } });
+    expect(untouched.state).toBe(ApprovalTaskState.PENDING);
+    expect(untouched.delegationId).toBeNull();
+
+    // Re-enabled, and the same delegation authorises again — no new row, no re-approval.
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: ALICE },
+      data: { status: 'ACTIVE' },
+    });
+    await as(
+      () => workflow.engine.decide({ taskId, decision: TaskDecision.APPROVED, comment: null }),
+      BOB,
+    );
+    const decided = await owner.approvalTask.findUniqueOrThrow({ where: { id: taskId } });
+    expect(decided.delegationId).toBe(delegationId);
+  });
+
+  /**
+   * The inbox told the same lie — Slice 28.
+   *
+   * `cover` is the second of the three moments §4's rule is asked at, and the comment above it
+   * says why it exists: "an inbox that showed tasks a delegate would then be refused at decision
+   * time would be an inbox that lies". It read the delegator's grants without asking whether the
+   * delegator was still an account that could act, so it went on offering Alice's work to Bob
+   * after she was switched off — and, once the decision path was fixed, would have offered him
+   * work he was then refused.
+   *
+   * Asserted in both directions in one case: the cover is there while she is active and gone the
+   * moment she is not, so a fix that simply returned nothing would fail the first half.
+   */
+  it('drops a disabled delegator out of the delegate’s cover', async () => {
+    const delegationId = await anActiveDelegation(BOB);
+
+    const before = await as(
+      () =>
+        delegation.gate.coverFor({
+          actorId: BOB,
+          permission: Permission.DOCUMENT_APPROVE,
+          at: clock.now(),
+        }),
+      BOB,
+    );
+    expect(before).toEqual([{ delegationId, delegatorId: ALICE }]);
+
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: ALICE },
+      data: { status: 'DISABLED' },
+    });
+
+    const after = await as(
+      () =>
+        delegation.gate.coverFor({
+          actorId: BOB,
+          permission: Permission.DOCUMENT_APPROVE,
+          at: clock.now(),
+        }),
+      BOB,
+    );
+    expect(after).toEqual([]);
+  });
+
+  /**
+   * The third moment, and the one that runs while the delegator is present — Slice 28.
+   *
+   * An access token outlives a status change by up to its TTL, so somebody disabled mid-session
+   * still holds a token the middleware accepts. Without this, the last thing they could do with it
+   * is hand their authority to somebody who keeps it for a fortnight — cover arranged on the way
+   * out of the door, by an account the tenant had just closed.
+   */
+  it('refuses a disabled delegator arranging new cover', async () => {
+    // Counted rather than asserted at zero: `beforeEach` retires what is ACTIVE, so the requests
+    // earlier cases left awaiting approval are still on the table. What this case is about is that
+    // it adds none of its own.
+    const awaiting = () =>
+      owner.delegation.count({
+        where: {
+          tenantId: TENANT,
+          delegatorId: ALICE,
+          status: DelegationStatus.PENDING_APPROVAL,
+        },
+      });
+    const before = await awaiting();
+
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: ALICE },
+      data: { status: 'DISABLED' },
+    });
+
+    await expect(
+      as(
+        () =>
+          delegation.delegations.request({
+            delegateId: BOB,
+            startsAt: clock.now(),
+            endsAt: new Date(now.getTime() + 86_400_000),
+            permissions: [Permission.DOCUMENT_APPROVE] as never,
+            reason: null,
+          }),
+        ALICE,
+      ),
+    ).rejects.toThrow(/cannot delegate a permission you do not hold/i);
+
+    expect(await awaiting()).toBe(before);
   });
 });
 
