@@ -1011,6 +1011,94 @@ describe('the database’s own defences', () => {
 
 // --- Tenant isolation ----------------------------------------------------------------------
 
+/**
+ * Slice 42 — an upload session belongs to whoever opened it.
+ *
+ * `created_by` has been on `upload_session` since Phase 3, written by `RecordStamps.creation()`
+ * like every other actor column, and `UploadSessionRecord` has carried it into `StorageService`
+ * the whole time. Nothing read it. Both routes that act on a session resolved it by identifier
+ * alone: `document:create` plus somebody else's session identifier was enough to finish their
+ * upload — receiving the `fileObjectId` for bytes this caller never sent, with the blob's audit
+ * row naming them as the uploader — or to abandon it and destroy a transfer in flight.
+ *
+ * The identifier is a `uuidv7` handed only to its creator while the session is open, so this was a
+ * trap rather than an open door. It is closed at the source for Slice 24's reason: an
+ * authenticated, permission-gated route that acts on an object checks that the actor may act on
+ * *that* object, rather than relying on an identifier being hard to learn.
+ */
+describe('an upload session belongs to whoever opened it', () => {
+  /** Alice opens every session here; Bob holds the same role and the same permissions. */
+  async function aliceOpens(marker: string) {
+    const content = aPdf(marker);
+    const target = await as(() =>
+      storage.createUploadSession({
+        filename: `${marker}.pdf`,
+        mimeType: 'application/pdf',
+        sizeBytes: content.length,
+        magicBytes: MAGIC,
+      }),
+    );
+    if (target.alreadyStored !== null) {
+      throw new Error('The fixture uploaded content that already existed.');
+    }
+    const decoded = decodeTransferToken(
+      SIGNING_SECRET,
+      new URL(target.url).searchParams.get('token') ?? '',
+      'PUT',
+      FIXED_NOW,
+    );
+    if (!('grant' in decoded)) {
+      throw new Error('The upload target did not carry a usable transfer capability.');
+    }
+    await localAdapter.beginWrite(decoded.grant.key);
+    await writeFile(localAdapter.partialPathFor(decoded.grant.key), content);
+    await localAdapter.finishWrite(decoded.grant.key);
+    return asId<UploadSessionId>(target.uploadSessionId);
+  }
+
+  it('records who opened it', async () => {
+    // The positive control for the column the guard reads: without this the cases below could pass
+    // because nothing is ever attributed and every caller looks equally unauthorised.
+    const sessionId = await aliceOpens('owner-recorded');
+    const row = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
+    expect(row.createdBy).toBe(ALICE);
+  });
+
+  it('lets the person who opened it finish it', async () => {
+    // The other half of the control: the guard must not refuse the owner.
+    const sessionId = await aliceOpens('owner-completes');
+    const completed = await as(() => storage.completeUploadSession(sessionId, []));
+    expect(completed.fileObjectId).toBeTruthy();
+  });
+
+  it('refuses to let somebody else finish it', async () => {
+    const sessionId = await aliceOpens('stranger-completes');
+
+    // Bob holds `TENANT_ADMIN` in this suite — every permission the product has — so nothing but
+    // the session's own ownership can refuse him. Without the guard he is handed the
+    // `fileObjectId` for bytes Alice sent.
+    await expect(as(() => storage.completeUploadSession(sessionId, []), BOB)).rejects.toThrow(
+      /somebody else/,
+    );
+
+    // And the refusal left the session alone, so Alice can still finish her own upload.
+    const stillOpen = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
+    expect(stillOpen.state).toBe('OPEN');
+    await expect(as(() => storage.completeUploadSession(sessionId, []))).resolves.toBeTruthy();
+  });
+
+  it('refuses to let somebody else abandon it', async () => {
+    const sessionId = await aliceOpens('stranger-abandons');
+
+    await expect(as(() => storage.abandonUploadSession(sessionId), BOB)).rejects.toThrow(
+      /somebody else/,
+    );
+
+    const stillOpen = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
+    expect(stillOpen.state).toBe('OPEN');
+  });
+});
+
 describe('two tenants sharing one database', () => {
   beforeEach(() => {
     // The on-premise shape: one PostgreSQL serving two companies, where a tenant column and a
