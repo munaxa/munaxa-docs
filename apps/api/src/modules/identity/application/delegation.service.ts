@@ -447,6 +447,48 @@ export class DefaultDelegationService implements DelegationService {
         ]);
       }
 
+      /*
+       * Both parties, re-checked at the moment cover comes into force — Slice 29.
+       *
+       * The check above is the same idea applied to the period: a request can go stale between
+       * being made and being approved, and approving a stale one writes an `ACTIVE` row that
+       * authorises nothing. A period is not the only thing that can go stale in that window, and
+       * with `delegation.requireApproval` on it is an unbounded one — the row waits until a manager
+       * happens to look.
+       *
+       * A **delegate** who has been disabled since is the case `refuseUnlessDelegable` already
+       * refuses at request time, in its own words: "a delegation to a disabled account is an
+       * arrangement whose delegate can never sign in, and it would look exactly like cover that is
+       * in place". Approving one produces exactly that row by the other door — and it is worse
+       * here, because the delegator has by now been told their cover is arranged and may be relying
+       * on it. Nobody is covering, and nothing says so.
+       *
+       * A **delegator** who has been disabled since authorises nothing either, since Slice 28 —
+       * but approving anyway leaves an ACTIVE arrangement that would come back to life by itself
+       * the moment the account were re-enabled, with no fresh decision by anybody. Approval is the
+       * control point; it should not be able to pre-authorise cover for an account the tenant has
+       * closed.
+       *
+       * `activeAmong` rather than two reads, and it is the same predicate the request path and the
+       * workflow's participant resolver use — `deleted_at IS NULL AND status = 'ACTIVE'`. Refusing
+       * rather than cancelling: the row stays `PENDING_APPROVAL` and can be approved if the account
+       * comes back, which is the delegator's decision to re-make rather than this method's to
+       * throw away.
+       */
+      const live = new Set(
+        await this.directory.activeAmong([delegation.delegatorId, delegation.delegateId]),
+      );
+      if (!live.has(delegation.delegateId)) {
+        throw new ValidationError('That person can no longer be delegated to.', [
+          { field: 'delegateId', message: 'not active' },
+        ]);
+      }
+      if (!live.has(delegation.delegatorId)) {
+        throw new ValidationError('That person can no longer delegate.', [
+          { field: 'delegatorId', message: 'not active' },
+        ]);
+      }
+
       const moved = await this.delegations.transition({
         id,
         from: [DelegationStatus.PENDING_APPROVAL],

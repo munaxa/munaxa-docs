@@ -529,10 +529,10 @@ beforeEach(async () => {
   if (held === 0) {
     await grantRole(ALICE, approverRoleId);
   }
-  // And her account with it. Slice 28's cases disable her, and a delegator left disabled would
-  // silently refuse every decision the cases after them expect to succeed.
+  // And the accounts with it. Slice 28's cases disable the delegator and Slice 29's disable the
+  // delegate; either left disabled would silently refuse what the cases after them expect to work.
   await owner.user.updateMany({
-    where: { tenantId: TENANT, id: ALICE },
+    where: { tenantId: TENANT, id: { in: [ALICE, BOB] } },
     data: { status: 'ACTIVE' },
   });
 });
@@ -862,6 +862,119 @@ describe('the delegator’s own authority', () => {
     ).rejects.toThrow(/cannot delegate a permission you do not hold/i);
 
     expect(await awaiting()).toBe(before);
+  });
+});
+
+// --- Approval of a request that has gone stale ---------------------------------------------------
+
+/**
+ * The window between asking for cover and getting it — Slice 29.
+ *
+ * With `delegation.requireApproval` on, a request sits in `PENDING_APPROVAL` until a manager
+ * happens to look, which is an unbounded wait. `approve` already re-checks one thing that can go
+ * stale in it — the period — and refuses with the reason rather than writing an `ACTIVE` row that
+ * authorises nothing. These are the other two things that can.
+ */
+describe('approving a request that has gone stale', () => {
+  /** A request, left where the manager would find it. Never approved here — that is the assertion. */
+  async function aPendingRequest(): Promise<DelegationId> {
+    return as(
+      () =>
+        delegation.delegations.request({
+          delegateId: BOB,
+          startsAt: clock.now(),
+          endsAt: new Date(now.getTime() + 7 * 86_400_000),
+          permissions: [Permission.DOCUMENT_APPROVE] as never,
+          reason: null,
+        }),
+      ALICE,
+    );
+  }
+
+  /**
+   * The positive control, first: nothing below is about approval being hard to obtain.
+   *
+   * Without this, a fix that refused every approval would pass both cases that follow.
+   */
+  it('approves the request while both parties can still act', async () => {
+    const id = await aPendingRequest();
+
+    await as(() => delegation.delegations.approve(id), MANAGER);
+
+    const row = await owner.delegation.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe(DelegationStatus.ACTIVE);
+  });
+
+  /**
+   * `refuseUnlessDelegable` refuses this at request time and says why: a delegation to a disabled
+   * account "would look exactly like cover that is in place". Approving one produced that row by
+   * the other door — and worse, because by then the delegator has been told their cover is
+   * arranged and may have gone on leave relying on it.
+   */
+  it('refuses when the delegate has been disabled since asking', async () => {
+    const id = await aPendingRequest();
+
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: BOB },
+      data: { status: 'DISABLED' },
+    });
+
+    await expect(as(() => delegation.delegations.approve(id), MANAGER)).rejects.toThrow(
+      /can no longer be delegated to/i,
+    );
+
+    // Refused, not cancelled: the request survives for the delegator to pursue with somebody who
+    // can actually cover, or for the same person if the account comes back.
+    const row = await owner.delegation.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe(DelegationStatus.PENDING_APPROVAL);
+    expect(row.approvedById).toBeNull();
+  });
+
+  /**
+   * The delegator's side. Since Slice 28 this delegation would authorise nothing anyway — but
+   * approving it leaves an ACTIVE arrangement that comes back to life by itself the moment the
+   * account is re-enabled, with nobody deciding that a second time.
+   */
+  it('refuses when the delegator has been disabled since asking', async () => {
+    const id = await aPendingRequest();
+
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: ALICE },
+      data: { status: 'DISABLED' },
+    });
+
+    await expect(as(() => delegation.delegations.approve(id), MANAGER)).rejects.toThrow(
+      /can no longer delegate/i,
+    );
+
+    const row = await owner.delegation.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe(DelegationStatus.PENDING_APPROVAL);
+    expect(row.approvedById).toBeNull();
+  });
+
+  /**
+   * And the arrangement is still approvable once the account is back — which is what makes the
+   * refusal a re-check rather than a cancellation.
+   */
+  it('approves the same request once the account is active again', async () => {
+    const id = await aPendingRequest();
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: BOB },
+      data: { status: 'DISABLED' },
+    });
+    await expect(as(() => delegation.delegations.approve(id), MANAGER)).rejects.toThrow(
+      /can no longer be delegated to/i,
+    );
+
+    await owner.user.updateMany({
+      where: { tenantId: TENANT, id: BOB },
+      data: { status: 'ACTIVE' },
+    });
+    await as(() => delegation.delegations.approve(id), MANAGER);
+
+    const row = await owner.delegation.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe(DelegationStatus.ACTIVE);
+    expect(row.approvedById).toBe(MANAGER);
   });
 });
 
