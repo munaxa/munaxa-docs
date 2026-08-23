@@ -86,9 +86,12 @@ import {
  *   department re-parented (`ScopeAdminService.moveDepartment`) and a department membership changed
  *   (`UserAdminService.update`). Only the first of those is followed by `library.acl-changed`; the
  *   rest publish their own event or none, and none of them depends on a consumer running.
+ *   A role's permission set joins that list in Slice 38 (`RoleAdminService.update`): Slice 37 put
+ *   it in the second group below on the strength of a claim about `capabilitiesFor` that was
+ *   wrong — see `decisionKey`.
  * - **Not cleared, because the key already separates the answers**: a user's roles, which are in
- *   `decisionKey` — see the note there, which also says what a role's *permission set* can and
- *   cannot do while an entry survives it.
+ *   `decisionKey` and in `filterKey`. Gaining or losing a role changes the key, so no entry
+ *   written under the old set can be read under the new one.
  *
  * The TTL is a backstop for the case prefix invalidation cannot see: another process's write to
  * shared ancestry. Setting `ACL_CACHE_TTL_SECONDS=0` disables the cache, and a cold cache produces
@@ -527,15 +530,20 @@ export class PrismaAclResolver implements AclResolver {
      * the product is `AclPermissionService.afterChange`, which runs on ACL entry and inheritance
      * writes.
      *
-     * What actually makes the omission safe is that a role's permission set reaches a decision only
-     * through step 6's tenant-wide grant, and `RbacGuard` gates every route on that same grant
-     * before this resolver is asked — from the token's `permissions` claim, which a role edit
-     * rewrites and which Slice 31 made refusable when it is stale. So a decision cached under an
-     * unchanged set of role *ids* cannot let a route through that `RbacGuard` would refuse.
+     * A role's permission set reaches a decision only through step 6's tenant-wide grant, and
+     * `RbacGuard` gates the route on that same grant before this resolver is asked — from the
+     * token's `permissions` claim, which a role edit rewrites and which Slice 31 made refusable
+     * when it is stale. That is what keeps a *decision* cached under an unchanged set of role ids
+     * from letting a route through that `RbacGuard` would refuse.
      *
-     * What a stale entry can still do is answer `capabilitiesFor` — the capability list a screen
-     * draws its buttons from — with a permission the role has just lost, for the length of the ACL
-     * TTL. That offers an action the next request then refuses; it grants nothing.
+     * Slice 37 added a second paragraph here saying the residue was `capabilitiesFor` answering
+     * with a permission a role had just lost. That was wrong twice over, and Slice 38 corrected
+     * both halves. `capabilitiesFor` reads no cache at all — it calls `resolveMany` directly, so
+     * it has always seen the current permission set. The entry that *did* go stale is
+     * `visibilityFilter`'s, whose key is the same minus the scope and whose tenant-wide region
+     * comes from `grantedAmong` reading `role_permission`. And it is not a button: the reports
+     * gate on `report:view` and their own keys while filtering rows on `document:view`, so the
+     * stale region is reach, not decoration. `RoleAdminService.update` now clears the prefix.
      */
     const roles = [...subject.roleIds].map(String).sort().join(',');
     return `acl:${tenantId}:d:${String(subject.userId)}:${roles}:${scope.type}:${String(scope.id)}:${permission}`;

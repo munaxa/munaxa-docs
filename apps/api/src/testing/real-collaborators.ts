@@ -77,6 +77,7 @@ import { PrismaDelegationRepository } from '../modules/identity/infrastructure/p
 import { PrismaUserDirectory } from '../modules/identity/infrastructure/prisma-user.directory';
 import { UserAdminService } from '../modules/identity/application/user-admin.service';
 import { PrismaIdentityAdminRepository } from '../modules/identity/infrastructure/prisma-identity-admin.repository';
+import { RoleAdminService } from '../modules/identity/application/role-admin.service';
 import { FolderContentsRegistry } from '../modules/library/application/folder-contents.port';
 import { LibraryAdminService } from '../modules/library/application/library-admin.service';
 import { PrismaLibraryAdminRepository } from '../modules/library/infrastructure/prisma-library-admin.repository';
@@ -357,6 +358,29 @@ export function realUserAdmin(options: {
   return new UserAdminService(
     new PrismaIdentityAdminRepository(stamps, cache),
     new ScryptPasswordHasher(),
+    writer,
+    realAclResolver({ ...options, cache }),
+  );
+}
+
+/**
+ * Administering roles — Slice 38.
+ *
+ * Beside `realUserAdmin` and for the same boundary reason. The resolver is here because changing a
+ * role's permission set changes what `visibilityFilter`'s tenant-wide region covers, and the key
+ * names the role's identifiers rather than what it grants; pass the suite's cache to observe that
+ * the write cleared it.
+ */
+export function realRoleAdmin(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+}): RoleAdminService {
+  const { stamps, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const cache = options.cache ?? new FakeCache(options.clock);
+  return new RoleAdminService(
+    new PrismaIdentityAdminRepository(stamps, cache),
     writer,
     realAclResolver({ ...options, cache }),
   );
@@ -1776,6 +1800,8 @@ export function realReporting(options: {
   readonly config: AppConfig;
   readonly storage: DefaultStorageService;
   readonly subjects?: ReportSubjectReader;
+  /** Share it with whatever performs a write, to observe that the write cleared it — Slice 38. */
+  readonly cache?: CachePort;
 }): ReportingStack {
   const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const acl = realAclResolver(options);

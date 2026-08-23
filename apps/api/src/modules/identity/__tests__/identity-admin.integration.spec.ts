@@ -76,7 +76,11 @@ const users = new UserAdminService(
   writer,
   realAclResolver({ clock, unitOfWork, config, cache }),
 );
-const roles = new RoleAdminService(repository, writer);
+const roles = new RoleAdminService(
+  repository,
+  writer,
+  realAclResolver({ clock, unitOfWork, config, cache }),
+);
 /** The placement this suite provisions into — declared, because the identifier is configuration now. */
 const PROVISION_SLUG = `identity-admin-${String(Date.now())}`;
 const PROVISION_TENANT = uuidv7();
