@@ -3,6 +3,7 @@ import 'reflect-metadata';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { updateFolderSchema } from '@edms/contracts';
 import { ScopeType, type ScopeTypeKey, type TenantId, type UserId, asId } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
@@ -499,16 +500,41 @@ describe('folders', () => {
       asAdmin(() => libraries.moveFolder(folder.id, target.id, undefined)),
     ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
 
-    // Breaking inheritance restricts a subtree, and the previous state is not recoverable by anyone who
-    // did not see it.
-    await expect(
-      asAdmin(() => libraries.updateFolder(folder.id, { inheritAcl: false }, undefined)),
-    ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
-
     // A rename is an ordinary edit, and stays blind-writable.
     await expect(
       asAdmin(() => libraries.updateFolder(folder.id, { name: 'Renamed' }, undefined)),
     ).resolves.toMatchObject({ name: 'Renamed' });
+  });
+
+  /**
+   * This case used to require `If-Match` for `updateFolder({ inheritAcl: false })` and said why:
+   * "breaking inheritance restricts a subtree, and the previous state is not recoverable by anyone
+   * who did not see it". The guard was right about the operation and wrong about the door —
+   * Slice 33 removed the door, so there is nothing left here to require a version for.
+   */
+  it('does not accept inheritance on the folder route at all', async () => {
+    // Refused at the boundary rather than ignored behind it. `.partial()` strips a key the object
+    // does not declare, so a patch of nothing but `inheritAcl` becomes an empty patch — and the
+    // schema's own refinement is what turns that into a refusal instead of a `200` for a change
+    // that never happened.
+    expect(updateFolderSchema.safeParse({ inheritAcl: false }).success).toBe(false);
+
+    // And a real edit alongside it changes the name and leaves the flag alone.
+    const library = await aLibrary();
+    const folder = await asAdmin(() =>
+      libraries.createFolder({
+        libraryId: library.id,
+        parentId: library.rootFolderId,
+        name: 'Still inheriting',
+        inheritAcl: true,
+      }),
+    );
+    const patch = updateFolderSchema.parse({ name: 'Renamed again', inheritAcl: false });
+    expect(patch).not.toHaveProperty('inheritAcl');
+
+    const updated = await asAdmin(() => libraries.updateFolder(folder.id, patch, folder.version));
+    expect(updated.name).toBe('Renamed again');
+    expect(updated.inheritAcl).toBe(true);
   });
 });
 

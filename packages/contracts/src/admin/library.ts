@@ -118,11 +118,23 @@ export const createFolderSchema = z.object({
   inheritAcl: z.boolean().default(true),
 });
 
+/**
+ * A folder's editable fields — **not** `inheritAcl`, since Slice 33.
+ *
+ * Breaking inheritance is `PUT /v1/scopes/folder/{id}/inheritance`, gated on
+ * `document:permission:manage` rather than on this route's `folder:manage`, writing
+ * `INHERITANCE_BROKEN` rather than `FOLDER_CHANGED`, and invalidating the permission caches. This
+ * schema carried the field and this route wrote it, which meant all three could be skipped.
+ *
+ * Removed rather than ignored in the service: `.partial()` on a Zod object strips a key it does
+ * not declare, so a caller sending `inheritAcl` here would have been answered `200` for a change
+ * that never happened — and on this particular flag, believing you have restricted a subtree when
+ * you have not is the worse of the two failures.
+ */
 export const updateFolderSchema = z
   .object({
     name: folderNameSchema,
     description: descriptionSchema.nullable(),
-    inheritAcl: z.boolean(),
   })
   .partial()
   .refine((patch) => Object.keys(patch).length > 0, 'Name at least one field to change.');
