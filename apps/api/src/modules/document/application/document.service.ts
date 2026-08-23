@@ -32,6 +32,7 @@ import {
   ValidationError,
   VersionConflictError,
 } from '../../../core/errors/application-errors';
+import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { READ_AUDIT_BUFFER, type ReadAuditBuffer } from '../../../core/audit/read-audit.port';
 import {
@@ -133,6 +134,8 @@ export class DefaultDocumentService {
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(READ_AUDIT_BUFFER) private readonly readAudit: ReadAuditBuffer,
     @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
+    /** Only to clear it: a move changes the chain a decision is resolved over — see `move`. */
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
     private readonly writer: AdministeredWriter,
   ) {}
 
@@ -452,6 +455,20 @@ export class DefaultDocumentService {
       }
 
       await this.documents.move(asId<DocumentId>(id), current.version, folder.id);
+      /*
+       * The move changed which folder's ACL chain decides this document — Slice 34.
+       *
+       * `08 §8` lists "a document move" among the writes that clear `acl:<tenant>:`, and the ACL
+       * resolver's own header repeats it. Nothing did: this service holds no cache, and the event
+       * below is consumed only by the search index. A decision cached before the move went on
+       * answering from the old folder's chain for the length of the TTL, so a document moved into
+       * a restricted folder stayed reachable by everyone who had already opened it.
+       *
+       * Cleared before the event is published, which is the order `AclPermissionService.afterChange`
+       * established: the window in which a stale decision could be read closes before anything
+       * downstream reacts to the move.
+       */
+      await this.acl.invalidateTenant();
       await this.outbox.publish([
         documentMovedEvent(asId<AnyId>(id), {
           documentId: id,

@@ -29,7 +29,6 @@ import {
   checkVersion,
 } from '../../../core/persistence';
 import { requireContext } from '../../../core/tenancy/tenant-context';
-import { CACHE_PORT, type CachePort } from '../../../ports/cache.port';
 import { LibraryAudit } from '../domain/audit-actions';
 import { aclChangedEvent } from '../domain/events';
 import {
@@ -90,7 +89,6 @@ export class DefaultPermissionService implements PermissionService {
     @Inject(ACL_SUBJECT_NAME_READER) private readonly subjectNames: AclSubjectNameReader,
     @Inject(SCOPE_CHAIN_READER) private readonly chains: ScopeChainReader,
     @Inject(ACL_RESOLVER) private readonly resolver: AclResolver,
-    @Inject(CACHE_PORT) private readonly cache: CachePort,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     private readonly writer: AdministeredWriter,
   ) {}
@@ -388,8 +386,7 @@ export class DefaultPermissionService implements PermissionService {
    * re-reading through a cache that still holds the old answer, and materialising it.
    */
   private async afterChange(scope: ScopeRef, changed: readonly AclEntryRecord[]): Promise<void> {
-    const { tenantId } = requireContext();
-    await this.cache.deleteByPrefix(`acl:${tenantId}:`);
+    await this.resolver.invalidateTenant();
     await this.outbox.publish([
       aclChangedEvent(scope.id, {
         scopeType: scope.type,

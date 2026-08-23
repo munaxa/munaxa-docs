@@ -30,7 +30,7 @@ import { requireTransaction } from '../../../core/prisma';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { AccessDenialRecorder } from '../../../core/authorization/access-denial.recorder';
-import { RecordingMetrics } from '../../../testing/fake-ports';
+import { FakeCache, RecordingMetrics } from '../../../testing/fake-ports';
 import { seedRoleGrant } from '../../../testing/acl-seed';
 import { PrismaAclSubjectNameReader } from '../infrastructure/prisma-acl-subject-name.reader';
 import {
@@ -109,6 +109,16 @@ let library: DocumentLibraryStack;
 let permissions: ReturnType<typeof realPermissions>;
 
 let rootFolderId: string;
+/** The library the tree hangs from — needed by the move cases, which create a folder of their own. */
+let libraryId: string;
+/**
+ * One cache shared by the stack that performs a move and the resolver that reads the answer.
+ *
+ * Two resolver instances over one cache is what two processes have over one Redis, and it is the
+ * arrangement that makes "the move cleared it" observable at all: a stack with a cache of its own
+ * would invalidate honestly and invisibly.
+ */
+const sharedAclCache = new FakeCache(clock);
 let openFolderId: string;
 let closedFolderId: string;
 let documentTypeId: string;
@@ -219,6 +229,7 @@ beforeAll(async () => {
     clock,
     unitOfWork,
     config: appConfig,
+    aclCache: sharedAclCache,
     registry: everyTenantRegistry(APP_URL),
     storageRoot: root,
     signingSecret: 'an-integration-suite-secret-of-at-least-32',
@@ -613,6 +624,7 @@ describe('the cache is an optimisation only', () => {
         ...appConfig,
         acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 },
       },
+      cache: sharedAclCache,
     });
     const scope = documentScope(openDocumentId);
 
@@ -654,6 +666,7 @@ describe('the cache is an optimisation only', () => {
       clock,
       unitOfWork,
       config: { ...appConfig, acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 } },
+      cache: sharedAclCache,
     });
     const scope = documentScope(openDocumentId);
     const warm = async (): Promise<boolean> =>
@@ -689,6 +702,104 @@ describe('the cache is an optimisation only', () => {
     // And back, so the folder leaves this file as the rest of it expects to find it.
     await asAdmin(() => cached.permissions.setInheritance(asId<FolderId>(openFolderId), true));
     expect(await warm()).toBe(true);
+  });
+});
+
+/**
+ * Moving a thing changes what reaches it — Slice 34.
+ *
+ * `08 §8` and the resolver's own header both list the writes that clear `acl:<tenant>:`, and both
+ * name a move: "an ACL edit, an inheritance change, a role's permissions, a user's roles, a
+ * department membership, **a document move**". The chain cache is documented in the same header as
+ * the half that changes when "a folder's ancestry changes when somebody moves it, which is a
+ * `library.folder-moved` event".
+ *
+ * Neither move clears anything. `DocumentService` and `LibraryAdminService` hold no cache at all,
+ * and the only consumer of `library.folder-moved` is the search index.
+ */
+describe('a move changes the answer, so it must clear the answer', () => {
+  /**
+   * Its own folders and its own documents, every time.
+   *
+   * The first version of these cases reached for `openFolderId` and reset its entries and its
+   * inheritance. That flipped two later cases from denied to allowed — an earlier test writes ACL
+   * entries on the root, and restoring inheritance let a user-level grant through — which is the
+   * same ordering coupling Slice 33's cache case was rewritten to avoid. Nothing shared is touched
+   * here.
+   */
+  async function aFolder(parentId: string, inheritAcl: boolean): Promise<string> {
+    const created = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId,
+        name: `Move ${uuidv7().slice(-10)}`,
+        inheritAcl,
+      }),
+    );
+    return created.id;
+  }
+
+  function warmStack() {
+    return realPermissions({
+      clock,
+      unitOfWork,
+      config: { ...appConfig, acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 } },
+      cache: sharedAclCache,
+    });
+  }
+
+  function reader(cached: ReturnType<typeof realPermissions>, documentId: string) {
+    return async (): Promise<boolean> =>
+      (
+        await asAlice(() =>
+          cached.resolver.resolve(
+            subject(ALICE, READER_ROLE),
+            documentScope(documentId),
+            Permission.DOCUMENT_VIEW,
+          ),
+        )
+      ).allowed;
+  }
+
+  it('invalidates when a document moves into a folder that breaks inheritance', async () => {
+    const cached = warmStack();
+    const home = await aFolder(rootFolderId, true);
+    const vault = await aFolder(rootFolderId, false);
+    const moving = await seedDocument(home, 'Movable procedure');
+    const warm = reader(cached, moving);
+
+    // Reachable where it is, and cached. Asked twice, so the second answer is the cached one.
+    expect(await warm()).toBe(true);
+    expect(await warm()).toBe(true);
+
+    const before = await owner.document.findUniqueOrThrow({
+      where: { id: moving },
+      select: { version: true },
+    });
+    await asAdmin(() => library.documents.move(moving, vault, before.version));
+
+    // It now sits under a folder that stops the walk, so the role grant no longer reaches it.
+    // Without the invalidation this is the cached `true`, and every reader who had already opened
+    // the document keeps it for the length of the TTL.
+    expect(await warm()).toBe(false);
+  });
+
+  it('invalidates when a folder moves under one that breaks inheritance', async () => {
+    const cached = warmStack();
+    const home = await aFolder(rootFolderId, true);
+    const vault = await aFolder(rootFolderId, false);
+    const branch = await aFolder(home, true);
+    const carried = await seedDocument(branch, 'Carried along');
+    const warm = reader(cached, carried);
+
+    expect(await warm()).toBe(true);
+    expect(await warm()).toBe(true);
+
+    // The subtree's ancestry changes, which is the case the resolver's header names by event.
+    const row = await owner.folder.findUniqueOrThrow({ where: { id: branch } });
+    await asAdmin(() => library.libraries.moveFolder(branch, vault, row.version));
+
+    expect(await warm()).toBe(false);
   });
 });
 
@@ -745,6 +856,7 @@ async function seedTree(): Promise<void> {
     }),
   );
   rootFolderId = library_.rootFolderId;
+  libraryId = library_.id;
 
   const open = await asAdmin(() =>
     library.libraries.createFolder({

@@ -367,6 +367,14 @@ export interface DocumentLibraryOptions {
   readonly documentSettings?: Readonly<Record<string, unknown>>;
   /** Overrides for Phase 10's retention settings — the recycle-bin window, the blob grace. */
   readonly retentionSettings?: Readonly<Record<string, unknown>>;
+  /**
+   * The cache the document service's ACL resolver clears when a document moves — Slice 34.
+   *
+   * Shared with a suite's own resolver so that "the move cleared it" is observable, which is the
+   * arrangement two processes have over one Redis. Omitted, the stack gets a cache of its own and
+   * the invalidation is real but unobserved.
+   */
+  readonly aclCache?: CachePort;
 }
 
 /**
@@ -411,6 +419,12 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     new PrismaLibraryAdminRepository(stamps),
     realOrganizationService(),
     outbox,
+    realAclResolver({
+      clock: options.clock,
+      unitOfWork: options.unitOfWork,
+      config: options.config,
+      ...(options.aclCache !== undefined && { cache: options.aclCache }),
+    }),
     folderContents,
     writer,
   );
@@ -452,6 +466,12 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     // different zone passes `documentSettings`, exactly as `retentionSettings` overrides Phase
     // 10's — the catalogue default (`UTC`) otherwise.
     settingsReaderFor(options.documentSettings ?? {}),
+    realAclResolver({
+      clock: options.clock,
+      unitOfWork: options.unitOfWork,
+      config: options.config,
+      ...(options.aclCache !== undefined && { cache: options.aclCache }),
+    }),
     writer,
   );
 
@@ -717,7 +737,6 @@ export function realPermissions(options: {
       new PrismaAclSubjectNameReader(),
       chains,
       resolver,
-      cache,
       outbox,
       writer,
     ),
@@ -1010,6 +1029,7 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
               new PrismaLibraryAdminRepository(stamps),
               realOrganizationService(),
               outbox,
+              realAclResolver({ clock: options.clock, unitOfWork: options.unitOfWork }),
               new FolderContentsRegistry(),
               writer,
             ),

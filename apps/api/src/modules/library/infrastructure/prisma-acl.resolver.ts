@@ -536,6 +536,20 @@ export class PrismaAclResolver implements AclResolver {
     return `acl:${tenantId}:v:${String(subject.userId)}:${roles}:${permission}`;
   }
 
+  /**
+   * The one definition of the tenant's cache namespace — Slice 34.
+   *
+   * Every key below is built from it and `invalidateTenant` clears it, so the two cannot drift.
+   * `AclPermissionService.afterChange` spelled the same string a second time until this existed.
+   */
+  private tenantPrefix(): string {
+    return `acl:${requireContext().tenantId}:`;
+  }
+
+  async invalidateTenant(): Promise<void> {
+    await this.cache.deleteByPrefix(this.tenantPrefix());
+  }
+
   private chainKey(scope: ScopeRef): string {
     return `acl:${requireContext().tenantId}:c:${scope.type}:${String(scope.id)}`;
   }
