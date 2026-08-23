@@ -75,13 +75,24 @@ import {
  *   a folder's ancestry changes when somebody moves it, which is a `library.folder-moved` event.
  * - **The decision**, per `(tenant, user, scope, permission)` — §8's key exactly.
  *
- * **Invalidation is by prefix, in the transaction that caused it**, never by TTL alone. Every write
- * that could change an answer — an ACL edit, an inheritance change, a role's permissions, a user's
- * roles, a department membership, a document move — clears `acl:<tenant>:` and is followed by the
- * `library.acl-changed` event that re-projects the search index. The TTL is a backstop for the case
- * prefix invalidation cannot see: another process's write to shared ancestry. Setting
- * `ACL_CACHE_TTL_SECONDS=0` disables the cache, and a cold cache produces the same answer — which is
- * §8's own requirement and is asserted rather than asserted-to.
+ * **Invalidation is by prefix, in the transaction that caused it**, never by TTL alone. This
+ * paragraph used to list "a role's permissions, a user's roles" among the writes that clear
+ * `acl:<tenant>:`, and neither ever did — `RoleAdminService` holds no cache at all. Slices 33 to 37
+ * went through that list one write at a time; what is true now:
+ *
+ * - **Cleared through `invalidateTenant`**, by the transaction that made the change: an ACL edit and
+ *   an inheritance change (`AclPermissionService.afterChange`), a folder created with inheritance
+ *   broken and a folder moved (`LibraryAdminService`), a document moved (`DocumentService.move`), a
+ *   department re-parented (`ScopeAdminService.moveDepartment`) and a department membership changed
+ *   (`UserAdminService.update`). Only the first of those is followed by `library.acl-changed`; the
+ *   rest publish their own event or none, and none of them depends on a consumer running.
+ * - **Not cleared, because the key already separates the answers**: a user's roles, which are in
+ *   `decisionKey` — see the note there, which also says what a role's *permission set* can and
+ *   cannot do while an entry survives it.
+ *
+ * The TTL is a backstop for the case prefix invalidation cannot see: another process's write to
+ * shared ancestry. Setting `ACL_CACHE_TTL_SECONDS=0` disables the cache, and a cold cache produces
+ * the same answer — which is §8's own requirement and is asserted rather than asserted-to.
  *
  * ## What it still does not do
  *

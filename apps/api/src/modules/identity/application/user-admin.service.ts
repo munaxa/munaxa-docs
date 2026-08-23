@@ -15,6 +15,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../core/errors/application-errors';
+import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { IdentityAdminAudit, SecurityAudit } from '../domain/audit-actions';
 import { checkPassword } from '../domain/password-policy';
@@ -62,6 +63,7 @@ export class UserAdminService {
     @Inject(IDENTITY_ADMIN_REPOSITORY) private readonly people: IdentityAdminRepository,
     @Inject(PASSWORD_HASHER) private readonly passwords: PasswordHasher,
     private readonly writer: AdministeredWriter,
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
   ) {}
 
   list(request: UserListRequest): Promise<Page<UserAdminRow>> {
@@ -98,6 +100,8 @@ export class UserAdminService {
       const id = this.writer.clock.nextId();
       await this.people.insertUser({ id, email, emailNormalized, displayName });
       await this.people.replaceRoles(id, input.roleIds);
+      // No cache invalidation beside this one, unlike `update` below: `id` was minted a line ago,
+      // so no decision can have been cached under a key naming it.
       await this.people.replaceDepartments(id, input.departments);
 
       return {
@@ -175,6 +179,25 @@ export class UserAdminService {
         // Department membership is a *subject* the ACL resolver matches on, so changing it changes
         // reach even when no role changed.
         await this.people.bumpPermissionVersion([id]);
+        /*
+         * And the cached answers go with it — Slice 37.
+         *
+         * The bump above is necessary and is not sufficient, because the two freshnesses are not
+         * the same freshness. It makes the access token refusable, so the next request arrives
+         * carrying a *newly minted* one; `decisionKey` is
+         * `(tenant, user, roles, scope, permission)` and names no department, so that new token
+         * resolves to the very same key and is served the decision cached before the membership
+         * changed. A person removed from a department keeps every grant the department gave them
+         * for the length of the ACL TTL, and a person added to one is refused for just as long.
+         *
+         * Departments stay out of the key on purpose. `departmentsOf` derives them from the
+         * database rather than taking them from the subject — Slice 24 removed the supplied list
+         * precisely because it was an unvalidated authorization input — so putting them in the key
+         * would mean performing the read the cache exists to avoid before every lookup, and would
+         * give the membership a second home to drift from. `08 §8`'s rule is the other one:
+         * invalidate by prefix, in the transaction that caused it.
+         */
+        await this.acl.invalidateTenant();
       }
 
       return {

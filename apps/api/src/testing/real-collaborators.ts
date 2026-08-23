@@ -75,7 +75,8 @@ import { DefaultDelegationService } from '../modules/identity/application/delega
 import { PrismaCredentialRepository } from '../modules/identity/infrastructure/prisma-credential.repository';
 import { PrismaDelegationRepository } from '../modules/identity/infrastructure/prisma-delegation.repository';
 import { PrismaUserDirectory } from '../modules/identity/infrastructure/prisma-user.directory';
-import type { UserAdminService } from '../modules/identity/application/user-admin.service';
+import { UserAdminService } from '../modules/identity/application/user-admin.service';
+import { PrismaIdentityAdminRepository } from '../modules/identity/infrastructure/prisma-identity-admin.repository';
 import { FolderContentsRegistry } from '../modules/library/application/folder-contents.port';
 import { LibraryAdminService } from '../modules/library/application/library-admin.service';
 import { PrismaLibraryAdminRepository } from '../modules/library/infrastructure/prisma-library-admin.repository';
@@ -331,6 +332,33 @@ export function realScopeAdmin(options: {
     outbox,
     realAclResolver(options),
     writer,
+  );
+}
+
+/**
+ * Administering people — Slice 37.
+ *
+ * Here for `realScopeAdmin`'s reason: a suite outside `identity/` may not import that module's
+ * `infrastructure/`, and the membership write this composes is one that other modules' suites need
+ * to perform. The resolver is passed the suite's cache so "the change cleared it" is observable;
+ * the repository is given the same one, because `bumpPermissionVersion` clears its own entry there.
+ *
+ * A real `ScryptPasswordHasher`, like every other collaborator in this file. It is only reached by
+ * `setPassword`, so a suite that never sets one never pays for it.
+ */
+export function realUserAdmin(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+}): UserAdminService {
+  const { stamps, writer } = realWriteStack(options.clock, options.unitOfWork);
+  const cache = options.cache ?? new FakeCache(options.clock);
+  return new UserAdminService(
+    new PrismaIdentityAdminRepository(stamps, cache),
+    new ScryptPasswordHasher(),
+    writer,
+    realAclResolver({ ...options, cache }),
   );
 }
 
