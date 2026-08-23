@@ -20,6 +20,10 @@ import { ProvisioningService } from '../application/provisioning.service';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
 import { personOptionQuerySchema } from '@edms/contracts';
 
+import { Reflector } from '@nestjs/core';
+import type { ExecutionContext } from '@nestjs/common';
+
+import { AuthenticationGuard } from '../../../core/auth/authentication.guard';
 import { FakeCache } from '../../../testing/fake-ports';
 import { CachedPermissionVersionReader } from '../infrastructure/cached-permission-version.reader';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
@@ -233,6 +237,90 @@ describe('creating a user', () => {
         }),
       ),
     ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+});
+
+/**
+ * Ending an account, and what "ending" reaches — Slice 32.
+ *
+ * `revokeSessions` ends the refresh families, which is what a *session* is in the database. It
+ * cannot reach an access token: that is a signed statement in somebody's browser, and until
+ * Slice 31 nothing in the product could reach one either. Now something can, and these are the
+ * three revocations that were still waiting out the token's life.
+ *
+ * Asserted through the guard rather than through the counter, because the counter moving is not
+ * the claim — the claim is the sentence on `setStatus`: "a disabled user holds no active session".
+ */
+describe('ending an account', () => {
+  /** The refusal `AuthenticationGuard` gives, for a token carrying `version`. */
+  async function accepts(userId: string, version: number): Promise<boolean> {
+    const guard = new AuthenticationGuard(new Reflector(), versions);
+    const request = {
+      getHandler: () => () => {},
+      getClass: () => class Controller {},
+    } as unknown as ExecutionContext;
+    try {
+      return await runWithContext(
+        { ...contextFor(asId<UserId>(userId)), permissionVersion: version },
+        () => guard.canActivate(request),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The positive control, first: a token minted now is accepted, so every refusal below is about
+   * the administrative act and not about the harness.
+   */
+  it('accepts the token an active user is holding', async () => {
+    const user = await aUser('Untouched');
+    const minted = await asAdmin(() => versions.currentFor(asId<UserId>(user.id)));
+
+    await expect(accepts(user.id, minted ?? 0)).resolves.toBe(true);
+  });
+
+  it('stops accepting the token of somebody who has been disabled', async () => {
+    const user = await aUser('Disabled');
+    // A password and an activation first, because activating somebody without one is refused and a
+    // disabled account is only interesting if it could sign in beforehand. Both of those *also*
+    // end sessions, so the version a token would carry is read afterwards — reading it first made
+    // this case pass with the disable bump removed, which is what mutation testing is for.
+    await asAdmin(() => users.setPassword(user.id, STRONG_PASSWORD, undefined));
+    const withPassword = await asAdmin(() => users.get(user.id));
+    await asAdmin(() => users.setStatus(user.id, UserStatus.ACTIVE, withPassword.version));
+    const active = await asAdmin(() => users.get(user.id));
+    const minted = (await asAdmin(() => versions.currentFor(asId<UserId>(user.id)))) ?? 0;
+    await expect(accepts(user.id, minted)).resolves.toBe(true);
+
+    await asAdmin(() => users.setStatus(user.id, UserStatus.DISABLED, active.version));
+
+    // The token is still in their browser and still signed. Nothing about it changed.
+    await expect(accepts(user.id, minted)).resolves.toBe(false);
+  });
+
+  it('stops accepting the token of somebody who has been deleted', async () => {
+    const user = await aUser('Deleted');
+    const minted = (await asAdmin(() => versions.currentFor(asId<UserId>(user.id)))) ?? 0;
+
+    await asAdmin(() => users.delete(user.id, user.version));
+
+    await expect(accepts(user.id, minted)).resolves.toBe(false);
+  });
+
+  /**
+   * The compromise response. `setPassword` says why it revokes: "the person whose password this
+   * was may not be the person who should keep the session open, and that is usually why an
+   * administrator is here". A token that outlives the reset by a quarter of an hour is exactly the
+   * thing that sentence is about.
+   */
+  it('stops accepting the token held when an administrator resets the password', async () => {
+    const user = await aUser('Reset');
+    const minted = (await asAdmin(() => versions.currentFor(asId<UserId>(user.id)))) ?? 0;
+
+    await asAdmin(() => users.setPassword(user.id, STRONG_PASSWORD, undefined));
+
+    await expect(accepts(user.id, minted)).resolves.toBe(false);
   });
 });
 

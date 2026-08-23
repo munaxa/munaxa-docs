@@ -228,6 +228,10 @@ export class UserAdminService {
       // Every session ends. The person whose password this was may not be the person who should keep
       // the session open, and that is usually why an administrator is here.
       await this.people.revokeSessions(id, 'PASSWORD_SET_BY_ADMINISTRATOR');
+      // Including the one they are using right now — Slice 32. This is the compromise response,
+      // and an intruder holding a live access token kept it for a quarter of an hour after the
+      // reset that was meant to remove them.
+      await this.people.bumpPermissionVersion([id]);
 
       // An invited user who now has a password can sign in, which is what ACTIVE means.
       if (current.status === UserStatus.INVITED) {
@@ -248,7 +252,10 @@ export class UserAdminService {
     });
   }
 
-  /** Enables or disables an account. A disabled user holds no active session. */
+  /**
+   * Enables or disables an account. A disabled user holds no active session — Slice 32 made that
+   * true of the access token as well as of the refresh families.
+   */
   async setStatus(
     id: string,
     status: Extract<UserStatusKey, 'ACTIVE' | 'DISABLED'>,
@@ -271,6 +278,12 @@ export class UserAdminService {
       await this.people.updateUser(id, current.version, { status });
       if (status === UserStatus.DISABLED) {
         await this.people.revokeSessions(id, 'ACCOUNT_DISABLED');
+        // And the access token they are holding — Slice 32. `revokeSessions` ends the refresh
+        // families, which is what a session is in the database; a signed token in a browser is not
+        // reachable that way and outlived this call by up to its whole lifetime. Bumping the
+        // version is what `AuthenticationGuard` refuses on, so the sentence on this method — "a
+        // disabled user holds no active session" — is now true of both halves.
+        await this.people.bumpPermissionVersion([id]);
       }
 
       return {
@@ -300,6 +313,9 @@ export class UserAdminService {
       // A deleted account must not keep a live session; the row is gone from every list, and the
       // token would still verify.
       await this.people.revokeSessions(id, 'ACCOUNT_DELETED');
+      // "The token would still verify" was the whole of the problem, and it stayed true for the
+      // token's remaining life until Slice 31 gave the guard something authoritative to ask.
+      await this.people.bumpPermissionVersion([id]);
 
       return {
         result: undefined,
