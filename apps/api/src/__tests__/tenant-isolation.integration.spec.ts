@@ -10,7 +10,7 @@ import type { AppConfig } from '../core/config/configuration';
 import type { Logger } from '../core/observability/logger';
 import { PrismaUnitOfWork } from '../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../core/tenancy/tenant-context';
-import { realOrganizationService } from '../testing/real-collaborators';
+import { realAclResolver, realOrganizationService } from '../testing/real-collaborators';
 import { ScopeAdminService } from '../modules/organization/application/scope-admin.service';
 import { PrismaScopeAdminRepository } from '../modules/organization/infrastructure/prisma-scope-admin.repository';
 import { realWriteStack } from '../testing/real-collaborators';
@@ -75,7 +75,13 @@ const clock = {
 const databases = placedTenants(config, logger, { [ACME]: APP_URL, [RIVAL]: SECOND_APP_URL });
 const unitOfWork = new PrismaUnitOfWork(databases);
 const { stamps, outbox, writer } = realWriteStack(clock, unitOfWork);
-const scopes = new ScopeAdminService(new PrismaScopeAdminRepository(stamps), outbox, writer);
+const scopes = new ScopeAdminService(
+  new PrismaScopeAdminRepository(stamps),
+  outbox,
+  // Real, so a move clears real cache entries — this suite just never reads them back.
+  realAclResolver({ clock, unitOfWork }),
+  writer,
+);
 const organization = realOrganizationService();
 
 /** Direct connections, so an assertion can look at what is *in* each database rather than through the app. */

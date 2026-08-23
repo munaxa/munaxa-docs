@@ -47,6 +47,8 @@ import { StorageCheckpointStore } from '../modules/audit/infrastructure/storage-
 import { ChainedAuditWriter } from '../modules/audit/infrastructure/chained-audit.writer';
 import { PrismaAuditRepository } from '../modules/audit/infrastructure/prisma-audit.repository';
 import { DefaultOrganizationService } from '../modules/organization/application/organization.service';
+import { ScopeAdminService } from '../modules/organization/application/scope-admin.service';
+import { PrismaScopeAdminRepository } from '../modules/organization/infrastructure/prisma-scope-admin.repository';
 import { PrismaScopeRepository } from '../modules/organization/infrastructure/prisma-scope.repository';
 import type { AppConfig } from '../core/config/configuration';
 import type { AntivirusPort } from '../ports/antivirus.port';
@@ -306,6 +308,32 @@ function silentLogger(): Logger {
  * same belief as the code under test, so it could not catch the case that matters: a caller naming a
  * node of the wrong kind, or one belonging to another tenant.
  */
+/**
+ * The organisation tree's write side — Slice 36.
+ *
+ * Composed here rather than in a suite because `no-restricted-imports` stops anything under
+ * `src/modules/**` reaching into another module's `infrastructure/`, which is the rule that keeps
+ * cross-module calls on application services and domain events. This file is the sanctioned place
+ * for that composition and already does it for the document library.
+ *
+ * The resolver is here only so a move can clear the ACL cache; pass the cache a suite reads from
+ * if it wants to observe that, and omit it otherwise.
+ */
+export function realScopeAdmin(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly config?: AppConfig;
+  readonly cache?: CachePort;
+}): ScopeAdminService {
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
+  return new ScopeAdminService(
+    new PrismaScopeAdminRepository(stamps),
+    outbox,
+    realAclResolver(options),
+    writer,
+  );
+}
+
 export function realOrganizationService(): DefaultOrganizationService {
   return new DefaultOrganizationService(new PrismaScopeRepository());
 }
