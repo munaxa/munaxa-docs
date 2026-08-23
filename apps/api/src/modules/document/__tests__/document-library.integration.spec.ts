@@ -1087,6 +1087,36 @@ describe('an upload session belongs to whoever opened it', () => {
     await expect(as(() => storage.completeUploadSession(sessionId, []))).resolves.toBeTruthy();
   });
 
+  it('refuses to abandon an upload that was already finished', async () => {
+    const sessionId = await aliceOpens('abandon-after-complete');
+    const completed = await as(() => storage.completeUploadSession(sessionId, []));
+    expect(completed.fileObjectId).toBeTruthy();
+
+    // Completion refuses a session it has already closed — `'That upload has already been
+    // finished.'` — and abandoning one is the same claim on the same row. Without the refusal the
+    // call succeeds and writes a `DELETED / abandoned` audit row for an upload that completed, and
+    // whose blob is durable and attachable.
+    await expect(as(() => storage.abandonUploadSession(sessionId))).rejects.toThrow(
+      /already been finished/,
+    );
+
+    // And the refusal left the completed session exactly as it was.
+    const row = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
+    expect(row.state).toBe('COMPLETED');
+    expect(row.fileObjectId).toBe(completed.fileObjectId);
+  });
+
+  it('refuses to abandon the same upload twice', async () => {
+    const sessionId = await aliceOpens('abandon-twice');
+    await as(() => storage.abandonUploadSession(sessionId));
+
+    // The second call has nothing left to claim. One refusal for both terminal states, so the
+    // answer never says which of the two a caller's identifier reached.
+    await expect(as(() => storage.abandonUploadSession(sessionId))).rejects.toThrow(
+      /already been finished/,
+    );
+  });
+
   it('refuses to let somebody else abandon it', async () => {
     const sessionId = await aliceOpens('stranger-abandons');
 

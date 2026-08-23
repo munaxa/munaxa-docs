@@ -355,8 +355,29 @@ export class DefaultStorageService implements StorageService {
         throw new NotFoundError('The requested upload');
       }
       this.refuseAnotherPersonsUpload(session);
-      if (session.state === UploadSessionState.OPEN) {
-        await this.discard(session.targetKey, id);
+      /*
+       * A session can only be abandoned once, and only if nothing else finished it — Slice 43.
+       *
+       * `UploadSessionRepository.settle` has answered "was I the one to move it out of `OPEN`"
+       * since Phase 3, and says why: *"a client retrying a request whose response it never saw must
+       * not do either of those twice"* — the two being creating a blob and bumping a reference
+       * count. All three call sites discarded that answer, and completion did not notice because it
+       * refuses a non-`OPEN` session at the top. This method had no such check, so abandoning an
+       * upload that had already completed returned success and wrote a `DELETED / abandoned` audit
+       * row for a blob that is durable and attached — a record that materially misstates what
+       * happened. Abandoning twice wrote two of them.
+       *
+       * The claim is the check rather than a second read of `session.state`: re-reading the row we
+       * already hold would refuse the sequential case and still lose the race against a completion
+       * committing beside it, which is exactly what the compare-and-set exists to decide.
+       *
+       * One refusal for both terminal states, and the same sentence `completeUploadSession` uses,
+       * so the answer never tells a caller which of the two their identifier reached.
+       */
+      if (!(await this.discard(session.targetKey, id))) {
+        throw new ValidationError('That upload has already been finished.', [
+          { field: 'state', message: session.state },
+        ]);
       }
       return {
         result: undefined,
@@ -757,9 +778,25 @@ export class DefaultStorageService implements StorageService {
     });
   }
 
-  private async discard(key: string, id: UploadSessionId): Promise<void> {
-    await this.storage.delete(key);
-    await this.sessions.settle(id, UploadSessionState.ABORTED, null);
+  /**
+   * Aborts a session and removes what it staged. Answers whether it was the one to abort it.
+   *
+   * **The claim comes first** — Slice 43. `settle` carries `state: OPEN` in its predicate, which is
+   * what makes it a compare-and-set rather than an assignment, and taking it before touching the
+   * store is what stops an abandon from deleting bytes a completion running beside it is still
+   * copying. The order was the other way round, which was safe only because nothing read the
+   * answer.
+   *
+   * The completion path calls this on a size or digest mismatch and then throws, so its `settle`
+   * rolls back with the rest of that transaction and the object is gone either way — the same net
+   * effect as before, and the reason that caller needs no change.
+   */
+  private async discard(key: string, id: UploadSessionId): Promise<boolean> {
+    const claimed = await this.sessions.settle(id, UploadSessionState.ABORTED, null);
+    if (claimed) {
+      await this.storage.delete(key);
+    }
+    return claimed;
   }
 
   private async require(id: FileObjectId): Promise<FileObjectRecord> {
