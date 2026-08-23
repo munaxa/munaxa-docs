@@ -740,6 +740,12 @@ describe('deleting a folder takes its documents out of the index', () => {
   }, 60_000);
 
   it('puts it back when the folder is restored', async () => {
+    // The precondition, asserted rather than assumed. Without this the case passes whenever the
+    // delete published nothing — it would be reading a document that was never removed and calling
+    // it a restoration. That is the shape Slice 40's own mutation run exposed: suppressing the
+    // delete publish left this case green.
+    expect(await finds(insideId)).toBe(false);
+
     const before = await outboxIds();
     const row = await owner.folder.findUniqueOrThrow({ where: { id: folderId } });
     await asAlice(() => library.libraries.restoreFolder(folderId, row.version));
