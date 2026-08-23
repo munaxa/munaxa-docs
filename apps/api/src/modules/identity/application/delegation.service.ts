@@ -36,6 +36,7 @@ import {
   delegationRequestedEvent,
   delegationRevokedEvent,
 } from '../domain/events';
+import { canSignIn } from '../domain/user';
 import {
   CREDENTIAL_REPOSITORY,
   type CredentialRepository,
@@ -147,8 +148,7 @@ export class DefaultDelegationService implements DelegationService {
     // Read once for the whole set rather than per candidate: somebody covering for one person
     // under two overlapping delegations is unusual but legal, and asking Identity the same
     // question twice inside one decision would be two reads of the same row.
-    const delegator = await this.credentials.findById(input.delegatorId);
-    const delegatorHolds = delegator?.permissions ?? [];
+    const delegatorHolds = await this.holdingsOf(input.delegatorId);
 
     let refusal: DelegationRefusalKey = DelegationRefusal.NONE;
     for (const delegation of matching) {
@@ -202,7 +202,7 @@ export class DefaultDelegationService implements DelegationService {
     for (const delegation of covering) {
       let permissions = held.get(delegation.delegatorId);
       if (permissions === undefined) {
-        permissions = (await this.credentials.findById(delegation.delegatorId))?.permissions ?? [];
+        permissions = await this.holdingsOf(delegation.delegatorId);
         held.set(delegation.delegatorId, permissions);
       }
       if (permissions.includes(input.permission)) {
@@ -735,6 +735,41 @@ export class DefaultDelegationService implements DelegationService {
    * first, except that the chain walk comes last because it is the only one that reads the whole
    * tenant.
    */
+  /**
+   * What a delegator can pass on *right now* — Slice 28.
+   *
+   * The one place the question "what does the delegator hold" is answered, because §4's rule is
+   * checked at three moments and answering it three ways is how they drift apart. Two of the three
+   * ask it about somebody who is not present: `authorise` decides a task for an absent delegator,
+   * and `cover` builds a delegate's inbox from absent delegators' grants.
+   *
+   * **An account that cannot sign in holds nothing to pass on.** `findById` already filters a
+   * deleted user, so a *deleted* delegator conferred nothing the moment they were deleted; a
+   * *disabled* one kept conferring everything until the delegation's end date, which inverted the
+   * two administrative actions — the reversible one was the weaker of the two. Disabling is what a
+   * tenant reaches for on an offboarding or a suspension pending investigation, and it is exactly
+   * the case where authority continuing by proxy is worst: the delegate goes on approving in the
+   * name of an account the tenant has just switched off, and the trail records the approval as the
+   * disabled person's own task.
+   *
+   * `canSignIn` rather than a new predicate, because it is already the product's answer to "may
+   * this stored user act": `AuthenticationService.refresh` ends a session with it,
+   * `ApiClientService` refuses to issue and to authenticate with it, and `activeAmong` — the same
+   * `status = ACTIVE` as a query — is what keeps a disabled person out of a workflow's
+   * participants and off the receiving end of a new delegation. This was the fourth such path and
+   * the only one that did not ask.
+   *
+   * Refusing here needs no new refusal key: `DELEGATOR_LACKS_AUTHORITY` already means "the
+   * delegator does not hold this", which is true of somebody who holds nothing at all. Nothing is
+   * written and no delegation is cancelled — the row stays `ACTIVE` and starts authorising again
+   * the moment the account is re-enabled, which is the same shape as the role-withdrawal case and
+   * the reason neither needs a compensating job.
+   */
+  private async holdingsOf(delegatorId: UserId): Promise<readonly PermissionKey[]> {
+    const delegator = await this.credentials.findById(delegatorId);
+    return delegator !== null && canSignIn(delegator.status) ? delegator.permissions : [];
+  }
+
   private async refuseUnlessDelegable(input: {
     readonly delegatorId: UserId;
     readonly delegateId: UserId;
@@ -758,8 +793,7 @@ export class DefaultDelegationService implements DelegationService {
     // authority check — that one happens again at decision time, and it is the one that counts.
     // Refusing here as well is a courtesy: it stops somebody arranging cover that was never going
     // to work, rather than letting them find out when a decision is refused.
-    const delegator = await this.credentials.findById(input.delegatorId);
-    const holds = new Set<string>(delegator?.permissions ?? []);
+    const holds = new Set<string>(await this.holdingsOf(input.delegatorId));
     const notHeld = input.permissions.filter((permission) => !holds.has(permission));
     if (notHeld.length > 0) {
       throw new ValidationError('You cannot delegate a permission you do not hold.', [
