@@ -22,12 +22,14 @@ import { sanitizeFilename } from '@edms/utils';
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import {
   ContentNotScannedError,
+  ForbiddenError,
   NotFoundError,
   StorageUnavailableError,
   UnsupportedContentError,
   ValidationError,
 } from '../../../core/errors/application-errors';
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
+import { requireContext } from '../../../core/tenancy/tenant-context';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { ANTIVIRUS_PORT, type AntivirusPort } from '../../../ports/antivirus.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
@@ -61,6 +63,7 @@ import {
   type IssuedUploadTarget,
   type StorageService,
   UPLOAD_SESSION_REPOSITORY,
+  type UploadSessionRecord,
   type UploadSessionRepository,
 } from './ports';
 
@@ -223,6 +226,7 @@ export class DefaultStorageService implements StorageService {
       if (session === null) {
         throw new NotFoundError('The requested upload');
       }
+      this.refuseAnotherPersonsUpload(session);
       if (session.state !== UploadSessionState.OPEN) {
         throw new ValidationError('That upload has already been finished.', [
           { field: 'state', message: session.state },
@@ -350,6 +354,7 @@ export class DefaultStorageService implements StorageService {
       if (session === null) {
         throw new NotFoundError('The requested upload');
       }
+      this.refuseAnotherPersonsUpload(session);
       if (session.state === UploadSessionState.OPEN) {
         await this.discard(session.targetKey, id);
       }
@@ -776,6 +781,35 @@ export class DefaultStorageService implements StorageService {
     // that belongs with the rest of the tenant's configuration, and `narrowPolicy` is the seam it
     // will attach to — it can only ever restrict what is here.
     return narrowPolicy(defaultUploadPolicy(this.config.storage.maxUploadBytes), {});
+  }
+
+  /**
+   * An upload session belongs to whoever opened it — Slice 42.
+   *
+   * `created_by` has been on the row since Phase 3, written by `RecordStamps.creation()` like every
+   * other actor column, and `UploadSessionRecord` has carried it to this class the whole time.
+   * Nothing read it. Both routes that act on a session — completing it and abandoning it — resolved
+   * it by identifier alone, so `document:create` plus somebody else's session identifier was enough
+   * to finish their upload and be handed the `fileObjectId` for bytes this caller never sent, with
+   * the blob's own audit row naming them as the uploader; or to abandon it and destroy a transfer
+   * in flight.
+   *
+   * The identifier is a `uuidv7` returned only to its creator while the session is open, so this
+   * was a trap rather than an open door. That is the same standing Slice 24 gave the resolver's
+   * supplied-subject list, and the same answer: an authenticated, permission-gated route that acts
+   * on an object should check that the actor may act on *that* object, rather than rely on the
+   * identifier being hard to learn.
+   *
+   * A null `created_by` is not refused. The column is nullable because a system context has no
+   * actor, and a row written before this check existed carries nothing to compare — refusing those
+   * would break an upload in flight across a deployment for no gain, and they age out with the
+   * session's own expiry.
+   */
+  private refuseAnotherPersonsUpload(session: UploadSessionRecord): void {
+    const { userId } = requireContext();
+    if (session.createdBy !== null && session.createdBy !== userId) {
+      throw new ForbiddenError('act on an upload somebody else started');
+    }
   }
 
   private expiry(): Date {
