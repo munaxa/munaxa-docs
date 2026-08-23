@@ -296,7 +296,7 @@ export class PrismaDocumentRepository implements DocumentRepository {
         deletedAt: null,
         folder: { OR: [{ path: input.path }, { path: { startsWith: `${input.path}.` } }] },
       },
-      select: { id: true, documentNumber: true, retentionPolicyId: true },
+      select: { id: true, documentNumber: true, retentionPolicyId: true, status: true },
     });
     if (rows.length === 0) {
       return [];
@@ -313,7 +313,7 @@ export class PrismaDocumentRepository implements DocumentRepository {
   async listCascade(cascadeId: string): Promise<readonly CascadedDocument[]> {
     return requireTransaction().document.findMany({
       where: { tenantId: this.tenantId(), deleteCascadeId: cascadeId, deletedAt: { not: null } },
-      select: { id: true, documentNumber: true, retentionPolicyId: true },
+      select: { id: true, documentNumber: true, retentionPolicyId: true, status: true },
     });
   }
 

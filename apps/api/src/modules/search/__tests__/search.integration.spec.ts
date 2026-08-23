@@ -588,6 +588,170 @@ describe('projection and the permission predicate', () => {
   }, 60_000);
 });
 
+/**
+ * Slice 40 — a folder's delete cascade, and the index it never told.
+ *
+ * `PrismaSearchSourceReader.factsFor` states the invariant: "Soft-deleted and purged documents are
+ * not findable: the entry is removed, never filtered at query time — an unfindable row in the index
+ * is a leak waiting for a predicate bug." The query really does not filter — `aclClauses` is
+ * tenant, then the subject overlap, then the caller's own filters — so the removal is the whole of
+ * it, and the removal only happens when something asks for a projection.
+ *
+ * `DocumentService.delete` asks, by publishing `document.deleted`. The folder cascade did not.
+ * `DocumentFolderContentsParticipant` opens by saying it is "a document delete with a different
+ * trigger", and it was — the hold, the revisions, the references and the retention schedule are all
+ * there — but it ended at the retention call and published nothing.
+ *
+ * It looked covered, because usually it was. `RetentionScheduler.onTrigger` publishes
+ * `retention.scheduled`, which routes to the search lane and resolves to the same document. But
+ * `proposeSchedule` returns null, and publishes nothing at all, for a numbered document with no
+ * `ON_DELETE` policy — the ordinary controlled record. So the incidental cover was inverted: the
+ * documents most worth hiding were the ones that missed it.
+ *
+ * Asserted through search itself, with the events the lane consumes driven through the projection
+ * exactly as the consumer drives them — not by calling `project` on an identifier the test already
+ * knows, which would assert the mechanism and skip the trigger that was missing.
+ */
+describe('deleting a folder takes its documents out of the index', () => {
+  let folderId: string;
+  let libraryId: string;
+  let insideId: DocumentId;
+  let outsideId: DocumentId;
+  const TITLE = `Cascaded welding instruction ${uuidv7().slice(-8)}`;
+
+  beforeAll(async () => {
+    const root = await owner.folder.findUniqueOrThrow({ where: { id: rootFolderId } });
+    libraryId = root.libraryId;
+    const folder = await asAlice(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: `Cascade ${uuidv7().slice(-8)}`,
+        inheritAcl: true,
+      }),
+    );
+    folderId = folder.id;
+
+    insideId = await documentIn(folderId, TITLE);
+    // A second document outside the folder, so "not found" cannot mean the index was emptied.
+    outsideId = await documentIn(
+      rootFolderId,
+      `Untouched welding instruction ${uuidv7().slice(-8)}`,
+    );
+
+    /*
+     * Numbered, and with no retention policy — which is what makes `proposeSchedule` return null
+     * and publish nothing. A draft would have taken the recycle-bin branch, published
+     * `retention.scheduled`, and been re-projected by accident.
+     */
+    for (const id of [insideId, outsideId]) {
+      await owner.document.update({
+        where: { id },
+        // `ck_document_numbered` requires the two to travel together, which is the database saying
+        // the same thing `proposeSchedule` does: a number is what stops it being a draft.
+        data: {
+          documentNumber: `CASCADE-${uuidv7().slice(-8)}`,
+          numberedAt: FIXED_NOW,
+          retentionPolicyId: null,
+        },
+      });
+    }
+
+    await project(insideId);
+    await project(outsideId);
+  }, 120_000);
+
+  async function documentIn(parentId: string, title: string): Promise<DocumentId> {
+    // Distinct bytes per document: identical content is refused as a duplicate, which is its own
+    // correct behaviour and not what this case is about.
+    const created = await createDocument(
+      title,
+      await realPdf([`Welding instruction body for ${title}.`]),
+      'welding.pdf',
+      'application/pdf',
+    );
+    await owner.document.update({
+      where: { id: created.documentId },
+      data: { folderId: parentId },
+    });
+    return created.documentId;
+  }
+
+  /** Every outbox row that exists right now, by identifier. */
+  async function outboxIds(): Promise<Set<string>> {
+    const rows = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT },
+      select: { id: true },
+    });
+    return new Set(rows.map((row) => row.id));
+  }
+
+  /**
+   * The search lane, over the rows one mutation added — and only those.
+   *
+   * Scoped by identifier rather than by timestamp because this suite's clock is frozen, and scoped
+   * at all because draining *every* `document.*` row would project the `document.created` row this
+   * fixture already wrote. That would remove the entry whether or not the delete published
+   * anything, which is a case that passes for the wrong reason.
+   */
+  async function drainSearchLane(before: Set<string>): Promise<void> {
+    const rows = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, id: { notIn: [...before] } },
+      select: { eventType: true, payload: true },
+    });
+    for (const row of rows) {
+      if (!row.eventType.startsWith('document.')) {
+        continue;
+      }
+      const payload = row.payload as { documentId?: string };
+      if (payload.documentId !== undefined) {
+        await project(asId<DocumentId>(payload.documentId));
+      }
+    }
+  }
+
+  const finds = async (id: DocumentId): Promise<boolean> => {
+    const found = await searchAs(asAlice, 'welding instruction');
+    return found.results.hits.some((hit) => hit.documentId === id);
+  };
+
+  it('finds both documents while they are live', async () => {
+    // The positive control, both halves: the one that will be deleted and the one that will not.
+    expect(await finds(insideId)).toBe(true);
+    expect(await finds(outsideId)).toBe(true);
+  }, 60_000);
+
+  it('stops finding the one whose folder was deleted, and keeps the other', async () => {
+    const before = await outboxIds();
+    const row = await owner.folder.findUniqueOrThrow({ where: { id: folderId } });
+    await asAlice(() => library.libraries.deleteFolder(folderId, row.version));
+
+    // The document is in the recycle bin, which is gated on `document:restore`.
+    const deleted = await owner.document.findUniqueOrThrow({ where: { id: insideId } });
+    expect(deleted.deletedAt).not.toBeNull();
+
+    // Nothing here names the document: the lane is driven from whatever the transaction published,
+    // which is the step that was missing. Without it there is no `document.deleted` row to find and
+    // the entry survives — title, body and highlights — for anyone who could read it before.
+    await drainSearchLane(before);
+
+    expect(await finds(insideId)).toBe(false);
+    expect(await finds(outsideId)).toBe(true);
+  }, 60_000);
+
+  it('puts it back when the folder is restored', async () => {
+    const before = await outboxIds();
+    const row = await owner.folder.findUniqueOrThrow({ where: { id: folderId } });
+    await asAlice(() => library.libraries.restoreFolder(folderId, row.version));
+
+    await drainSearchLane(before);
+
+    // The other direction: a restored document nothing re-projected would stay out of the index it
+    // was removed from, unfindable until some later edit happened to put it back.
+    expect(await finds(insideId)).toBe(true);
+  }, 60_000);
+});
+
 describe('Arabic', () => {
   let arabicId: DocumentId;
 
