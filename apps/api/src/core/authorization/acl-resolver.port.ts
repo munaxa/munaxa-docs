@@ -32,6 +32,20 @@ export interface Decision {
 }
 
 export interface AclResolver {
+  /**
+   * Clears every cached answer for the acting tenant — Slice 34.
+   *
+   * On the resolver because the resolver owns the keys. `08 §8` requires invalidation "by prefix,
+   * in the transaction that caused it", and the prefix is an implementation detail of the cache
+   * this port sits in front of: a caller that spelled it itself would be a second definition of
+   * something that must never disagree with the first.
+   *
+   * Callers are the writes that change an answer without writing an ACL entry — a document moved
+   * to another folder, a folder moved to another parent. Both change the chain a decision is
+   * resolved over while leaving every entry, role and membership exactly where it was.
+   */
+  invalidateTenant(): Promise<void>;
+
   resolve(
     subject: AuthorizationSubject,
     scope: ScopeRef,

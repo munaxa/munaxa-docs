@@ -27,6 +27,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../core/errors/application-errors';
+import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import {
@@ -80,6 +81,8 @@ export class LibraryAdminService {
     @Inject(LIBRARY_ADMIN_REPOSITORY) private readonly libraries: LibraryAdminRepository,
     @Inject(ORGANIZATION_SERVICE) private readonly organization: OrganizationService,
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
+    /** Only to clear it: a move rewrites the subtree's ancestry — see `moveFolder`. */
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
     private readonly contents: FolderContentsRegistry,
     private readonly writer: AdministeredWriter,
   ) {}
@@ -454,8 +457,18 @@ export class LibraryAdminService {
         nodes: rewritten,
       });
 
-      // Ancestry changed, so inherited permissions changed with it — and so will the ACL fingerprints
-      // the search index carries once there are documents to index.
+      /*
+       * Ancestry changed, so inherited permissions changed with it — and so will the ACL
+       * fingerprints the search index carries once there are documents to index.
+       *
+       * Which is why the cached answers go first — Slice 34. The resolver's own header names this
+       * case: the chain is cached "per (tenant, scope)" because it is "the half that changes least:
+       * a folder's ancestry changes when somebody moves it, which is a `library.folder-moved`
+       * event". Nothing acted on that event but the search index, so every decision and every
+       * chain resolved over the old ancestry — for the whole subtree, since `rewriteSubtree` moves
+       * the descendants too — survived until the TTL.
+       */
+      await this.acl.invalidateTenant();
       await this.outbox.publish([
         folderMovedEvent(asId<AnyId>(id), {
           folderId: id,
