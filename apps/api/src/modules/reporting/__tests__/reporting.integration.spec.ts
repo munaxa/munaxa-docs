@@ -28,12 +28,14 @@ import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { seedRoleGrant } from '../../../testing/acl-seed';
+import { FakeCache } from '../../../testing/fake-ports';
 import {
   type DocumentLibraryStack,
   type ReportingStack,
   realDocumentLibrary,
   realPermissions,
   realReporting,
+  realRoleAdmin,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { ExportFormat } from '../domain/report-catalogue';
@@ -513,6 +515,172 @@ describe('an unknown parameter is refused rather than ignored', () => {
 });
 
 // --- Fixtures ---------------------------------------------------------------------------------
+
+/**
+ * Slice 38 — what a role grants, and the reach cached under a key that names only which roles.
+ *
+ * `filterKey` is `(tenant, user, roles, permission)`. The roles in it are *identifiers*: a person
+ * gaining or losing a role gets a different key, but a role whose permission set is rewritten keeps
+ * the same one. `computeVisibilityFilter` asks `grantedAmong` — a read of `role_permission` — and
+ * turns a tenant-wide grant into a region covering the whole tenant, so that region outlives the
+ * grant that produced it for the length of the ACL TTL.
+ *
+ * `RoleAdminService.update` bumps every holder's `permission_version`, and that is the sessions
+ * half: the access token is refused and a fresh one issued. The fresh one carries the same user and
+ * the same roles, so it resolves to the same key.
+ *
+ * **`RbacGuard` is not the backstop here, and the reports are why.** It refuses a route on the
+ * permissions in the token; `report-catalogue.ts` declares `deleted-documents` as
+ * `[report:view, document:restore]` and `expired-documents` as `[report:view, retention:manage]`,
+ * and both filter their rows through `visibilityFilter(subject, document:view)`. Take
+ * `document:view` off a role and its holders still pass every check those reports make. What they
+ * are then served is a cached tenant-wide reach.
+ *
+ * Proven through the report itself rather than through the filter, so the guard is in the picture:
+ * `ReportingService.run` performs its own `capabilitiesFor` check first, and that check passes —
+ * correctly, because the permissions the report declares are still held.
+ */
+describe('a role losing a permission loses the reach cached under it', () => {
+  /** Holds `document:view` to begin with. The revocation is hers. */
+  const CARA = asId<UserId>(uuidv7());
+  /** Never holds it — the control that says the filter is what gates the rows. */
+  const DIRK = asId<UserId>(uuidv7());
+  const REACH_ROLE = uuidv7();
+  const NO_VIEW_ROLE = uuidv7();
+
+  const TITLE = `Withdrawn procedure ${uuidv7().slice(-8)}`;
+
+  /** A real TTL over one cache, shared by the stack that reads and the service that writes. */
+  const sharedCache = new FakeCache(clock);
+  let warm: ReportingStack;
+  let roleAdmin: ReturnType<typeof realRoleAdmin>;
+
+  beforeAll(async () => {
+    const warmConfig = {
+      ...appConfig,
+      acl: { cacheTtlSeconds: 60, maxSubjectEntries: 5_000 },
+    } as unknown as AppConfig;
+    warm = realReporting({
+      clock,
+      unitOfWork,
+      config: warmConfig,
+      storage: library.storage,
+      cache: sharedCache,
+    });
+    roleAdmin = realRoleAdmin({ clock, unitOfWork, config: warmConfig, cache: sharedCache });
+
+    for (const [id, name] of [
+      [CARA, 'cara'],
+      [DIRK, 'dirk'],
+    ] as const) {
+      await owner.user.create({
+        data: {
+          id,
+          tenantId: TENANT,
+          email: `${id}@reporting.test`,
+          emailNormalized: `${id}@reporting.test`,
+          displayName: name,
+          status: 'ACTIVE',
+          updatedAt: FIXED_NOW,
+        },
+      });
+    }
+    // The two roles differ in exactly one key, and it is not one the report requires.
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: REACH_ROLE,
+      key: 'REACH',
+      userIds: [CARA],
+      permissions: [Permission.REPORT_VIEW, Permission.DOCUMENT_RESTORE, Permission.DOCUMENT_VIEW],
+      now: FIXED_NOW,
+    });
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: NO_VIEW_ROLE,
+      key: 'REACH_WITHOUT_VIEW',
+      userIds: [DIRK],
+      permissions: [Permission.REPORT_VIEW, Permission.DOCUMENT_RESTORE],
+      now: FIXED_NOW,
+    });
+
+    // Its own folder and its own document, hung from the library root rather than from a folder
+    // another case writes entries on, so nothing shared decides this.
+    const root = await owner.folder.findFirstOrThrow({
+      where: { tenantId: TENANT, libraryId, parentId: null },
+    });
+    const folder = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: root.id,
+        name: `Withdrawn ${uuidv7().slice(-8)}`,
+        inheritAcl: true,
+      }),
+    );
+    const type = await owner.documentType.findFirstOrThrow({ where: { tenantId: TENANT } });
+    const documentId = await seedDocument(folder.id, type.id, TITLE);
+    // Deleted, because `deleted-documents` is the report whose declared permissions do not include
+    // `document:view` while its rows are still filtered by it.
+    await owner.document.update({
+      where: { id: documentId },
+      data: { deletedAt: FIXED_NOW, deletedBy: ADMIN },
+    });
+  });
+
+  const titlesFor = async (userId: UserId, roleId: string): Promise<readonly string[]> => {
+    const rows = await runWithContext(contextFor(userId, [roleId]), () =>
+      warm.reports.run('deleted-documents', {}, page),
+    );
+    return rows.data.map((row) => String(row['title']));
+  };
+
+  it('shows the document to a caller whose role grants document:view, and to nobody else', async () => {
+    // The positive control, both halves. Dirk passes the report's own gate — `report:view` and
+    // `document:restore` — and is still shown nothing, which is what makes the case below about
+    // reach rather than about the report being empty for everyone.
+    expect(await titlesFor(CARA, REACH_ROLE)).toContain(TITLE);
+    expect(await titlesFor(DIRK, NO_VIEW_ROLE)).not.toContain(TITLE);
+  });
+
+  it('stops showing it once the permission is taken off the role', async () => {
+    // Asked twice: the second answer is the cached filter, so what follows is about an entry that
+    // exists rather than about a lookup that happens to repeat.
+    expect(await titlesFor(CARA, REACH_ROLE)).toContain(TITLE);
+    expect(await titlesFor(CARA, REACH_ROLE)).toContain(TITLE);
+
+    const before = await owner.user.findUniqueOrThrow({ where: { id: CARA } });
+    const role = await owner.role.findUniqueOrThrow({ where: { id: REACH_ROLE } });
+    await asAdmin(() =>
+      roleAdmin.update(
+        REACH_ROLE,
+        { permissions: [Permission.REPORT_VIEW, Permission.DOCUMENT_RESTORE] },
+        role.version,
+      ),
+    );
+
+    // The bump happened — and on its own it changes nothing here, because the token it refuses is
+    // replaced by one carrying the same user and the same role identifiers.
+    const after = await owner.user.findUniqueOrThrow({ where: { id: CARA } });
+    expect(after.permissionVersion).toBeGreaterThan(before.permissionVersion);
+
+    // The report still runs: `report:view` and `document:restore` are untouched, and
+    // `capabilitiesFor` reads no cache, so its gate sees the truth and lets her through. Only the
+    // rows should have changed — without an invalidation they do not, and a caller who may no
+    // longer view a document is handed its number, title, library and folder path.
+    expect(await titlesFor(CARA, REACH_ROLE)).not.toContain(TITLE);
+  });
+
+  it('leaves another tenant’s cached answers alone', async () => {
+    const otherTenant = `acl:${uuidv7()}:v:someone:everything`;
+    await sharedCache.set(otherTenant, { unrestricted: true }, 60);
+
+    const role = await owner.role.findUniqueOrThrow({ where: { id: NO_VIEW_ROLE } });
+    await asAdmin(() =>
+      roleAdmin.update(NO_VIEW_ROLE, { permissions: [Permission.REPORT_VIEW] }, role.version),
+    );
+
+    expect(await sharedCache.get(otherTenant)).not.toBeNull();
+  });
+});
 
 async function runExport(
   userId: UserId,

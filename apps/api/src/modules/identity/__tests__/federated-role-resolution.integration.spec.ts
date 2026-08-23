@@ -11,7 +11,7 @@ import type { Logger } from '../../../core/observability/logger';
 
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
-import { realWriteStack } from '../../../testing/real-collaborators';
+import { realAclResolver, realWriteStack } from '../../../testing/real-collaborators';
 import { FakeCache } from '../../../testing/fake-ports';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { ProvisioningService } from '../application/provisioning.service';
@@ -85,7 +85,7 @@ const passwords = new ScryptPasswordHasher();
 // A cache, because the repository now clears the permission-version entry it invalidates. Nothing
 // in this suite reads it back; it is here so the constructor has what it needs.
 const repository = new PrismaIdentityAdminRepository(stamps, new FakeCache(clock));
-const roles = new RoleAdminService(repository, writer);
+const roles = new RoleAdminService(repository, writer, realAclResolver({ clock, unitOfWork }));
 const federation = new PrismaFederatedUserRepository();
 const credentials = new PrismaCredentialRepository();
 

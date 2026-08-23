@@ -23,6 +23,7 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../core/errors/application-errors';
+import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
 import { IdentityAdminAudit } from '../domain/audit-actions';
 import {
   IDENTITY_ADMIN_REPOSITORY,
@@ -62,6 +63,7 @@ export class RoleAdminService {
   constructor(
     @Inject(IDENTITY_ADMIN_REPOSITORY) private readonly roles: IdentityAdminRepository,
     private readonly writer: AdministeredWriter,
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
   ) {}
 
   list(request: RoleListRequest): Promise<Page<RoleAdminRow>> {
@@ -165,6 +167,28 @@ export class RoleAdminService {
         // thing and the tokens still in flight say another.
         const holders = await this.roles.userIdsWithRole(id);
         await this.roles.bumpPermissionVersion(holders);
+        /*
+         * And the cached answers, which the bump does not reach — Slice 38.
+         *
+         * `filterKey` is `(tenant, user, roles, permission)`. It names the role *identifiers*, not
+         * what they grant, so a holder whose token is refused and reissued lands on the entry
+         * cached before this write. The entry that matters is `visibilityFilter`'s: it is built
+         * from `grantedAmong`, which reads the rows `replacePermissions` has just rewritten, and a
+         * tenant-wide grant there becomes a region covering the whole tenant.
+         *
+         * `RbacGuard` does not stand in front of that. It refuses a route on the permissions in the
+         * token, and the reports are the case where the two differ: `report-catalogue.ts` declares
+         * `deleted-documents` as `[report:view, document:restore]` and `expired-documents` as
+         * `[report:view, retention:manage]`, while both filter their rows through
+         * `visibilityFilter(subject, document:view)`. Take `document:view` off a role and its
+         * holders still pass every check those reports make — and are served a cached tenant-wide
+         * reach for the length of the ACL TTL.
+         *
+         * The role's *identifiers* need no invalidation, and none is added: a user gaining or
+         * losing a role changes `roleIds`, which changes the key. This is only about what the role
+         * itself grants.
+         */
+        await this.acl.invalidateTenant();
       }
 
       return {
