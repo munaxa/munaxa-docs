@@ -784,6 +784,52 @@ describe('a move changes the answer, so it must clear the answer', () => {
     expect(await warm()).toBe(false);
   });
 
+  /**
+   * Slice 34's follow-up A, now testable — Slice 35.
+   *
+   * That slice identified the mechanism and could not reach it: the list path in this suite runs
+   * through a resolver configured at `cacheTtlSeconds: 0`, so nothing was ever cached and the case
+   * passed without proving anything. It was removed rather than kept.
+   *
+   * The visibility filter is the only thing creation can make stale, and it is asked here directly
+   * — the lowest layer that holds the defect. Its tenant-wide region carries
+   * `excludedFolderPaths: breaks`, the broken-inheritance paths read *at computation time*. A
+   * folder created with the break after that read is a cut the cached filter does not have, so
+   * every list and every search built from it reaches into a subtree that was never reachable.
+   *
+   * Creation grants nothing and hides nothing that existed — Slice 33 was right to leave the
+   * permission model alone. What it does is change the answer, and the answer was cached.
+   */
+  it('invalidates when a folder is created with inheritance already broken', async () => {
+    const cached = warmStack();
+    const exclusions = async (): Promise<readonly string[]> => {
+      const filter = await asAlice(() =>
+        cached.resolver.visibilityFilter(subject(ALICE, READER_ROLE), Permission.DOCUMENT_VIEW),
+      );
+      return filter.allowedRegions.flatMap((region) => [...region.excludedFolderPaths]);
+    };
+
+    // Warm it, twice, so the second answer is the cached one.
+    const before = await exclusions();
+    expect(await exclusions()).toEqual(before);
+
+    const vault = await aFolder(rootFolderId, false);
+    const row = await owner.folder.findUniqueOrThrow({ where: { id: vault } });
+
+    // A cold resolver — the same suite's `cacheTtlSeconds: 0` stack — is what the answer ought to
+    // be, and `08 §8` requires the cached one to agree with it.
+    const cold = await asAlice(() =>
+      permissions.resolver.visibilityFilter(subject(ALICE, READER_ROLE), Permission.DOCUMENT_VIEW),
+    );
+    expect(cold.allowedRegions.flatMap((region) => [...region.excludedFolderPaths])).toContain(
+      row.path,
+    );
+
+    // Without an invalidation the cached filter has no cut for a folder that did not exist when it
+    // was built, and a reader lists documents placed behind the break.
+    expect(await exclusions()).toContain(row.path);
+  });
+
   it('invalidates when a folder moves under one that breaks inheritance', async () => {
     const cached = warmStack();
     const home = await aFolder(rootFolderId, true);

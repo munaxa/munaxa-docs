@@ -322,6 +322,24 @@ export class LibraryAdminService {
         inheritAcl: input.inheritAcl,
       });
 
+      if (!input.inheritAcl) {
+        /*
+         * A folder born with the break is a new cut on the tree — Slice 35.
+         *
+         * Creation grants nothing and hides nothing that already existed, which is why Slice 33
+         * left the permission model alone and this does too. What it changes is the *answer*: the
+         * visibility filter's tenant-wide region carries `excludedFolderPaths`, the broken paths
+         * read at the moment the filter was computed, and a break created after that read is a cut
+         * the cached filter does not have. Every list and every search built from it then reaches
+         * into a subtree that was never reachable, until the TTL runs out.
+         *
+         * Only when the break is asked for. A folder that inherits adds no cut and no entry, and
+         * the regions are path prefixes that already cover it — clearing the tenant's ACL cache on
+         * every ordinary folder creation would be a cost paid for nothing.
+         */
+        await this.acl.invalidateTenant();
+      }
+
       return {
         result: await this.requireFolder(id, false),
         change: this.folderChanged(id, AdministrativeOperation.CREATED, undefined, {
