@@ -51,9 +51,15 @@ export class AuthenticationGuard implements CanActivate {
      * ADR-0018: an API key's effective permissions are "the intersection of that person's
      * tenant-wide grants with the key's scopes, both read at authentication rather than
      * snapshotted — so removing a role removes it from every key bound to them on the next call".
-     * `ApiKeyAuthenticator` reads them from the database on every request and reports
-     * `permissionVersion: 0` for the provisional context it builds on the way, so comparing that
-     * number against a real one would refuse every key in the product.
+     * `ApiClientService.authenticate` re-reads the subject on every request — the key's revocation
+     * and expiry, the subject's `deletedAt` and `canSignIn`, and the fresh intersection — and the
+     * context it produces carries that same read's `permissionVersion`.
+     *
+     * So the comparison is skipped because it cannot fail, not because it would: asking again
+     * would compare a number against the row it was just read from. Slice 31 said the opposite —
+     * that it "would refuse every key" — which was wrong about a security check and is corrected
+     * here. The `permissionVersion: 0` in that path belongs to the *provisional* context built to
+     * resolve the key, and never reaches this guard.
      */
     if (active.channel === ActorChannel.API) {
       return true;

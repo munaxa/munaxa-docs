@@ -506,9 +506,26 @@ export class PrismaAclResolver implements AclResolver {
     permission: PermissionKey,
   ): string {
     const { tenantId } = requireContext();
-    // The roles are in the key as well as the user, so a token minted before a role change and one
-    // minted after it do not share an entry. `permissionVersion` exists on the context for the same
-    // reason and is not used here: it changes on a role edit, which already invalidates by prefix.
+    /*
+     * The roles are in the key as well as the user, so a token minted before a role change and one
+     * minted after it do not share an entry.
+     *
+     * `permissionVersion` is deliberately not in it, and the reason stated here until Slice 33 was
+     * wrong: it said a role edit "already invalidates by prefix", and nothing does —
+     * `RoleAdminService` holds no cache at all, and the only `deleteByPrefix('acl:<tenant>:')` in
+     * the product is `AclPermissionService.afterChange`, which runs on ACL entry and inheritance
+     * writes.
+     *
+     * What actually makes the omission safe is that a role's permission set reaches a decision only
+     * through step 6's tenant-wide grant, and `RbacGuard` gates every route on that same grant
+     * before this resolver is asked — from the token's `permissions` claim, which a role edit
+     * rewrites and which Slice 31 made refusable when it is stale. So a decision cached under an
+     * unchanged set of role *ids* cannot let a route through that `RbacGuard` would refuse.
+     *
+     * What a stale entry can still do is answer `capabilitiesFor` — the capability list a screen
+     * draws its buttons from — with a permission the role has just lost, for the length of the ACL
+     * TTL. That offers an action the next request then refuses; it grants nothing.
+     */
     const roles = [...subject.roleIds].map(String).sort().join(',');
     return `acl:${tenantId}:d:${String(subject.userId)}:${roles}:${scope.type}:${String(scope.id)}:${permission}`;
   }
