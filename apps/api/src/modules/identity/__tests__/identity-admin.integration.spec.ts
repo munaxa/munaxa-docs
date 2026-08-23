@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { Permission, SystemRole, type TenantId, type UserId, UserStatus } from '@edms/domain';
+import { Permission, SystemRole, type TenantId, type UserId, UserStatus, asId } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
@@ -20,6 +20,8 @@ import { ProvisioningService } from '../application/provisioning.service';
 import { ScryptPasswordHasher } from '../infrastructure/scrypt-password-hasher';
 import { personOptionQuerySchema } from '@edms/contracts';
 
+import { FakeCache } from '../../../testing/fake-ports';
+import { CachedPermissionVersionReader } from '../infrastructure/cached-permission-version.reader';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 /**
@@ -50,7 +52,14 @@ const prisma = sharedDatabase(config, logger, APP_URL);
 const unitOfWork = new PrismaUnitOfWork(prisma);
 const { stamps, writer, audit } = realWriteStack(clock, unitOfWork);
 const passwords = new ScryptPasswordHasher();
-const repository = new PrismaIdentityAdminRepository(stamps);
+/**
+ * A real, observable cache — because the permission version is only authoritative if the entry
+ * that caches it is cleared when the number moves. Slice 31 put that invalidation inside
+ * `bumpPermissionVersion`, and this is where it is proven.
+ */
+const cache = new FakeCache(clock);
+const repository = new PrismaIdentityAdminRepository(stamps, cache);
+const versions = new CachedPermissionVersionReader(cache, unitOfWork);
 const users = new UserAdminService(repository, passwords, writer);
 const roles = new RoleAdminService(repository, writer);
 /** The placement this suite provisions into — declared, because the identifier is configuration now. */
@@ -228,22 +237,39 @@ describe('creating a user', () => {
 });
 
 describe('changing what somebody may do', () => {
+  /**
+   * Named for what it proves — Slice 31, and it did not until then.
+   *
+   * This case has asserted `after === before + 1` since Phase 0.5 while being called "so an
+   * outstanding token stops being accepted". The number moving was never the claim; nothing
+   * compared it, so no token stopped being accepted and the name was aspirational. It now asserts
+   * the mechanism that makes the sentence true: the number moves **and** the cached answer that
+   * `AuthenticationGuard` reads moves with it, in the same transaction as the role change.
+   *
+   * The cache is read through the real reader rather than inspected directly, because a test that
+   * reached into the entry would still pass if the guard asked a differently-spelled key.
+   */
   it('bumps the permission version, so an outstanding token stops being accepted', async () => {
     const user = await aUser('Roles');
-    const before = await owner.user.findUnique({
-      where: { id: user.id },
-      select: { permissionVersion: true },
-    });
+    const userId = asId<UserId>(user.id);
+
+    // The number a token minted now would carry — and, as a side effect, a warm cache entry, which
+    // is the state a busy tenant is always in and the one an invalidation has to survive.
+    const minted = await asAdmin(() => versions.currentFor(userId));
+    expect(minted).not.toBeNull();
 
     await asAdmin(() => users.update(user.id, { roleIds: [authorRoleId] }, user.version));
 
-    const after = await owner.user.findUnique({
+    const row = await owner.user.findUnique({
       where: { id: user.id },
       select: { permissionVersion: true },
     });
-    // The whole purpose of the column: a revoked role takes effect within one request rather than at
-    // the end of a fifteen-minute token's life.
-    expect(after?.permissionVersion).toBe((before?.permissionVersion ?? 0) + 1);
+    expect(row?.permissionVersion).toBe((minted ?? 0) + 1);
+
+    // The half that was missing. Without the invalidation inside `bumpPermissionVersion` this
+    // still answers `minted`, the guard finds a match, and the outstanding token goes on working
+    // for the rest of its life.
+    await expect(asAdmin(() => versions.currentFor(userId))).resolves.toBe((minted ?? 0) + 1);
   });
 
   it('bumps it for a department change too, because membership is a subject the resolver matches on', async () => {

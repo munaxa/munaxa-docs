@@ -38,6 +38,7 @@ import { DocumentModule } from './modules/document/document.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { IdentityApiKeyAuthenticator } from './modules/identity/infrastructure/api-key.authenticator';
 import { IntegrationModule } from './modules/integration/integration.module';
+import { CachedPermissionVersionReader } from './modules/identity/infrastructure/cached-permission-version.reader';
 import { JwtTokenService } from './modules/identity/infrastructure/jwt.token-service';
 import { LibraryModule } from './modules/library/library.module';
 import { NotificationModule } from './modules/notification/notification.module';
@@ -78,7 +79,7 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     TenancyModule,
     // Identity ships a real verifier, so the port no longer resolves to the one that rejects
     // everything. This is the only place that may import both `core/` and a module.
-    AuthModule.withVerifier(JwtTokenService),
+    AuthModule.withVerifier(JwtTokenService, CachedPermissionVersionReader),
     AuthorizationModule,
     AuditModule,
     // Phase 16. Global, and after Auth and Authorization because it resolves the caller's reach
