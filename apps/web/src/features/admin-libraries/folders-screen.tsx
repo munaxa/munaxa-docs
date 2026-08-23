@@ -168,10 +168,14 @@ export function FoldersScreen({
                 inheritAcl: flag(data, 'inheritAcl'),
               });
             }
+            // No `inheritAcl` — Slice 33. Breaking a folder's inheritance is
+            // `PUT /scopes/folder/{id}/inheritance` on the permissions screen, gated on
+            // `document:permission:manage` rather than on this screen's `folder:manage`, and the
+            // folder route no longer accepts the field. Sending it here would be stripped by the
+            // schema and answered `200`, which on this flag is the worst of both.
             const patch = changedFields(editing, {
               name: text(data, 'name'),
               description: nullableText(data, 'description'),
-              inheritAcl: flag(data, 'inheritAcl'),
             });
             return isEmptyPatch(patch)
               ? unchanged()
@@ -199,12 +203,23 @@ export function FoldersScreen({
             label={translate('admin.fields.description')}
             defaultValue={editing?.description ?? ''}
           />
-          <SwitchField
-            name="inheritAcl"
-            label={translate('admin.folders.inheritAcl')}
-            hint={translate('admin.folders.inheritAclHint')}
-            defaultChecked={editing?.inheritAcl ?? true}
-          />
+          {/*
+            Offered when creating and not when editing — Slice 33, and the same shape the parent
+            picker above already has. A new folder may be created as a restricted subtree; changing
+            an existing one retroactively hides content that is already in it, which is the
+            operation ADR-0005 calls "the one most likely to hide content from the people
+            accountable for it" and routes through the permissions screen instead. The list still
+            badges a folder that does not inherit, so the flag stays visible here — it is only no
+            longer settable.
+          */}
+          {editing === null ? (
+            <SwitchField
+              name="inheritAcl"
+              label={translate('admin.folders.inheritAcl')}
+              hint={translate('admin.folders.inheritAclHint')}
+              defaultChecked
+            />
+          ) : null}
         </FormDialog>
       )}
 

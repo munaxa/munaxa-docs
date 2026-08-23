@@ -331,20 +331,39 @@ export class LibraryAdminService {
     });
   }
 
+  /**
+   * Renames a folder, or changes its description. **Not its inheritance** — Slice 33.
+   *
+   * This method used to write `inheritAcl`, and `PATCH /v1/admin/folders/{id}` is gated on
+   * `folder:manage`. `AclPermissionService.setInheritance` is gated on
+   * `document:permission:manage`, and `permissions.controller.ts` says exactly why the two are
+   * different keys: "so somebody who may rename folders cannot silently detach one from the
+   * tenant's grants". The same file records that `updateFolderSchema.inheritAcl` stays in the
+   * contract because the screen still *shows* the flag, and that "what it no longer does is set
+   * it". It still did.
+   *
+   * Three things went wrong through this door, and only the first needs the two keys to have been
+   * separated by a custom role:
+   *
+   * 1. the gate ADR-0005 singles out — "the one most likely to hide content from the people
+   *    accountable for it" — was reachable without its key;
+   * 2. the trail recorded `FOLDER_CHANGED`, an ordinary folder edit, where the dedicated route
+   *    writes `INHERITANCE_BROKEN`;
+   * 3. nothing invalidated `acl:<tenant>:`, so every cached decision and every cached chain went
+   *    on answering with the old inheritance until the TTL ran out. That one happened in every
+   *    tenant, whatever roles it had.
+   *
+   * The field is gone from `updateFolderSchema` rather than ignored here, so a caller who sends it
+   * is refused by validation instead of being told the change succeeded when it did not.
+   */
   async updateFolder(
     id: string,
-    patch: { name?: string; description?: string | null; inheritAcl?: boolean },
+    patch: { name?: string; description?: string | null },
     expectedVersion: number | undefined,
   ): Promise<FolderRow> {
     return this.writer.write(async () => {
       const current = await this.requireFolder(id, false);
-      // Breaking inheritance restricts a subtree, and the previous state is not recoverable from the
-      // new one by anyone who did not see it. Renaming is an ordinary edit.
-      if (patch.inheritAcl !== undefined && patch.inheritAcl !== current.inheritAcl) {
-        requireVersion(expectedVersion, current.version);
-      } else {
-        checkVersion(expectedVersion, current.version);
-      }
+      checkVersion(expectedVersion, current.version);
 
       const name = patch.name === undefined ? undefined : this.requireFolderName(patch.name);
       if (name !== undefined && name.toLowerCase() !== current.name.toLowerCase()) {
@@ -366,7 +385,6 @@ export class LibraryAdminService {
         ...(patch.description !== undefined && {
           description: patch.description === null ? null : squish(patch.description),
         }),
-        ...(patch.inheritAcl !== undefined && { inheritAcl: patch.inheritAcl }),
       });
 
       return {
@@ -376,11 +394,9 @@ export class LibraryAdminService {
           AdministrativeOperation.UPDATED,
           {
             ...(name !== undefined && { name: current.name }),
-            ...(patch.inheritAcl !== undefined && { inheritAcl: current.inheritAcl }),
           },
           {
             ...(name !== undefined && { name }),
-            ...(patch.inheritAcl !== undefined && { inheritAcl: patch.inheritAcl }),
           },
         ),
       };
