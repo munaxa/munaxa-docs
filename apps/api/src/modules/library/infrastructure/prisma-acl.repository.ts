@@ -30,13 +30,15 @@ import type {
  * column. Reading a node's entries for every permission is a third question — the permissions
  * screen's — and it has its own method, which is the only one that does not narrow.
  *
- * **A write replaces a node's set in one statement pair.** `replaceForScope` deletes what is no
- * longer wanted and inserts what is new, inside the caller's transaction, and reports the
- * difference. The alternative — delete-all then insert-all — is simpler and wrong: it rewrites
- * `created_at` and `created_by` on every entry that did not change, so "who granted this, and
- * when" would be answered with the timestamp of the last unrelated edit to the same folder. The
- * difference it reports is what this transaction actually wrote, never what it merely intended:
- * the insert tolerates a row a concurrent edit put there first, and says so.
+ * **A write replaces a node's set.** `replaceForScope` deletes what is no longer wanted and inserts
+ * what is new, inside the caller's transaction, and reports the difference. The alternative —
+ * delete-all then insert-all — is simpler and wrong: it rewrites `created_at` and `created_by` on
+ * every entry that did not change, so "who granted this, and when" would be answered with the
+ * timestamp of the last unrelated edit to the same folder. The difference it reports is what this
+ * transaction actually wrote, never what it merely intended: the insert tolerates a row a
+ * concurrent edit put there first, and the delete reads its own affected-row count — both because
+ * the report becomes an audit event, and an event for an act somebody else performed is worse
+ * than no event at all.
  *
  * Row-level security scopes every statement here to the tenant; the explicit `tenantId` filters
  * are the second layer `05-database-design.md` §6 requires, not the only one.
@@ -143,8 +145,34 @@ export class PrismaAclRepository implements AclRepository {
       }
     }
 
-    if (removedIds.length > 0) {
-      await tx.aclEntry.deleteMany({ where: { tenantId, id: { in: removedIds } } });
+    /*
+     * Removed one at a time, so each answer is this transaction's own — Slice 48.
+     *
+     * `revoked` becomes an `ACL_REVOKED` row, and that row is evidence: "who withdrew this reach,
+     * and when" is the question an access review opens the trail to ask. Two administrators
+     * removing the same entry both read it as present, and one bulk `deleteMany` reports only how
+     * many rows went — so the one that removed nothing still filed a revocation, and the trail
+     * named two people for an act one of them performed.
+     *
+     * A bulk delete cannot be made to answer this after the fact: once the row is gone, absence
+     * does not say who removed it. The count has to be read at the statement that did the work,
+     * which is `settle`'s idiom in this product — claim by predicate, then read the affected-row
+     * count as the truth. Prisma has no `deleteManyAndReturn`, and raw SQL is not needed for
+     * correctness here, only for a single round trip; the set is a diff of one node's entries and
+     * the contract caps it at 500.
+     *
+     * Ordered by identifier rather than by map iteration, so two edits removing overlapping sets
+     * take the row locks in the same order and cannot deadlock against each other.
+     */
+    const removed: AclEntryRecord[] = [];
+    const removals = revoked
+      .map((entry, index) => ({ entry, id: removedIds[index] ?? '' }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    for (const removal of removals) {
+      const { count } = await tx.aclEntry.deleteMany({ where: { tenantId, id: removal.id } });
+      if (count === 1) {
+        removed.push(removal.entry);
+      }
     }
     let written = granted;
     if (granted.length > 0) {
@@ -193,7 +221,7 @@ export class PrismaAclRepository implements AclRepository {
         written = granted.filter((_, index) => landed.has(rows[index]?.id ?? ''));
       }
     }
-    return { granted: written, revoked };
+    return { granted: written, revoked: removed };
   }
 
   async deleteForScope(scope: ScopeRef): Promise<readonly AclEntryRecord[]> {
