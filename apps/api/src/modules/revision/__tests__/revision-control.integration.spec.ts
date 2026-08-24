@@ -79,6 +79,7 @@ const MAGIC = new Uint8Array(Buffer.from('%PDF-1.7\n% ', 'utf8'));
 let root: string;
 let owner: PrismaClient;
 let library: DocumentLibraryStack;
+let libraryOptions: Parameters<typeof realDocumentLibrary>[0];
 let workflow: WorkflowEngineStack;
 let revision: RevisionControlStack;
 let revisionOptions: Parameters<typeof realRevisionControl>[0];
@@ -310,7 +311,7 @@ beforeAll(async () => {
         : Promise.reject(Object.assign(new Error('not found'), { code: 'NOT_FOUND' })),
   };
 
-  library = realDocumentLibrary({
+  libraryOptions = {
     clock,
     unitOfWork,
     config: appConfig,
@@ -322,7 +323,8 @@ beforeAll(async () => {
       scan: () => Promise.reject(new Error('AV_DRIVER is NONE')),
     },
     users,
-  });
+  };
+  library = realDocumentLibrary(libraryOptions);
 
   workflow = realWorkflowEngine({
     clock,
@@ -1308,5 +1310,100 @@ describe('two cancels of one check-out', () => {
     expect(
       await owner.documentLock.count({ where: { documentId: second, releasedAt: null } }),
     ).toBe(0);
+  });
+});
+
+/**
+ * Two archivals of one document at the same moment — Slice 50.
+ *
+ * `applyLifecycleTransition` returns early when the document already holds the status being asked
+ * for, and that idempotence is deliberate: a workflow stage activating twice must not be a
+ * conflict. But the early return happens *before* `setStatus`, so the version guard the sweep's own
+ * comment relies on ("Two passes racing settle it once: `applyLifecycleTransition` guards on the
+ * version it read, so the loser gets a conflict rather than a second `EXPIRED` row") never runs.
+ * `archive` then decides whether to announce the archival from the status it read *before* the
+ * transition, which for the loser is the pre-archival one.
+ */
+describe('two archivals of one document', () => {
+  function archivals(documentId: string): Promise<number> {
+    return owner.outboxMessage.count({
+      where: { tenantId: TENANT, eventType: 'document.archived', aggregateId: documentId },
+    });
+  }
+
+  it('announces the archival once when one person archives', async () => {
+    const documentId = await published();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+
+    await as(() => library.documents.archive(documentId, before.version, 'Retired'), CONTROLLER);
+
+    expect(await archivals(documentId)).toBe(1);
+    expect((await owner.document.findUniqueOrThrow({ where: { id: documentId } })).status).toBe(
+      DocumentStatus.ARCHIVED,
+    );
+  });
+
+  it('announces nothing for a repeat archival issued in order', async () => {
+    const documentId = await published();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(() => library.documents.archive(documentId, before.version, 'Retired'), CONTROLLER);
+
+    // The sequential second caller, which is the answer the concurrent one has to match: it reads
+    // ARCHIVED, the transition changes nothing, and no event is published.
+    const after = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(
+      () => library.documents.archive(documentId, after.version, 'Retired again'),
+      CONTROLLER,
+    );
+
+    expect(await archivals(documentId)).toBe(1);
+  });
+
+  it('announces the archival once when a second archival is already committed underneath it', async () => {
+    const documentId = await published();
+    const before = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+
+    /*
+     * The seam: the *real* document repository, wrapped for one caller only. Its first read
+     * answers truthfully and then waits — after the answer rather than before it, because the
+     * interleaving worth proving is a transaction that read the document and then stalled, which
+     * is the only way to reach the transition's idempotent branch. Wrapping one caller rather than
+     * counting arrivals is what keeps it deterministic.
+     */
+    let admit: () => void = () => undefined;
+    const stalled = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let stalledOnce = false;
+    const held = new Proxy(library.documentRepository, {
+      get(target, property, receiver) {
+        if (property === 'findById') {
+          return async (...args: readonly unknown[]) => {
+            const answer = await (
+              target.findById as (...rest: readonly unknown[]) => Promise<unknown>
+            )(...args);
+            if (!stalledOnce) {
+              stalledOnce = true;
+              await stalled;
+            }
+            return answer;
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const stalling = realDocumentLibrary({ ...libraryOptions, documentRepository: held }).documents;
+
+    const loser = as(() => stalling.archive(documentId, before.version, 'Retired'), CONTROLLER);
+    await as(() => library.documents.archive(documentId, before.version, 'Retired'), CONTROLLER);
+    admit();
+    await loser.catch(() => undefined);
+
+    // One archival happened, so the product must announce it once: a second `document.archived`
+    // tells the search index and every webhook subscriber that something happened when nothing did.
+    expect(await archivals(documentId)).toBe(1);
   });
 });
