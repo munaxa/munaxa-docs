@@ -141,8 +141,31 @@ export class StorageBlobReaper implements BlobReaper {
         }
       }
 
+      /*
+       * `state: OPEN` again, and it is the whole of the fix — Slice 45.
+       *
+       * The select above and this stamp are separated by the object deletes, which are not database
+       * work and hold no lock; the select takes none either. Under `READ COMMITTED` an `UPDATE`
+       * re-checks its `WHERE` against the *updated* row after waiting on a concurrent writer, and
+       * neither `id` nor `tenant_id` changes when somebody completes or abandons a session. So
+       * without this predicate the sweep was an assignment rather than a claim: a session that
+       * reached a terminal state while it ran was stamped `EXPIRED` over it, and counted.
+       *
+       * `UploadSessionRepository.settle` has had the right shape since Phase 3 — claim by
+       * predicate, then read the affected-row count as the truth — and this is that shape applied
+       * to the sweep. The return value keeps its contract: it was already `updateMany`'s count, and
+       * now that count is honest, so a caller reading "how many did I expire" is told how many rows
+       * this actually moved rather than how many it had hoped to.
+       *
+       * The tenant stays in the predicate beside it. Narrowing to `OPEN` is not a reason to widen
+       * anything else.
+       */
       const { count } = await tx.uploadSession.updateMany({
-        where: { id: { in: sessions.map((session) => session.id) }, tenantId },
+        where: {
+          id: { in: sessions.map((session) => session.id) },
+          tenantId,
+          state: UploadSessionState.OPEN,
+        },
         data: { state: UploadSessionState.EXPIRED, ...this.stamps.update() },
       });
       return count;
