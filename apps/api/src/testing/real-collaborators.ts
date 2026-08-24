@@ -33,6 +33,7 @@ import {
 } from '../modules/notification/infrastructure/prisma-notification.repositories';
 import type {
   DocumentLockRepository,
+  DocumentRepository,
   DocumentService,
 } from '../modules/document/application/ports';
 import { AdministeredWriter } from '../core/persistence/administered-writer';
@@ -408,6 +409,8 @@ export function realOrganizationService(): DefaultOrganizationService {
 export interface DocumentLibraryStack {
   readonly storage: DefaultStorageService;
   readonly documents: DefaultDocumentService;
+  /** The repository the service reads and writes through — exposed so a suite can wrap it. */
+  readonly documentRepository: DocumentRepository;
   /** Check-out, check-in and publication — what Phase 10's cascade assertions need revisions from. */
   readonly control: RevisionControlService;
   readonly libraries: LibraryAdminService;
@@ -436,6 +439,11 @@ export interface DocumentLibraryStack {
 }
 
 export interface DocumentLibraryOptions {
+  /**
+   * The document repository, when a suite needs to hold one lifecycle transition against another
+   * — Slice 50. The real one by default; a suite that passes its own passes the real one wrapped.
+   */
+  readonly documentRepository?: DocumentRepository;
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;
   readonly config: AppConfig;
@@ -524,13 +532,14 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
    * Harmless until now only because every suite using this stack runs it at `cacheTtlSeconds: 0`,
    * where the resolver reads and writes nothing either way.
    */
-  const documentRepository = realDocumentRepository({
+  const builtDocumentRepository = realDocumentRepository({
     ...options,
     ...(options.aclCache !== undefined && { cache: options.aclCache }),
   });
+  const documentRepository = options.documentRepository ?? builtDocumentRepository;
   const documents = new DefaultDocumentService(
     documentRepository,
-    new PrismaDocumentActivityRepository(documentRepository),
+    new PrismaDocumentActivityRepository(builtDocumentRepository),
     new AdministrationConfigurationAdapter(
       configuration,
       realOrganizationService(),
@@ -597,6 +606,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
   );
 
   return {
+    documentRepository,
     storage,
     documents,
     control: new RevisionControlService(

@@ -694,7 +694,7 @@ export class DefaultDocumentService {
       const current = await this.require(id, false);
       requireVersion(expectedVersion, current.version);
 
-      await this.applyLifecycleTransition({
+      const archived = await this.applyLifecycleTransition({
         documentId: id,
         to: DocumentStatus.ARCHIVED,
         workflowInstanceId: null,
@@ -707,7 +707,7 @@ export class DefaultDocumentService {
         auditFacts: { via: 'EXPLICIT' },
       });
 
-      if (current.status !== DocumentStatus.ARCHIVED) {
+      if (archived) {
         // Only on a real transition. A redelivered or repeated archive is a success that changed
         // nothing, and an event announcing it would tell the search index and every webhook
         // subscriber that something happened when nothing did.
@@ -758,7 +758,7 @@ export class DefaultDocumentService {
         }
       }
 
-      await this.applyLifecycleTransition({
+      const reinstated = await this.applyLifecycleTransition({
         documentId: id,
         to: DocumentStatus.PUBLISHED,
         workflowInstanceId: null,
@@ -767,7 +767,7 @@ export class DefaultDocumentService {
         attestReason: true,
       });
 
-      if (current.status !== DocumentStatus.PUBLISHED) {
+      if (reinstated) {
         await this.outbox.publish([
           documentReinstatedEvent(asId<AnyId>(id), { documentId: id, reason: stated }),
         ]);
@@ -810,11 +810,12 @@ export class DefaultDocumentService {
 
     let expired = 0;
     for (const candidate of due) {
+      let settled = false;
       try {
         // One transaction per document, and `read` for the same reason as `archive`: the
         // transition writes the single `EXPIRED` row inside it.
         await this.writer.read(async () => {
-          await this.applyLifecycleTransition({
+          const moved = await this.applyLifecycleTransition({
             documentId: candidate.documentId,
             to: DocumentStatus.EXPIRED,
             workflowInstanceId: null,
@@ -826,6 +827,13 @@ export class DefaultDocumentService {
             // and does not in Los Angeles.
             auditFacts: { effectiveTo: candidate.effectiveTo, evaluatedOn: today, timezone },
           });
+          if (!moved) {
+            // Another pass expired it between this one's candidate read and this write. The
+            // transition's idempotent branch is why that is not a conflict; announcing it anyway
+            // would tell every subscriber a second expiry happened, and counting it would report
+            // work this pass did not do.
+            return;
+          }
           await this.outbox.publish([
             documentExpiredEvent(asId<AnyId>(candidate.documentId), {
               documentId: candidate.documentId,
@@ -833,8 +841,11 @@ export class DefaultDocumentService {
               effectiveTo: candidate.effectiveTo,
             }),
           ]);
+          settled = true;
         });
-        expired += 1;
+        if (settled) {
+          expired += 1;
+        }
       } catch (error) {
         if (error instanceof VersionConflictError || error instanceof InvalidTransitionError) {
           // Somebody moved it between the candidate read and the write — a check-out, a
@@ -1034,14 +1045,22 @@ export class DefaultDocumentService {
      * did not learn from the subject line.
      */
     readonly decisionComment?: string | null;
-  }): Promise<void> {
-    await this.writer.write(async () => {
+    /**
+     * Answers whether *this* call moved the document — Slice 50.
+     *
+     * The idempotent branch below is deliberate and stays: a workflow stage activating twice must
+     * not be a conflict. What it also does is return before `setStatus`, so the version guard never
+     * runs and a caller cannot tell a transition it performed from one it found already done. Every
+     * caller that announces the transition, counts it, or otherwise claims it happened has to ask.
+     */
+  }): Promise<boolean> {
+    return await this.writer.write<boolean>(async () => {
       const current = await this.require(input.documentId, false);
       if (current.status === input.to) {
         // Idempotent by design. The engine transitions to `UNDER_REVIEW` as each stage activates,
         // and a second stage activating must not be a conflict.
         return {
-          result: undefined,
+          result: false,
           change: this.transitioned(input, current.status, true),
         };
       }
@@ -1080,7 +1099,7 @@ export class DefaultDocumentService {
       await this.announce(input.to, current, input);
 
       return {
-        result: undefined,
+        result: true,
         change: this.transitioned(input, current.status, false),
       };
     });
