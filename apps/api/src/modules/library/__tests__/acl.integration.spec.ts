@@ -2164,3 +2164,147 @@ describe('two administrators saving one node at once', () => {
     expect(operations.filter((operation) => operation === 'UPDATED')).toHaveLength(1);
   });
 });
+
+/**
+ * Two administrators withdrawing the same entry at once — Slice 48.
+ *
+ * The mirror of the grant race above, and the same seam. `revoked` becomes an `ACL_REVOKED` row,
+ * and that row is what an access review reads to answer "who withdrew this reach, and when". Both
+ * administrators read the entry as present and both ask for it to go; only one statement can
+ * actually remove it, so only one of them may be recorded as having done so.
+ */
+describe('two administrators withdrawing one entry at once', () => {
+  const scope = () => folderScope(closedFolderId);
+  const view = () => entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_VIEW, AclEffect.ALLOW);
+  const print = () => entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_PRINT, AclEffect.ALLOW);
+
+  type Resolver = ReturnType<typeof realPermissions>['resolver'];
+
+  function heldAt(arrivals: number): Resolver {
+    let seen = 0;
+    let release: () => void = () => undefined;
+    const all = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return new Proxy(permissions.resolver, {
+      get(target, property, receiver) {
+        if (property === 'resolve') {
+          return async (...args: readonly unknown[]) => {
+            seen += 1;
+            if (seen === arrivals) {
+              release();
+            }
+            await all;
+            return (target.resolve as (...rest: readonly unknown[]) => unknown)(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+  }
+
+  function racing(resolver: Resolver) {
+    return realPermissions({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      cache: permissions.cache,
+      resolver,
+    }).permissions;
+  }
+
+  async function revocationsSince(before: number): Promise<readonly string[]> {
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, action: 'ACL_REVOKED' },
+      orderBy: { sequence: 'asc' },
+      select: { payload: true },
+      skip: before,
+    });
+    return rows.map((row) => JSON.stringify(row.payload));
+  }
+
+  function countRevocations(): Promise<number> {
+    return owner.auditEvent.count({ where: { tenantId: TENANT, action: 'ACL_REVOKED' } });
+  }
+
+  afterEach(async () => {
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), []));
+  });
+
+  it('records the withdrawal when one administrator withdraws', async () => {
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [view(), print()]));
+    const before = await countRevocations();
+
+    await asAdmin(() => racing(heldAt(1)).replaceFor(scope(), [view()]));
+
+    expect(await revocationsSince(before)).toHaveLength(1);
+    expect(
+      await owner.aclEntry.count({
+        where: { tenantId: TENANT, scopeId: closedFolderId, permission: Permission.DOCUMENT_PRINT },
+      }),
+    ).toBe(0);
+  });
+
+  it('records nothing withdrawn when the same withdrawal is repeated in order', async () => {
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [view(), print()]));
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [view()]));
+    const before = await countRevocations();
+
+    // The sequential second-comer, which is the answer the concurrent one has to match: it sees
+    // the entry already gone, so it withdraws nothing and files no revocation.
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [view()]));
+
+    expect(await revocationsSince(before)).toHaveLength(0);
+  });
+
+  it('files one revocation, not one per administrator', async () => {
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [view(), print()]));
+    const before = await countRevocations();
+    const editors = racing(heldAt(2));
+
+    await Promise.all([
+      asAdmin(() => editors.replaceFor(scope(), [view()])),
+      asAdmin(() => editors.replaceFor(scope(), [view()])),
+    ]);
+
+    // One entry existed and one statement removed it. A second `ACL_REVOKED` would name an
+    // administrator for an act somebody else performed.
+    const written = await revocationsSince(before);
+    expect(written).toHaveLength(1);
+    expect(written[0]).toContain(Permission.DOCUMENT_PRINT);
+    expect(
+      await owner.aclEntry.count({
+        where: { tenantId: TENANT, scopeId: closedFolderId, permission: Permission.DOCUMENT_PRINT },
+      }),
+    ).toBe(0);
+  });
+
+  it('withdraws every entry an edit names, not just the first', async () => {
+    const download = () =>
+      entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_DOWNLOAD, AclEffect.ALLOW);
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [view(), print(), download()]));
+    const before = await countRevocations();
+    const editors = racing(heldAt(2));
+
+    // One editor withdraws *two* entries and the other withdraws one of the same two, so a loop
+    // that stopped after its first removal would leave a live entry behind. Tolerating a delete
+    // that hit nothing must not become tolerating a delete that never ran.
+    await Promise.all([
+      asAdmin(() => editors.replaceFor(scope(), [view()])),
+      asAdmin(() => editors.replaceFor(scope(), [view(), print()])),
+    ]);
+
+    const live = await owner.aclEntry.findMany({
+      where: { tenantId: TENANT, scopeId: closedFolderId },
+      select: { permission: true },
+    });
+    expect(live.map((row) => row.permission)).toStrictEqual([Permission.DOCUMENT_VIEW]);
+    // Two entries went, and between them the two editors are recorded as withdrawing each once.
+    const written = await revocationsSince(before);
+    expect(written.join(' ').match(/document:print/g) ?? []).toHaveLength(1);
+    expect(written.join(' ').match(/document:download/g) ?? []).toHaveLength(1);
+  });
+});
