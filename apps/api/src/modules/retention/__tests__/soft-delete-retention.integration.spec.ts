@@ -1080,6 +1080,175 @@ describe('a completion the reaper finished underneath it', () => {
   }, 60_000);
 });
 
+/**
+ * Slice 45 — the reaper only expires what is still open.
+ *
+ * `expireUploadSessions` selects `state: OPEN, expiresAt < now`, deletes each staged object, and
+ * then stamps the rows it selected. That final `updateMany` carried only `id IN (…)` and the
+ * tenant, so it was an assignment rather than a claim — and the two statements are separated by
+ * the object-store deletes, which are not database work and hold no lock. The select takes no
+ * `FOR UPDATE`; under `READ COMMITTED` an `UPDATE` re-checks its `WHERE` against the *updated* row
+ * after waiting on a concurrent writer, and neither `id` nor `tenant_id` changes when a session is
+ * completed or abandoned. So a session that reached a terminal state during the sweep was stamped
+ * `EXPIRED` over it, and counted as expired.
+ *
+ * `UploadSessionRepository.settle` has expressed the right shape since Phase 3: claim by predicate,
+ * then read the affected-row count as the truth. This is that shape applied to the sweep.
+ *
+ * The interleaving is forced at the storage port — the reaper's own seam between selecting and
+ * stamping — rather than by hoping two promises land in the right order. Each competing mutation
+ * runs from the test's own scope, because `PrismaUnitOfWork.run` joins an ambient transaction and a
+ * completion invoked from inside the reaper's hook would silently become part of the reaper's own.
+ */
+describe('the reaper only expires what is still open', () => {
+  async function staged(marker: string): Promise<UploadSessionId> {
+    const content = Buffer.from(`%PDF-1.7\n% ${marker}\n1 0 obj\n<<>>\nendobj\n`);
+    const target = await as(() =>
+      library.storage.createUploadSession({
+        filename: `${marker}.pdf`,
+        mimeType: 'application/pdf',
+        sizeBytes: content.length,
+        magicBytes: MAGIC,
+      }),
+    );
+    const decoded = decodeTransferToken(
+      SIGNING_SECRET,
+      new URL(target.url).searchParams.get('token') ?? '',
+      'PUT',
+      now,
+    );
+    if (!('grant' in decoded)) {
+      throw new Error('The upload target did not carry a usable transfer capability.');
+    }
+    await library.localStorage.beginWrite(decoded.grant.key);
+    await writeFile(library.localStorage.partialPathFor(decoded.grant.key), content);
+    await library.localStorage.finishWrite(decoded.grant.key);
+    return asId<UploadSessionId>(target.uploadSessionId);
+  }
+
+  /** A reaper that stops at its first object delete — after the select, before the stamp. */
+  function heldReaper() {
+    let release!: () => void;
+    let arrived!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reached = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    let held = false;
+    const port = new Proxy(library.storagePort, {
+      get(target, prop, receiver) {
+        if (prop === 'delete') {
+          return async (key: string) => {
+            if (!held) {
+              held = true;
+              arrived();
+              await gate;
+            }
+            return (target as { delete: (k: string) => Promise<void> }).delete(key);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        // Bound through a stated signature: `Function.bind` answers `any`, and every other member
+        // of the port has to keep working for the reaper to reach its stamp at all.
+        return typeof value === 'function'
+          ? (value as (...args: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const racing = realRetention({
+      clock,
+      unitOfWork,
+      storage: port,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+    return { racing, reached, release };
+  }
+
+  const stateOf = async (id: UploadSessionId): Promise<string> =>
+    (await owner.uploadSession.findUniqueOrThrow({ where: { id } })).state;
+
+  it('expires a session nobody finished', async () => {
+    // The positive control, and it is mandatory: a predicate that filtered the whole batch out
+    // would satisfy every case below and expire nothing at all.
+    const sessionId = await staged(`quiet-${String(Date.now())}`);
+    now = new Date(now.getTime() + 86_400_000);
+
+    expect(await asSystem(() => retention.retention.expireUploadSessions())).toBeGreaterThanOrEqual(
+      1,
+    );
+    expect(await stateOf(sessionId)).toBe('EXPIRED');
+  }, 60_000);
+
+  it('leaves a session that was completed under it alone', async () => {
+    const sessionId = await staged(`completed-${String(Date.now())}`);
+    now = new Date(now.getTime() + 86_400_000);
+
+    const { racing, reached, release } = heldReaper();
+    const reaping = asSystem(() => racing.retention.expireUploadSessions());
+    await reached;
+
+    // Committed on its own connection while the reaper holds its transaction open. The select took
+    // no lock, so this does not wait for it.
+    const completed = await as(() => library.storage.completeUploadSession(sessionId, []));
+    expect(await stateOf(sessionId)).toBe('COMPLETED');
+
+    release();
+    // The count is the assertion, not just the state: it is the affected-row result of the stamp,
+    // so zero is the claim failing rather than the row happening to look right.
+    expect(await reaping).toBe(0);
+    expect(await stateOf(sessionId)).toBe('COMPLETED');
+
+    const row = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
+    expect(row.fileObjectId).toBe(completed.fileObjectId);
+  }, 60_000);
+
+  it('leaves a session that was abandoned under it alone', async () => {
+    const sessionId = await staged(`abandoned-${String(Date.now())}`);
+    now = new Date(now.getTime() + 86_400_000);
+
+    const { racing, reached, release } = heldReaper();
+    const reaping = asSystem(() => racing.retention.expireUploadSessions());
+    await reached;
+
+    await as(() => library.storage.abandonUploadSession(sessionId));
+    expect(await stateOf(sessionId)).toBe('ABORTED');
+
+    release();
+    expect(await reaping).toBe(0);
+    expect(await stateOf(sessionId)).toBe('ABORTED');
+  }, 60_000);
+
+  it('expires only the open one when a batch holds all three', async () => {
+    // The case a fix that assumed "every selected id is still open" would pass, and a fix that
+    // dropped the whole batch on one terminal row would fail.
+    const stamp = String(Date.now());
+    const stillOpen = await staged(`batch-open-${stamp}`);
+    const willComplete = await staged(`batch-complete-${stamp}`);
+    const willAbandon = await staged(`batch-abandon-${stamp}`);
+    now = new Date(now.getTime() + 86_400_000);
+
+    const { racing, reached, release } = heldReaper();
+    const reaping = asSystem(() => racing.retention.expireUploadSessions());
+    await reached;
+
+    await as(() => library.storage.completeUploadSession(willComplete, []));
+    await as(() => library.storage.abandonUploadSession(willAbandon));
+
+    release();
+    expect(await reaping).toBe(1);
+    expect(await stateOf(stillOpen)).toBe('EXPIRED');
+    expect(await stateOf(willComplete)).toBe('COMPLETED');
+    expect(await stateOf(willAbandon)).toBe('ABORTED');
+  }, 60_000);
+});
+
 // --- The rolling integrity verifier -----------------------------------------------------------
 
 /**
