@@ -31,7 +31,10 @@ import {
   PrismaNotificationSuppressionRepository,
   PrismaNotificationTemplateRepository,
 } from '../modules/notification/infrastructure/prisma-notification.repositories';
-import type { DocumentService } from '../modules/document/application/ports';
+import type {
+  DocumentLockRepository,
+  DocumentService,
+} from '../modules/document/application/ports';
 import { AdministeredWriter } from '../core/persistence/administered-writer';
 import { RecordStamps } from '../core/persistence/record-stamps';
 import { PrismaOutboxWriter } from '../core/outbox/prisma-outbox.writer';
@@ -718,6 +721,14 @@ export interface WorkflowEngineOptions {
 export interface RevisionControlStack {
   readonly control: RevisionControlService;
   readonly revisionQueries: RevisionQueryService;
+  /**
+   * The lock repository this stack is using — exposed so a suite can wrap it, not replace it.
+   *
+   * The boundary lint forbids a suite outside `modules/document/` constructing that module's
+   * infrastructure, and wrapping the *real* one is the only honest way to hold one check-out
+   * against another: a double would answer from the same belief as the code under test.
+   */
+  readonly locks: DocumentLockRepository;
 }
 
 export interface RevisionControlOptions {
@@ -731,6 +742,14 @@ export interface RevisionControlOptions {
   readonly config: AppConfig;
   /** Answers `userExists`, the way the library stack takes it. */
   readonly users: Pick<UserAdminService, 'get'>;
+  /**
+   * The lock repository, when a suite needs to hold one check-out against another — Slice 49.
+   *
+   * The real one by default. A suite that passes its own passes the *real* one wrapped, because
+   * the interleaving worth proving is the one where both callers read a live lock and only one
+   * release lands, and nothing in the service is a seam between those two moments.
+   */
+  readonly locks?: DocumentLockRepository;
 }
 
 export function realRevisionControl(options: RevisionControlOptions): RevisionControlStack {
@@ -742,9 +761,10 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
     get: (definition: { defaultValue: unknown }) => Promise.resolve(definition.defaultValue),
   } as never;
 
+  const locks = options.locks ?? new PrismaDocumentLockRepository(stamps);
   const control = new RevisionControlService(
     realDocumentRepository(options),
-    new PrismaDocumentLockRepository(stamps),
+    locks,
     new PrismaRevisionWriter(stamps, outbox),
     new StorageContentGateAdapter(options.storage),
     new AdministrationConfigurationAdapter(
@@ -761,6 +781,7 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
 
   return {
     control,
+    locks,
     revisionQueries: new RevisionQueryService(
       new PrismaRevisionQueryRepository(),
       writer,

@@ -6,6 +6,7 @@ import {
   type DocumentId,
   DocumentLockReleaseReason,
   DocumentStatus,
+  type DocumentStatusKey,
   RevisionStatus,
   ScanStatus,
   Settings,
@@ -235,13 +236,17 @@ export class RevisionControlService {
       if (input.keepCheckedOut) {
         await this.locks.attachDraft(live.id, revision.revisionId);
       } else {
-        await this.locks.release({
-          lockId: live.id,
-          reason: DocumentLockReleaseReason.CHECKED_IN,
-          releasedBy: actor,
-          releaseNote: null,
-          at: this.writer.clock.now(),
-        });
+        await this.requireEnded(
+          await this.locks.release({
+            lockId: live.id,
+            reason: DocumentLockReleaseReason.CHECKED_IN,
+            releasedBy: actor,
+            releaseNote: null,
+            at: this.writer.clock.now(),
+          }),
+          input.documentId,
+          DocumentStatus.DRAFT,
+        );
       }
 
       await this.outbox.publish([
@@ -541,13 +546,17 @@ export class RevisionControlService {
       });
       await this.content.reference(file.fileObjectId);
       await this.documents.attachLatestRevision(asId<DocumentId>(id), revision.revisionId);
-      await this.locks.release({
-        lockId: lock.id,
-        reason: DocumentLockReleaseReason.CHECKED_IN,
-        releasedBy: actor,
-        releaseNote: null,
-        at: now,
-      });
+      await this.requireEnded(
+        await this.locks.release({
+          lockId: lock.id,
+          reason: DocumentLockReleaseReason.CHECKED_IN,
+          releasedBy: actor,
+          releaseNote: null,
+          at: now,
+        }),
+        id,
+        DocumentStatus.DRAFT,
+      );
       await this.service.applyLifecycleTransition({
         documentId: id,
         to: DocumentStatus.DRAFT,
@@ -646,13 +655,17 @@ export class RevisionControlService {
         discardedDraftId = await this.discardWorkingDraft(document, live);
       }
 
-      await this.locks.release({
-        lockId: live.id,
-        reason: options.reason,
-        releasedBy: this.requireActor(),
-        releaseNote: options.releaseNote,
-        at: this.writer.clock.now(),
-      });
+      await this.requireEnded(
+        await this.locks.release({
+          lockId: live.id,
+          reason: options.reason,
+          releasedBy: this.requireActor(),
+          releaseNote: options.releaseNote,
+          at: this.writer.clock.now(),
+        }),
+        id,
+        DocumentStatus.PUBLISHED,
+      );
 
       return {
         result: await this.require(id),
@@ -699,6 +712,35 @@ export class RevisionControlService {
     }
     await this.locks.attachDraft(lock.id, null);
     return draft.id;
+  }
+
+  /**
+   * Refuses when the check-out was already ended underneath this transaction — Slice 49.
+   *
+   * `applyLifecycleTransition` is idempotent when the document already holds the status being
+   * asked for, and that is deliberate: a workflow stage activating twice must not be a conflict.
+   * It is also the hole a second cancel fell through. Two administrators cancelling one check-out
+   * both read it as live, the winner moved the document to `PUBLISHED`, and the loser's transition
+   * found the document already there and returned without touching the version — so nothing
+   * refused it, and it went on to file a second `CHECKOUT_CANCELLED` for a check-out that had
+   * been cancelled once.
+   *
+   * The lock is the thing that says a check-out is live, so the lock's own affected-row count is
+   * the truth. Thrown rather than swallowed, and thrown here rather than earlier, because the
+   * whole operation is one transaction: the refusal rolls back the transition, the discarded
+   * draft and the audit row together. The status is re-read so the error names what the document
+   * actually holds, which makes it the same refusal the sequential second caller already gets.
+   */
+  private async requireEnded(
+    ended: boolean,
+    documentId: string,
+    to: DocumentStatusKey,
+  ): Promise<void> {
+    if (ended) {
+      return;
+    }
+    const current = await this.require(documentId);
+    throw new InvalidTransitionError(current.status, to);
   }
 
   private async requireLiveLock(documentId: string): Promise<LockRecord> {
