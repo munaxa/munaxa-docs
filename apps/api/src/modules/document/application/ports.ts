@@ -460,14 +460,20 @@ export interface DocumentLockRepository {
    */
   releaseExpired(documentId: DocumentId, now: Date): Promise<LockRecord | null>;
 
-  /** Ends the lock with its reason. The row stays: lock history is the point of having rows. */
+  /**
+   * Ends the lock with its reason. The row stays: lock history is the point of having rows.
+   *
+   * Answers whether *this* call ended it. The predicate is `releasedAt: null`, so a lock a
+   * concurrent check-in or cancel already ended is not ended twice — and the caller has to know,
+   * because ending a check-out is what its audit row claims to have done.
+   */
   release(input: {
     lockId: string;
     reason: DocumentLockReleaseReasonKey;
     releasedBy: string | null;
     releaseNote: string | null;
     at: Date;
-  }): Promise<void>;
+  }): Promise<boolean>;
 
   /** Records the working draft a check-in created while keeping the lock. */
   attachDraft(lockId: string, revisionId: string | null): Promise<void>;

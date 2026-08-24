@@ -81,6 +81,7 @@ let owner: PrismaClient;
 let library: DocumentLibraryStack;
 let workflow: WorkflowEngineStack;
 let revision: RevisionControlStack;
+let revisionOptions: Parameters<typeof realRevisionControl>[0];
 let unitOfWork: PrismaUnitOfWork;
 
 let rootFolderId: string;
@@ -331,7 +332,7 @@ beforeAll(async () => {
     directory,
   });
 
-  revision = realRevisionControl({
+  revisionOptions = {
     clock,
     unitOfWork,
     documents: library.documents,
@@ -340,7 +341,8 @@ beforeAll(async () => {
     storagePort: library.storagePort,
     config: appConfig,
     users,
-  });
+  };
+  revision = realRevisionControl(revisionOptions);
 
   owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
 
@@ -1173,5 +1175,138 @@ describe('the effective-window sweep', () => {
     );
     expect(pass.examined).toBe(0);
     expect(pass.expired).toBe(0);
+  });
+});
+
+/**
+ * Two administrators cancelling one check-out at the same moment — Slice 49.
+ *
+ * `endCheckOut` reads the document, reads the live lock, moves the document and then releases.
+ * `applyLifecycleTransition` is idempotent when the document already holds the status asked for,
+ * so the loser's transition found the document already `PUBLISHED` and returned without a version
+ * check — nothing refused it, and it filed a second `CHECKOUT_CANCELLED` for a check-out that had
+ * been cancelled once. The lock's own affected-row count is what says who ended it.
+ */
+describe('two cancels of one check-out', () => {
+  async function cancellations(documentId: string, since: number): Promise<number> {
+    return (
+      (await owner.auditEvent.count({
+        where: { tenantId: TENANT, action: 'CHECKOUT_CANCELLED', subjectId: documentId },
+      })) - since
+    );
+  }
+
+  function filed(documentId: string): Promise<number> {
+    return owner.auditEvent.count({
+      where: { tenantId: TENANT, action: 'CHECKOUT_CANCELLED', subjectId: documentId },
+    });
+  }
+
+  it('cancels once when one person cancels', async () => {
+    const documentId = await published();
+    await as(() => revision.control.checkOut(documentId), AUTHOR);
+    const before = await filed(documentId);
+
+    await as(() => revision.control.cancelCheckOut(documentId), AUTHOR);
+
+    expect(await cancellations(documentId, before)).toBe(1);
+    expect(await owner.documentLock.count({ where: { documentId, releasedAt: null } })).toBe(0);
+    expect((await owner.document.findUniqueOrThrow({ where: { id: documentId } })).status).toBe(
+      'PUBLISHED',
+    );
+  });
+
+  it('refuses a second cancel issued in order, and files nothing for it', async () => {
+    const documentId = await published();
+    await as(() => revision.control.checkOut(documentId), AUTHOR);
+    await as(() => revision.control.cancelCheckOut(documentId), AUTHOR);
+    const before = await filed(documentId);
+
+    // The sequential second caller, which is the answer the concurrent one has to match.
+    await expect(
+      as(() => revision.control.cancelCheckOut(documentId), AUTHOR),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
+    expect(await cancellations(documentId, before)).toBe(0);
+  });
+
+  it('refuses a cancel whose live lock was ended underneath it, and files one cancellation', async () => {
+    const documentId = await published();
+    await as(() => revision.control.checkOut(documentId), AUTHOR);
+    const before = await filed(documentId);
+
+    /*
+     * The seam: the *real* lock repository, wrapped for one of the two callers only.
+     *
+     * The stalling caller answers `liveFor` truthfully and then waits — after the answer rather
+     * than before it, because the interleaving worth proving is a transaction that read a live
+     * lock and then stalled, which is the only way to reach the transition's idempotent branch.
+     * Wrapping one caller rather than counting arrivals is what makes it deterministic: which of
+     * two identical calls reaches the port first is the scheduler's business, and nothing here
+     * depends on it.
+     */
+    let admit: () => void = () => undefined;
+    const stalled = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    const held = new Proxy(revision.locks, {
+      get(target, property, receiver) {
+        if (property === 'liveFor') {
+          return async (...args: readonly unknown[]) => {
+            const answer = await (
+              target.liveFor as (...rest: readonly unknown[]) => Promise<unknown>
+            )(...args);
+            await stalled;
+            return answer;
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const stalling = realRevisionControl({ ...revisionOptions, locks: held }).control;
+
+    // The stalling cancel reads the live lock, then waits inside its own transaction.
+    const loser = as(() => stalling.cancelCheckOut(documentId), AUTHOR);
+    // The other cancel runs to completion while it waits, and ends the check-out.
+    await as(() => revision.control.cancelCheckOut(documentId), AUTHOR);
+    admit();
+
+    await expect(loser).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
+    // One check-out was cancelled once; a second row would name somebody for an act the lock
+    // says they did not perform.
+    expect(await cancellations(documentId, before)).toBe(1);
+    expect(await owner.documentLock.count({ where: { documentId, releasedAt: null } })).toBe(0);
+  });
+
+  it('still lets the holder check in, and check out again afterwards', async () => {
+    const documentId = await published();
+    await as(() => revision.control.checkOut(documentId), AUTHOR);
+
+    // The claim must refuse a lost race without refusing the ordinary path that always wins.
+    const fileObjectId = await uploadClean(unique('revised'));
+    await as(() =>
+      revision.control.checkIn({
+        documentId,
+        fileObjectId,
+        filename: 'revised.pdf',
+        changeNote: 'second draft',
+        keepCheckedOut: false,
+      }),
+    );
+    expect(await owner.documentLock.count({ where: { documentId, releasedAt: null } })).toBe(0);
+
+    // The check-in left the document in DRAFT, which is where the next check-out starts from on
+    // a document that has one; a fresh publication is what the check-out machine takes.
+    const second = await published();
+    await as(() => revision.control.checkOut(second), AUTHOR);
+    expect(
+      await owner.documentLock.count({ where: { documentId: second, releasedAt: null } }),
+    ).toBe(1);
+    await as(() => revision.control.cancelCheckOut(second), AUTHOR);
+    expect(
+      await owner.documentLock.count({ where: { documentId: second, releasedAt: null } }),
+    ).toBe(0);
   });
 });

@@ -105,8 +105,11 @@ export class PrismaDocumentLockRepository implements DocumentLockRepository {
     releasedBy: string | null;
     releaseNote: string | null;
     at: Date;
-  }): Promise<void> {
-    await requireTransaction().documentLock.updateMany({
+  }): Promise<boolean> {
+    // `releasedAt: null` in the predicate and the affected-row count as the answer — `settle`'s
+    // idiom, for `settle`'s reason. A lock somebody else ended a moment ago matches nothing, and
+    // the caller must not go on to say it ended the check-out.
+    const { count } = await requireTransaction().documentLock.updateMany({
       where: { id: input.lockId, tenantId: this.tenantId(), releasedAt: null },
       data: {
         releasedAt: input.at,
@@ -117,6 +120,7 @@ export class PrismaDocumentLockRepository implements DocumentLockRepository {
         version: { increment: 1 },
       },
     });
+    return count === 1;
   }
 
   async attachDraft(lockId: string, revisionId: string | null): Promise<void> {
