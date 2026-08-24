@@ -34,7 +34,9 @@ import type {
  * longer wanted and inserts what is new, inside the caller's transaction, and reports the
  * difference. The alternative — delete-all then insert-all — is simpler and wrong: it rewrites
  * `created_at` and `created_by` on every entry that did not change, so "who granted this, and
- * when" would be answered with the timestamp of the last unrelated edit to the same folder.
+ * when" would be answered with the timestamp of the last unrelated edit to the same folder. The
+ * difference it reports is what this transaction actually wrote, never what it merely intended:
+ * the insert tolerates a row a concurrent edit put there first, and says so.
  *
  * Row-level security scopes every statement here to the tenant; the explicit `tenantId` filters
  * are the second layer `05-database-design.md` §6 requires, not the only one.
@@ -144,26 +146,54 @@ export class PrismaAclRepository implements AclRepository {
     if (removedIds.length > 0) {
       await tx.aclEntry.deleteMany({ where: { tenantId, id: { in: removedIds } } });
     }
+    let written = granted;
     if (granted.length > 0) {
       const now = this.stamps.now();
-      await tx.aclEntry.createMany({
-        data: granted.map((entry) => ({
-          id: this.stamps.nextId(),
-          tenantId,
-          scopeType: scope.type as never,
-          scopeId: String(scope.id),
-          subjectType: entry.subjectType as never,
-          subjectId: entry.subjectId,
-          permission: entry.permission,
-          effect: entry.effect as never,
-          createdAt: now,
-          createdBy: userId,
-          updatedAt: now,
-          updatedBy: userId,
-        })),
-      });
+      const rows = granted.map((entry) => ({
+        id: this.stamps.nextId(),
+        tenantId,
+        scopeType: scope.type as never,
+        scopeId: String(scope.id),
+        subjectType: entry.subjectType as never,
+        subjectId: entry.subjectId,
+        permission: entry.permission,
+        effect: entry.effect as never,
+        createdAt: now,
+        createdBy: userId,
+        updatedAt: now,
+        updatedBy: userId,
+      }));
+      /*
+       * `skipDuplicates`, because the read above is a moment old — Slice 47.
+       *
+       * `uq_acl_entry` is one row per subject and permission on a node, and the `existing` read
+       * and this insert are the same question asked at two moments. Two administrators saving one
+       * folder's permissions at the same time both saw the entry absent, and the loser used to
+       * raise `P2002` from `createMany` — a raw Prisma error, so `AllExceptionsFilter` answered
+       * `500` on a permissions screen.
+       *
+       * Tolerated rather than caught, for the reason Slice 46 established against PostgreSQL: a
+       * unique violation aborts the transaction, and the recovery this needs is a read. Caught
+       * here, nothing further could run. `ON CONFLICT DO NOTHING` leaves the transaction usable.
+       *
+       * What the caller is told must stay true, which is why the count is not enough on its own:
+       * `granted` becomes the audit event, and reporting a grant this transaction did not write
+       * would file an act that never happened. The ids are ours, so reading them back says
+       * exactly which rows landed — and a loser that wrote none reaches the service's own
+       * "nothing changed" answer, which is what the same edit applied twice in a row already
+       * produces.
+       */
+      const { count } = await tx.aclEntry.createMany({ data: rows, skipDuplicates: true });
+      if (count !== rows.length) {
+        const mine = await tx.aclEntry.findMany({
+          where: { tenantId, id: { in: rows.map((row) => row.id) } },
+          select: { id: true },
+        });
+        const landed = new Set(mine.map((row) => row.id));
+        written = granted.filter((_, index) => landed.has(rows[index]?.id ?? ''));
+      }
     }
-    return { granted, revoked };
+    return { granted: written, revoked };
   }
 
   async deleteForScope(scope: ScopeRef): Promise<readonly AclEntryRecord[]> {

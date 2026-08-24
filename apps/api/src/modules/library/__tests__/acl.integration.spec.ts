@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   AclEffect,
@@ -2016,5 +2016,151 @@ describe('subject names', () => {
 
     expect(explicit.entries).toStrictEqual([]);
     expect(asked).toBe(0);
+  });
+});
+
+/**
+ * Two administrators saving one node's permissions at the same moment — Slice 47.
+ *
+ * `uq_acl_entry` is one row per subject and permission on a node, and `replaceForScope` reads the
+ * node's set before it inserts the difference. Between the two sits nothing but the caller's own
+ * transaction, so both administrators can see an entry absent and both go on to insert it.
+ *
+ * The resolver is the seam, because the service asks it whether the caller may manage the node
+ * before it reads the entries — a real port, held so both editors are inside their transactions
+ * and past the guard before either reads. Both then issue their read before either read resolves,
+ * which is what makes the interleaving the product's rather than the scheduler's.
+ */
+describe('two administrators saving one node at once', () => {
+  const scope = () => folderScope(openFolderId);
+  const draft = () => entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_PRINT, AclEffect.ALLOW);
+
+  type Resolver = ReturnType<typeof realPermissions>['resolver'];
+
+  /** The real resolver, held at `resolve` until `arrivals` editors are inside it. */
+  function heldAt(arrivals: number): Resolver {
+    let seen = 0;
+    let release: () => void = () => undefined;
+    const all = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return new Proxy(permissions.resolver, {
+      get(target, property, receiver) {
+        if (property === 'resolve') {
+          return async (...args: readonly unknown[]) => {
+            seen += 1;
+            if (seen === arrivals) {
+              release();
+            }
+            await all;
+            return (target.resolve as (...rest: readonly unknown[]) => unknown)(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+  }
+
+  function racing(resolver: Resolver) {
+    return realPermissions({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      cache: permissions.cache,
+      resolver,
+    }).permissions;
+  }
+
+  afterEach(async () => {
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), []));
+  });
+
+  it('grants once when one administrator saves', async () => {
+    const result = await asAdmin(() => racing(heldAt(1)).replaceFor(scope(), [draft()]));
+
+    expect(result.entries).toHaveLength(1);
+    expect(
+      await owner.aclEntry.count({
+        where: {
+          tenantId: TENANT,
+          scopeId: openFolderId,
+          permission: Permission.DOCUMENT_PRINT,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('grants nothing the second time when the same save is repeated in order', async () => {
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [draft()]));
+    // The sequential second-comer, which is the answer the concurrent one has to match.
+    await asAdmin(() => permissions.permissions.replaceFor(scope(), [draft()]));
+
+    expect(
+      await owner.aclEntry.count({
+        where: {
+          tenantId: TENANT,
+          scopeId: openFolderId,
+          permission: Permission.DOCUMENT_PRINT,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('answers both of them, and writes the row once', async () => {
+    const editors = racing(heldAt(2));
+
+    const outcomes = await Promise.all([
+      asAdmin(() => editors.replaceFor(scope(), [draft()])),
+      asAdmin(() => editors.replaceFor(scope(), [draft()])),
+    ]);
+
+    // Neither is handed a constraint error: the loser reaches the same "nothing changed" answer
+    // the sequential second save already produces.
+    for (const outcome of outcomes) {
+      expect(outcome.entries).toHaveLength(1);
+      expect(outcome.entries[0]).toMatchObject({
+        subjectId: BOB,
+        permission: Permission.DOCUMENT_PRINT,
+        effect: AclEffect.ALLOW,
+      });
+    }
+    expect(
+      await owner.aclEntry.count({
+        where: {
+          tenantId: TENANT,
+          scopeId: openFolderId,
+          permission: Permission.DOCUMENT_PRINT,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('files one grant and one confirmation, never two grants', async () => {
+    const editors = racing(heldAt(2));
+    const before = await owner.auditEvent.count({
+      where: { tenantId: TENANT, action: 'ACL_GRANTED' },
+    });
+
+    await Promise.all([
+      asAdmin(() => editors.replaceFor(scope(), [draft()])),
+      asAdmin(() => editors.replaceFor(scope(), [draft()])),
+    ]);
+
+    // Both editors file an `ACL_GRANTED` row, because a `PUT` that matched is an administrator
+    // confirming a set and the trail says who last reviewed the node. What must not happen is two
+    // rows claiming the *act*: the loser wrote nothing, so its row is the `UPDATED` confirmation
+    // with no entries, and only the winner's is `CREATED`.
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, action: 'ACL_GRANTED' },
+      orderBy: { sequence: 'asc' },
+      select: { payload: true },
+      skip: before,
+    });
+    const operations = rows.map((row) => (row.payload as { operation?: string }).operation);
+    expect(operations.filter((operation) => operation === 'CREATED')).toHaveLength(1);
+    expect(operations.filter((operation) => operation === 'UPDATED')).toHaveLength(1);
   });
 });
