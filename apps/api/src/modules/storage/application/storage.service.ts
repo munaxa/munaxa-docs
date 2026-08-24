@@ -574,7 +574,7 @@ export class DefaultStorageService implements StorageService {
       }
 
       const id = this.writer.clock.nextId();
-      await this.files.insert({
+      const created = await this.files.insert({
         id,
         checksumSha256: digest,
         sizeBytes: input.content.length,
@@ -588,6 +588,13 @@ export class DefaultStorageService implements StorageService {
         scanThreat: null,
         derived: true,
       });
+      if (!created) {
+        // Two renders of the same artefact finishing together — the read above and the insert are
+        // the same question asked at two moments, and the render sits between them. The winner's
+        // row is the answer this call already gives when the digest was there first, so take it
+        // rather than reading back an id that was never written.
+        return this.deduplicatedDerived(digest, { derived: true });
+      }
 
       const stored = await this.require(asId<FileObjectId>(id));
       return {
@@ -649,7 +656,7 @@ export class DefaultStorageService implements StorageService {
 
     return this.writer.write<FileObjectRecord>(async () => {
       const id = this.writer.clock.nextId();
-      await this.files.insert({
+      const created = await this.files.insert({
         id,
         // The store's own answer for the size, and our own for the digest — computed over the
         // bytes as they went past rather than read back, because reading it back would attest
@@ -665,6 +672,12 @@ export class DefaultStorageService implements StorageService {
         scanThreat: null,
         derived: true,
       });
+      if (!created) {
+        // The same export, run twice, finishing at the same time. The read above already returns
+        // the winner's row when it got there first; arriving together must not answer differently.
+        return this.deduplicatedDerived(checksumSha256, { derived: true, streamed: true });
+      }
+
       const record = await this.require(asId<FileObjectId>(id));
       return {
         result: record,
@@ -896,6 +909,28 @@ export class DefaultStorageService implements StorageService {
       change: this.uploaded(existing.id, AdministrativeOperation.UPDATED, {
         deduplicated: true,
         uploadSessionId: id,
+      }),
+    };
+  }
+
+  /**
+   * The winner's row, for a derived artefact whose insert lost the race — Slice 46.
+   *
+   * `insert` tolerates the conflict rather than raising it, so a loser must resolve the winner
+   * instead of reading back an id that was never written. The outcome is deliberately the one each
+   * caller's own `findByChecksum` branch already gives when the digest was simply there first:
+   * arriving together must not answer differently from arriving second.
+   */
+  private async deduplicatedDerived(digest: string, facts: Readonly<Record<string, unknown>>) {
+    const winner = await this.files.findByChecksum(digest);
+    if (winner === null) {
+      throw new StorageUnavailableError('The artefact could not be stored.');
+    }
+    return {
+      result: winner,
+      change: this.uploaded(winner.id, AdministrativeOperation.UPDATED, {
+        ...facts,
+        deduplicated: true,
       }),
     };
   }
