@@ -131,6 +131,9 @@ function aPdf(marker: string): Buffer {
 
 const MAGIC = new Uint8Array(Buffer.from('%PDF-1.7\n% ', 'utf8'));
 
+/** Held open by a case that needs a completion paused mid-flight; null everywhere else. */
+let scanGate: (() => Promise<void>) | null = null;
+
 function scopedPath(key: string): string {
   return `${TENANT}/${key}`;
 }
@@ -280,7 +283,12 @@ beforeAll(async () => {
     signingSecret: SIGNING_SECRET,
     antivirus: {
       scanner: 'unconfigured',
-      scan: () => Promise.reject(new Error('AV_DRIVER is NONE')),
+      scan: async () => {
+        if (scanGate !== null) {
+          await scanGate();
+        }
+        return Promise.reject(new Error('AV_DRIVER is NONE'));
+      },
     },
     users: {
       get: (id: string) =>
@@ -967,6 +975,109 @@ describe('the upload-session sweep', () => {
     expect(session.state).toBe('EXPIRED');
     expect(await library.localStorage.head(decoded.grant.key)).toBeNull();
   });
+});
+
+/**
+ * Slice 44 — a completion that the reaper finished underneath it.
+ *
+ * `UploadSessionRepository.settle` carries `state: OPEN` in its predicate, which is what makes it a
+ * claim rather than an assignment, and its port says why the answer matters: *"completion is the
+ * step that creates a blob and bumps a reference count, and a client retrying a request whose
+ * response it never saw must not do either of those twice."*
+ *
+ * `completeUploadSession` reads the session's state once, at the top, and then does the whole
+ * promotion — `completeUpload`, the size and digest checks, the copy to the content key, the scan,
+ * the `file_object` insert — before settling. Slice 43 called ignoring the answer harmless because
+ * of that opening check. It is not: the check runs *before* the work, and the row can move
+ * underneath it. `storage.sweep-upload-sessions` runs every fifteen minutes and expires anything
+ * still `OPEN` past its deadline, which is exactly a session whose completion is in flight.
+ *
+ * Observed before it was fixed: the reaper stamped `EXPIRED`, the completion went on to commit a
+ * durable `file_object` and answered the caller with its identifier, and the session row was left
+ * saying `EXPIRED` with `file_object_id` null — a blob the caller can attach to a document, and a
+ * record denying the upload ever finished.
+ *
+ * The interleaving is forced at the antivirus port rather than by hoping two promises land in the
+ * right order: the scan is the real seam between the digest read and the insert, and holding it is
+ * what a slow scanner does anyway.
+ */
+describe('a completion the reaper finished underneath it', () => {
+  async function staged(marker: string): Promise<UploadSessionId> {
+    const content = Buffer.from(`%PDF-1.7\n% ${marker}\n1 0 obj\n<<>>\nendobj\n`);
+    const target = await as(() =>
+      library.storage.createUploadSession({
+        filename: `${marker}.pdf`,
+        mimeType: 'application/pdf',
+        sizeBytes: content.length,
+        magicBytes: MAGIC,
+      }),
+    );
+    const decoded = decodeTransferToken(
+      SIGNING_SECRET,
+      new URL(target.url).searchParams.get('token') ?? '',
+      'PUT',
+      now,
+    );
+    if (!('grant' in decoded)) {
+      throw new Error('The upload target did not carry a usable transfer capability.');
+    }
+    await library.localStorage.beginWrite(decoded.grant.key);
+    await writeFile(library.localStorage.partialPathFor(decoded.grant.key), content);
+    await library.localStorage.finishWrite(decoded.grant.key);
+    return asId<UploadSessionId>(target.uploadSessionId);
+  }
+
+  it('completes normally when nothing takes the session away', async () => {
+    // The positive control. Without it the case below could pass because completion refuses
+    // everything, and the assertion about the blob would hold for the wrong reason.
+    const sessionId = await staged(`quiet-${String(Date.now())}`);
+    const completed = await as(() => library.storage.completeUploadSession(sessionId, []));
+
+    const row = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
+    expect(row.state).toBe('COMPLETED');
+    expect(row.fileObjectId).toBe(completed.fileObjectId);
+  }, 60_000);
+
+  it('refuses, and leaves no blob behind, when the reaper expired it mid-flight', async () => {
+    const sessionId = await staged(`reaped-${String(Date.now())}`);
+    const before = await owner.fileObject.count({ where: { tenantId: TENANT } });
+
+    let release!: () => void;
+    let arrived!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reached = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    scanGate = async () => {
+      arrived();
+      await gate;
+    };
+
+    const completing = as(() => library.storage.completeUploadSession(sessionId, []));
+    await reached;
+    // Released for everything else the suite does; only this completion is held.
+    scanGate = null;
+
+    now = new Date(now.getTime() + 86_400_000);
+    expect(await asSystem(() => retention.retention.expireUploadSessions())).toBeGreaterThanOrEqual(
+      1,
+    );
+    release();
+
+    // The session is gone from under it, so the answer is the one the method already gives for a
+    // session it cannot claim — and the same one `abandonUploadSession` gives.
+    await expect(completing).rejects.toThrow(/already been finished/);
+
+    const row = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
+    expect(row.state).toBe('EXPIRED');
+    expect(row.fileObjectId).toBeNull();
+
+    // The refusal rolled the whole promotion back. Without it the caller holds the identifier of a
+    // durable blob whose own session says it never finished.
+    expect(await owner.fileObject.count({ where: { tenantId: TENANT } })).toBe(before);
+  }, 60_000);
 });
 
 // --- The rolling integrity verifier -----------------------------------------------------------
