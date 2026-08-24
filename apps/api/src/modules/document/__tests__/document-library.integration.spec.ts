@@ -13,6 +13,7 @@ import {
   NumberSegmentKind,
   RevisionLabelStyle,
   ScanStatus,
+  type FileObjectId,
   type TenantId,
   type UploadSessionId,
   type UserId,
@@ -130,6 +131,15 @@ function aPdf(marker: string): Buffer {
 const MAGIC = new Uint8Array(Buffer.from('%PDF-1.7\n% ', 'utf8'));
 
 /**
+ * Held open by a case that needs two completions paused between the checksum read and the insert;
+ * null everywhere else, so every other test sees exactly the behaviour it always saw.
+ */
+let scanGate: (() => Promise<void>) | null = null;
+
+/** The suite's unit of work, for the two calls below the use-case layer that need one. */
+let uow: PrismaUnitOfWork;
+
+/**
  * The path the scoping wrapper would have produced, for asserting against the disk directly.
  *
  * The suite's registry gives each tenant a prefix equal to its own identifier, so this mirrors what
@@ -239,6 +249,7 @@ beforeAll(async () => {
 
   const prisma = sharedDatabase(appConfig, logger, APP_URL);
   const unitOfWork = new PrismaUnitOfWork(prisma);
+  uow = unitOfWork;
 
   // The whole library, composed the way the container composes it — real storage over a real
   // temporary directory, under the real tenant scoping. `AV_DRIVER=NONE` here, so the gate records
@@ -253,7 +264,12 @@ beforeAll(async () => {
     signingSecret: SIGNING_SECRET,
     antivirus: {
       scanner: 'unconfigured',
-      scan: () => Promise.reject(new Error('AV_DRIVER is NONE')),
+      scan: async () => {
+        if (scanGate !== null) {
+          await scanGate();
+        }
+        return Promise.reject(new Error('AV_DRIVER is NONE'));
+      },
     },
     users: {
       get: (id: string) =>
@@ -1126,6 +1142,175 @@ describe('an upload session belongs to whoever opened it', () => {
 
     const stillOpen = await owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } });
     expect(stillOpen.state).toBe('OPEN');
+  });
+});
+
+/**
+ * Slice 46 — the same bytes, uploaded by two people at once.
+ *
+ * `uq_file_object_checksum` is one row per digest per tenant, and `completeUploadSession` asks for
+ * an existing digest before it stores one. Between the two sit the copy to the content key and the
+ * antivirus scan, so two sessions carrying identical content both read *no* digest and both went on
+ * to insert. The loser raised `P2002` from `fileObject.create`.
+ *
+ * That was not merely an ugly error. A raw Prisma error is neither an `HttpException` nor a
+ * `DomainError`, so `AllExceptionsFilter` answered `500`; the rolled-back transaction left the
+ * session `OPEN` with `file_object_id` null; and the staging object had already been deleted
+ * *outside* the transaction, so retrying answered "Object storage is unavailable". The upload had
+ * to be started again from the file picker, and the dead session sat `OPEN` until the sweep.
+ *
+ * A unique violation also leaves PostgreSQL in `25P02` — "current transaction is aborted, commands
+ * ignored until end of transaction block" — so catching it and re-reading the winner cannot work
+ * where it is needed. The insert tolerates the conflict instead and says whether it wrote the row,
+ * which is `settle`'s idiom in this same subsystem.
+ *
+ * Both callers are real and distinct, both sessions are their own, and the barrier sits at the
+ * antivirus port — the genuine seam between the digest read and the insert — so the interleaving is
+ * forced rather than hoped for. Each completion begins from this scope, because
+ * `PrismaUnitOfWork.run` joins an ambient transaction and one started inside the other would prove
+ * nothing.
+ */
+describe('the same bytes, uploaded by two people at once', () => {
+  async function stagedFor(actor: UserId, bytes: Buffer, marker: string): Promise<UploadSessionId> {
+    const target = await as(
+      () =>
+        storage.createUploadSession({
+          filename: `${marker}.pdf`,
+          mimeType: 'application/pdf',
+          sizeBytes: bytes.length,
+          magicBytes: MAGIC,
+        }),
+      actor,
+    );
+    if (target.alreadyStored !== null) {
+      throw new Error('The fixture uploaded content that already existed.');
+    }
+    const decoded = decodeTransferToken(
+      SIGNING_SECRET,
+      new URL(target.url).searchParams.get('token') ?? '',
+      'PUT',
+      FIXED_NOW,
+    );
+    if (!('grant' in decoded)) {
+      throw new Error('The upload target did not carry a usable transfer capability.');
+    }
+    await localAdapter.beginWrite(decoded.grant.key);
+    await writeFile(localAdapter.partialPathFor(decoded.grant.key), bytes);
+    await localAdapter.finishWrite(decoded.grant.key);
+    return asId<UploadSessionId>(target.uploadSessionId);
+  }
+
+  const sessionRow = (id: UploadSessionId) =>
+    owner.uploadSession.findUniqueOrThrow({ where: { id } });
+
+  it('stores two different contents as two different blobs', async () => {
+    // The first control: the flow works at all, and dedup is not simply collapsing everything onto
+    // one row. Without this every assertion below could hold while uploads were broken.
+    const one = await stagedFor(ALICE, aPdf(`distinct-a-${String(Date.now())}`), 'distinct-a');
+    const two = await stagedFor(ALICE, aPdf(`distinct-b-${String(Date.now())}`), 'distinct-b');
+
+    const first = await as(() => storage.completeUploadSession(one, []), ALICE);
+    const second = await as(() => storage.completeUploadSession(two, []), ALICE);
+
+    expect(first.fileObjectId).not.toBe(second.fileObjectId);
+    expect(first.deduplicated).toBe(false);
+    expect(second.deduplicated).toBe(false);
+  });
+
+  it('deduplicates identical content uploaded one after the other', async () => {
+    // The second control, and the semantics the concurrent case must converge on: the later
+    // session gets the earlier blob, says so, and settles onto it rather than staying open.
+    const bytes = aPdf(`sequential-${String(Date.now())}`);
+    const first = await stagedFor(ALICE, bytes, 'sequential-one');
+    const second = await stagedFor(BOB, bytes, 'sequential-two');
+
+    const winner = await as(() => storage.completeUploadSession(first, []), ALICE);
+    const later = await as(() => storage.completeUploadSession(second, []), BOB);
+
+    expect(later.fileObjectId).toBe(winner.fileObjectId);
+    expect(later.deduplicated).toBe(true);
+    expect((await sessionRow(second)).state).toBe('COMPLETED');
+    expect((await sessionRow(second)).fileObjectId).toBe(winner.fileObjectId);
+  });
+
+  it('deduplicates identical content completing at the same moment', async () => {
+    const bytes = aPdf(`concurrent-${String(Date.now())}`);
+    const mine = await stagedFor(ALICE, bytes, 'concurrent-one');
+    const theirs = await stagedFor(BOB, bytes, 'concurrent-two');
+
+    // Neither completion leaves the scan until both have arrived, so both have read "no such
+    // digest" before either can insert. That is the interleaving, forced rather than awaited.
+    let arrivals = 0;
+    let open!: () => void;
+    const both = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    scanGate = async () => {
+      arrivals += 1;
+      if (arrivals === 2) {
+        open();
+      }
+      await both;
+    };
+
+    const [first, second] = await Promise.all([
+      as(() => storage.completeUploadSession(mine, []), ALICE),
+      as(() => storage.completeUploadSession(theirs, []), BOB),
+    ]);
+    scanGate = null;
+
+    // One blob, two references to it — the sequential answer, reached concurrently. Before the fix
+    // one of these two rejected with `P2002`.
+    expect(first.fileObjectId).toBe(second.fileObjectId);
+    expect([first.deduplicated, second.deduplicated].filter(Boolean)).toHaveLength(1);
+
+    // Exactly one row carries the digest, and it is the one both were handed.
+    const blobs = await owner.fileObject.findMany({
+      where: { tenantId: TENANT, checksumSha256: first.checksumSha256 },
+      select: { id: true, storageKey: true },
+    });
+    expect(blobs).toHaveLength(1);
+    expect(blobs[0]?.id).toBe(first.fileObjectId);
+
+    // Both sessions settled, neither is left open for the sweep to find.
+    for (const id of [mine, theirs]) {
+      const row = await sessionRow(id);
+      expect(row.state).toBe('COMPLETED');
+      expect(row.fileObjectId).toBe(first.fileObjectId);
+    }
+
+    // The staging objects are gone and the content object is there: one durable blob, and no
+    // successful completion pointing at bytes that are not.
+    // Asserted against the key the row itself names, rather than one recomputed here: the claim is
+    // that a completion never points at bytes that are not there.
+    expect(await localAdapter.head(scopedPath(TENANT, blobs[0]?.storageKey ?? ''))).not.toBeNull();
+  });
+
+  it('counts one reference per document that attaches the shared blob', async () => {
+    // Reference counting is the invariant a deduplication fix is most likely to break: one physical
+    // blob, one increment per attaching document, and never an increment for the dedup itself.
+    const bytes = aPdf(`references-${String(Date.now())}`);
+    const mine = await stagedFor(ALICE, bytes, 'references-one');
+    const theirs = await stagedFor(BOB, bytes, 'references-two');
+
+    const first = await as(() => storage.completeUploadSession(mine, []), ALICE);
+    const second = await as(() => storage.completeUploadSession(theirs, []), BOB);
+    expect(second.fileObjectId).toBe(first.fileObjectId);
+
+    const before = await owner.fileObject.findUniqueOrThrow({
+      where: { id: first.fileObjectId },
+      select: { refCount: true },
+    });
+    // `reference` is a repository-level adjustment rather than a use case, so it carries no unit of
+    // work of its own — the same wrapping the document write path gives it.
+    await as(() => uow.run(() => storage.reference(asId<FileObjectId>(first.fileObjectId))), ALICE);
+    await as(() => uow.run(() => storage.reference(asId<FileObjectId>(second.fileObjectId))), BOB);
+
+    const after = await owner.fileObject.findUniqueOrThrow({
+      where: { id: first.fileObjectId },
+      select: { refCount: true },
+    });
+    expect(after.refCount).toBe(before.refCount + 2);
   });
 });
 

@@ -265,23 +265,7 @@ export class DefaultStorageService implements StorageService {
       const existing = await this.files.findByChecksum(digest);
       if (existing !== null) {
         await this.storage.delete(session.targetKey);
-        this.requireClaimed(
-          await this.sessions.settle(id, UploadSessionState.COMPLETED, existing.id),
-        );
-        return {
-          result: {
-            fileObjectId: existing.id,
-            checksumSha256: existing.checksumSha256,
-            sizeBytes: existing.sizeBytes,
-            mimeType: existing.mimeType,
-            scanStatus: existing.scanStatus,
-            deduplicated: true,
-          },
-          change: this.uploaded(existing.id, AdministrativeOperation.UPDATED, {
-            deduplicated: true,
-            uploadSessionId: id,
-          }),
-        };
+        return await this.deduplicatedOnto(existing, id);
       }
 
       const contentKey = blobKeyFor(digest);
@@ -290,7 +274,7 @@ export class DefaultStorageService implements StorageService {
 
       const scan = await this.scan(contentKey, metadata.sizeBytes, session.declaredMimeType);
       const fileObjectId = this.writer.clock.nextId();
-      await this.files.insert({
+      const created = await this.files.insert({
         id: fileObjectId,
         checksumSha256: digest,
         sizeBytes: metadata.sizeBytes,
@@ -302,6 +286,31 @@ export class DefaultStorageService implements StorageService {
         scanThreat: scan.threat,
         derived: false,
       });
+      if (!created) {
+        /*
+         * Somebody stored these very bytes while this transaction was scanning them — Slice 46.
+         *
+         * The read above and the insert are the same question asked at two moments, and between
+         * them sit the copy to the content key and the scan. Two people uploading the same standard
+         * form at the same time both saw no digest, and the loser used to raise `P2002` from
+         * `fileObject.create` — a raw Prisma error, so `AllExceptionsFilter` answered `500`, and the
+         * rolled-back transaction left the session `OPEN` with its staging object already deleted,
+         * which made retrying answer "Object storage is unavailable". The upload had to be started
+         * again from the file picker.
+         *
+         * Now the insert tolerates the conflict and says so, and this converges on the answer the
+         * *sequential* second-comer already gets: the winner's blob, this session settled onto it,
+         * and `deduplicated`. Nothing new is invented — the bytes are the same bytes, which is what
+         * content addressing means, and both sessions copied them to the same content key.
+         */
+        const winner = await this.files.findByChecksum(digest);
+        if (winner === null) {
+          // The digest is not there and this did not write it: something other than the checksum
+          // index refused the row, and answering "stored" would be a lie about durable content.
+          throw new StorageUnavailableError('The blob could not be stored.');
+        }
+        return await this.deduplicatedOnto(winner, id);
+      }
       this.requireClaimed(
         await this.sessions.settle(id, UploadSessionState.COMPLETED, fileObjectId),
       );
@@ -865,6 +874,32 @@ export class DefaultStorageService implements StorageService {
    * The payload does not repeat `session.state`, because the state this read at the top is no
    * longer the state the row is in; saying "not open" is the whole of what is known here.
    */
+  /**
+   * This session finished onto a blob somebody else stored.
+   *
+   * One shape for both ways of reaching it — the digest already existed when this transaction
+   * looked, or it appeared while this transaction worked. The session still settles, so a caller
+   * who lost the race is not left holding an `OPEN` row, and the audit records the upload against
+   * the blob it actually resolved to.
+   */
+  private async deduplicatedOnto(existing: FileObjectRecord, id: UploadSessionId) {
+    this.requireClaimed(await this.sessions.settle(id, UploadSessionState.COMPLETED, existing.id));
+    return {
+      result: {
+        fileObjectId: existing.id,
+        checksumSha256: existing.checksumSha256,
+        sizeBytes: existing.sizeBytes,
+        mimeType: existing.mimeType,
+        scanStatus: existing.scanStatus,
+        deduplicated: true,
+      },
+      change: this.uploaded(existing.id, AdministrativeOperation.UPDATED, {
+        deduplicated: true,
+        uploadSessionId: id,
+      }),
+    };
+  }
+
   private requireClaimed(claimed: boolean): void {
     if (!claimed) {
       throw new ValidationError('That upload has already been finished.', [

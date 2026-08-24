@@ -51,7 +51,14 @@ export interface FileObjectRepository {
   findById(id: FileObjectId): Promise<FileObjectRecord | null>;
   /** Dedupe: an identical checksum within the tenant is the same blob. */
   findByChecksum(checksum: string): Promise<FileObjectRecord | null>;
-  insert(file: NewFileObject): Promise<void>;
+  /**
+   * Inserts the blob, and answers whether it was the one to insert it.
+   *
+   * `false` means another transaction stored this digest first — `uq_file_object_checksum` is one
+   * row per digest per tenant. The conflict is *tolerated* rather than raised, because a unique
+   * violation aborts the PostgreSQL transaction and the recovery a caller needs is a read.
+   */
+  insert(file: NewFileObject): Promise<boolean>;
   recordScan(
     id: FileObjectId,
     verdict: { status: ScanStatusKey; scanner: string; threat: string | null; at: Date },
