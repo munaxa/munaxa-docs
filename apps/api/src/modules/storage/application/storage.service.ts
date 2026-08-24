@@ -265,7 +265,9 @@ export class DefaultStorageService implements StorageService {
       const existing = await this.files.findByChecksum(digest);
       if (existing !== null) {
         await this.storage.delete(session.targetKey);
-        await this.sessions.settle(id, UploadSessionState.COMPLETED, existing.id);
+        this.requireClaimed(
+          await this.sessions.settle(id, UploadSessionState.COMPLETED, existing.id),
+        );
         return {
           result: {
             fileObjectId: existing.id,
@@ -300,7 +302,9 @@ export class DefaultStorageService implements StorageService {
         scanThreat: scan.threat,
         derived: false,
       });
-      await this.sessions.settle(id, UploadSessionState.COMPLETED, fileObjectId);
+      this.requireClaimed(
+        await this.sessions.settle(id, UploadSessionState.COMPLETED, fileObjectId),
+      );
 
       const events: DomainEventDraft[] = [
         fileObjectCreatedEvent(asId<AnyId>(fileObjectId), {
@@ -842,6 +846,33 @@ export class DefaultStorageService implements StorageService {
    * would break an upload in flight across a deployment for no gain, and they age out with the
    * session's own expiry.
    */
+  /**
+   * The session was still ours to finish — Slice 44.
+   *
+   * `settle` carries `state: OPEN` in its predicate, and the answer is the only thing that can tell
+   * this method the row moved while it worked. The check at the top of `completeUploadSession` runs
+   * *before* the promotion — `completeUpload`, the digest read, the copy, the scan, the insert —
+   * and `storage.sweep-upload-sessions` runs every fifteen minutes against anything still `OPEN`
+   * past its deadline, which is exactly a session whose completion is in flight. Without this the
+   * reaper stamped `EXPIRED`, the completion committed a durable `file_object` anyway and answered
+   * with its identifier, and the row was left saying the upload never finished.
+   *
+   * Throwing rather than forcing the state: the session really was taken away, and refusing is what
+   * this method already answers for a session it cannot have. The rollback takes the blob with it —
+   * the bytes copied to the content key become an unreferenced object, which is the direction
+   * `storeStreamed` already calls benign and which the blob sweep collects.
+   *
+   * The payload does not repeat `session.state`, because the state this read at the top is no
+   * longer the state the row is in; saying "not open" is the whole of what is known here.
+   */
+  private requireClaimed(claimed: boolean): void {
+    if (!claimed) {
+      throw new ValidationError('That upload has already been finished.', [
+        { field: 'state', message: 'not open' },
+      ]);
+    }
+  }
+
   private refuseAnotherPersonsUpload(session: UploadSessionRecord): void {
     const { userId } = requireContext();
     if (session.createdBy !== null && session.createdBy !== userId) {
