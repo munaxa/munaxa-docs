@@ -1094,3 +1094,165 @@ describe('the audit stream is a gap-free cursor', () => {
     ).rejects.toThrow();
   });
 });
+
+/**
+ * One delivery row is attempted once, however many workers meet it — Slice 51.
+ *
+ * `claimDue` is named for what it is meant to do and does not do it: it is a `findMany` over
+ * `state IN (PENDING, RETRYING) AND next_attempt_at <= now`, marking nothing. `fanOut` writes each
+ * row `nextAttemptAt: now` and then attempts it *outside* the transaction, so from the moment it
+ * commits until it settles the row is both in flight and due — and `webhooks.retry-due` runs every
+ * minute onto a lane whose per-tenant concurrency is four.
+ *
+ * The service states the invariant this breaks: "this event has already been recorded for this
+ * endpoint, so the second arrival must not become a second POST."
+ */
+describe('one delivery, one POST, however many workers meet it', () => {
+  let endpointId: string;
+
+  async function anEndpoint(): Promise<string> {
+    const created = await asAdmin(() =>
+      webhooks.admin.create({
+        name: `Sweep ${uuidv7().slice(0, 8)}`,
+        url: `https://hooks.example.com/sweep-${uuidv7().slice(0, 8)}`,
+        eventTypes: [],
+        enabled: true,
+      }),
+    );
+    return created.endpoint.id;
+  }
+
+  function anEvent() {
+    return {
+      eventId: asId<AnyId>(uuidv7()),
+      tenantId: TENANT,
+      eventType: 'document.published',
+      aggregateType: 'document',
+      aggregateId: uuidv7(),
+      occurredAt: FIXED_NOW,
+      payload: { marker: 'sweep' },
+      correlationId: 'sweep-suite',
+    };
+  }
+
+  const postsTo = (url: string): number =>
+    webhooks.http.sent.filter((sent) => sent.url === url).length;
+
+  function urlOf(id: string): Promise<string> {
+    return asAdmin(async () => (await webhooks.admin.get(id)).url);
+  }
+
+  beforeAll(async () => {
+    endpointId = await anEndpoint();
+  });
+
+  it('posts once for one event when nothing else is sweeping', async () => {
+    const url = await urlOf(endpointId);
+    const before = postsTo(url);
+
+    await runWithContext(contextFor(null, []), () => webhooks.delivery.fanOut(anEvent()));
+
+    expect(postsTo(url) - before).toBe(1);
+  });
+
+  it('posts again when the endpoint refused and the sweep finds it due', async () => {
+    const url = await urlOf(endpointId);
+    const before = postsTo(url);
+    webhooks.http.status = 500;
+    await runWithContext(contextFor(null, []), () => webhooks.delivery.fanOut(anEvent()));
+    webhooks.http.status = 200;
+
+    // The sweep must still deliver what is genuinely due — a claim that refused everything would
+    // pass the race assertion below while breaking retries altogether.
+    await runWithContext(contextFor(null, []), () =>
+      webhooks.delivery.retryDue(new Date(FIXED_NOW.getTime() + 60 * 60 * 1000)),
+    );
+
+    expect(postsTo(url) - before).toBe(2);
+  });
+
+  it('posts once when the retry sweep meets a delivery already in flight', async () => {
+    // Its own endpoint, so nothing another case left RETRYING can be swept into this count.
+    const isolated = await anEndpoint();
+    const url = await urlOf(isolated);
+    const before = postsTo(url);
+
+    /*
+     * The seam: the real HTTP port, held on its first send. `fanOut` has committed the delivery
+     * row by then — `nextAttemptAt: now`, state PENDING — so the sweep that runs while it is held
+     * sees exactly what a sweep running in the same minute sees in production.
+     */
+    let admit: () => void = () => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let held = false;
+    const realSend = webhooks.http.send.bind(webhooks.http);
+    webhooks.http.send = async (request: Parameters<typeof realSend>[0]) => {
+      if (!held) {
+        held = true;
+        await inFlight;
+      }
+      return realSend(request);
+    };
+
+    try {
+      const fanning = runWithContext(contextFor(null, []), () =>
+        webhooks.delivery.fanOut(anEvent()),
+      );
+      // A second later — inside the attempt's own ten-second timeout, which is the window in
+      // which the first send is genuinely still outstanding. The lane carries fan-out jobs and
+      // retry jobs together at four per tenant, so a sweep starting here is ordinary.
+      await runWithContext(contextFor(null, []), () =>
+        webhooks.delivery.retryDue(new Date(FIXED_NOW.getTime() + 1_000)),
+      );
+      admit();
+      await fanning;
+    } finally {
+      webhooks.http.send = realSend;
+    }
+
+    // The delivery's own row is the unambiguous record of how many times the product attempted
+    // it, and it is what `maxAttempts` and the endpoint's consecutive-failure disable are counted
+    // from. One row, attempted once: a second attempt is a duplicate POST the receiver never asked
+    // for, and it spends the endpoint's failure budget twice as fast.
+    const rows = await owner.webhookDelivery.findMany({
+      where: { endpointId: isolated },
+      select: { state: true, attempts: true },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.attempts).toBe(1);
+    expect(postsTo(url)).toBeGreaterThan(before);
+  });
+
+  it('posts once when two sweeps select the same due delivery together', async () => {
+    const isolated = await anEndpoint();
+
+    // A delivery genuinely due: the endpoint refused, so the row is RETRYING with a backoff.
+    webhooks.http.status = 500;
+    await runWithContext(contextFor(null, []), () => webhooks.delivery.fanOut(anEvent()));
+    webhooks.http.status = 200;
+    const settled = await owner.webhookDelivery.findFirstOrThrow({
+      where: { endpointId: isolated },
+      select: { attempts: true, nextAttemptAt: true },
+    });
+    const due = new Date((settled.nextAttemptAt ?? FIXED_NOW).getTime() + 1_000);
+
+    /*
+     * Two sweeps at the same instant. Both `claimDue` selections are issued before either attempt
+     * begins, so both hold the same row — which is the case the claim's own due predicate decides:
+     * the first attempt leases the row forward, and the second finds it no longer due. Nothing
+     * here depends on which sweep the scheduler resumes first; either order gives one attempt.
+     */
+    await Promise.all([
+      runWithContext(contextFor(null, []), () => webhooks.delivery.retryDue(due)),
+      runWithContext(contextFor(null, []), () => webhooks.delivery.retryDue(due)),
+    ]);
+
+    const after = await owner.webhookDelivery.findFirstOrThrow({
+      where: { endpointId: isolated },
+      select: { attempts: true },
+    });
+    expect(after.attempts).toBe(settled.attempts + 1);
+  });
+});

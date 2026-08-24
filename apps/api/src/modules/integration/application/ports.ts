@@ -188,6 +188,14 @@ export interface WebhookRepository {
   }): Promise<{ readonly created: boolean; readonly id: AnyId }>;
 
   findDelivery(id: AnyId): Promise<PendingDelivery | null>;
+  /**
+   * Claims one attempt at a delivery, answering it only to the caller that took it.
+   *
+   * `claimDue` selects; this is what claims. Two workers can meet the same due row — the sweep
+   * runs every minute and `fanOut` attempts its own rows outside the transaction that wrote them
+   * — and only the one whose update matched may send.
+   */
+  claimAttempt(id: AnyId, now: Date, leaseUntil: Date): Promise<PendingDelivery | null>;
   /** The retry sweep's claim: due, unsettled, oldest first. */
   claimDue(now: Date, limit: number): Promise<readonly PendingDelivery[]>;
   settleDelivered(id: AnyId, at: Date, status: number): Promise<void>;
