@@ -45,8 +45,24 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
     return row === null ? null : toRecord(row);
   }
 
-  async insert(file: NewFileObject): Promise<void> {
-    await requireTransaction().fileObject.create({
+  /**
+   * Inserts the blob, and answers whether it was the one to insert it — Slice 46.
+   *
+   * `createMany` with `skipDuplicates` rather than `create`, which is `ON CONFLICT DO NOTHING` and
+   * is the whole reason this is not a `create` in a `try`. `uq_file_object_checksum` is one row per
+   * digest per tenant, and two people uploading the same standard form at the same time both read
+   * no existing digest before either commits — so the loser used to raise `P2002`. A unique
+   * violation leaves the transaction in `25P02`, "current transaction is aborted, commands ignored
+   * until end of transaction block", so the obvious recovery — catch it and re-read the winner —
+   * cannot run where it is needed. Not raising it is what keeps the transaction usable.
+   *
+   * The boolean is `settle`'s idiom, for `settle`'s reason: claim by predicate, then read the
+   * affected-row count as the truth. `false` means the digest was already there, and the caller
+   * resolves the winner rather than guessing.
+   */
+  async insert(file: NewFileObject): Promise<boolean> {
+    const { count } = await requireTransaction().fileObject.createMany({
+      skipDuplicates: true,
       data: {
         id: file.id,
         tenantId: this.tenantId(),
@@ -64,6 +80,7 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
         ...this.stamps.creation(),
       },
     });
+    return count === 1;
   }
 
   async recordScan(
