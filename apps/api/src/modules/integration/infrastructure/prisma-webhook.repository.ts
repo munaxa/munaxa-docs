@@ -183,6 +183,32 @@ export class PrismaWebhookRepository implements WebhookRepository {
     return row ? { ...toDelivery(row), payload: row.payload } : null;
   }
 
+  /**
+   * Takes this delivery out of the due window and answers it, or answers null — Slice 51.
+   *
+   * The predicate is the whole of it: `state` and `next_attempt_at` are what `claimDue` selects on,
+   * so moving `next_attempt_at` past the attempt's own deadline is what stops a second worker
+   * meeting a row that is already in flight. The affected-row count is the truth, as it is for
+   * every other claim in this product — one row means this caller owns the attempt, none means
+   * somebody else does.
+   *
+   * A lease rather than `null`, because a worker that dies mid-send must not strand the delivery:
+   * `leaseUntil` is the request timeout, so the row becomes due again exactly when the attempt it
+   * is waiting for could no longer be outstanding.
+   */
+  async claimAttempt(id: AnyId, now: Date, leaseUntil: Date): Promise<PendingDelivery | null> {
+    const tx = requireTransaction();
+    const { count } = await tx.webhookDelivery.updateMany({
+      where: { id, state: { in: ['PENDING', 'RETRYING'] }, nextAttemptAt: { lte: now } },
+      data: { nextAttemptAt: leaseUntil },
+    });
+    if (count !== 1) {
+      return null;
+    }
+    const row = await tx.webhookDelivery.findFirst({ where: { id } });
+    return row ? { ...toDelivery(row), payload: row.payload } : null;
+  }
+
   async claimDue(now: Date, limit: number): Promise<readonly PendingDelivery[]> {
     const rows = await requireTransaction().webhookDelivery.findMany({
       where: {

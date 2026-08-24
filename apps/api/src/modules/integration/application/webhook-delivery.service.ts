@@ -134,7 +134,7 @@ export class DefaultWebhookDeliveryService implements WebhookDeliveryService {
     // database transaction — and therefore a connection, and therefore a slot in the pool — for
     // the length of somebody else's server's response time.
     for (const id of queued) {
-      await this.attempt(id);
+      await this.attempt(id, now);
     }
     return queued.length;
   }
@@ -142,7 +142,7 @@ export class DefaultWebhookDeliveryService implements WebhookDeliveryService {
   async retryDue(now: Date): Promise<number> {
     const due = await this.unitOfWork.run(() => this.repository.claimDue(now, RETRY_BATCH));
     for (const delivery of due) {
-      await this.attempt(delivery.id);
+      await this.attempt(delivery.id, now);
     }
     return due.length;
   }
@@ -154,18 +154,28 @@ export class DefaultWebhookDeliveryService implements WebhookDeliveryService {
    * inside another. Three transactions rather than one for the reason above: the middle step is
    * somebody else's latency.
    */
-  private async attempt(deliveryId: AnyId): Promise<void> {
+  private async attempt(deliveryId: AnyId, due: Date): Promise<void> {
     const prepared = await this.unitOfWork.run(async () => {
-      const delivery = await this.repository.findDelivery(deliveryId);
-      if (!delivery || delivery.state === 'DELIVERED' || delivery.state === 'DEAD') {
+      const maxAttempts = await this.settings.get(Settings.WEBHOOK_MAX_ATTEMPTS);
+      const timeoutSeconds = await this.settings.get(Settings.WEBHOOK_TIMEOUT_SECONDS);
+      // Claimed before anything is sent, and the claim is what makes one row one POST. `claimDue`
+      // only selects, `fanOut` attempts its own rows outside the transaction that wrote them, and
+      // the sweep runs every minute — so two workers meeting one due row is ordinary rather than
+      // exotic, and the database has to decide which of them owns the attempt.
+      // `due` rather than the clock: it is the instant the caller decided this row was due, and
+      // claiming against anything else would refuse a retry whose backoff has elapsed.
+      const delivery = await this.repository.claimAttempt(
+        deliveryId,
+        due,
+        new Date(due.getTime() + timeoutSeconds * 1_000),
+      );
+      if (delivery === null) {
         return null;
       }
       const endpoint = await this.repository.findEndpointCredential(delivery.endpointId);
       if (!endpoint || !endpoint.enabled) {
         return null;
       }
-      const maxAttempts = await this.settings.get(Settings.WEBHOOK_MAX_ATTEMPTS);
-      const timeoutSeconds = await this.settings.get(Settings.WEBHOOK_TIMEOUT_SECONDS);
       return { delivery, endpoint, maxAttempts, timeoutSeconds };
     });
 
