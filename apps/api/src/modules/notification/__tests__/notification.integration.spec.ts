@@ -1176,3 +1176,177 @@ describe('a notification belongs to one person', () => {
     expect((await messagesFor(MALLORY)).length).toBe(before);
   });
 });
+
+/**
+ * One queued message is sent once, however many delivery passes meet it — Slice 52.
+ *
+ * `claimQueued` is named for what it is meant to do and does not do it: it is a `findMany` over
+ * `state = QUEUED AND (release_at IS NULL OR release_at <= now)`, marking nothing. The lane runs
+ * `notifications.deliver` every minute at concurrency eight and retries a failed pass five times,
+ * so two passes meeting the same queued row is ordinary — and the transport is somebody's inbox.
+ *
+ * `release_at` is already the gate: the schema says it "gates the delivery claim as well as
+ * explaining the state".
+ */
+describe('one queued message, one send, however many passes meet it', () => {
+  async function queuedFor(recipient: UserId): Promise<number> {
+    return owner.notificationMessage.count({
+      where: {
+        tenantId: TENANT,
+        recipientId: recipient,
+        channel: NotificationChannel.EMAIL,
+        state: DeliveryState.QUEUED,
+      },
+    });
+  }
+
+  function sendsTo(address: string): number {
+    return stack.transport.sent.filter((message) => message.address === address).length;
+  }
+
+  it('sends a queued message once when one pass runs', async () => {
+    const before = sendsTo(addressOf('ada'));
+    const queued = await queuedFor(ADA);
+
+    const outcome = await runWithContext(contextFor(null), () =>
+      stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+
+    // The control that stops the race assertion below passing because nothing was ever sent.
+    expect(outcome.attempted).toBe(queued);
+    expect(sendsTo(addressOf('ada')) - before).toBe(queued);
+  });
+
+  it('sends a queued message once when a second pass runs while the first is in flight', async () => {
+    // A fresh queued message, produced the way the product produces them.
+    await asSystem(() =>
+      stack.events.handle({
+        eventId: uuidv7(),
+        eventType: 'workflow.task-assigned',
+        payload: {
+          workflowInstanceId: uuidv7(),
+          documentId: DOCUMENT,
+          stageIndex: 0,
+          stageName: 'Race',
+          assigneeIds: [ADA],
+          dueAt: '2026-08-12T09:00:00.000Z',
+        },
+      }),
+    );
+    const before = sendsTo(addressOf('ada'));
+    const queued = await queuedFor(ADA);
+    expect(queued).toBe(1);
+
+    /*
+     * The seam: the real transport, held on its first send.
+     *
+     * The second pass is started only once the first has *arrived* at the transport, rather than
+     * both being launched and left to race for the latch. Which of two concurrent passes reaches
+     * the transport first is the scheduler's business, and a test that depends on the answer is a
+     * test that reports whichever answer it got that run. Waiting for the arrival makes the first
+     * pass definitively the one holding the claim, which is the interleaving under examination:
+     * a minute's pass still sending when the next minute's pass begins.
+     */
+    let arrived: () => void = () => undefined;
+    const atTransport = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let held = false;
+    const realSend = stack.transport.send.bind(stack.transport);
+    stack.transport.send = async (message: Parameters<typeof realSend>[0]) => {
+      if (!held) {
+        held = true;
+        arrived();
+        await inFlight;
+      }
+      return realSend(message);
+    };
+
+    try {
+      const first = runWithContext(contextFor(null), () =>
+        stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+      );
+      await atTransport;
+      const second = await runWithContext(contextFor(null), () =>
+        stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+      );
+      admit();
+      await first;
+
+      // The second pass must claim nothing: the row is already being sent.
+      expect(second.attempted).toBe(0);
+    } finally {
+      stack.transport.send = realSend;
+    }
+
+    // One message, one send. A second is a duplicate in somebody's inbox that no retry policy
+    // asked for and no provider will collapse under SMTP.
+    expect(sendsTo(addressOf('ada')) - before).toBe(1);
+  });
+
+  it('sends nothing more when a second pass runs after the first', async () => {
+    const before = sendsTo(addressOf('ada'));
+
+    // The sequential second pass, which is the answer the concurrent one has to match: the rows
+    // are no longer QUEUED, so it claims nothing and sends nothing.
+    const outcome = await runWithContext(contextFor(null), () =>
+      stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+
+    expect(outcome.attempted).toBe(0);
+    expect(sendsTo(addressOf('ada')) - before).toBe(0);
+  });
+
+  /*
+   * Two passes over one batch, neither held — the interleaving the row count exists for.
+   *
+   * The test above orders the two passes: the first has committed its claim before the second
+   * begins, so the second's *candidate select* already excludes the row and the claim's affected
+   * row count is never what saved it. That count is for the other order — both passes selecting
+   * before either claims, which is what concurrency eight over a batch of fifty produces every
+   * time two passes overlap. A batch is what opens that window: the first pass spends one
+   * statement per row claiming, and the second pass's select lands inside that loop.
+   *
+   * Whatever the interleaving, the property is the same one and holds under all of them: a row is
+   * sent by the pass whose claim affected it, and one row is affected once.
+   */
+  it('sends each of a batch once when two passes run at the same time', async () => {
+    const BATCH = 20;
+    for (let index = 0; index < BATCH; index += 1) {
+      await asSystem(() =>
+        stack.events.handle({
+          eventId: uuidv7(),
+          eventType: 'workflow.task-assigned',
+          payload: {
+            workflowInstanceId: uuidv7(),
+            documentId: DOCUMENT,
+            stageIndex: 0,
+            stageName: `Concurrent ${String(index)}`,
+            assigneeIds: [ADA],
+            dueAt: '2026-08-12T09:00:00.000Z',
+          },
+        }),
+      );
+    }
+    const before = sendsTo(addressOf('ada'));
+    expect(await queuedFor(ADA)).toBe(BATCH);
+
+    const [first, second] = await Promise.all([
+      runWithContext(contextFor(null), () =>
+        stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+      ),
+      runWithContext(contextFor(null), () =>
+        stack.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+      ),
+    ]);
+
+    // Between them the two passes claimed every row and claimed none of them twice.
+    expect(first.attempted + second.attempted).toBe(BATCH);
+    expect(sendsTo(addressOf('ada')) - before).toBe(BATCH);
+    expect(await queuedFor(ADA)).toBe(0);
+  });
+});

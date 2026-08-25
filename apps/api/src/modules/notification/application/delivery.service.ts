@@ -7,8 +7,10 @@ import {
   DeliveryState,
   NotificationChannel,
   Permission,
+  QueueName,
   Settings,
   asId,
+  queueDefinition,
 } from '@edms/domain';
 
 import { LOGGER, type Logger } from '../../../core/observability/logger';
@@ -136,7 +138,15 @@ export class DeliveryService {
     }
 
     const now = this.clock.now();
-    const claimed = await this.unitOfWork.run(() => this.messages.claimQueued(channel, limit, now));
+    // The lane's own job budget as the lease. A pass that dies mid-send — the process killed,
+    // the job timed out — leaves its rows held for exactly as long as the job it was running was
+    // ever allowed to take, after which they are due again and another pass picks them up.
+    const leaseUntil = new Date(
+      now.getTime() + queueDefinition(QueueName.NOTIFICATIONS_DELIVER).timeoutMs,
+    );
+    const claimed = await this.unitOfWork.run(() =>
+      this.messages.claimQueued(channel, limit, now, leaseUntil),
+    );
 
     let sent = 0;
     let failed = 0;

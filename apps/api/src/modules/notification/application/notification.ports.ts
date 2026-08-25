@@ -167,11 +167,18 @@ export interface NotificationMessageRepository {
    *
    * A row whose `releaseAt` is in the future is not waiting — it is being held — so it is not
    * claimed. That predicate is what quiet hours and digests are built on.
+   *
+   * It is also what makes this a claim rather than a read: a claimed row has `releaseAt` set to
+   * `leaseUntil`, so a second pass meeting it while the first is still sending finds it not due
+   * and leaves it alone. Only rows this call actually claimed are returned. `leaseUntil` should
+   * outlast one delivery attempt — a pass that dies mid-send holds nothing longer than that —
+   * and the settle in `recordDelivery` replaces it with the retry instant or clears it.
    */
   claimQueued(
     channel: NotificationChannelKey,
     limit: number,
     now: Date,
+    leaseUntil: Date,
   ): Promise<readonly NotificationMessageRecord[]>;
   /**
    * Moves held messages whose window has closed back into the queue.
