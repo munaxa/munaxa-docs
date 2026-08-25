@@ -261,19 +261,60 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
     channel: NotificationChannelKey,
     limit: number,
     now: Date,
+    leaseUntil: Date,
   ): Promise<readonly NotificationMessageRecord[]> {
-    const rows = await requireTransaction().notificationMessage.findMany({
-      where: {
-        tenantId: requireContext().tenantId,
-        channel,
-        state: DeliveryState.QUEUED,
-        // A row being held is not a row waiting to go out. This one predicate is what quiet
-        // hours and digests are built on, and it is why neither needs a scheduler of its own:
-        // the database decides what is due, every pass, from the row itself.
-        OR: [{ releaseAt: null }, { releaseAt: { lte: now } }],
-      },
+    const tx = requireTransaction();
+    const tenantId = requireContext().tenantId;
+    const due = {
+      tenantId,
+      channel,
+      state: DeliveryState.QUEUED,
+      // A row being held is not a row waiting to go out. This one predicate is what quiet
+      // hours and digests are built on, and it is why neither needs a scheduler of its own:
+      // the database decides what is due, every pass, from the row itself.
+      OR: [{ releaseAt: null }, { releaseAt: { lte: now } }],
+    };
+    const candidates = await tx.notificationMessage.findMany({
+      where: due,
       orderBy: { createdAt: 'asc' },
       take: limit,
+      select: { id: true },
+    });
+
+    /*
+     * Selected, then *claimed* — Slice 52.
+     *
+     * The select above is what this method used to be, and a select is not a claim. The lane runs
+     * every minute at concurrency eight and retries a failed pass five times, so two passes
+     * meeting one queued row is ordinary; both used to read it and both used to send it, and the
+     * transport is somebody's inbox. Under SMTP nothing collapses that duplicate — the adapter
+     * puts the idempotency key in a `Message-ID` header, which is not an idempotency contract.
+     *
+     * `release_at` is the lease, because it is already the withholding mechanism: the settle below
+     * writes a retry backoff into the same column, and its comment says why — "`claimQueued`
+     * withholds a QUEUED row whose `release_at` is in the future". A pass that dies mid-send holds
+     * a row no longer than the lane's own job budget, after which it is due again.
+     *
+     * One statement per row rather than one for the batch, because the affected-row count of a
+     * bulk update says how many were claimed and not which — and which is what the caller sends.
+     */
+    const claimed: string[] = [];
+    for (const candidate of candidates) {
+      const { count } = await tx.notificationMessage.updateMany({
+        where: { ...due, id: candidate.id },
+        data: { releaseAt: leaseUntil },
+      });
+      if (count === 1) {
+        claimed.push(candidate.id);
+      }
+    }
+    if (claimed.length === 0) {
+      return [];
+    }
+
+    const rows = await tx.notificationMessage.findMany({
+      where: { tenantId, id: { in: claimed } },
+      orderBy: { createdAt: 'asc' },
     });
     return rows.map(toRecord);
   }
