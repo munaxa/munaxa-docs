@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { type TenantId, type UserId, asId } from '@edms/domain';
+import { type AnyId, type TenantId, type UserId, asId } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
@@ -322,6 +322,179 @@ describe('rotating the authenticator sealing key', () => {
     await expect(
       asBob(() => withoutKey.challenge(BOB, totpCode(secret, step(), 6))),
     ).rejects.toThrowError(/MFA_TOTP_SEALING_KEY/);
+  });
+});
+
+/**
+ * One authenticator code proves one thing, however many challenges meet it — Slice 53.
+ *
+ * `challenge` reads the enrolment, decides `step > lastStep`, and then writes the step it proved.
+ * The decision and the write are two statements in one transaction, and two challenges are two
+ * transactions: both read the same `last_step`, both find the code arithmetically correct and
+ * unspent, and both are told so. The service's own comment calls the second one a replay — "the
+ * window a code is arithmetically correct for is thirty seconds wide, and one already spent inside
+ * it is a replay" — and `IdentitySignerAuthenticator` goes through this method precisely so "the
+ * replay window ... appl[ies] to a signature exactly as [it applies] to a sign-in".
+ *
+ * Both callers reach it from their own transaction: `challenge` opens a unit of work, and neither
+ * of these is invoked from inside the other's callback, so neither joins the other's transaction.
+ */
+describe('one authenticator code, one proof, however many challenges meet it', () => {
+  const CARA = asId<UserId>(uuidv7());
+  const caraContext: RequestContext = { ...context, userId: CARA };
+  const asCara = <T>(work: () => Promise<T>): Promise<T> => runWithContext(caraContext, work);
+
+  /**
+   * Two callers, each parked where it writes the step it proved.
+   *
+   * Ordinals are assigned by arrival, and the arrival order is fixed rather than observed: the
+   * second challenge is not started until the first has parked, so the first is always ordinal
+   * zero. Reaching the park at all is the evidence — a caller only writes a step it has already
+   * decided is unspent, so two parked callers holding the same step is proof that both passed the
+   * replay check, and not that one of them never looked.
+   */
+  class Turnstile {
+    readonly proving: number[] = [];
+    readonly reached: Promise<void>[] = [];
+    private readonly arrivals: (() => void)[] = [];
+    private readonly admissions: Promise<void>[] = [];
+    private readonly admits: (() => void)[] = [];
+    private armed = false;
+
+    arm(callers: number): void {
+      for (let index = 0; index < callers; index += 1) {
+        let arrive: () => void = () => undefined;
+        this.reached.push(
+          new Promise<void>((resolve) => {
+            arrive = resolve;
+          }),
+        );
+        this.arrivals.push(arrive);
+        let admit: () => void = () => undefined;
+        this.admissions.push(
+          new Promise<void>((resolve) => {
+            admit = resolve;
+          }),
+        );
+        this.admits.push(admit);
+      }
+      this.armed = true;
+    }
+
+    async park(step: number): Promise<void> {
+      if (!this.armed) {
+        return;
+      }
+      const ordinal = this.proving.length;
+      this.proving.push(step);
+      this.arrivals[ordinal]?.();
+      await this.admissions[ordinal];
+    }
+
+    release(ordinal: number): void {
+      this.admits[ordinal]?.();
+    }
+  }
+
+  const turnstile = new Turnstile();
+
+  /**
+   * The real repository, subclassed rather than substituted: every statement is the production
+   * one, and the override adds a place to stand between the decision and the write.
+   */
+  class ParkingMfaRepository extends PrismaMfaRepository {
+    override async claimStep(enrolmentId: AnyId, step: number): Promise<boolean> {
+      await turnstile.park(step);
+      return super.claimStep(enrolmentId, step);
+    }
+  }
+
+  /** Built in `beforeAll`, because the unit of work it needs is built in the suite's own. */
+  let parking: DefaultMfaService;
+
+  let secret = '';
+
+  async function storedStep(): Promise<bigint | null> {
+    const row = await owner.mfaEnrolment.findFirstOrThrow({
+      where: { tenantId: TENANT, userId: CARA },
+      select: { lastStep: true },
+    });
+    return row.lastStep;
+  }
+
+  async function replaysRecorded(): Promise<number> {
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: String(CARA), action: 'MFA_FAILED' },
+      select: { payload: true },
+    });
+    return rows.filter((row) => JSON.stringify(row.payload).includes('REPLAYED')).length;
+  }
+
+  beforeAll(async () => {
+    await owner.user.create({
+      data: {
+        id: CARA,
+        tenantId: TENANT,
+        email: `${CARA}@mfa.test`,
+        emailNormalized: `${CARA}@mfa.test`,
+        displayName: 'Cara',
+        status: 'ACTIVE',
+        updatedAt: new Date(now),
+      },
+    });
+    parking = new DefaultMfaService(
+      new ParkingMfaRepository(config, new RecordStamps(clock)),
+      new PrismaSessionRepository(clock),
+      realAuditWriter(clock, unitOfWork),
+      unitOfWork,
+      clock,
+      config,
+    );
+    now = new Date(now.getTime() + 60_000);
+    secret = (await asCara(() => parking.begin(CARA, 'cara@mfa.test'))).secret;
+    await asCara(() => parking.confirm(CARA, totpCode(secret, step(), 6)));
+  });
+
+  it('accepts a code once', async () => {
+    // The control. Without it every assertion below passes on a service that refuses everything.
+    now = new Date(now.getTime() + 60_000);
+    expect(await asCara(() => parking.challenge(CARA, totpCode(secret, step(), 6)))).toBe(true);
+    expect(await storedStep()).toBe(BigInt(step()));
+  });
+
+  it('refuses the same code again when the two challenges are ordered', async () => {
+    // The serial answer the concurrent one has to match, and the reason the failure below is
+    // about concurrency rather than about the check being absent.
+    expect(await asCara(() => parking.challenge(CARA, totpCode(secret, step(), 6)))).toBe(false);
+  });
+
+  it('proves one code once when two challenges hold it at the same moment', async () => {
+    now = new Date(now.getTime() + 60_000);
+    const spent = step();
+    const code = totpCode(secret, spent, 6);
+    const replaysBefore = await replaysRecorded();
+    turnstile.arm(2);
+
+    // Each from its own scope, so each opens its own transaction.
+    const first = asCara(() => parking.challenge(CARA, code));
+    await turnstile.reached[0];
+    const second = asCara(() => parking.challenge(CARA, code));
+    await turnstile.reached[1];
+
+    // Both read the enrolment, both judged this code unspent, and both are about to say so.
+    expect(turnstile.proving).toEqual([spent, spent]);
+
+    turnstile.release(0);
+    const firstAnswer = await first;
+    turnstile.release(1);
+    const secondAnswer = await second;
+
+    // One code, one proof. The second challenge met a step that had already been spent, which is
+    // the replay the ordered test above refuses.
+    expect(firstAnswer).toBe(true);
+    expect(secondAnswer).toBe(false);
+    expect(await storedStep()).toBe(BigInt(spent));
+    expect(await replaysRecorded()).toBe(replaysBefore + 1);
   });
 });
 

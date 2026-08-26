@@ -41,7 +41,24 @@ export interface MfaRepository {
     step: number,
     codeHashes: readonly string[],
   ): Promise<void>;
-  /** Records a successful challenge: the step consumed, and the failure counter reset. */
+  /**
+   * Spends a TOTP step, and answers whether *this* call was the one that spent it.
+   *
+   * The one-time part of a one-time password. A challenge decides a step is unspent by reading
+   * `lastStep` and then writes the step it proved, and two challenges are two transactions: both
+   * can read the same `lastStep` and both can find the same code correct and unspent. Only one of
+   * them may be told so, and the affected row count of a write predicated on `lastStep` is which.
+   *
+   * A caller told `false` has met a code somebody else has already used — a replay, reached by a
+   * different route than presenting an old code, and owed the same refusal.
+   */
+  claimStep(enrolmentId: AnyId, step: number): Promise<boolean>;
+  /**
+   * Records a successful challenge: the step consumed, and the failure counter reset.
+   *
+   * Unconditional, and used by the recovery-code path, where what was single-use was the code and
+   * the repository has already spent it. The TOTP path claims instead — see `claimStep`.
+   */
   recordSuccess(enrolmentId: AnyId, step: number): Promise<void>;
   /**
    * Re-seals a secret under the deployment's current key — Phase 18's rotation path.
