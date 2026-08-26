@@ -1462,6 +1462,15 @@ export function realRetention(
      */
     readonly storageService?: DefaultStorageService;
     /**
+     * The legal-hold repository, when a suite needs its own — the same door `disposition` uses.
+     *
+     * A suite proving what the sweep does with a hold that arrives *between* the read that forms
+     * its belief and the transaction that acts on it needs somewhere to stand between the two, and
+     * `listLiveFor` is where the belief is formed. What a suite passes is this real repository
+     * subclassed, so every statement underneath is still the production one.
+     */
+    readonly holds?: PrismaLegalHoldRepository;
+    /**
      * Phase 6.1's `DOCUMENT_EXPIRY`. Optional for the same reason `storageService` is: the suites
      * that never fire `documents.expire-effective` are unchanged, and one that calls the sweep
      * without supplying it fails by name rather than by reporting a pass that never ran.
@@ -1471,7 +1480,7 @@ export function realRetention(
 ): RetentionStack {
   const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const schedules = new PrismaRetentionScheduleRepository(stamps);
-  const holdRepository = new PrismaLegalHoldRepository(stamps);
+  const holdRepository = options.holds ?? new PrismaLegalHoldRepository(stamps);
   const tombstones = new PrismaTombstoneRepository();
   const reaper = new StorageBlobReaper(
     options.storage,

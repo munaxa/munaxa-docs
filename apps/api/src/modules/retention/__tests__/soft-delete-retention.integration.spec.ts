@@ -28,6 +28,11 @@ import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
+import { RecordStamps } from '../../../core/persistence/record-stamps';
+import type { LegalHoldRecord } from '../application/ports';
+import { RetentionAudit } from '../domain/audit-actions';
+import { DispositionOutcome } from '../domain/schedule';
+import { PrismaLegalHoldRepository } from '../infrastructure/prisma-retention.repositories';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { decodeTransferToken } from '../../../testing/transfer-token';
@@ -1379,5 +1384,152 @@ describe('DOCUMENT_DELETION_RULES', () => {
         expect(count).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+/**
+ * A legal hold placed while the sweep is settling one — Slice 55.
+ *
+ * `settle` reads the live holds in its own transaction and then dispatches; `archive` opens a
+ * second transaction and archives. A hold placed between the two is committed before the archive
+ * runs and invisible to it, because — unlike `purge`, which re-reads the holds inside the
+ * transaction that would destroy — `archive` asks nobody. `RetentionDispositionAdapter.archive`
+ * consults the document's lifecycle and nothing else.
+ *
+ * `SUSPENDED` is one of `LIVE_STATES`, so the disposition's own `moveState` then writes `EXECUTED`
+ * over the suspension the hold had just written, and the release that would resume the schedule
+ * finds nothing suspended to resume.
+ */
+describe('a legal hold that arrives while the sweep is deciding', () => {
+  /**
+   * The real repository, subclassed: every statement is the production one, and the override adds
+   * a place to stand at the moment the sweep's belief about the holds is formed.
+   *
+   * The park is *after* the query, holding its answer. That is the whole point: the sweep must go
+   * on to decide from what it read before the matter opened, which is what a decision taken in one
+   * transaction and acted on in the next always does. Parking before the query would let the
+   * re-read see the hold and there would be no race left to examine.
+   *
+   * Only the first call is parked — the sweep's own, in `settle`. The second, inside the archiving
+   * transaction, is the one under test and must run freely.
+   */
+  class ParkingHolds extends PrismaLegalHoldRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+    /**
+     * Whose decision to park on.
+     *
+     * The sweep settles every schedule the tenant has due, and this file leaves plenty behind, so
+     * parking "the first caller" parks whichever document happened to sort first. The park belongs
+     * to one document by name or it is not the interleaving under examination at all — which is
+     * how the first version of this test came to pass against the unfixed sweep.
+     */
+    target: string | null = null;
+
+    override async listLiveFor(documentId: DocumentId): Promise<readonly LegalHoldRecord[]> {
+      const live = await super.listLiveFor(documentId);
+      const gate = this.admit;
+      if (gate !== null && String(documentId) === this.target) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+      return live;
+    }
+  }
+
+  async function scheduleOf(documentId: string): Promise<{ state: string }> {
+    return owner.retentionSchedule.findFirstOrThrow({ where: { documentId } });
+  }
+
+  async function statusOf(documentId: string): Promise<string> {
+    return (await owner.document.findUniqueOrThrow({ where: { id: documentId } })).status;
+  }
+
+  it('archives when nothing holds the record', async () => {
+    // The control. Without it every assertion below passes on a sweep that archives nothing.
+    const document = await createDocument({ documentTypeId: archivingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Archive me'));
+    await advanceToDue(document.id);
+
+    expect(
+      (await asSystem(() => retention.retention.executeDue(100))).archived,
+    ).toBeGreaterThanOrEqual(1);
+    expect(await statusOf(document.id)).toBe('ARCHIVED');
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.EXECUTED);
+  });
+
+  it('refuses to archive when the hold was placed before the sweep began', async () => {
+    // The serial answer the concurrent one has to match: the sweep's own hold read sees it.
+    const document = await createDocument({ documentTypeId: archivingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Held before'));
+    await as(() => retention.holds.place(document.id, 'Matter 2026-201'));
+
+    await asSystem(() => retention.retention.executeDue(100));
+
+    expect(await statusOf(document.id)).not.toBe('ARCHIVED');
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.SUSPENDED);
+  });
+
+  it('refuses to archive a record a hold reached while the sweep was deciding', async () => {
+    const document = await createDocument({ documentTypeId: archivingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Held during'));
+    await advanceToDue(document.id);
+
+    const parking = new ParkingHolds(new RecordStamps(clock));
+    parking.target = document.id;
+    const racing = realRetention({
+      clock,
+      unitOfWork,
+      storage: library.storagePort,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      holds: parking,
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    // The sweep, from its own scope. It parks holding the answer "no holds", which is the belief
+    // it will carry into the archiving transaction.
+    const sweep = asSystem(() => racing.retention.executeDue(100));
+    await atDecision;
+
+    // The matter opens. Its own scope and its own transaction — not nested in the sweep's, which
+    // would make this one transaction racing itself.
+    const hold = await as(() => retention.holds.place(document.id, 'Matter 2026-202'));
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.SUSPENDED);
+
+    admit();
+    await sweep;
+
+    // The hold is live and was live before the archive ran. A disposition that proceeds anyway is
+    // a hold that does not hold.
+    expect(await statusOf(document.id)).not.toBe('ARCHIVED');
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.SUSPENDED);
+
+    // And the trail says the sweep met the hold and stood down, rather than silently doing
+    // nothing — the same record `purge` writes when its own second check refuses.
+    const blocked = (await trailFor(document.id)).filter(
+      (event) =>
+        event.action === RetentionAudit.PURGE_EXECUTED &&
+        JSON.stringify(event.payload).includes(DispositionOutcome.BLOCKED),
+    );
+    expect(blocked).toHaveLength(1);
+
+    // And the release resumes it, which it cannot do from a terminal state.
+    await as(() => retention.holds.release(hold.id, 'Matter closed'));
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.PENDING);
   });
 });
