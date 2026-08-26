@@ -75,7 +75,18 @@ export interface MfaRepository {
   remove(userId: UserId): Promise<void>;
   /** Live recovery codes for an enrolment, hashed — the service compares, never the database. */
   liveRecoveryCodes(enrolmentId: AnyId): Promise<readonly { id: AnyId; codeHash: string }[]>;
-  markRecoveryCodeUsed(id: AnyId, at: Date): Promise<void>;
+  /**
+   * Spends a recovery code, and answers whether *this* call was the one that spent it.
+   *
+   * Single-use, and single-use is a property of the write rather than of the read that preceded
+   * it. Two challenges holding one code are two transactions: both can list it among the live
+   * codes and both can match its hash. Only one may be told it opened anything, and the affected
+   * row count of a write predicated on `usedAt` is which.
+   *
+   * A caller told `false` has met a code somebody else has already spent, which is the same
+   * situation as presenting a code spent an hour ago and is owed the same refusal.
+   */
+  claimRecoveryCode(id: AnyId, at: Date): Promise<boolean>;
   countLiveRecoveryCodes(enrolmentId: AnyId): Promise<number>;
 }
 

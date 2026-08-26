@@ -14,7 +14,7 @@ import { type RequestContext, runWithContext } from '../../../core/tenancy/tenan
 import { sharedDatabase } from '../../../testing/tenant-database';
 import { realAuditWriter } from '../../../testing/real-collaborators';
 import { DefaultMfaService } from '../application/mfa.service';
-import { totpCode } from '../domain/totp';
+import { hashRecoveryCode, normalizeRecoveryCode, totpCode } from '../domain/totp';
 import { PrismaMfaRepository } from '../infrastructure/prisma-mfa.repository';
 import { PrismaSessionRepository } from '../infrastructure/prisma-session.repository';
 
@@ -326,6 +326,62 @@ describe('rotating the authenticator sealing key', () => {
 });
 
 /**
+ * Two callers, each parked at the statement that spends a single-use credential.
+ *
+ * Ordinals are assigned by arrival, and the arrival order is fixed rather than observed: the
+ * second caller is not started until the first has parked, so the first is always ordinal zero.
+ * Reaching the park is the evidence — a caller only reaches the spending statement once it has
+ * read the credential and believed it unspent, so two parked callers holding the same marker is
+ * proof that both passed the check, and not that one of them never looked.
+ *
+ * Shared by the authenticator-step race (Slice 53) and the recovery-code race (Slice 54), which
+ * are the same interleaving over two different credentials.
+ */
+class Turnstile<TMarker> {
+  /** What each caller was holding when it parked, in arrival order. */
+  readonly arrivals: TMarker[] = [];
+  readonly reached: Promise<void>[] = [];
+  private readonly announce: (() => void)[] = [];
+  private readonly admissions: Promise<void>[] = [];
+  private readonly admits: (() => void)[] = [];
+  private armed = false;
+
+  arm(callers: number): void {
+    for (let index = 0; index < callers; index += 1) {
+      let arrive: () => void = () => undefined;
+      this.reached.push(
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+      this.announce.push(arrive);
+      let admit: () => void = () => undefined;
+      this.admissions.push(
+        new Promise<void>((resolve) => {
+          admit = resolve;
+        }),
+      );
+      this.admits.push(admit);
+    }
+    this.armed = true;
+  }
+
+  async park(marker: TMarker): Promise<void> {
+    if (!this.armed) {
+      return;
+    }
+    const ordinal = this.arrivals.length;
+    this.arrivals.push(marker);
+    this.announce[ordinal]?.();
+    await this.admissions[ordinal];
+  }
+
+  release(ordinal: number): void {
+    this.admits[ordinal]?.();
+  }
+}
+
+/**
  * One authenticator code proves one thing, however many challenges meet it — Slice 53.
  *
  * `challenge` reads the enrolment, decides `step > lastStep`, and then writes the step it proved.
@@ -353,50 +409,7 @@ describe('one authenticator code, one proof, however many challenges meet it', (
    * decided is unspent, so two parked callers holding the same step is proof that both passed the
    * replay check, and not that one of them never looked.
    */
-  class Turnstile {
-    readonly proving: number[] = [];
-    readonly reached: Promise<void>[] = [];
-    private readonly arrivals: (() => void)[] = [];
-    private readonly admissions: Promise<void>[] = [];
-    private readonly admits: (() => void)[] = [];
-    private armed = false;
-
-    arm(callers: number): void {
-      for (let index = 0; index < callers; index += 1) {
-        let arrive: () => void = () => undefined;
-        this.reached.push(
-          new Promise<void>((resolve) => {
-            arrive = resolve;
-          }),
-        );
-        this.arrivals.push(arrive);
-        let admit: () => void = () => undefined;
-        this.admissions.push(
-          new Promise<void>((resolve) => {
-            admit = resolve;
-          }),
-        );
-        this.admits.push(admit);
-      }
-      this.armed = true;
-    }
-
-    async park(step: number): Promise<void> {
-      if (!this.armed) {
-        return;
-      }
-      const ordinal = this.proving.length;
-      this.proving.push(step);
-      this.arrivals[ordinal]?.();
-      await this.admissions[ordinal];
-    }
-
-    release(ordinal: number): void {
-      this.admits[ordinal]?.();
-    }
-  }
-
-  const turnstile = new Turnstile();
+  const turnstile = new Turnstile<number>();
 
   /**
    * The real repository, subclassed rather than substituted: every statement is the production
@@ -482,7 +495,7 @@ describe('one authenticator code, one proof, however many challenges meet it', (
     await turnstile.reached[1];
 
     // Both read the enrolment, both judged this code unspent, and both are about to say so.
-    expect(turnstile.proving).toEqual([spent, spent]);
+    expect(turnstile.arrivals).toEqual([spent, spent]);
 
     turnstile.release(0);
     const firstAnswer = await first;
@@ -495,6 +508,150 @@ describe('one authenticator code, one proof, however many challenges meet it', (
     expect(secondAnswer).toBe(false);
     expect(await storedStep()).toBe(BigInt(spent));
     expect(await replaysRecorded()).toBe(replaysBefore + 1);
+  });
+});
+
+/**
+ * One recovery code opens one door, however many challenges hold it — Slice 54.
+ *
+ * `tryRecoveryCode` reads the live codes, matches a hash, and then marks the match used. Those are
+ * two statements and two challenges are two transactions: both read the code with `used_at` null,
+ * both match it, and both are told they proved something. `markRecoveryCodeUsed` predicates on the
+ * row's identity alone, so unlike the authenticator step there is nothing for the second write to
+ * re-evaluate — the row lock serialises the two updates and then both of them succeed.
+ *
+ * The service calls these codes "single-use and ... the *only* way past a lost authenticator",
+ * which is what makes spending one twice a defect rather than a curiosity.
+ */
+describe('one recovery code, one door, however many challenges hold it', () => {
+  const DORA = asId<UserId>(uuidv7());
+  const doraContext: RequestContext = { ...context, userId: DORA };
+  const asDora = <T>(work: () => Promise<T>): Promise<T> => runWithContext(doraContext, work);
+
+  const turnstile = new Turnstile<string>();
+
+  /** The real repository, subclassed: the override only adds a place to stand before the write. */
+  class ParkingRecoveryRepository extends PrismaMfaRepository {
+    override async claimRecoveryCode(id: AnyId, at: Date): Promise<boolean> {
+      await turnstile.park(String(id));
+      return super.claimRecoveryCode(id, at);
+    }
+  }
+
+  let parking: DefaultMfaService;
+  let codes: readonly string[] = [];
+
+  async function liveCount(): Promise<number> {
+    return owner.mfaRecoveryCode.count({
+      where: { tenantId: TENANT, enrolment: { userId: DORA }, usedAt: null },
+    });
+  }
+
+  /** By hash, not by creation order: `createMany` gives every row the same `created_at`. */
+  async function usedAtOf(code: string): Promise<Date | null> {
+    const row = await owner.mfaRecoveryCode.findFirstOrThrow({
+      where: {
+        tenantId: TENANT,
+        enrolment: { userId: DORA },
+        codeHash: hashRecoveryCode(normalizeRecoveryCode(code)),
+      },
+      select: { usedAt: true },
+    });
+    return row.usedAt;
+  }
+
+  beforeAll(async () => {
+    await owner.user.create({
+      data: {
+        id: DORA,
+        tenantId: TENANT,
+        email: `${DORA}@mfa.test`,
+        emailNormalized: `${DORA}@mfa.test`,
+        displayName: 'Dora',
+        status: 'ACTIVE',
+        updatedAt: new Date(now),
+      },
+    });
+    parking = new DefaultMfaService(
+      new ParkingRecoveryRepository(config, new RecordStamps(clock)),
+      new PrismaSessionRepository(clock),
+      realAuditWriter(clock, unitOfWork),
+      unitOfWork,
+      clock,
+      config,
+    );
+    now = new Date(now.getTime() + 60_000);
+    const offer = await asDora(() => parking.begin(DORA, 'dora@mfa.test'));
+    const confirmation = await asDora(() =>
+      parking.confirm(DORA, totpCode(offer.secret, step(), 6)),
+    );
+    codes = confirmation.recoveryCodes;
+  });
+
+  it('accepts a recovery code once', async () => {
+    // The control. Without it every assertion below passes on a service that refuses everything.
+    expect(codes.length).toBe(4);
+    expect(await liveCount()).toBe(4);
+    expect(await asDora(() => parking.challenge(DORA, codes[0] ?? ''))).toBe(true);
+    expect(await liveCount()).toBe(3);
+  });
+
+  it('refuses a spent recovery code when the two challenges are ordered', async () => {
+    // The serial answer the concurrent one has to match.
+    now = new Date(now.getTime() + 60_000);
+    expect(await asDora(() => parking.challenge(DORA, codes[0] ?? ''))).toBe(false);
+    expect(await liveCount()).toBe(3);
+  });
+
+  it('refuses a code that was never issued', async () => {
+    now = new Date(now.getTime() + 60_000);
+    expect(await asDora(() => parking.challenge(DORA, 'ZZZZ-ZZZZ-ZZZZ'))).toBe(false);
+    expect(await liveCount()).toBe(3);
+  });
+
+  it('leaves the other codes usable after one is spent', async () => {
+    now = new Date(now.getTime() + 60_000);
+    expect(await asDora(() => parking.challenge(DORA, codes[1] ?? ''))).toBe(true);
+    expect(await liveCount()).toBe(2);
+  });
+
+  it('spends a recovery code once when two challenges hold it at the same moment', async () => {
+    now = new Date(now.getTime() + 60_000);
+    const contended = codes[2] ?? '';
+    const liveBefore = await liveCount();
+    expect(liveBefore).toBe(2);
+    turnstile.arm(2);
+
+    // Each from its own scope: `challenge` opens its own unit of work, and neither of these is
+    // invoked from inside the other's callback, so neither joins the other's transaction.
+    const first = asDora(() => parking.challenge(DORA, contended));
+    await turnstile.reached[0];
+    const second = asDora(() => parking.challenge(DORA, contended));
+    await turnstile.reached[1];
+
+    // Both read the live codes, both matched this one, and both are about to spend it.
+    expect(turnstile.arrivals).toHaveLength(2);
+    expect(turnstile.arrivals[0]).toBe(turnstile.arrivals[1]);
+
+    turnstile.release(0);
+    const firstAnswer = await first;
+    // Spent, and by the caller that won — asserted before the loser is let go, so the row the
+    // second challenge meets is one that is used and nothing else.
+    const spentAt = await usedAtOf(contended);
+    expect(spentAt).not.toBeNull();
+
+    turnstile.release(1);
+    const secondAnswer = await second;
+
+    // One code, one door. The second challenge met a code somebody else had already spent, which
+    // is the refusal the ordered test above gives.
+    expect(firstAnswer).toBe(true);
+    expect(secondAnswer).toBe(false);
+    // And exactly one code left the live set: a second success would still have marked one row,
+    // so the count alone cannot tell these apart — the answers above are what do.
+    expect(await liveCount()).toBe(liveBefore - 1);
+    // The winner's instant stands. A second write would move it, losing when the code was spent.
+    expect((await usedAtOf(contended))?.getTime()).toBe(spentAt?.getTime());
   });
 });
 
