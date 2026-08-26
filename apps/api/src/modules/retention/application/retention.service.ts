@@ -358,6 +358,39 @@ export class DefaultRetentionService implements RetentionService {
 
   private async archive(schedule: RetentionScheduleRecord): Promise<void> {
     await this.writer.write(async () => {
+      // The second hold check, inside the transaction that would archive — the one `purge` has
+      // taken since it was written, for exactly the same reason and now for the same disposition.
+      // `settle` read the holds in a transaction that has since committed, and a matter opened in
+      // the interval is committed and invisible to a decision already taken. Asking again here
+      // makes the refusal a property of the database rather than of the gap between two
+      // statements.
+      //
+      // It matters more than the reversibility of an archive suggests. `SUSPENDED` is one of
+      // `LIVE_STATES`, so the `EXECUTED` below would be written straight over the suspension the
+      // hold had just recorded — and a release then finds nothing suspended to resume, leaving the
+      // schedule terminal and the hold with nothing left to hold.
+      const live = await this.holds.listLiveFor(schedule.documentId);
+      if (live.length > 0) {
+        // Nothing moves the schedule here, and `purge`'s twin of this branch moves it only
+        // belt-and-braces: placing a hold suspends every live schedule the document has, so a
+        // document this branch can see a hold for is already `SUSPENDED`. What this returns is the
+        // record that the sweep met one and stood down.
+        return {
+          result: undefined,
+          change: {
+            action: RetentionAudit.PURGE_EXECUTED,
+            subjectType: AuditSubjectType.DOCUMENT,
+            subjectId: asId<AnyId>(schedule.documentId),
+            operation: AdministrativeOperation.UPDATED,
+            after: {
+              scheduleId: schedule.id,
+              outcome: DispositionOutcome.BLOCKED,
+              holds: live.length,
+            },
+          },
+        };
+      }
+
       const archived = await this.documents.archive(schedule.documentId);
       if (archived) {
         await this.schedules.moveState({
