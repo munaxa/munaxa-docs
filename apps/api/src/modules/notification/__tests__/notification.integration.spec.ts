@@ -22,6 +22,10 @@ import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import type { DocumentRecord, DocumentService } from '../../document/application/ports';
 import { type NotificationStack, realNotifications } from '../../../testing/real-collaborators';
+import {
+  type DueForDelivery,
+  PrismaNotificationMessageRepository,
+} from '../infrastructure/prisma-notification.repositories';
 import { sharedDatabase } from '../../../testing/tenant-database';
 import { NotificationType } from '../domain/notification-types';
 import { NotificationAudit } from '../domain/audit-actions';
@@ -1349,4 +1353,207 @@ describe('one queued message, one send, however many passes meet it', () => {
     expect(sendsTo(addressOf('ada')) - before).toBe(BATCH);
     expect(await queuedFor(ADA)).toBe(0);
   });
+
+  /*
+   * Both passes select the row; one claims it; the other is refused *by the count*.
+   *
+   * The two tests above cannot establish this ordering. Ordering whole claims puts the first
+   * pass's commit before the second pass's select, so the second is turned away by its own
+   * predicate and the affected-row count is never consulted. The batch test opens the window by
+   * making the first pass's claim loop long enough for the second pass's select to land inside
+   * it — which works, and works every time it has been run, but it is the scheduler's doing and
+   * not the test's. "It failed under the mutation twenty times" is evidence; it is not proof.
+   *
+   * So both passes are parked *inside* `claimQueued`, between selecting a row and claiming it,
+   * and released in a fixed order. Reaching the park is itself the evidence the assertion needs:
+   * a pass can only be parked on a row its SELECT returned. That is what separates "B never saw
+   * the row" from "B saw it and its UPDATE affected nothing", and only the second is the property
+   * under test.
+   *
+   * Each pass runs its own `deliverBatch` from its own `runWithContext`, so each opens its own
+   * transaction. Neither is invoked from inside the other's callback — a nested `run` would join
+   * the ambient transaction, and the test would then be one transaction racing itself, which is
+   * both deterministic and meaningless.
+   */
+  it('refuses the second pass at the claim rather than at the select', async () => {
+    const parked = new ParkedClaims();
+    const seam = realNotifications({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      documents,
+      messages: parked,
+    });
+
+    await asSystem(() =>
+      seam.events.handle({
+        eventId: uuidv7(),
+        eventType: 'workflow.task-assigned',
+        payload: {
+          workflowInstanceId: uuidv7(),
+          documentId: DOCUMENT,
+          stageIndex: 0,
+          stageName: 'Contended',
+          assigneeIds: [ADA],
+          dueAt: '2026-08-12T09:00:00.000Z',
+        },
+      }),
+    );
+    const queued = await owner.notificationMessage.findMany({
+      where: {
+        tenantId: TENANT,
+        recipientId: ADA,
+        channel: NotificationChannel.EMAIL,
+        state: DeliveryState.QUEUED,
+      },
+      select: { id: true },
+    });
+    expect(queued.length).toBe(1);
+    const contended = queued[0]!.id;
+
+    /*
+     * The first pass is also held at the transport, and that is not decoration.
+     *
+     * Releasing the second pass only after the first has *finished* would let the delivery
+     * outcome do the refusing: `recordDelivery` moves the row to `SENT`, and a second pass is
+     * then turned away by `state = QUEUED` whether or not a lease was ever written. The claim
+     * would look load-bearing while the terminal state was doing the work — and an earlier
+     * draft of this test passed with the claim degraded to a plain read for exactly that reason.
+     *
+     * Held at the transport, the first pass has committed its claim and written nothing else.
+     * The row the second pass meets is still `QUEUED`, still addressed to the same person, and
+     * refused by one thing only: the lease the claim put in `release_at`.
+     */
+    let admitTransport: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      admitTransport = resolve;
+    });
+    let sending: () => void = () => undefined;
+    const atTransport = new Promise<'sending'>((resolve) => {
+      sending = () => {
+        resolve('sending');
+      };
+    });
+    let held = false;
+    const realSend = seam.transport.send.bind(seam.transport);
+    seam.transport.send = async (message: Parameters<typeof realSend>[0]) => {
+      if (!held) {
+        held = true;
+        sending();
+        await released;
+      }
+      return realSend(message);
+    };
+
+    const first = runWithContext(contextFor(null), () =>
+      seam.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+    expect(await parked.arrivalOf(1, first)).toBe('parked');
+
+    // Started only now, so its select cannot precede the first pass's — and cannot follow the
+    // first pass's claim either, because that pass is held before making it.
+    const second = runWithContext(contextFor(null), () =>
+      seam.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+    );
+    expect(await parked.arrivalOf(2, second)).toBe('parked');
+
+    // The assertion the whole test exists for: *both* passes selected the same row. Neither is
+    // about to be turned away by a predicate that never returned it.
+    expect(parked.claiming).toEqual([contended, contended]);
+
+    // The first pass claims, commits, and stops at the transport.
+    parked.admit(1);
+    expect(await Promise.race([atTransport, first.then(() => 'finished' as const)])).toBe(
+      'sending',
+    );
+    const midFlight = await owner.notificationMessage.findUnique({
+      where: { id: contended },
+      select: { state: true, releaseAt: true },
+    });
+    expect(midFlight?.state).toBe(DeliveryState.QUEUED);
+    // Still queued, and held only by the lease the claim wrote. Asserted separately from the
+    // instant so that a claim which writes nothing fails here, naming the absent lease, rather
+    // than further down on a comparison against `undefined`.
+    const lease = midFlight?.releaseAt ?? null;
+    expect(lease).not.toBeNull();
+    expect(lease!.getTime()).toBeGreaterThan(clock.now().getTime());
+
+    // The second pass now issues the claim it selected a row for, against a row that is still
+    // queued and is nevertheless not its to send.
+    parked.admit(2);
+    const secondOutcome = await second;
+    expect(secondOutcome.attempted).toBe(0);
+    expect(secondOutcome.sent).toBe(0);
+
+    admitTransport();
+    const firstOutcome = await first;
+    expect(firstOutcome.attempted).toBe(1);
+    expect(firstOutcome.sent).toBe(1);
+
+    // One message, one send, one row in a terminal state.
+    expect(
+      seam.transport.sent.filter((message) => message.address === addressOf('ada')).length,
+    ).toBe(1);
+    const after = await owner.notificationMessage.findUnique({
+      where: { id: contended },
+      select: { state: true },
+    });
+    expect(after?.state).toBe(DeliveryState.SENT);
+  });
 });
+
+/**
+ * The real message repository, with every pass held between selecting a row and claiming it.
+ *
+ * A subclass rather than a substitute: `claimDue` records the row, waits to be let go, and then
+ * runs the production statement through `super`. Every other method, `claimQueued` included, is
+ * the one the product ships — the select, the predicate, the read-back and the transaction are
+ * all untouched, and the only thing this class decides is *when* the claim is issued.
+ */
+class ParkedClaims extends PrismaNotificationMessageRepository {
+  /** The rows passes are currently parked on, in arrival order. */
+  readonly claiming: string[] = [];
+  private readonly gates: (() => void)[] = [];
+  private readonly watchers: (() => void)[] = [];
+
+  protected override async claimDue(
+    due: DueForDelivery,
+    id: string,
+    leaseUntil: Date,
+  ): Promise<boolean> {
+    const admitted = new Promise<void>((resolve) => {
+      this.gates.push(resolve);
+    });
+    this.claiming.push(id);
+    this.watchers.splice(0).forEach((notify) => {
+      notify();
+    });
+    await admitted;
+    return super.claimDue(due, id, leaseUntil);
+  }
+
+  /**
+   * Waits for the nth pass to park, or for its `deliverBatch` to finish without parking.
+   *
+   * Raced against the worker rather than left to wait, so a change that stops issuing the claim
+   * at all fails on an assertion that names the problem instead of on a suite timeout.
+   */
+  async arrivalOf(nth: number, worker: Promise<unknown>): Promise<'parked' | 'finished'> {
+    const arrived = new Promise<'parked'>((resolve) => {
+      const check = (): void => {
+        if (this.claiming.length >= nth) {
+          resolve('parked');
+        } else {
+          this.watchers.push(check);
+        }
+      };
+      check();
+    });
+    return Promise.race([arrived, worker.then(() => 'finished' as const)]);
+  }
+
+  /** Lets the nth parked pass issue its claim. */
+  admit(nth: number): void {
+    this.gates[nth - 1]?.();
+  }
+}
