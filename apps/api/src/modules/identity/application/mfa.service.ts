@@ -212,8 +212,18 @@ export class DefaultMfaService implements MfaService {
       });
       // Strictly greater, not merely valid: the window a code is arithmetically correct for is
       // thirty seconds wide, and one already spent inside it is a replay.
-      if (step !== null && (enrolment.lastStep === null || step > enrolment.lastStep)) {
-        await this.enrolments.recordSuccess(enrolment.id, step);
+      //
+      // The read decides and the claim is what makes it true — Slice 53. Two challenges holding
+      // one code are two transactions: both read this `lastStep`, both find the code unspent, and
+      // both arrive here. `claimStep` spends the step under the same predicate, so exactly one is
+      // told it proved anything and the other falls through to the refusal below, which is the
+      // replay it is. `IdentitySignerAuthenticator` challenges through this method so a signature
+      // gets that guarantee as a sign-in does — and those two are a pair that can race.
+      if (
+        step !== null &&
+        (enrolment.lastStep === null || step > enrolment.lastStep) &&
+        (await this.enrolments.claimStep(enrolment.id, step))
+      ) {
         if (enrolment.staleSeal) {
           // Phase 18's key rotation, completed one person at a time. This is the only moment the
           // plaintext secret and a successful proof of it exist together, which is what makes it

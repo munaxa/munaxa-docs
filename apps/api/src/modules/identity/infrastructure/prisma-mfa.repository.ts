@@ -178,6 +178,20 @@ export class PrismaMfaRepository implements MfaRepository {
     await tx.user.updateMany({ where: { id: userId, tenantId }, data: { mfaEnrolled: true } });
   }
 
+  async claimStep(enrolmentId: AnyId, step: number): Promise<boolean> {
+    const { count } = await requireTransaction().mfaEnrolment.updateMany({
+      where: {
+        id: String(enrolmentId),
+        tenantId: requireContext().tenantId,
+        // The same question the caller already asked of the row it read, asked again by the write
+        // itself. Between the two, another challenge holding the same code can have spent it.
+        OR: [{ lastStep: null }, { lastStep: { lt: BigInt(step) } }],
+      },
+      data: { lastStep: BigInt(step), failedAttempts: 0, updatedAt: this.stamps.now() },
+    });
+    return count === 1;
+  }
+
   async recordSuccess(enrolmentId: AnyId, step: number): Promise<void> {
     await requireTransaction().mfaEnrolment.updateMany({
       where: { id: String(enrolmentId), tenantId: requireContext().tenantId },
