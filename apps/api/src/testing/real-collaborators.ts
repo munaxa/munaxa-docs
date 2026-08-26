@@ -1672,12 +1672,24 @@ export function realNotifications(options: {
    * the cache unless it supplies one that stores nothing.
    */
   readonly cache?: CachePort;
+  /**
+   * The message repository, when a suite needs to park a worker inside one — Slice 52 follow-up.
+   *
+   * A *subclass of the real one*, never a substitute for it: the only thing a suite may do here is
+   * override `claimDue` to hold a pass between selecting a row and claiming it, then delegate to
+   * `super`. That instant is not reachable from outside — `claimQueued` is atomic to its caller —
+   * and it is the instant the affected-row count exists for, so without this a suite can order two
+   * whole claims but cannot make two passes select the same row before either claims it.
+   *
+   * Defaulted, so every existing caller composes the real repository exactly as before.
+   */
+  readonly messages?: PrismaNotificationMessageRepository;
 }): NotificationStack {
   const { writer } = realWriteStack(options.clock, options.unitOfWork);
   const settings = settingsReaderFor(options.settings ?? {});
   const logger = silentLogger();
 
-  const messages = new PrismaNotificationMessageRepository();
+  const messages = options.messages ?? new PrismaNotificationMessageRepository();
   const preferences = new PrismaNotificationPreferenceRepository();
   const templates = new PrismaNotificationTemplateRepository();
   const suppressions = new PrismaNotificationSuppressionRepository();

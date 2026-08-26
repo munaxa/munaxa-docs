@@ -265,15 +265,7 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
   ): Promise<readonly NotificationMessageRecord[]> {
     const tx = requireTransaction();
     const tenantId = requireContext().tenantId;
-    const due = {
-      tenantId,
-      channel,
-      state: DeliveryState.QUEUED,
-      // A row being held is not a row waiting to go out. This one predicate is what quiet
-      // hours and digests are built on, and it is why neither needs a scheduler of its own:
-      // the database decides what is due, every pass, from the row itself.
-      OR: [{ releaseAt: null }, { releaseAt: { lte: now } }],
-    };
+    const due = dueForDelivery(tenantId, channel, now);
     const candidates = await tx.notificationMessage.findMany({
       where: due,
       orderBy: { createdAt: 'asc' },
@@ -300,11 +292,7 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
      */
     const claimed: string[] = [];
     for (const candidate of candidates) {
-      const { count } = await tx.notificationMessage.updateMany({
-        where: { ...due, id: candidate.id },
-        data: { releaseAt: leaseUntil },
-      });
-      if (count === 1) {
+      if (await this.claimDue(due, candidate.id, leaseUntil)) {
         claimed.push(candidate.id);
       }
     }
@@ -317,6 +305,29 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
       orderBy: { createdAt: 'asc' },
     });
     return rows.map(toRecord);
+  }
+
+  /**
+   * One row, claimed or not claimed — the statement the affected-row count is read from.
+   *
+   * Its own method because the interesting instant of a delivery pass is between selecting a row
+   * and claiming it, and that instant is not otherwise reachable: `claimQueued` is atomic from
+   * outside, so a suite can order two whole claims but cannot make two passes select the same row
+   * before either claims it. That second ordering is the one this count exists for, and the
+   * ordinary one — the lane's concurrency is eight and a pass spends one of these per row, so a
+   * second pass's select lands inside the first pass's loop routinely.
+   *
+   * `protected` rather than public: the seam is for a subclass in this module's own suite to park
+   * a worker on, and the port stays four methods wide.
+   */
+  protected async claimDue(due: DueForDelivery, id: string, leaseUntil: Date): Promise<boolean> {
+    const { count } = await requireTransaction().notificationMessage.updateMany({
+      where: { ...due, id },
+      data: { releaseAt: leaseUntil },
+    });
+    // Zero means somebody else claimed it between this pass's select and this statement. The row
+    // is theirs to send, and saying so is the whole of the difference between a claim and a read.
+    return count === 1;
   }
 
   async releaseHeld(now: Date, limit: number): Promise<number> {
@@ -607,6 +618,28 @@ export class PrismaNotificationBatchRepository implements NotificationBatchRepos
 function normalizeAddress(address: string): string {
   return address.trim().toLowerCase();
 }
+
+/**
+ * What a delivery pass may take: queued, this tenant's, this channel's, and not being held.
+ *
+ * One definition rather than two, because the select and the claim must ask the same question.
+ * A claim that re-checked something weaker than what was selected would hand out rows another
+ * pass already holds; a claim that re-checked something stronger would silently drop work.
+ *
+ * A row whose `releaseAt` is in the future is not waiting — it is being held — so it is not
+ * claimed. That predicate is what quiet hours and digests are built on, and it is why neither
+ * needs a scheduler of its own: the database decides what is due, every pass, from the row itself.
+ */
+function dueForDelivery(tenantId: string, channel: NotificationChannelKey, now: Date) {
+  return {
+    tenantId,
+    channel,
+    state: DeliveryState.QUEUED,
+    OR: [{ releaseAt: null }, { releaseAt: { lte: now } }],
+  };
+}
+
+export type DueForDelivery = ReturnType<typeof dueForDelivery>;
 
 function toStringRecord(value: unknown): Readonly<Record<string, string>> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
