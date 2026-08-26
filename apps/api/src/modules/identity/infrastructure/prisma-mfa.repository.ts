@@ -244,11 +244,20 @@ export class PrismaMfaRepository implements MfaRepository {
     return rows.map((row) => ({ id: asId<AnyId>(row.id), codeHash: row.codeHash }));
   }
 
-  async markRecoveryCodeUsed(id: AnyId, at: Date): Promise<void> {
-    await requireTransaction().mfaRecoveryCode.updateMany({
-      where: { id: String(id), tenantId: requireContext().tenantId },
+  async claimRecoveryCode(id: AnyId, at: Date): Promise<boolean> {
+    const { count } = await requireTransaction().mfaRecoveryCode.updateMany({
+      where: {
+        id: String(id),
+        tenantId: requireContext().tenantId,
+        // What the caller believed when it listed this code, asked again by the write itself.
+        // Without it there is nothing for the second write to re-evaluate: the row lock orders
+        // the two updates and then both of them succeed, and the later one moves `used_at` off
+        // the instant the code was actually spent.
+        usedAt: null,
+      },
       data: { usedAt: at },
     });
+    return count === 1;
   }
 
   async countLiveRecoveryCodes(enrolmentId: AnyId): Promise<number> {

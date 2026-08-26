@@ -289,7 +289,15 @@ export class DefaultMfaService implements MfaService {
     if (match === undefined) {
       return false;
     }
-    await this.enrolments.markRecoveryCodeUsed(match.id, this.clock.now());
+    // The match decides and the claim is what makes it true — Slice 54. A code listed as live and
+    // matched by hash is still only a belief about a row another challenge may be spending at the
+    // same moment; the claim spends it under the same `used_at` predicate, and a caller that loses
+    // has met an already-spent code. Returning false hands it to the refusal `challenge` already
+    // gives for a code spent an hour ago, rather than inventing a second way to say the same
+    // thing — and, importantly, without recording a success for a code it did not spend.
+    if (!(await this.enrolments.claimRecoveryCode(match.id, this.clock.now()))) {
+      return false;
+    }
     await this.enrolments.recordSuccess(enrolmentId, this.currentStep());
     return true;
   }
