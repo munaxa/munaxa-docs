@@ -145,18 +145,28 @@ export class DefaultFederationService implements FederationService {
       return NOT_FEDERATED;
     }
 
-    const resolved = await this.within(tenantId, async () => {
-      if (!(await this.settings.get(Settings.FEATURE_FEDERATION))) {
-        return null;
-      }
-      const provider = await this.providers.find();
-      if (!provider || !provider.enabled) {
-        return null;
-      }
-      // The domain decides, on a label boundary — `evil-acme.com` must not select the provider
-      // that claims `acme.com`.
-      return domainMatches(normalizeEmail(email), provider.domains) ? provider : null;
-    });
+    // `run` rather than context alone. `find()` reads through `requireTransaction()`, and a context
+    // without a unit of work has none — so this threw `NoActiveTransactionError`, which is neither a
+    // `DomainError` nor an `HttpException` and therefore left `AllExceptionsFilter` answering `500`.
+    // Only for a tenant that had switched federation on, because the gate above returns first for
+    // everyone else: the endpoint failed precisely for the tenants using the feature. The settings
+    // read is unaffected either way — its repository falls back to the tenant's own client — but it
+    // belongs inside the same unit of work now that there is one, so both reads see one snapshot.
+    // The provider's own HTTP stays outside it, which is the boundary this method already had.
+    const resolved = await this.within(tenantId, () =>
+      this.unitOfWork.run(async () => {
+        if (!(await this.settings.get(Settings.FEATURE_FEDERATION))) {
+          return null;
+        }
+        const provider = await this.providers.find();
+        if (!provider || !provider.enabled) {
+          return null;
+        }
+        // The domain decides, on a label boundary — `evil-acme.com` must not select the provider
+        // that claims `acme.com`.
+        return domainMatches(normalizeEmail(email), provider.domains) ? provider : null;
+      }),
+    );
 
     if (!resolved) {
       // The same answer for "no such tenant", "no provider", "provider disabled" and "domain not
@@ -224,7 +234,13 @@ export class DefaultFederationService implements FederationService {
     await this.cache.delete(cacheKey(digestOf(input.state)));
 
     const tenantId = pending.tenantId;
-    const provider = await this.within(tenantId, () => this.providers.findCredential());
+    // Its own unit of work, and deliberately not the one the provisioning block below opens: the
+    // token exchange between them is the provider's HTTP endpoint, and holding a database
+    // transaction across somebody else's network call is how a slow provider becomes a database
+    // outage. This read needs a transaction because `findCredential` reads through one.
+    const provider = await this.within(tenantId, () =>
+      this.unitOfWork.run(() => this.providers.findCredential()),
+    );
     if (!provider || !provider.enabled) {
       throw new UnauthenticatedError(REJECTED);
     }
