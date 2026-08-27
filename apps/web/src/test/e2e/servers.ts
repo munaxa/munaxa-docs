@@ -135,6 +135,17 @@ export function cleanUpFixtures(): void {
 export interface Servers {
   readonly api: ChildProcess;
   readonly web: ChildProcess;
+  /**
+   * The Redis this API was given — Slice 58, and exposed because it is no longer the ambient one.
+   *
+   * A suite that hands the running deployment work through Redis has to hand it to the *same*
+   * Redis. `dr-verify-chain.mjs` is the one that does: it enqueues onto the lane the API's
+   * `AuditLaneConsumer` subscribes to, and it read its URL from the ambient environment back when
+   * every process here shared one. That stopped being true when each suite got its own logical
+   * database, and a job enqueued on the wrong one is not refused — it is simply never consumed,
+   * which the caller sees as the verifier reporting nothing at all.
+   */
+  readonly redisUrl: string;
 }
 
 /**
@@ -147,6 +158,39 @@ export interface Servers {
  * suite that wants them rather than turned on for every suite.
  */
 export type ExtraEnv = Readonly<Record<string, string>>;
+
+/**
+ * A Redis logical database of this suite's own — Slice 58.
+ *
+ * `auth.login` is ten attempts per five minutes and it counts **by IP as well as by address**
+ * (`RATE_LIMIT_RULES`). A shard runs its files in one worker against one loopback address, so
+ * without this every suite in it spends from one budget: measured, the signing/faded-text/search
+ * shard reaches twelve. The eleventh sign-in is refused, `signInAndCapture` never leaves `/login`,
+ * and the suite reports a thirty-second navigation timeout that names nothing about a rate limit.
+ *
+ * What is wrong there is the *environment*, not the rule. Each suite boots its own API over its own
+ * tenant and is an independent deployment in every respect except this one: they share a Redis. So
+ * each gets its own logical database and its own genuine budget, and the limiter is untouched — the
+ * same frozen rule, the same real Redis, the same real counters. Nothing is mocked, nothing is
+ * bypassed, and a suite that spends its own budget still gets the `429` it is asking for.
+ *
+ * The sequence lives in `process.env` rather than a module variable because it must not depend on
+ * whether Vitest isolates module registries between files. Under this project's current settings a
+ * module-scoped counter survives the file boundary and would work — that was measured, not assumed
+ * — but `isolate` is a configuration knob, and a counter that silently restarts at the same number
+ * would hand every suite the same database and put the collision straight back. `process.env` is
+ * one worker process either way. Databases 1–15 are used and 0 is left alone, so anything else
+ * pointed at this Redis is undisturbed.
+ */
+function redisUrlForThisSuite(): string {
+  const base = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
+  const next = Number(process.env.E2E_REDIS_DB_SEQ ?? '0') + 1;
+  process.env.E2E_REDIS_DB_SEQ = String(next);
+  const database = ((next - 1) % 15) + 1;
+  const url = new URL(base);
+  url.pathname = `/${String(database)}`;
+  return url.toString();
+}
 
 export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): Promise<Servers> {
   const main = join(API, 'dist', 'main.js');
@@ -218,6 +262,9 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
           }),
         };
 
+  // Resolved before the spawn so that what is returned is exactly what the child was given.
+  const redisUrl = extraEnv.REDIS_URL ?? redisUrlForThisSuite();
+
   const api = spawn('node', [main], {
     cwd: API,
     env: {
@@ -227,6 +274,8 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
       ...tenancy,
       SIGNATURE_WITNESS_SECRET: WITNESS_SECRET,
       CORS_ORIGINS: WEB_URL,
+      // Before `extraEnv`, so a suite that wants a particular Redis still gets the last word.
+      REDIS_URL: redisUrl,
       ...extraEnv,
     },
     // Its own process group, so `stopServers` can take the whole tree down. `next start` is a
@@ -265,7 +314,7 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
     waitForPort(`http://127.0.0.1:${String(API_PORT)}/api/v1/health`, api, 'API'),
     waitForPort(`${WEB_URL}/login`, web, 'web'),
   ]);
-  return { api, web };
+  return { api, web, redisUrl };
 }
 
 /**
