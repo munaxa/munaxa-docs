@@ -91,6 +91,15 @@ let servers: Servers | null = null;
 let fixture: Fixture;
 let rehearsal: Rehearsal;
 let readApiLog: () => string = () => '';
+/*
+ * The Redis the *currently running* API is on — Slice 58.
+ *
+ * Rebound beside `readApiLog` at each boot for the same reason it exists: this suite runs two
+ * deployments in turn, and both of these are properties of whichever one is up. The verifier is
+ * enqueued onto it rather than onto whatever `REDIS_URL` happens to say, because since each
+ * suite took its own logical database those are no longer the same address.
+ */
+let apiRedisUrl = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 
 const sessions = new Map<string, Awaited<ReturnType<BrowserContext['storageState']>>>();
 
@@ -194,6 +203,7 @@ beforeAll(async () => {
   fixture = seedFixture();
   servers = await startServers(fixture, RECOVERY_ENV);
   readApiLog = captureApiLog(servers);
+  apiRedisUrl = servers.redisUrl;
   browser = await chromium.launch({
     headless: true,
     args: ['--no-proxy-server'],
@@ -271,7 +281,7 @@ async function verifyChain(readLog: () => string, tenants: number): Promise<stri
   execFileSync('node', [join(ROOT, 'scripts', 'dr-verify-chain.mjs')], {
     cwd: ROOT,
     encoding: 'utf8',
-    env: process.env,
+    env: { ...process.env, REDIS_URL: apiRedisUrl },
   });
 
   const deadline = Date.now() + 120_000;
@@ -804,6 +814,7 @@ describe('A · the restored environment, in a real browser', () => {
 
     servers = await startServers(fixture, RECOVERY_ENV);
     readApiLog = captureApiLog(servers);
+    apiRedisUrl = servers.redisUrl;
     // Signed in again rather than reusing the cookies from before, and that is the assertion: the
     // credentials that authenticate are the *restored* ones.
     await establishSession(fixture.signer.email);
