@@ -179,16 +179,27 @@ export type ExtraEnv = Readonly<Record<string, string>>;
  * module-scoped counter survives the file boundary and would work — that was measured, not assumed
  * — but `isolate` is a configuration knob, and a counter that silently restarts at the same number
  * would hand every suite the same database and put the collision straight back. `process.env` is
- * one worker process either way. Databases 1–15 are used and 0 is left alone, so anything else
- * pointed at this Redis is undisturbed.
+ * one worker process either way — `poolOptions.forks.singleFork` is set on this project, so there
+ * is exactly one. Databases 1–15 are used and 0 is left alone, so anything else pointed at this
+ * Redis is undisturbed.
  */
 function redisUrlForThisSuite(): string {
   const base = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
   const next = Number(process.env.E2E_REDIS_DB_SEQ ?? '0') + 1;
   process.env.E2E_REDIS_DB_SEQ = String(next);
-  const database = ((next - 1) % 15) + 1;
+  // Refused rather than wrapped. A sixteenth deployment reusing database 1 would share a login
+  // budget with the first one and fail the way this whole mechanism exists to stop — as a thirty
+  // second navigation timeout naming nothing — and it would do it silently, years from now, to
+  // somebody who has never read this. The largest shard today boots five.
+  if (next > 15) {
+    throw new Error(
+      `This shard has booted ${String(next)} deployments and a Redis has only 15 usable logical ` +
+        'databases, so this one would have to share a rate-limit budget with an earlier suite. ' +
+        'Split the shard rather than raising this number.',
+    );
+  }
   const url = new URL(base);
-  url.pathname = `/${String(database)}`;
+  url.pathname = `/${String(next)}`;
   return url.toString();
 }
 
