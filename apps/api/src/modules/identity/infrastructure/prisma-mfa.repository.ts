@@ -147,13 +147,21 @@ export class PrismaMfaRepository implements MfaRepository {
     userId: UserId,
     step: number,
     codeHashes: readonly string[],
-  ): Promise<void> {
+  ): Promise<boolean> {
     const tx = requireTransaction();
     const { tenantId } = requireContext();
     const now = this.stamps.now();
 
-    await tx.mfaEnrolment.updateMany({
-      where: { id: String(enrolmentId), tenantId },
+    const { count } = await tx.mfaEnrolment.updateMany({
+      where: {
+        id: String(enrolmentId),
+        tenantId,
+        // The same question the caller already asked of the row it read, asked again by the write
+        // itself. Between the two, another confirmation holding the same code can have proved this
+        // enrolment, and the codes below are issued rather than replaced — so a second writer here
+        // does not overwrite the first one's set, it doubles it.
+        confirmedAt: null,
+      },
       data: {
         confirmedAt: now,
         lastStep: BigInt(step),
@@ -163,6 +171,9 @@ export class PrismaMfaRepository implements MfaRepository {
         version: { increment: 1 },
       },
     });
+    if (count !== 1) {
+      return false;
+    }
     await tx.mfaRecoveryCode.createMany({
       data: codeHashes.map((codeHash) => ({
         id: this.stamps.nextId(),
@@ -176,6 +187,7 @@ export class PrismaMfaRepository implements MfaRepository {
     // that reads `user.mfa_enrolled` — the auth response, the admin list — has to learn a new
     // column, and it stops being a claim nothing checks.
     await tx.user.updateMany({ where: { id: userId, tenantId }, data: { mfaEnrolled: true } });
+    return true;
   }
 
   async claimStep(enrolmentId: AnyId, step: number): Promise<boolean> {

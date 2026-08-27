@@ -160,12 +160,19 @@ export class DefaultMfaService implements MfaService {
       const codes = Array.from({ length: this.config.mfa.recoveryCodeCount }, () =>
         generateRecoveryCode(),
       );
-      await this.enrolments.confirm(
+      // The check at the top of this transaction asked an enrolment that another confirmation can
+      // have proved since. This asks the write itself, and a caller told `false` is in exactly the
+      // position of one that arrived second in order — owed the same refusal, and owed it before
+      // the codes below are counted as issued.
+      const proved = await this.enrolments.confirm(
         enrolment.id,
         userId,
         step,
         codes.map((value) => hashRecoveryCode(normalizeRecoveryCode(value))),
       );
+      if (!proved) {
+        throw new ForbiddenError('That authenticator is already confirmed.');
+      }
       // Every session ends, including the one being used to enrol. The set of factors that opened a
       // session is part of what it means, and a session opened before the factor existed outlives
       // the decision to have one.
