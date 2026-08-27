@@ -35,12 +35,24 @@ export interface MfaRepository {
   findFor(userId: UserId): Promise<MfaEnrolmentRecord | null>;
   /** Replaces any *unconfirmed* enrolment; a confirmed one is refused by the service first. */
   startEnrolment(userId: UserId, secret: string): Promise<AnyId>;
+  /**
+   * Proves an enrolment, and answers whether *this* call was the one that proved it.
+   *
+   * The service refuses an already-confirmed enrolment by reading `confirmedAt`, and two
+   * confirmations are two transactions: both can read the same unconfirmed row and both can find
+   * the same code correct. Only one of them may be told so, and the affected row count of a write
+   * predicated on `confirmedAt` is which.
+   *
+   * Unlike the other claims here, what the loser would do is not merely redundant. The recovery
+   * codes are *issued* by this call rather than replaced, so a second writer does not overwrite the
+   * first one's set — it adds a second live set that its owner never sees and cannot rotate.
+   */
   confirm(
     enrolmentId: AnyId,
     userId: UserId,
     step: number,
     codeHashes: readonly string[],
-  ): Promise<void>;
+  ): Promise<boolean>;
   /**
    * Spends a TOTP step, and answers whether *this* call was the one that spent it.
    *

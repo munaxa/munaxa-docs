@@ -664,3 +664,191 @@ async function trailActions(): Promise<readonly string[]> {
   });
   return rows.map((row) => row.action);
 }
+
+/**
+ * One enrolment, one set of recovery codes, however many confirmations prove it — Slice 59.
+ *
+ * `confirm` reads the enrolment, refuses it if `confirmedAt` is already set, verifies the code, and
+ * then writes. Those are two statements and two confirmations are two transactions: both read an
+ * unconfirmed enrolment, both find the same code correct, and both are allowed to write. The write
+ * predicates on the row's identity alone, so there is nothing for the second one to re-evaluate —
+ * the row lock serialises the two updates and then both of them succeed.
+ *
+ * What the second one does is not idempotent. `confirm` follows its update with a `createMany` of a
+ * *fresh* set of recovery codes, so the loser does not overwrite the winner's set, it **adds to
+ * it**: an enrolment configured for four codes ends with eight live, four of them belonging to a
+ * response that a duplicate submit discards. Recovery codes are, in this service's own words,
+ * "single-use and ... the *only* way past a lost authenticator" — so those four are live
+ * second-factor bypass credentials that their owner has never seen, cannot quote, and will not
+ * think to rotate. `statusFor` reports the inflated total, and the trail carries two `MFA_ENROLLED`
+ * events for one enrolment.
+ *
+ * Both callers reach it from their own scope: `confirm` opens a unit of work, and neither of these
+ * is invoked from inside the other's callback, so neither joins the other's transaction.
+ */
+describe('one enrolment, one set of recovery codes, however many confirmations prove it', () => {
+  const EVE = asId<UserId>(uuidv7());
+  const FRAN = asId<UserId>(uuidv7());
+  const asEve = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext({ ...context, userId: EVE }, work);
+  const asFran = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext({ ...context, userId: FRAN }, work);
+
+  const turnstile = new Turnstile<string>();
+
+  /** The real repository, subclassed: the override only adds a place to stand before the write. */
+  class ParkingConfirmRepository extends PrismaMfaRepository {
+    override async confirm(
+      enrolmentId: AnyId,
+      userId: UserId,
+      totpStep: number,
+      codeHashes: readonly string[],
+    ): Promise<boolean> {
+      await turnstile.park(String(enrolmentId));
+      return super.confirm(enrolmentId, userId, totpStep, codeHashes);
+    }
+  }
+
+  let parking: DefaultMfaService;
+
+  async function liveCodes(userId: UserId): Promise<number> {
+    return owner.mfaRecoveryCode.count({
+      where: { tenantId: TENANT, enrolment: { userId }, usedAt: null },
+    });
+  }
+
+  async function enrolmentsRecorded(userId: UserId): Promise<number> {
+    return owner.auditEvent.count({
+      where: { tenantId: TENANT, subjectId: String(userId), action: 'MFA_ENROLLED' },
+    });
+  }
+
+  async function seedUser(id: UserId, name: string): Promise<void> {
+    await owner.user.create({
+      data: {
+        id,
+        tenantId: TENANT,
+        email: `${id}@mfa.test`,
+        emailNormalized: `${id}@mfa.test`,
+        displayName: name,
+        status: 'ACTIVE',
+        updatedAt: new Date(now),
+      },
+    });
+  }
+
+  beforeAll(async () => {
+    await seedUser(EVE, 'Eve');
+    await seedUser(FRAN, 'Fran');
+    parking = new DefaultMfaService(
+      new ParkingConfirmRepository(config, new RecordStamps(clock)),
+      new PrismaSessionRepository(clock),
+      realAuditWriter(clock, unitOfWork),
+      unitOfWork,
+      clock,
+      config,
+    );
+  });
+
+  it('confirms once and issues exactly the configured number of codes', async () => {
+    // The control. Without it every assertion below passes on a service that confirms nothing.
+    now = new Date(now.getTime() + 60_000);
+    const offer = await asEve(() => parking.begin(EVE, 'eve@mfa.test'));
+    const confirmation = await asEve(() => parking.confirm(EVE, totpCode(offer.secret, step(), 6)));
+
+    expect(confirmation.recoveryCodes).toHaveLength(4);
+    expect(await liveCodes(EVE)).toBe(4);
+    expect(await enrolmentsRecorded(EVE)).toBe(1);
+  });
+
+  it('refuses a second confirmation when the two are ordered', async () => {
+    // The serial answer the concurrent one has to match, and the reason the failure below is about
+    // concurrency rather than about the check being absent.
+    now = new Date(now.getTime() + 60_000);
+    const enrolment = await owner.mfaEnrolment.findFirstOrThrow({
+      where: { tenantId: TENANT, userId: EVE },
+      select: { secret: true },
+    });
+    expect(enrolment.secret).toBeTruthy();
+
+    await expect(
+      asEve(async () => {
+        const offered = await parking.statusFor(EVE);
+        expect(offered.enrolled).toBe(true);
+        return parking.confirm(EVE, '000000');
+      }),
+    ).rejects.toThrow(/already confirmed/i);
+
+    // And nothing was added by the attempt.
+    expect(await liveCodes(EVE)).toBe(4);
+    expect(await enrolmentsRecorded(EVE)).toBe(1);
+  });
+
+  it('adds nothing when the claim is lost, without relying on the caller to roll back', async () => {
+    /*
+     * The repository's own contract, asserted in a transaction that **commits**.
+     *
+     * The service answers a lost claim by throwing, and that rollback would hide a repository that
+     * issued the codes before it checked — so this calls the repository directly and lets the
+     * transaction succeed. What is being pinned is that a losing `confirm` writes nothing, rather
+     * than that somebody upstream undoes what it wrote.
+     */
+    now = new Date(now.getTime() + 60_000);
+    const enrolment = await owner.mfaEnrolment.findFirstOrThrow({
+      where: { tenantId: TENANT, userId: EVE },
+      select: { id: true, confirmedAt: true },
+    });
+    expect(enrolment.confirmedAt).not.toBeNull();
+
+    const repository = new PrismaMfaRepository(config, new RecordStamps(clock));
+    const claimed = await asEve(() =>
+      unitOfWork.run(() =>
+        repository.confirm(asId<AnyId>(enrolment.id), EVE, step(), [
+          hashRecoveryCode(normalizeRecoveryCode('AAAA-BBBB-CCCC')),
+          hashRecoveryCode(normalizeRecoveryCode('DDDD-EEEE-FFFF')),
+        ]),
+      ),
+    );
+
+    expect(claimed).toBe(false);
+    expect(await liveCodes(EVE)).toBe(4);
+  });
+
+  it('issues one set of recovery codes when two confirmations hold the same code', async () => {
+    now = new Date(now.getTime() + 60_000);
+    const offer = await asFran(() => parking.begin(FRAN, 'fran@mfa.test'));
+    const code = totpCode(offer.secret, step(), 6);
+    expect(await liveCodes(FRAN)).toBe(0);
+    turnstile.arm(2);
+
+    // Each from its own scope, so each opens its own transaction.
+    const first = asFran(() => parking.confirm(FRAN, code));
+    await turnstile.reached[0];
+    const second = asFran(() => parking.confirm(FRAN, code));
+    await turnstile.reached[1];
+
+    // Both read the enrolment, both judged it unconfirmed, both verified this code, and both are
+    // about to write. Two parked callers holding the same enrolment is the proof of that.
+    expect(turnstile.arrivals).toHaveLength(2);
+    expect(turnstile.arrivals[0]).toBe(turnstile.arrivals[1]);
+
+    turnstile.release(0);
+    const winner = await first;
+    // Settled by the caller that won — asserted before the loser is let go, so the row the second
+    // confirmation meets is one that is confirmed and nothing else.
+    expect(winner.recoveryCodes).toHaveLength(4);
+    expect(await liveCodes(FRAN)).toBe(4);
+
+    turnstile.release(1);
+    const loser = await second.then(
+      (value) => ({ kind: 'confirmed' as const, value }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    // One enrolment, one set. The second confirmation met an enrolment that had already been
+    // proved, which is the refusal the ordered test above receives.
+    expect(loser.kind).toBe('refused');
+    expect(await liveCodes(FRAN)).toBe(4);
+    expect(await enrolmentsRecorded(FRAN)).toBe(1);
+  });
+});
