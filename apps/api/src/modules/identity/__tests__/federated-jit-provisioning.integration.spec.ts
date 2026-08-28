@@ -92,7 +92,19 @@ const { audit } = realWriteStack(clock, unitOfWork);
 
 const SLUG = `jit-race-${String(Date.now())}`;
 const PROVISION_TENANT = uuidv7();
-const registry = everyTenantRegistry(APP_URL, { [SLUG]: PROVISION_TENANT });
+/*
+ * A neighbouring tenant in the **same database**, so that what separates the two is row-level
+ * security and `uq_user_external_identity`'s tenant column rather than two connection strings.
+ * `findByExternalIdentity` carries no `tenantId` predicate — it is scoped by the transaction's
+ * `app.tenant_id` — so a suite that put the tenants in separate databases could not tell whether
+ * that scoping works at all.
+ */
+const NEIGHBOUR_SLUG = `jit-race-neighbour-${String(Date.now())}`;
+const NEIGHBOUR_TENANT = uuidv7();
+const registry = everyTenantRegistry(APP_URL, {
+  [SLUG]: PROVISION_TENANT,
+  [NEIGHBOUR_SLUG]: NEIGHBOUR_TENANT,
+});
 
 const provisioning = new ProvisioningService(
   new PrismaProvisioningRepository(),
@@ -107,6 +119,7 @@ const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
 
 let tenantId: TenantId;
 let providerId: string;
+let neighbourTenantId: TenantId;
 
 /* The provider's signing key. Real RS256, so `verifyIdToken` does its real work. */
 const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -199,12 +212,16 @@ let service: DefaultFederationService;
  * One authorization flow, started the way `begin` starts one: a single-use state in the cache and
  * a nonce whose digest is what the callback compares against.
  */
-async function startFlow(subject: string, email: string): Promise<{ code: string; state: string }> {
+async function startFlow(
+  subject: string,
+  email: string,
+  forTenant: TenantId = tenantId,
+): Promise<{ code: string; state: string }> {
   const state = uuidv7();
   const nonce = uuidv7();
   const code = uuidv7();
   const pending: PendingAuthorization = {
-    tenantId,
+    tenantId: forTenant,
     nonceDigest: digestOf(nonce),
     redirectUri: REDIRECT_URI,
     createdAt: FIXED_NOW.toISOString(),
@@ -217,11 +234,12 @@ async function startFlow(subject: string, email: string): Promise<{ code: string
 function callback(
   on: DefaultFederationService,
   flow: { code: string; state: string },
+  slug: string = SLUG,
 ): Promise<unknown> {
   return on.complete({
     code: flow.code,
     state: flow.state,
-    tenantSlug: SLUG,
+    tenantSlug: slug,
     ipAddress: '127.0.0.1',
     userAgent: 'jit-race-suite',
     correlationId: `jit-race-${flow.state.slice(-8)}`,
@@ -229,8 +247,10 @@ function callback(
   });
 }
 
-async function usersWith(email: string): Promise<number> {
-  return owner.user.count({ where: { tenantId, emailNormalized: email, deletedAt: null } });
+async function usersWith(email: string, inTenant: TenantId = tenantId): Promise<number> {
+  return owner.user.count({
+    where: { tenantId: inTenant, emailNormalized: email, deletedAt: null },
+  });
 }
 
 async function provisionedEvents(email: string): Promise<number> {
@@ -271,6 +291,34 @@ beforeAll(async () => {
       id: providerId,
       tenantId,
       name: 'Race IdP',
+      issuer: ISSUER,
+      discoveryUrl: `${ISSUER}/.well-known/openid-configuration`,
+      clientId: CLIENT_ID,
+      clientSecret: 'secret',
+      domains: ['jit-race.test'],
+      defaultRoleKeys: [SystemRole.READER],
+      jitProvisioning: true,
+      enabled: true,
+    },
+  });
+
+  const neighbour = await provisioning.provision({
+    slug: NEIGHBOUR_SLUG,
+    name: 'JIT Race Neighbour',
+    adminEmail: `root@${NEIGHBOUR_SLUG}.test`,
+    adminPassword: 'correct-horse-battery-staple-42',
+    adminDisplayName: 'Root Administrator',
+  });
+  neighbourTenantId = neighbour.tenantId;
+  await owner.tenant.update({
+    where: { id: neighbourTenantId },
+    data: { settings: { 'feature.federation': true } },
+  });
+  await owner.identityProvider.create({
+    data: {
+      id: uuidv7(),
+      tenantId: neighbourTenantId,
+      name: 'Neighbour IdP',
       issuer: ISSUER,
       discoveryUrl: `${ISSUER}/.well-known/openid-configuration`,
       clientId: CLIENT_ID,
@@ -377,5 +425,226 @@ describe('the two federation endpoints, over a real database', () => {
 
     await expect(callback(service, { code: flow.code, state: uuidv7() })).rejects.toThrow();
     expect(await usersWith('nobody@jit-race.test')).toBe(0);
+  });
+});
+
+/**
+ * Two callers, each parked at the statement that creates the identity.
+ *
+ * Ordinals are assigned by arrival and the arrival order is fixed rather than observed: the second
+ * caller is not started until the first has parked, so the first is always ordinal zero.
+ */
+class Turnstile<TMarker> {
+  readonly arrivals: TMarker[] = [];
+  readonly reached: Promise<void>[] = [];
+  private readonly announce: (() => void)[] = [];
+  private readonly admissions: Promise<void>[] = [];
+  private readonly admits: (() => void)[] = [];
+  private armed = false;
+
+  arm(callers: number): void {
+    for (let index = 0; index < callers; index += 1) {
+      let arrive: () => void = () => undefined;
+      this.reached.push(
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+      this.announce.push(arrive);
+      let admit: () => void = () => undefined;
+      this.admissions.push(
+        new Promise<void>((resolve) => {
+          admit = resolve;
+        }),
+      );
+      this.admits.push(admit);
+    }
+    this.armed = true;
+  }
+
+  async park(marker: TMarker): Promise<void> {
+    if (!this.armed) {
+      return;
+    }
+    const ordinal = this.arrivals.length;
+    this.arrivals.push(marker);
+    this.announce[ordinal]?.();
+    await this.admissions[ordinal];
+  }
+
+  release(ordinal: number): void {
+    this.admits[ordinal]?.();
+  }
+}
+
+/**
+ * One external identity, one account, however many callbacks carry it — Slice 61.
+ *
+ * `complete` reads whether the external subject already has a local account and, finding none,
+ * creates one. Those are two statements in one transaction and two callbacks are two transactions:
+ * both read "absent", and then both insert against `uq_user_external_identity`
+ * (`tenant_id, identity_provider_id, external_id`).
+ *
+ * Two distinct authorization flows is what makes this ordinary rather than exotic. The state is
+ * single-use, so a *replayed* callback is refused long before here — but somebody signing in for
+ * the first time from two tabs has two states and two valid assertions for one subject, and an
+ * identity provider that retries its redirect produces the same shape.
+ */
+describe('one external identity, one account, however many callbacks carry it', () => {
+  const turnstile = new Turnstile<string>();
+
+  /**
+   * The real repository, subclassed: the override only adds a place to stand before the insert.
+   *
+   * A caller reaches `provision` only after `findByExternalIdentity` has answered "absent", so two
+   * parked callers holding one subject is proof that both read an empty result — and not that one
+   * of them never looked.
+   */
+  class ParkingFederatedUserRepository extends PrismaFederatedUserRepository {
+    override async provision(
+      input: Parameters<PrismaFederatedUserRepository['provision']>[0],
+    ): Promise<boolean> {
+      await turnstile.park(input.externalId);
+      return super.provision(input);
+    }
+  }
+
+  let parking: DefaultFederationService;
+
+  beforeAll(() => {
+    parking = buildService(new ParkingFederatedUserRepository());
+  });
+
+  async function identitiesFor(subject: string): Promise<number> {
+    return owner.user.count({
+      where: { tenantId, identityProviderId: providerId, externalId: subject },
+    });
+  }
+
+  async function roleRowsFor(email: string): Promise<number> {
+    return owner.userRole.count({ where: { user: { tenantId, emailNormalized: email } } });
+  }
+
+  it('provisions two different subjects independently', async () => {
+    // A control, and the one that says the parked path provisions correctly when nothing contends.
+    const first = await startFlow('subject-hopper', 'hopper@jit-race.test');
+    const second = await startFlow('subject-lamport', 'lamport@jit-race.test');
+
+    await callback(parking, first);
+    await callback(parking, second);
+
+    expect(await usersWith('hopper@jit-race.test')).toBe(1);
+    expect(await usersWith('lamport@jit-race.test')).toBe(1);
+    expect(await identitiesFor('subject-hopper')).toBe(1);
+    expect(await identitiesFor('subject-lamport')).toBe(1);
+  });
+
+  it('signs both callers in when two callbacks carry one new identity at the same moment', async () => {
+    const email = 'grace@jit-race.test';
+    const first = await startFlow('subject-grace', email);
+    const second = await startFlow('subject-grace', email);
+    expect(await usersWith(email)).toBe(0);
+    turnstile.arm(2);
+
+    // Each from its own scope, so each opens its own transaction.
+    const one = callback(parking, first);
+    await turnstile.reached[0];
+    const two = callback(parking, second);
+    await turnstile.reached[1];
+
+    // Both read the identity as absent, and both are about to create it.
+    expect(turnstile.arrivals).toEqual(['subject-grace', 'subject-grace']);
+
+    turnstile.release(0);
+    const winner = await one.then(
+      (value) => ({ kind: 'signed-in' as const, value }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+    turnstile.release(1);
+    const loser = await two.then(
+      (value) => ({ kind: 'signed-in' as const, value }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    // The data is safe either way — the constraint sees to that. One account, one identity, one
+    // set of roles, one provisioning event.
+    expect(await usersWith(email)).toBe(1);
+    expect(await identitiesFor('subject-grace')).toBe(1);
+    expect(await provisionedEvents(email)).toBe(1);
+    expect(await roleRowsFor(email)).toBe(1);
+
+    // What is not safe is the answer. A sequential second arrival signs in, so a concurrent one
+    // that is refused is being told something the same request would not be told a moment later.
+    expect(winner.kind).toBe('signed-in');
+    expect(loser.kind).toBe('signed-in');
+  });
+
+  it('refuses a subject whose address is already held by a different subject', async () => {
+    /*
+     * The other reason the insert can be refused, and the reason the loser's resolution has to be
+     * able to come back empty.
+     *
+     * `uq_user_tenant_email` is the constraint here rather than the identity one, and no race is
+     * involved: this address belongs to an account bound to *another* subject at this provider.
+     * `findByExternalIdentity` will not return it — its address branch matches only accounts bound
+     * to nobody — so there is no winner to converge on, and the only safe answer is to refuse.
+     *
+     * Signing this caller into the account that holds the address would be an account takeover
+     * performed by whoever can make the provider assert an address, which is why this is asserted
+     * rather than assumed. The sequential path met the same conflict as a raw constraint violation.
+     */
+    const taken = 'katherine@jit-race.test';
+    const held = await startFlow('subject-katherine', taken);
+    await callback(service, held);
+    const owner1 = await owner.user.findFirstOrThrow({
+      where: { tenantId, emailNormalized: taken },
+      select: { id: true },
+    });
+
+    const impostor = await startFlow('subject-someone-else', taken);
+    const outcome = await callback(service, impostor).then(
+      (value) => ({ kind: 'signed-in' as const, value }),
+      () => ({ kind: 'refused' as const }),
+    );
+
+    expect(outcome.kind).toBe('refused');
+    // And nothing was taken over, nor a second account created.
+    expect(await usersWith(taken)).toBe(1);
+    const still = await owner.user.findFirstOrThrow({
+      where: { tenantId, emailNormalized: taken },
+      select: { id: true, externalId: true },
+    });
+    expect(still.id).toBe(owner1.id);
+    expect(still.externalId).toBe('subject-katherine');
+  });
+
+  it('gives a neighbouring tenant asserting the same subject its own account', async () => {
+    /*
+     * The convergence must not reach across the tenant boundary. Both tenants live in one database
+     * here, so what keeps them apart is `app.tenant_id` on the transaction and the tenant column in
+     * `uq_user_external_identity` — not a separate connection string. A resolution that dropped the
+     * tenant scope would hand this callback the *other* tenant's account and sign somebody into an
+     * organisation they have no membership of.
+     */
+    const email = 'grace@jit-race.test';
+    const mine = await usersWith(email);
+    expect(mine).toBe(1);
+
+    const flow = await startFlow('subject-grace', email, neighbourTenantId);
+    const result = (await callback(service, flow, NEIGHBOUR_SLUG)) as {
+      accessToken: string;
+      user: { id: string };
+    };
+
+    expect(result.accessToken).toBeTruthy();
+    // Its own account, in its own tenant, and the neighbour's count is untouched.
+    expect(await usersWith(email, neighbourTenantId)).toBe(1);
+    expect(await usersWith(email)).toBe(1);
+
+    const ours = await owner.user.findFirstOrThrow({
+      where: { tenantId, emailNormalized: email },
+      select: { id: true },
+    });
+    expect(result.user.id).not.toBe(ours.id);
   });
 });

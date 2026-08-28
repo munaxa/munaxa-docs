@@ -577,6 +577,11 @@ export interface FederatedUserRepository {
    * make "this account has no password because it federates" distinguishable from "this account
    * has no password because nobody has accepted the invitation", a distinction the product could
    * not make before this phase.
+   *
+   * Answers whether *this* call created the account. Two callbacks carrying one new subject both
+   * read it absent and both arrive here, and `uq_user_external_identity` lets exactly one of them
+   * write. A caller told `false` lost that race and is in the position of one that arrived second
+   * in order: the account exists, and signing in against it is what the sequential path does.
    */
   provision(input: {
     readonly id: UserId;
@@ -587,5 +592,5 @@ export interface FederatedUserRepository {
     readonly externalId: string;
     readonly roleKeys: readonly string[];
     readonly at: Date;
-  }): Promise<void>;
+  }): Promise<boolean>;
 }

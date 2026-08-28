@@ -329,9 +329,9 @@ export class DefaultFederationService implements FederationService {
           // way; an asserted group nobody mapped contributes nothing, and a mapped role key that
           // does not exist in this tenant is dropped by the repository rather than created.
           const roleKeys = rolesForClaims(groups, provider.roleMappings, provider.defaultRoleKeys);
-          userId = asId<UserId>(uuidv7(now.getTime()));
-          await this.users.provision({
-            id: userId,
+          const candidate = asId<UserId>(uuidv7(now.getTime()));
+          const provisioned = await this.users.provision({
+            id: candidate,
             email,
             emailNormalized: email,
             displayName,
@@ -340,19 +340,44 @@ export class DefaultFederationService implements FederationService {
             roleKeys,
             at: now,
           });
-          await this.audit.write(this.actor(tenantId, input, userId), {
-            action: IntegrationAudit.USER_PROVISIONED_FROM_PROVIDER,
-            subjectType: AuditSubjectType.USER,
-            subjectId: userId,
-            outcome: AuditOutcome.SUCCESS,
-            // Which provider said so, and what the mapping produced. This is what makes "which
-            // accounts exist because Entra said so, and what did the mapping give them" one query.
-            payload: {
-              providerId: provider.id,
-              assertedGroups: groups.length,
-              roleKeys: [...roleKeys],
-            },
-          });
+
+          if (provisioned) {
+            userId = candidate;
+            await this.audit.write(this.actor(tenantId, input, userId), {
+              action: IntegrationAudit.USER_PROVISIONED_FROM_PROVIDER,
+              subjectType: AuditSubjectType.USER,
+              subjectId: userId,
+              outcome: AuditOutcome.SUCCESS,
+              // Which provider said so, and what the mapping produced. This is what makes "which
+              // accounts exist because Entra said so, and what did the mapping give them" one query.
+              payload: {
+                providerId: provider.id,
+                assertedGroups: groups.length,
+                roleKeys: [...roleKeys],
+              },
+            });
+          } else {
+            /*
+             * Another callback carrying this same subject reached the insert first — Slice 61.
+             *
+             * The read above and that insert are the same question asked at two moments, and
+             * somebody signing in for the first time from two tabs asks it twice at once. This
+             * caller is now in exactly the position of one that arrived *second in order*, and is
+             * owed what that one is given: the account that exists, signed in against. No second
+             * account, no second grant, and no second provisioning event — the account was not
+             * created here, so saying it was would file an act that never happened.
+             */
+            const winner = await this.users.findByExternalIdentity(provider.id, externalId, email);
+            if (winner === null) {
+              // Not this race. The address is already held at this tenant by an account this
+              // subject is not, which the sequential path meets as a raw constraint violation.
+              // Refusing is what every other "we will not sign you in" on this path does.
+              throw new UnauthenticatedError(REJECTED);
+            }
+            userId = winner;
+            // The same link the existing-account branch above makes, and for the same reason.
+            await this.users.linkToProvider(userId, provider.id, externalId, displayName, now);
+          }
         }
 
         const credential = await this.credentials.findById(userId);
