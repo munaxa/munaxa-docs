@@ -171,7 +171,7 @@ export class PrismaFederatedUserRepository implements FederatedUserRepository {
     readonly externalId: string;
     readonly roleKeys: readonly string[];
     readonly at: Date;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const transaction = requireTransaction();
     const context = requireContext();
 
@@ -200,30 +200,64 @@ export class PrismaFederatedUserRepository implements FederatedUserRepository {
             select: { id: true },
           });
 
-    await transaction.user.create({
-      data: {
-        id: input.id,
-        tenantId: context.tenantId,
-        email: input.email,
-        emailNormalized: input.emailNormalized,
-        displayName: input.displayName,
-        // Active rather than invited: the provider has just authenticated them, so there is no
-        // invitation for them to accept. An `INVITED` row would be an account that exists and
-        // cannot sign in, immediately after somebody signed in.
-        status: 'ACTIVE',
-        // No password hash, and `FEDERATED` beside it — which together are what make "no password
-        // because they federate" distinguishable from "no password because the invitation is
-        // outstanding", a distinction this product could not make before Phase 17.
-        identitySource: 'FEDERATED',
-        identityProviderId: input.providerId,
-        externalId: input.externalId,
-        federatedAt: input.at,
-        lastLoginAt: input.at,
-        roles: {
-          create: roles.map((role) => ({ tenantId: context.tenantId, roleId: role.id })),
+    /*
+     * `skipDuplicates`, because the read that decided this account was missing is a moment old —
+     * Slice 61.
+     *
+     * `uq_user_external_identity` is one account per subject at a provider in a tenant, and the
+     * lookup in `findByExternalIdentity` and this insert are the same question asked at two
+     * moments. Somebody signing in for the first time from two tabs has two valid assertions for
+     * one subject, and both callbacks read it absent.
+     *
+     * Tolerated rather than caught, for the reason Slice 46 established against PostgreSQL and
+     * Slice 47 applied to `acl_entry`: a unique violation **aborts the transaction**, and the
+     * recovery this needs is a read. Caught here, nothing further could run — the loser could not
+     * look up the account that now exists, let alone open a session against it. `ON CONFLICT DO
+     * NOTHING` leaves the transaction usable, so the caller can converge on the winner.
+     *
+     * The affected row count is the claim, and the nested create had to be unnested to make it:
+     * `createMany` cannot carry children. The roles are written only by the caller that wrote the
+     * account, so a loser adds no second grant — and because it writes them inside the same
+     * transaction, an account is never visible without them.
+     */
+    const { count } = await transaction.user.createMany({
+      data: [
+        {
+          id: input.id,
+          tenantId: context.tenantId,
+          email: input.email,
+          emailNormalized: input.emailNormalized,
+          displayName: input.displayName,
+          // Active rather than invited: the provider has just authenticated them, so there is no
+          // invitation for them to accept. An `INVITED` row would be an account that exists and
+          // cannot sign in, immediately after somebody signed in.
+          status: 'ACTIVE',
+          // No password hash, and `FEDERATED` beside it — which together are what make "no password
+          // because they federate" distinguishable from "no password because the invitation is
+          // outstanding", a distinction this product could not make before Phase 17.
+          identitySource: 'FEDERATED',
+          identityProviderId: input.providerId,
+          externalId: input.externalId,
+          federatedAt: input.at,
+          lastLoginAt: input.at,
         },
-      },
+      ],
+      skipDuplicates: true,
     });
+    if (count !== 1) {
+      return false;
+    }
+
+    if (roles.length > 0) {
+      await transaction.userRole.createMany({
+        data: roles.map((role) => ({
+          tenantId: context.tenantId,
+          userId: String(input.id),
+          roleId: role.id,
+        })),
+      });
+    }
+    return true;
   }
 }
 
