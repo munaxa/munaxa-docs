@@ -648,3 +648,131 @@ describe('one external identity, one account, however many callbacks carry it', 
     expect(result.user.id).not.toBe(ours.id);
   });
 });
+
+/**
+ * A refused sign-in leaves evidence — Slice 62.
+ *
+ * `13-audit-architecture.md` §1 binds an audit row to *the change it records*: "either both
+ * happened or neither did". A refusal records no change, which is exactly why the two paths that
+ * already get this right use a **second, committing** transaction and say so —
+ * `AuthenticationService` calls it "a second, committing transaction … the attempt is recorded
+ * whether or not it succeeded, and only then does the request fail", and `refresh` warns that
+ * "throwing inside it would roll the revocation back — the exception that reports a stolen token
+ * would also erase the record of it".
+ *
+ * `LOGIN_FAILED` is Security-group evidence in that catalogue and the audit sink streams it to a
+ * tenant's own collector, so a row that never commits is a refusal their SIEM never sees.
+ *
+ * Three of the four federated refusals record their failure before the provisioning transaction is
+ * opened, and commit. The fourth records it *inside* that transaction and then throws, which
+ * discards the row it just wrote.
+ */
+describe('a refused federated sign-in leaves evidence', () => {
+  interface RefusalRow {
+    readonly tenantId: string;
+    readonly action: string;
+    readonly outcome: string;
+    readonly correlationId: string | null;
+    readonly payload: unknown;
+  }
+
+  /** Every `LOGIN_FAILED` this tenant holds for one reason code, with the fields that matter. */
+  async function refusalsRecorded(reason: string): Promise<RefusalRow[]> {
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId, action: 'LOGIN_FAILED' },
+      select: {
+        tenantId: true,
+        action: true,
+        outcome: true,
+        correlationId: true,
+        payload: true,
+      },
+    });
+    return rows.filter((row) => JSON.stringify(row.payload).includes(reason));
+  }
+
+  it('still records the success audit for a sign-in that succeeds', async () => {
+    /*
+     * The other half of the control, and the one the restructure could have broken: carrying the
+     * result out of the transaction rather than returning it directly must not disturb what the
+     * successful path writes inside it. `LOGIN_SUCCEEDED` is written in the same transaction as the
+     * session it records, which is `13-audit-architecture.md` §1 applied correctly — there *is* a
+     * change for it to be bound to.
+     */
+    const flow = await startFlow('subject-audit-control', 'audit-control@jit-race.test');
+    const result = (await callback(service, flow)) as { accessToken: string };
+    expect(result.accessToken).toBeTruthy();
+
+    const succeeded = await owner.auditEvent.findMany({
+      where: { tenantId, action: 'LOGIN_SUCCEEDED' },
+      select: { payload: true, outcome: true },
+    });
+    const mine = succeeded.filter((row) => JSON.stringify(row.payload).includes('FEDERATED'));
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((row) => row.outcome === 'SUCCESS')).toBe(true);
+  });
+
+  it('records a refusal that happens before the provisioning transaction', async () => {
+    /*
+     * The positive control, and the path that already behaves. A nonce that is not the one this
+     * flow stored is refused above the transaction, so `recordFailure` opens its own, commits, and
+     * only then does the request fail. Without this the assertion below could pass on a service
+     * that records no refusals at all.
+     */
+    const before = (await refusalsRecorded('NONCE_NOT_OURS')).length;
+    const state = uuidv7();
+    const code = uuidv7();
+    await cache.set(
+      `federation:authorization:${digestOf(state)}`,
+      {
+        tenantId,
+        nonceDigest: digestOf('a-nonce-this-flow-did-not-issue'),
+        redirectUri: REDIRECT_URI,
+        createdAt: FIXED_NOW.toISOString(),
+      },
+      600,
+    );
+    tokensByCode.set(code, idTokenFor('subject-nonce', 'nonce@jit-race.test', uuidv7()));
+
+    await expect(callback(service, { code, state })).rejects.toThrow();
+    expect((await refusalsRecorded('NONCE_NOT_OURS')).length).toBe(before + 1);
+  });
+
+  it('records a refusal that happens inside the provisioning transaction', async () => {
+    /*
+     * The same claim for the fourth refusal. A provider with JIT provisioning switched off refuses
+     * an unknown subject — a real configuration, and the one a tenant chooses when accounts are
+     * created by an administrator rather than by the directory. That refusal is decided *inside*
+     * the provisioning transaction, and the `UnauthenticatedError` that carries it out discards
+     * everything that transaction wrote, the failure row included.
+     */
+    const before = (await refusalsRecorded('NO_ACCOUNT_AND_JIT_OFF')).length;
+    await owner.identityProvider.update({
+      where: { id: providerId },
+      data: { jitProvisioning: false },
+    });
+    try {
+      const flow = await startFlow('subject-unknown-to-this-tenant', 'stranger@jit-race.test');
+
+      await expect(callback(service, flow)).rejects.toThrow();
+      // The caller is refused either way; what is in question is whether anybody can see it was.
+      expect(await usersWith('stranger@jit-race.test')).toBe(0);
+
+      const recorded = await refusalsRecorded('NO_ACCOUNT_AND_JIT_OFF');
+      expect(recorded.length).toBe(before + 1);
+      // Written outside the transaction that refused, but with the context that refused: the
+      // tenant is the one the validated state named, not one the callback supplied.
+      const row = recorded[recorded.length - 1];
+      expect(row?.tenantId).toBe(tenantId);
+      expect(row?.action).toBe('LOGIN_FAILED');
+      expect(row?.outcome).toBe('DENIED');
+      expect(row?.correlationId).toBeTruthy();
+      expect(JSON.stringify(row?.payload)).toContain('FEDERATED');
+    } finally {
+      await owner.identityProvider.update({
+        where: { id: providerId },
+        data: { jitProvisioning: true },
+      });
+    }
+  });
+});
