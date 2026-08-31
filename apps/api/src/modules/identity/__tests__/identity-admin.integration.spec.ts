@@ -1387,3 +1387,145 @@ describe('one address, one live account, however the second claim arrives', () =
     expect(outcome.error).toBeInstanceOf(DuplicateError);
   });
 });
+
+/**
+ * One key, one live role, however the second claim on it arrives — Slice 65.
+ *
+ * `uq_role_tenant_key` is partial on `deleted_at IS NULL`, exactly as `uq_user_tenant_email` is, and
+ * `roleKeyTaken` reads that same condition. Slices 63 and 64 closed this shape for the account
+ * table; the role table has it too, and in both directions: **creating** a role claims a key, and
+ * **restoring** a deleted one puts its key back under the index.
+ *
+ * The restore case is the one Slice 22 makes reachable rather than theoretical. A tenant may delete
+ * `contractors` and create a new `contractors`, because the index skips deleted rows — so a role in
+ * the recycle bin whose key has been taken since is the expected state, not a corner case, and its
+ * restore is refused. This suite already pins the ordered answer for the create direction:
+ * "refuses a duplicate key" expects `DUPLICATE`.
+ */
+describe('one key, one live role, however the second claim arrives', () => {
+  const turnstile = new Turnstile<string>();
+  /**
+   * Which write this test wants to stop at, and nothing else stops.
+   *
+   * Gating on an explicit marker rather than on "the turnstile is armed": a suite that arms once and
+   * then performs ordinary setup through the same repository would otherwise park its own
+   * `create` and `delete` calls, take ordinals no slot was armed for, and leave the caller it does
+   * want to hold waiting on a slot that will never be announced.
+   */
+  let parkOn: string | null = null;
+
+  /** The real repository, subclassed: each override only adds a place to stand before its write. */
+  class ParkingRoleRepository extends PrismaIdentityAdminRepository {
+    override async insertRole(
+      input: Parameters<PrismaIdentityAdminRepository['insertRole']>[0],
+    ): Promise<void> {
+      if (parkOn === `create:${input.key}`) {
+        await turnstile.park(`create:${input.key}`);
+      }
+      return super.insertRole(input);
+    }
+
+    override async setRoleDeleted(id: string, version: number, deleted: boolean): Promise<void> {
+      if (!deleted && parkOn === `restore:${id}`) {
+        await turnstile.park(`restore:${id}`);
+      }
+      return super.setRoleDeleted(id, version, deleted);
+    }
+  }
+
+  let parking: RoleAdminService;
+
+  beforeAll(() => {
+    parking = new RoleAdminService(
+      new ParkingRoleRepository(stamps, cache),
+      writer,
+      realAclResolver({ clock, unitOfWork, config, cache }),
+    );
+  });
+
+  async function liveRoles(key: string): Promise<number> {
+    return owner.role.count({ where: { tenantId, key, deletedAt: null } });
+  }
+
+  it('creates the role when nothing contends', async () => {
+    // The control. Without it every assertion below passes on a service that creates nothing.
+    const key = `solo-${uuidv7().slice(-6)}`;
+    const created = await asAdmin(() => parking.create({ key, name: 'Solo', permissions: [] }));
+
+    expect(created.id).toBeTruthy();
+    expect(await liveRoles(key)).toBe(1);
+  });
+
+  it('refuses the loser the way the ordered second caller is refused', async () => {
+    const key = `contended-${uuidv7().slice(-6)}`;
+    expect(await liveRoles(key)).toBe(0);
+    const base = turnstile.reached.length;
+    parkOn = `create:${key}`;
+    turnstile.arm(2);
+
+    // Each from its own scope, so each opens its own transaction. Both reach the insert only after
+    // their own `roleKeyTaken` answered "free", which is what parking here proves.
+    const one = asAdmin(() => parking.create({ key, name: 'One', permissions: [] }));
+    await turnstile.reached[base];
+    const two = asAdmin(() => parking.create({ key, name: 'Two', permissions: [] }));
+    await turnstile.reached[base + 1];
+
+    expect(turnstile.arrivals.slice(-2)).toEqual([`create:${key}`, `create:${key}`]);
+
+    turnstile.release(base);
+    const winner = await one.then(
+      (value) => ({ kind: 'created' as const, value }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+    turnstile.release(base + 1);
+    const loser = await two.then(
+      () => ({ kind: 'created' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(winner.kind).toBe('created');
+    expect(await liveRoles(key)).toBe(1);
+    expect(loser.kind).toBe('refused');
+    expect(loser.error).toBeInstanceOf(DuplicateError);
+    // The *role's* duplicate, not the account's: the translation is narrowed by model, and a
+    // refusal naming the wrong resource would send an administrator to the wrong screen.
+    expect((loser.error as Error).message).toContain('role');
+  });
+
+  it('refuses a restore whose key is claimed while the restore is deciding', async () => {
+    const key = `recycled-${uuidv7().slice(-6)}`;
+    const first = await asAdmin(() =>
+      parking.create({ key, name: 'First Spell', permissions: [] }),
+    );
+    await asAdmin(() => parking.delete(first.id, first.version));
+    expect(await liveRoles(key)).toBe(0);
+
+    const deleted = await asAdmin(() => parking.get(first.id));
+    const base = turnstile.reached.length;
+    parkOn = `restore:${first.id}`;
+    turnstile.arm(1);
+
+    const restoring = asAdmin(() => parking.restore(first.id, deleted.version));
+    await turnstile.reached[base];
+
+    // The key is taken again while the restore is parked — the sequence Slice 22 says a tenant may
+    // perform, arriving in the window between the check and the write.
+    const second = await asAdmin(() =>
+      parking.create({ key, name: 'Second Spell', permissions: [] }),
+    );
+    expect(second.id).not.toBe(first.id);
+    expect(await liveRoles(key)).toBe(1);
+
+    turnstile.release(base);
+    const outcome = await restoring.then(
+      () => ({ kind: 'restored' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    // The index keeps the data right: one live role for the key, the replacement.
+    expect(await liveRoles(key)).toBe(1);
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toBeInstanceOf(DuplicateError);
+    expect((outcome.error as Error).message).toContain('role');
+  });
+});

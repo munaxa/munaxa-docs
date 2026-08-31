@@ -361,17 +361,20 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
   }): Promise<void> {
     const tx = requireTransaction();
     const tenantId = this.tenantId();
-    await tx.role.create({
-      data: {
-        id: input.id,
-        tenantId,
-        key: input.key,
-        name: input.name,
-        description: input.description,
-        isSystem: input.isSystem,
-        ...this.stamps.creation(),
-      },
-    });
+    // `roleKeyTaken` and this insert are the same question at two moments — Slice 65.
+    await this.claimingTheKey(() =>
+      tx.role.create({
+        data: {
+          id: input.id,
+          tenantId,
+          key: input.key,
+          name: input.name,
+          description: input.description,
+          isSystem: input.isSystem,
+          ...this.stamps.creation(),
+        },
+      }),
+    );
     if (input.permissions.length > 0) {
       await tx.rolePermission.createMany({
         data: input.permissions.map((permission) => ({ tenantId, roleId: input.id, permission })),
@@ -404,13 +407,23 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
   }
 
   async setRoleDeleted(id: string, version: number, deleted: boolean): Promise<void> {
-    const { count } = await requireTransaction().role.updateMany({
-      where: { id, tenantId: this.tenantId(), version },
-      data: {
-        ...(deleted ? this.stamps.deletion() : this.stamps.restoration()),
-        version: { increment: 1 },
-      },
-    });
+    /*
+     * Restoring re-enters the index — Slice 65, and the same shape `setUserDeleted` has.
+     *
+     * `uq_role_tenant_key` is partial on `deleted_at IS NULL`, so a deleted role sits outside it and
+     * clearing the stamp puts its key back under it. Slice 22 is what makes that reachable rather
+     * than theoretical: a tenant may delete `contractors` and create a new `contractors`, so a role
+     * in the recycle bin whose key has been taken since is the expected state.
+     */
+    const { count } = await this.claimingTheKey(() =>
+      requireTransaction().role.updateMany({
+        where: { id, tenantId: this.tenantId(), version },
+        data: {
+          ...(deleted ? this.stamps.deletion() : this.stamps.restoration()),
+          version: { increment: 1 },
+        },
+      }),
+    );
     this.requireOneRow(count, version);
   }
 
@@ -432,27 +445,42 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
   }
 
   /**
-   * Runs a write that can meet `uq_user_tenant_email`, and translates that one violation.
+   * Runs a write that can meet a partial unique index, and translates that one violation.
    *
-   * Three statements here can reach that index: inviting an address, changing one, and restoring an
-   * account whose address re-enters the partial index. Each asks `emailTaken` first, and each asks
-   * it a moment before it writes — so each can lose the address in between and must answer the way
-   * the administrator who arrived second in order is answered.
+   * Five statements here reach one: inviting an address, changing one, restoring an account whose
+   * address re-enters the index, creating a role key, and restoring a role whose key re-enters it.
+   * Each asks a `…Taken` question first, and each asks it a moment before it writes — so each can
+   * lose the claim in between and must answer the way the administrator who arrived second in order
+   * is answered.
    *
    * Translating rather than tolerating, for the reason Slice 63 set out: a unique violation aborts
    * the transaction, so a loser that needed to *read* could not recover here. None of these do.
    * They need a different exception, and the boundary that knows what the index means is where it
    * belongs.
    */
-  private async claimingTheAddress<TResult>(write: () => Promise<TResult>): Promise<TResult> {
+  private async claimingUnique<TResult>(
+    model: 'User' | 'Role',
+    duplicate: () => DuplicateError,
+    write: () => Promise<TResult>,
+  ): Promise<TResult> {
     try {
       return await write();
     } catch (error) {
-      if (isTakenEmailViolation(error)) {
-        throw new DuplicateError('user', 'email');
+      if (isUniqueViolationOn(error, model)) {
+        throw duplicate();
       }
       throw error;
     }
+  }
+
+  /** The address claim: one live account per address in a tenant. */
+  private claimingTheAddress<TResult>(write: () => Promise<TResult>): Promise<TResult> {
+    return this.claimingUnique('User', () => new DuplicateError('user', 'email'), write);
+  }
+
+  /** The key claim: one live role per key in a tenant. */
+  private claimingTheKey<TResult>(write: () => Promise<TResult>): Promise<TResult> {
+    return this.claimingUnique('Role', () => new DuplicateError('role', 'key'), write);
   }
 
   private requireOneRow(count: number, expectedVersion: number): void {
@@ -605,23 +633,30 @@ function toRoleRow(row: RoleSelection): RoleAdminRow {
 }
 
 /**
- * The one violation `insertUser` translates; anything else is a genuine failure.
+ * The one violation a claiming write translates; anything else is a genuine failure.
  *
- * Matched by model rather than by index name, and that is a limitation worth stating rather than
- * hiding: `uq_user_tenant_email` is a **partial** index, and Prisma reports `target: null` for it —
- * measured, `{"modelName":"User","target":null}` — so there is no name to compare. Naming it, as
- * `uq_document_signature_live` is named, would produce a test that never fires.
+ * Matched by model rather than by index name, and that limit is worth stating rather than hiding:
+ * `uq_user_tenant_email` and `uq_role_tenant_key` are both **partial**, and Prisma reports
+ * `target: null` for a partial index — measured, `{"modelName":"User","target":null}` — so there is
+ * no name to compare. Naming one, as `uq_document_signature_live` is named, would produce a check
+ * that never fires.
  *
- * What makes the unnamed match exact is the insert itself. `user` carries three unique indexes and
- * this statement can reach only one of them: `uq_user_external_identity` covers
- * `(tenant_id, identity_provider_id, external_id)` and this writes neither provider nor subject, so
- * both are `NULL` and PostgreSQL holds `NULL`s distinct; `user_pkey` is a freshly minted UUIDv7.
- * The address is the only value here that another row can already hold.
+ * What makes the unnamed match exact is the statement doing the writing. Each caller below can
+ * reach exactly one unique index on its table:
+ *
+ * - `user` carries three. `uq_user_external_identity` covers `(tenant_id, identity_provider_id,
+ *   external_id)`, and the invite writes neither provider nor subject, so both are `NULL` and
+ *   PostgreSQL holds `NULL`s distinct; the update and the restore touch neither. `user_pkey` is a
+ *   freshly minted UUIDv7 on insert and untouched on update.
+ * - `role` carries two. `role_pkey` is likewise a fresh UUIDv7, and the permission rows that follow
+ *   an insert belong to `RolePermission`, which this predicate does not match.
+ *
+ * The address and the key are the only values here another live row can already hold.
  */
-function isTakenEmailViolation(error: unknown): boolean {
+function isUniqueViolationOn(error: unknown, model: 'User' | 'Role'): boolean {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError &&
     error.code === 'P2002' &&
-    error.meta?.['modelName'] === 'User'
+    error.meta?.['modelName'] === model
   );
 }
