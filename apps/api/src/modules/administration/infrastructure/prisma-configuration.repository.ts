@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
 import type { SequenceResetScopeKey } from '@edms/domain';
-import { subtreePrefix } from '@edms/domain';
+import { ancestorIdsOf, subtreePrefix } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
 import { VersionConflictError } from '../../../core/errors/application-errors';
@@ -313,16 +313,48 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     });
     this.requireOneRow(count, input.version);
 
+    /*
+     * Then the descendants, **each guarded by the parent the snapshot found it under** — Slice 69.
+     *
+     * There *is* a concurrent edit to lose to, and it is this same method: a move rewrites a
+     * descendant's `path` and re-parents the node it was asked to move, so two moves inside one
+     * subtree are two writers of one row. The second mover's version guard protects the node it
+     * acted on; nothing protected that node from the first mover's rewrite of it as somebody else's
+     * descendant, and the row that came out named one parent in `parent_id` and another in `path`.
+     *
+     * Categories are not an ACL scope, so unlike the department and folder trees this decides no
+     * permission. It decides the tree: `categorySubtree` selects by path prefix, the depth ceiling
+     * is measured from the path, and `checkTreePlacement` refuses a cycle with
+     * `isAtOrBelow(parentPath, nodePath)` and nothing else — so a diverged row is carried by the
+     * wrong subtree, left behind by its real one, and judged for cycles against an ancestry it does
+     * not have. `category` carries no constraint tying `path` to `parent_id`.
+     *
+     * Guarded on `parent_id` rather than on the version: a descendant that was merely renamed has a
+     * new version and the same place in the tree, and refusing a move because somebody edited a name
+     * would be a conflict about nothing. Zero rows means the tree moved under the snapshot, which is
+     * a `VersionConflictError` for the same reason the moved node's own guard is — and a refusal
+     * rather than a skip, because skipping only the row whose parent changed would rewrite its
+     * siblings and leave it describing where one of them used to be.
+     *
+     * `deleted_at` is deliberately not in the guard. The snapshot only ever contains live rows, so
+     * the only row this can now reach that it could not before is one soft-deleted since, and
+     * rewriting that one is what keeps its path usable if it is restored.
+     *
+     * What this does not close: a category created under, or moved *into*, this subtree while the
+     * move is deciding is not in the snapshot, so no statement here guards it. The arrival writes
+     * only its own row — measured, its foreign key takes `FOR KEY SHARE` on the parent, which does
+     * not conflict with this rewrite's `FOR NO KEY UPDATE` — so closing it needs the arrival to
+     * write its new parent's row, which changes what `version` means on a parent.
+     */
     for (const node of input.paths) {
       if (node.id === input.id) {
         continue;
       }
-      // No version guard on a descendant: its path is derived data this module owns, not a field
-      // anybody edits, so there is no concurrent edit to lose to.
-      await tx.category.updateMany({
-        where: { id: node.id, tenantId: this.tenantId(), deletedAt: null },
+      const { count: rewritten } = await tx.category.updateMany({
+        where: { id: node.id, tenantId: this.tenantId(), parentId: parentIdIn(node.path) },
         data: { path: node.path, ...stamps },
       });
+      this.requireOneRow(rewritten, input.version);
     }
   }
 
@@ -932,6 +964,18 @@ function toCategory(
     path: row.path,
     childCount: row._count.children,
   };
+}
+
+/**
+ * The parent a rewritten path puts a category under.
+ *
+ * A move swaps a prefix, so the identifiers below the moved node are the ones the subtree already
+ * had: the second-to-last segment of a descendant's *new* path names the same parent its old one
+ * did. Derived from the path being written rather than carried alongside it, so the guard cannot
+ * come to disagree with what it guards.
+ */
+function parentIdIn(path: string): string | null {
+  return ancestorIdsOf(path).at(-1) ?? null;
 }
 
 function toMetadataField(
