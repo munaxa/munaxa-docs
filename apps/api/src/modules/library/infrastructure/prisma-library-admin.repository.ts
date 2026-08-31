@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
-import { ScopeType, type ScopeTypeKey, subtreePrefix } from '@edms/domain';
+import { ScopeType, type ScopeTypeKey, ancestorIdsOf, subtreePrefix } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
 import { VersionConflictError } from '../../../core/errors/application-errors';
@@ -305,16 +305,46 @@ export class PrismaLibraryAdminRepository implements LibraryAdminRepository {
     });
     this.requireOneRow(count, input.version);
 
+    /*
+     * Then the descendants, **each guarded by the parent the snapshot found it under** — Slice 68.
+     *
+     * There *is* a concurrent edit to lose to, and it is this same method: a move writes a
+     * descendant's `path` and `depth` and the `parent_id` of the folder it was asked to move, so
+     * two moves inside one subtree are two writers of one row. The second mover's version guard
+     * protects the folder it acted on; nothing protected that folder from the first mover's rewrite
+     * of it as somebody else's descendant, and the row that came out named one parent in
+     * `parent_id` and another in `path`.
+     *
+     * `path` is what resolves access — `PrismaScopeChainReader.chainFor` is `idsInPath(path)`, then
+     * a read of exactly those folders for their `inherit_acl` — so a stale path decides a document's
+     * permissions on folders that are no longer above it, and misses the inheritance break on the
+     * one that is. Nothing in the schema catches it: `folder` has no constraint tying `path` to
+     * `parent_id`, and `ck_folder_depth` bounds `depth` without tying it to the path.
+     *
+     * Guarded on `parent_id` rather than on the version: a descendant that was merely renamed has a
+     * new version and the same place in the tree, and refusing a move because somebody edited a name
+     * would be a conflict about nothing. Zero rows means the tree moved under the snapshot, which is
+     * a `VersionConflictError` for the same reason the moved folder's own guard is — and a refusal
+     * rather than a skip, because skipping only the row whose parent changed would rewrite its
+     * siblings and leave it describing where one of them used to be.
+     *
+     * `deleted_at` is deliberately not in the guard. The snapshot only ever contains live rows, so
+     * the only row this can now reach that it could not before is one soft-deleted since, and
+     * rewriting that one is what keeps its path usable if it is restored.
+     *
+     * What this does not close: a folder created under, or moved *into*, this subtree while the move
+     * is deciding is not in the snapshot, so no statement here guards it. Closing that needs the
+     * arriving child to write its new parent's row, which changes what `version` means on a parent.
+     */
     for (const node of input.nodes) {
       if (node.id === input.id) {
         continue;
       }
-      // No version guard on a descendant: path and depth are derived data this module owns, not fields
-      // anybody edits, so there is no concurrent edit to lose to.
-      await tx.folder.updateMany({
-        where: { id: node.id, tenantId: this.tenantId(), deletedAt: null },
+      const { count: rewritten } = await tx.folder.updateMany({
+        where: { id: node.id, tenantId: this.tenantId(), parentId: parentIdIn(node.path) },
         data: { path: node.path, depth: node.depth, ...stamps },
       });
+      this.requireOneRow(rewritten, input.version);
     }
   }
 
@@ -493,6 +523,18 @@ interface Stamps {
   deletedAt: Date | null;
   deletedBy: string | null;
   version: number;
+}
+
+/**
+ * The parent a rewritten path puts a folder under.
+ *
+ * A move swaps a prefix, so the identifiers below the moved folder are the ones the subtree already
+ * had: the second-to-last segment of a descendant's *new* path names the same parent its old one
+ * did. Derived from the path being written rather than carried alongside it, so the guard cannot
+ * come to disagree with what it guards.
+ */
+function parentIdIn(path: string): string | null {
+  return ancestorIdsOf(path).at(-1) ?? null;
 }
 
 function stampsOf(row: Stamps): Stamps {

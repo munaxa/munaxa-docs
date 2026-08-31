@@ -4,7 +4,14 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { updateFolderSchema } from '@edms/contracts';
-import { ScopeType, type ScopeTypeKey, type TenantId, type UserId, asId } from '@edms/domain';
+import {
+  ScopeType,
+  type ScopeTypeKey,
+  type TenantId,
+  type UserId,
+  asId,
+  idsInPath,
+} from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
@@ -17,6 +24,7 @@ import {
   realOrganizationService,
   realWriteStack,
 } from '../../../testing/real-collaborators';
+import type { FolderRow } from '../application/administration.ports';
 import { FolderContentsRegistry } from '../application/folder-contents.port';
 import { LibraryAdminService } from '../application/library-admin.service';
 import { PrismaLibraryAdminRepository } from '../infrastructure/prisma-library-admin.repository';
@@ -743,5 +751,281 @@ describe('tenant isolation', () => {
       libraries.listFolders({ page: 1, pageSize: 100, sortDirection: 'asc', deleted: 'all' }),
     );
     expect(theirs.data.map((row) => row.libraryId)).not.toContain(library.id);
+  });
+});
+
+/**
+ * Two callers, each parked at a chosen boundary.
+ *
+ * Gated on an explicit marker rather than on "the turnstile is armed", so the ordinary setup this
+ * suite performs through the same repository does not park itself, take ordinals no slot was armed
+ * for, and leave the caller it does want to hold waiting for ever.
+ */
+class Turnstile<TMarker> {
+  readonly arrivals: TMarker[] = [];
+  readonly reached: Promise<void>[] = [];
+  private readonly announce: (() => void)[] = [];
+  private readonly admissions: Promise<void>[] = [];
+  private readonly admits: (() => void)[] = [];
+
+  arm(callers: number): number {
+    const base = this.reached.length;
+    for (let index = 0; index < callers; index += 1) {
+      let arrive: () => void = () => undefined;
+      this.reached.push(
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+      this.announce.push(arrive);
+      let admit: () => void = () => undefined;
+      this.admissions.push(
+        new Promise<void>((resolve) => {
+          admit = resolve;
+        }),
+      );
+      this.admits.push(admit);
+    }
+    return base;
+  }
+
+  async park(marker: TMarker): Promise<void> {
+    const ordinal = this.arrivals.length;
+    this.arrivals.push(marker);
+    this.announce[ordinal]?.();
+    await this.admissions[ordinal];
+  }
+
+  release(ordinal: number): void {
+    this.admits[ordinal]?.();
+  }
+}
+
+/**
+ * A folder move rewrites the paths it read, and only those — Slice 68.
+ *
+ * `moveFolder` reads its subtree, computes every descendant's new `path` and `depth` from that
+ * snapshot, and writes them back. The moved folder's own write was version-guarded; the
+ * descendants' writes were not, and the repository said why: path and depth "are derived data this
+ * module owns, not fields anybody edits, so there is no concurrent edit to lose to".
+ *
+ * There is one, and it is this same method: a move writes a descendant's `path` and `depth`, and
+ * the `parent_id` of the folder it was asked to move. Two moves inside one subtree are two writers
+ * of one row, and the row that came out named one parent in `parent_id` and another in `path`.
+ *
+ * `path` is what resolves access. `PrismaScopeChainReader.chainFor` is `idsInPath(folder.path)`,
+ * then a read of exactly those folders for their `inherit_acl` — so the chain a document's
+ * permissions are decided on is the ancestry the *path* names. A stale path resolves the chain
+ * through folders that are no longer above it, and not through the one that is: the entries on the
+ * ancestry it left still reach it, and an inheritance break on the ancestry it joined does not.
+ *
+ * The database cannot catch this. `folder` carries no constraint tying `path` to `parent_id`, and
+ * `ck_folder_depth` bounds `depth` to 1..32 without tying it to the path either.
+ */
+describe('a folder move that rewrites a subtree it no longer owns', () => {
+  const turnstile = new Turnstile<string>();
+  /** Which move this test wants to stop at, between its snapshot and its writes. */
+  let parkOn: string | null = null;
+
+  class ParkingLibraryRepository extends PrismaLibraryAdminRepository {
+    override async moveFolder(
+      input: Parameters<PrismaLibraryAdminRepository['moveFolder']>[0],
+    ): Promise<void> {
+      // Parked *here*: the service has already read the subtree and computed every new path and
+      // depth, and has written nothing. That is the window the snapshot is stale in.
+      if (parkOn === `move:${input.id}`) {
+        await turnstile.park(`move:${input.id}`);
+      }
+      return super.moveFolder(input);
+    }
+  }
+
+  const parking = new LibraryAdminService(
+    new ParkingLibraryRepository(stamps),
+    organization,
+    outbox,
+    realAclResolver({ clock, unitOfWork }),
+    new FolderContentsRegistry(),
+    writer,
+  );
+
+  /** `parent → child → grandchild` with a `sibling` beside the child, plus two folders to move to. */
+  async function tree(): Promise<{
+    parent: FolderRow;
+    child: FolderRow;
+    grandchild: FolderRow;
+    sibling: FolderRow;
+    destination: FolderRow;
+    elsewhere: FolderRow;
+  }> {
+    const library = await aLibrary();
+    const make = (parentId: string, name: string): Promise<FolderRow> =>
+      asAdmin(() =>
+        parking.createFolder({ libraryId: library.id, parentId, name, inheritAcl: true }),
+      );
+    const parent = await make(library.rootFolderId, 'Parent');
+    const child = await make(parent.id, 'Child');
+    const grandchild = await make(child.id, 'Grandchild');
+    const sibling = await make(parent.id, 'Sibling');
+    const destination = await make(library.rootFolderId, 'Destination');
+    const elsewhere = await make(library.rootFolderId, 'Elsewhere');
+    return { parent, child, grandchild, sibling, destination, elsewhere };
+  }
+
+  async function rowOf(id: string): Promise<{
+    parentId: string | null;
+    path: string;
+    depth: number;
+  }> {
+    return owner.folder.findUniqueOrThrow({
+      where: { id },
+      select: { parentId: true, path: true, depth: true },
+    });
+  }
+
+  /** Every live folder whose path or depth disagrees with the parent it actually points at. */
+  async function foldersDisagreeingWithTheirParent(): Promise<string[]> {
+    const rows = await owner.folder.findMany({
+      where: { tenantId: TENANT, deletedAt: null },
+      select: { id: true, parentId: true, path: true, depth: true },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return rows
+      .filter((row) => {
+        const parent = row.parentId === null ? null : byId.get(row.parentId);
+        const expected = parent ? `${parent.path}.${row.id}` : row.id;
+        return row.path !== expected || row.depth !== idsInPath(row.path).length;
+      })
+      .map((row) => row.id);
+  }
+
+  it('moves a subtree when nothing contends', async () => {
+    // The control. Without it every assertion below passes on a service that moves nothing.
+    const { parent, child, grandchild, destination } = await tree();
+    const moved = await asAdmin(() =>
+      parking.moveFolder(parent.id, destination.id, parent.version),
+    );
+
+    expect(moved.path).toBe(`${destination.path}.${parent.id}`);
+    expect(moved.depth).toBe(destination.depth + 1);
+    expect((await rowOf(child.id)).path).toBe(`${moved.path}.${child.id}`);
+    expect((await rowOf(grandchild.id)).depth).toBe(moved.depth + 2);
+    expect(await foldersDisagreeingWithTheirParent()).toEqual([]);
+  });
+
+  it('refuses to rewrite a descendant that moved out while it was deciding', async () => {
+    const { parent, child, destination, elsewhere } = await tree();
+    parkOn = `move:${parent.id}`;
+    const base = turnstile.arm(1);
+
+    // The first administrator moves the parent. Its subtree snapshot, taken before it parks, still
+    // has the child under it.
+    const movingParent = asAdmin(() =>
+      parking.moveFolder(parent.id, destination.id, parent.version),
+    );
+    await turnstile.reached[base];
+
+    // The second administrator moves the child out, from its own scope and so its own transaction,
+    // and commits. This is the edit the first administrator's snapshot cannot know about.
+    parkOn = null;
+    const movedChild = await asAdmin(() =>
+      parking.moveFolder(child.id, elsewhere.id, child.version),
+    );
+    expect(movedChild.path).toBe(`${elsewhere.path}.${child.id}`);
+
+    turnstile.release(base);
+    const outcome = await movingParent.then(
+      () => ({ kind: 'moved' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    // Whatever the first move's own fate, the child must not be left describing an ancestry it does
+    // not have: `chainFor` is `idsInPath(path)`, so a stale path is a stale ACL chain — the folders
+    // it has left deciding its documents' permissions, and the one it has joined not.
+    const after = await rowOf(child.id);
+    expect(after.parentId).toBe(elsewhere.id);
+    expect(after.path).toBe(`${elsewhere.path}.${child.id}`);
+    expect(idsInPath(after.path)).not.toContain(parent.id);
+    expect(after.depth).toBe(idsInPath(after.path).length);
+    expect(await foldersDisagreeingWithTheirParent()).toEqual([]);
+
+    // And the loser is told, rather than committing a rewrite of a tree that changed under it.
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
+  });
+
+  it('refuses when a descendant only moved to another branch of the same subtree', async () => {
+    /*
+     * Why the guard refuses rather than quietly skipping the row it no longer recognises.
+     *
+     * The folder that moved is still inside the subtree being moved, so the rest of the snapshot is
+     * still wrong about it: the grandchild now hangs from the sibling, and the sibling's path is
+     * about to be rewritten. Skipping the one row whose parent changed would rewrite the sibling and
+     * leave the grandchild describing where the sibling used to be — the same divergence, one level
+     * further down. The whole snapshot is stale together, so the whole move is refused together.
+     */
+    const { parent, child, grandchild, sibling, destination } = await tree();
+    parkOn = `move:${parent.id}`;
+    const base = turnstile.arm(1);
+
+    const movingParent = asAdmin(() =>
+      parking.moveFolder(parent.id, destination.id, parent.version),
+    );
+    await turnstile.reached[base];
+
+    parkOn = null;
+    const moved = await asAdmin(() =>
+      parking.moveFolder(grandchild.id, sibling.id, grandchild.version),
+    );
+    expect(moved.path).toBe(`${sibling.path}.${grandchild.id}`);
+
+    turnstile.release(base);
+    const outcome = await movingParent.then(
+      () => ({ kind: 'moved' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
+    // Refused means nothing was written, so the sibling still holds the path the grandchild names.
+    expect((await rowOf(child.id)).path).toBe(`${parent.path}.${child.id}`);
+    expect((await rowOf(sibling.id)).path).toBe(`${parent.path}.${sibling.id}`);
+    expect(await foldersDisagreeingWithTheirParent()).toEqual([]);
+  });
+
+  it('still moves when a descendant was only put in the recycle bin', async () => {
+    /*
+     * The other side of the guard: what must *not* become a conflict.
+     *
+     * Deleting a leaf moves nothing, so the snapshot is still right about where every folder sits
+     * and the move has nothing to lose to. The deleted row is carried along with the rest —
+     * `folderSubtree` never sees a row already in the bin, so restoring one whose ancestors moved
+     * meanwhile is a stale path either way, and this is the one window where the move can still
+     * keep it honest.
+     */
+    const { parent, child, grandchild, destination } = await tree();
+    parkOn = `move:${parent.id}`;
+    const base = turnstile.arm(1);
+
+    const movingParent = asAdmin(() =>
+      parking.moveFolder(parent.id, destination.id, parent.version),
+    );
+    await turnstile.reached[base];
+
+    parkOn = null;
+    await asAdmin(() => parking.deleteFolder(grandchild.id, grandchild.version));
+
+    turnstile.release(base);
+    const moved = await movingParent;
+
+    expect(moved.path).toBe(`${destination.path}.${parent.id}`);
+    const movedChild = await rowOf(child.id);
+    expect(movedChild.path).toBe(`${moved.path}.${child.id}`);
+    // Carried with the subtree even though it is in the bin, so a restore does not resurrect a row
+    // describing where its ancestors used to be.
+    const deleted = await rowOf(grandchild.id);
+    expect(deleted.path).toBe(`${movedChild.path}.${grandchild.id}`);
+    expect(deleted.depth).toBe(idsInPath(deleted.path).length);
+    expect(await foldersDisagreeingWithTheirParent()).toEqual([]);
   });
 });
