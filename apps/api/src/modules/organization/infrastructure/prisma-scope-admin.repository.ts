@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 import { depthOf, subtreePrefix } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
-import { VersionConflictError } from '../../../core/errors/application-errors';
+import { DuplicateError, VersionConflictError } from '../../../core/errors/application-errors';
 import {
   RecordStamps,
   deletedCondition,
@@ -99,9 +99,11 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
   }
 
   async insertCompany(input: { id: string; code: string; name: string }): Promise<void> {
-    await requireTransaction().company.create({
-      data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
-    });
+    await this.claimingTheCode(OrganizationNodeKind.COMPANY, () =>
+      requireTransaction().company.create({
+        data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+      }),
+    );
   }
 
   async updateCompany(
@@ -109,10 +111,14 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     version: number,
     patch: { code?: string; name?: string },
   ): Promise<void> {
-    const { count } = await requireTransaction().company.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
-    });
+    // The code is one of the things this patch can move, so this write can meet the index that
+    // `companyCodeTaken` read a moment ago — Slice 66.
+    const { count } = await this.claimingTheCode(OrganizationNodeKind.COMPANY, () =>
+      requireTransaction().company.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+      }),
+    );
     this.requireOneRow(count, version);
   }
 
@@ -193,9 +199,11 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     name: string;
     legalName: string | null;
   }): Promise<void> {
-    await requireTransaction().entity.create({
-      data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
-    });
+    await this.claimingTheCode(OrganizationNodeKind.ENTITY, () =>
+      requireTransaction().entity.create({
+        data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+      }),
+    );
   }
 
   async updateEntity(
@@ -203,10 +211,14 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     version: number,
     patch: { code?: string; name?: string; legalName?: string | null },
   ): Promise<void> {
-    const { count } = await requireTransaction().entity.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
-    });
+    // The code is one of the things this patch can move, so this write can meet the index that
+    // `entityCodeTaken` read a moment ago — Slice 66.
+    const { count } = await this.claimingTheCode(OrganizationNodeKind.ENTITY, () =>
+      requireTransaction().entity.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+      }),
+    );
     this.requireOneRow(count, version);
   }
 
@@ -273,9 +285,11 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     name: string;
     address: string | null;
   }): Promise<void> {
-    await requireTransaction().branch.create({
-      data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
-    });
+    await this.claimingTheCode(OrganizationNodeKind.BRANCH, () =>
+      requireTransaction().branch.create({
+        data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+      }),
+    );
   }
 
   async updateBranch(
@@ -283,10 +297,14 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     version: number,
     patch: { code?: string; name?: string; address?: string | null },
   ): Promise<void> {
-    const { count } = await requireTransaction().branch.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
-    });
+    // The code is one of the things this patch can move, so this write can meet the index that
+    // `branchCodeTaken` read a moment ago — Slice 66.
+    const { count } = await this.claimingTheCode(OrganizationNodeKind.BRANCH, () =>
+      requireTransaction().branch.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+      }),
+    );
     this.requireOneRow(count, version);
   }
 
@@ -373,9 +391,11 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     name: string;
     path: string;
   }): Promise<void> {
-    await requireTransaction().department.create({
-      data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
-    });
+    await this.claimingTheCode(OrganizationNodeKind.DEPARTMENT, () =>
+      requireTransaction().department.create({
+        data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+      }),
+    );
   }
 
   async updateDepartment(
@@ -383,10 +403,14 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     version: number,
     patch: { code?: string; name?: string; branchId?: string | null },
   ): Promise<void> {
-    const { count } = await requireTransaction().department.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
-    });
+    // The code is one of the things this patch can move, so this write can meet the index that
+    // `departmentCodeTaken` read a moment ago — Slice 66.
+    const { count } = await this.claimingTheCode(OrganizationNodeKind.DEPARTMENT, () =>
+      requireTransaction().department.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+      }),
+    );
     this.requireOneRow(count, version);
   }
 
@@ -456,7 +480,15 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
       version: { increment: 1 },
     };
 
-    const { count } = await (() => {
+    /*
+     * Restoring re-enters the index — Slice 66.
+     *
+     * Every kind's code index is partial on `deleted_at IS NULL`, so a deleted node sits outside it
+     * and clearing the stamp puts its code back under it. `restore` asks the kind's own
+     * `…CodeTaken` first, but that read and this write are two statements, and a code can be
+     * claimed between them.
+     */
+    const { count } = await this.claimingTheCode(kind, () => {
       switch (kind) {
         case OrganizationNodeKind.COMPANY:
           return tx.company.updateMany({ where, data });
@@ -469,7 +501,7 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
         default:
           return Promise.resolve({ count: 0 });
       }
-    })();
+    });
     this.requireOneRow(count, version);
   }
 
@@ -572,6 +604,38 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
    * Reported rather than ignored. `updateMany` returning 0 is the *only* signal that optimistic
    * locking did its job, and swallowing it would make every guard above decorative.
    */
+  /**
+   * Runs a write that claims a code, and translates that one violation.
+   *
+   * Nine statements here reach a code index: four creations, four renames, and the restore that
+   * puts a deleted node's code back under its partial index. Each asks the kind's own `…CodeTaken`
+   * first — `mode: 'insensitive'` against the index's `lower(code)`, which is the same comparison —
+   * and each asks it a moment before it writes, so each can lose the code in between and must
+   * answer the way the administrator who arrived second in order is answered.
+   *
+   * Translating rather than tolerating, for the reason Slice 63 established: a unique violation
+   * aborts the transaction, so a loser that needed to *read* could not recover here. None of these
+   * do. They need a different exception, and the boundary that knows what the index means is where
+   * it belongs.
+   *
+   * Matched by model rather than by index name: these are all **partial** indexes, and Prisma
+   * reports `target: null` for one — measured — so naming it would produce a check that never
+   * fires. Each statement writes one table, so the model is exact.
+   */
+  private async claimingTheCode<TResult>(
+    kind: OrganizationNodeKindKey,
+    write: () => Promise<TResult>,
+  ): Promise<TResult> {
+    try {
+      return await write();
+    } catch (error) {
+      if (isUniqueViolationOn(error, MODEL_OF[kind])) {
+        throw new DuplicateError(RESOURCE_OF[kind], 'code');
+      }
+      throw error;
+    }
+  }
+
   private requireOneRow(count: number, expectedVersion: number): void {
     if (count === 0) {
       throw new VersionConflictError(expectedVersion, -1);
@@ -685,4 +749,29 @@ function pathOf(paths: readonly SubtreeNode[], id: string): string {
     throw new Error('The rewritten subtree does not contain the node being moved.');
   }
   return found.path;
+}
+
+/** The Prisma model each kind writes, for narrowing a unique violation to the right table. */
+const MODEL_OF: Record<OrganizationNodeKindKey, string> = {
+  [OrganizationNodeKind.COMPANY]: 'Company',
+  [OrganizationNodeKind.ENTITY]: 'Entity',
+  [OrganizationNodeKind.BRANCH]: 'Branch',
+  [OrganizationNodeKind.DEPARTMENT]: 'Department',
+};
+
+/** What the refusal calls the thing, so it names the screen the administrator is on. */
+const RESOURCE_OF: Record<OrganizationNodeKindKey, string> = {
+  [OrganizationNodeKind.COMPANY]: 'company',
+  [OrganizationNodeKind.ENTITY]: 'entity',
+  [OrganizationNodeKind.BRANCH]: 'branch',
+  [OrganizationNodeKind.DEPARTMENT]: 'department',
+};
+
+/** The one violation a claiming write translates; anything else is a genuine failure. */
+function isUniqueViolationOn(error: unknown, model: string): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002' &&
+    error.meta?.['modelName'] === model
+  );
 }

@@ -751,3 +751,226 @@ describe('a picker with more departments than one page', () => {
     expect(elsewhere.data).toStrictEqual([]);
   });
 });
+
+/**
+ * Two callers, each parked at the statement that claims a code.
+ *
+ * Gated on an explicit marker rather than on "the turnstile is armed", so a suite that arms once
+ * and then performs ordinary setup through the same repository does not park its own calls, take
+ * ordinals no slot was armed for, and leave the caller it does want to hold waiting for ever.
+ */
+class Turnstile<TMarker> {
+  readonly arrivals: TMarker[] = [];
+  readonly reached: Promise<void>[] = [];
+  private readonly announce: (() => void)[] = [];
+  private readonly admissions: Promise<void>[] = [];
+  private readonly admits: (() => void)[] = [];
+
+  arm(callers: number): number {
+    const base = this.reached.length;
+    for (let index = 0; index < callers; index += 1) {
+      let arrive: () => void = () => undefined;
+      this.reached.push(
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+      this.announce.push(arrive);
+      let admit: () => void = () => undefined;
+      this.admissions.push(
+        new Promise<void>((resolve) => {
+          admit = resolve;
+        }),
+      );
+      this.admits.push(admit);
+    }
+    return base;
+  }
+
+  async park(marker: TMarker): Promise<void> {
+    const ordinal = this.arrivals.length;
+    this.arrivals.push(marker);
+    this.announce[ordinal]?.();
+    await this.admissions[ordinal];
+  }
+
+  release(ordinal: number): void {
+    this.admits[ordinal]?.();
+  }
+}
+
+/**
+ * One code, one live node, however the second claim on it arrives — Slice 66.
+ *
+ * Every scope kind carries a partial unique index on `(parent, lower(code)) WHERE deleted_at IS
+ * NULL`, and every `…CodeTaken` reads that same condition — `mode: 'insensitive'` against the
+ * index's `lower(code)`, which the repository's own comment says is deliberate. So the check and
+ * the constraint describe one state, asked at two moments, and an administrator who claims the code
+ * in between leaves the write to meet the index.
+ *
+ * This suite already pins the ordered answer: restoring a company whose code was re-used expects
+ * `DUPLICATE`, "naming the code rather than a raw constraint violation". These are the same two
+ * administrators, at once.
+ */
+describe('one code, one live node, however the second claim arrives', () => {
+  const turnstile = new Turnstile<string>();
+  /** Which write this test wants to stop at, and nothing else stops. */
+  let parkOn: string | null = null;
+
+  /** The real repository, subclassed: each override only adds a place to stand before its write. */
+  class ParkingScopeRepository extends PrismaScopeAdminRepository {
+    override async insertDepartment(
+      input: Parameters<PrismaScopeAdminRepository['insertDepartment']>[0],
+    ): Promise<void> {
+      if (parkOn === `create:${input.code}`) {
+        await turnstile.park(`create:${input.code}`);
+      }
+      return super.insertDepartment(input);
+    }
+
+    override async setDeleted(
+      kind: Parameters<PrismaScopeAdminRepository['setDeleted']>[0],
+      id: string,
+      version: number,
+      deleted: boolean,
+    ): Promise<void> {
+      if (!deleted && parkOn === `restore:${id}`) {
+        await turnstile.park(`restore:${id}`);
+      }
+      return super.setDeleted(kind, id, version, deleted);
+    }
+  }
+
+  const parking = new ScopeAdminService(
+    new ParkingScopeRepository(stamps),
+    outbox,
+    realAclResolver({ clock, unitOfWork }),
+    writer,
+  );
+
+  async function liveDepartments(entityId: string, code: string): Promise<number> {
+    return owner.department.count({
+      where: { entityId, code: { equals: code, mode: 'insensitive' }, deletedAt: null },
+    });
+  }
+
+  it('creates the department when nothing contends', async () => {
+    // The control. Without it every assertion below passes on a service that creates nothing.
+    const { entityId } = fixture(ACME);
+    const code = `SOLO${String(Date.now()).slice(-5)}`;
+    const created = await asTenant(ACME, () =>
+      parking.createDepartment({ entityId, code, name: 'Solo' }),
+    );
+
+    expect(created.id).toBeTruthy();
+    expect(await liveDepartments(entityId, code)).toBe(1);
+  });
+
+  it('reports a failure that is not a duplicate as itself', async () => {
+    /*
+     * The narrowing, asserted. Translating *every* failure from a claiming write into "that code is
+     * already in use" would hide a genuine fault behind a plausible refusal, so the predicate is
+     * `P2002` on the kind's own model and nothing else. A department under an entity that does not
+     * exist violates the foreign key instead, and must surface as itself.
+     *
+     * Driven at the repository, because the service refuses an unknown entity before it ever
+     * reaches the insert — which is correct, and is exactly why the repository's own narrowing
+     * needs its own proof.
+     */
+    const repository = new PrismaScopeAdminRepository(stamps);
+    const outcome = await asTenant(ACME, () =>
+      unitOfWork.run(() =>
+        repository.insertDepartment({
+          id: uuidv7(),
+          entityId: uuidv7(),
+          branchId: null,
+          parentId: null,
+          code: `ORPH${String(Date.now()).slice(-5)}`,
+          name: 'Orphan',
+          path: 'orphan',
+        }),
+      ),
+    ).then(
+      () => ({ kind: 'inserted' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).not.toMatchObject({ code: 'DUPLICATE' });
+  });
+
+  it('refuses the loser the way the ordered second caller is refused', async () => {
+    const { entityId } = fixture(ACME);
+    const code = `CONT${String(Date.now()).slice(-5)}`;
+    expect(await liveDepartments(entityId, code)).toBe(0);
+    parkOn = `create:${code}`;
+    const base = turnstile.arm(2);
+
+    // Each from its own scope, so each opens its own transaction. Both reach the insert only after
+    // their own `departmentCodeTaken` answered "free", which is what parking here proves.
+    const one = asTenant(ACME, () => parking.createDepartment({ entityId, code, name: 'One' }));
+    await turnstile.reached[base];
+    const two = asTenant(ACME, () => parking.createDepartment({ entityId, code, name: 'Two' }));
+    await turnstile.reached[base + 1];
+
+    expect(turnstile.arrivals.slice(-2)).toEqual([`create:${code}`, `create:${code}`]);
+
+    turnstile.release(base);
+    const winner = await one.then(
+      (value) => ({ kind: 'created' as const, value }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+    turnstile.release(base + 1);
+    const loser = await two.then(
+      () => ({ kind: 'created' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(winner.kind).toBe('created');
+    expect(await liveDepartments(entityId, code)).toBe(1);
+    expect(loser.kind).toBe('refused');
+    expect(loser.error).toMatchObject({ code: 'DUPLICATE' });
+    // The department's duplicate, not another node kind's: a refusal naming the wrong resource
+    // would send an administrator to the wrong screen.
+    expect((loser.error as Error).message).toContain('department');
+  });
+
+  it('refuses a restore whose code is claimed while the restore is deciding', async () => {
+    const { entityId } = fixture(ACME);
+    const code = `RECY${String(Date.now()).slice(-5)}`;
+    const first = await asTenant(ACME, () =>
+      parking.createDepartment({ entityId, code, name: 'First Spell' }),
+    );
+    await asTenant(ACME, () =>
+      parking.delete(OrganizationNodeKind.DEPARTMENT, first.id, first.version),
+    );
+    expect(await liveDepartments(entityId, code)).toBe(0);
+
+    const deleted = await asTenant(ACME, () => parking.getDepartment(first.id));
+    parkOn = `restore:${first.id}`;
+    const base = turnstile.arm(1);
+
+    const restoring = asTenant(ACME, () =>
+      parking.restore(OrganizationNodeKind.DEPARTMENT, first.id, deleted.version),
+    );
+    await turnstile.reached[base];
+
+    // The code is taken again while the restore is parked — the sequence the partial index exists
+    // to permit, arriving in the window between the check and the write.
+    const second = await asTenant(ACME, () =>
+      parking.createDepartment({ entityId, code, name: 'Second Spell' }),
+    );
+    expect(second.id).not.toBe(first.id);
+    expect(await liveDepartments(entityId, code)).toBe(1);
+
+    turnstile.release(base);
+    const outcome = await restoring.then(
+      () => ({ kind: 'restored' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(await liveDepartments(entityId, code)).toBe(1);
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toMatchObject({ code: 'DUPLICATE' });
+  });
+});
