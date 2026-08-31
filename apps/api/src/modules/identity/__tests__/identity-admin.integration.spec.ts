@@ -1204,3 +1204,186 @@ describe('one address, one account, however many administrators invite it at onc
     expect(loser.error).toBeInstanceOf(DuplicateError);
   });
 });
+
+/**
+ * One address, one live account, however the second claim on it arrives — Slice 64.
+ *
+ * Slice 63 closed this for `insertUser`. It is the same index and the same read-then-write, and two
+ * further statements reach it: **restoring** a deleted account puts its row back inside
+ * `uq_user_tenant_email` — the index is partial on `deleted_at IS NULL`, so a deleted row is outside
+ * it and a restored one is inside again — and **changing an address** moves the indexed value on a
+ * row that is already inside.
+ *
+ * Both are guarded by a read the service performs first, and the restore path's own comment says
+ * why: "the address was released when the account was deleted, and may have been re-invited since".
+ * That read and the write are two statements, so an invitation that lands between them leaves the
+ * write to meet the index — as a raw `P2002`, which `AllExceptionsFilter` renders `500`, where the
+ * ordered administrator is refused with `DuplicateError`.
+ *
+ * The sequential answer is already pinned by this suite: "refuses to restore an account whose
+ * address has been re-invited" expects `DUPLICATE`. These are the same two administrators, at once.
+ */
+/** The display name that asks the parking repository to stop before it writes. */
+const PARK_HERE = 'park-here';
+
+describe('one address, one live account, however the second claim arrives', () => {
+  const turnstile = new Turnstile<string>();
+
+  /** The real repository, subclassed: each override only adds a place to stand before its write. */
+  class ParkingLifecycleRepository extends PrismaIdentityAdminRepository {
+    override async setUserDeleted(id: string, version: number, deleted: boolean): Promise<void> {
+      await turnstile.park(`restore:${id}`);
+      return super.setUserDeleted(id, version, deleted);
+    }
+
+    override async updateUser(
+      id: string,
+      version: number,
+      patch: Parameters<PrismaIdentityAdminRepository['updateUser']>[2],
+    ): Promise<void> {
+      if (patch.emailNormalized !== undefined) {
+        await turnstile.park(`email:${id}`);
+      }
+      // A second place to stand, for the version race below. Keyed on a sentinel name so it cannot
+      // interfere with the address tests, which park on their own marker.
+      if (patch.displayName === PARK_HERE) {
+        await turnstile.park(`version:${id}`);
+      }
+      return super.updateUser(id, version, patch);
+    }
+  }
+
+  let parking: UserAdminService;
+
+  beforeAll(() => {
+    parking = new UserAdminService(
+      new ParkingLifecycleRepository(stamps, cache),
+      passwords,
+      writer,
+      realAclResolver({ clock, unitOfWork, config, cache }),
+    );
+  });
+
+  async function liveWith(email: string): Promise<number> {
+    return owner.user.count({
+      where: { tenantId, emailNormalized: email.toLowerCase(), deletedAt: null },
+    });
+  }
+
+  it('restores an account whose address is still free', async () => {
+    // The control. Without it the assertion below passes on a service that restores nothing.
+    const email = `returning-${uuidv7().slice(-8)}@identity-admin.test`;
+    const person = await asAdmin(() =>
+      parking.create({ email, displayName: 'Returning', roleIds: [], departments: [] }),
+    );
+    await asAdmin(() => parking.delete(person.id, person.version));
+    expect(await liveWith(email)).toBe(0);
+
+    const deleted = await asAdmin(() => parking.get(person.id));
+    await asAdmin(() => parking.restore(person.id, deleted.version));
+
+    expect(await liveWith(email)).toBe(1);
+  });
+
+  it('refuses a restore whose address is re-invited while the restore is deciding', async () => {
+    const email = `contended-restore-${uuidv7().slice(-8)}@identity-admin.test`;
+    const person = await asAdmin(() =>
+      parking.create({ email, displayName: 'Away', roleIds: [], departments: [] }),
+    );
+    await asAdmin(() => parking.delete(person.id, person.version));
+    const deleted = await asAdmin(() => parking.get(person.id));
+    // Ordinals accumulate across this block, so each test takes the slots it arms rather than
+    // assuming it starts at zero.
+    const base = turnstile.reached.length;
+    turnstile.arm(1);
+
+    // The restore reaches its write only once its own `emailTaken` has answered "free", so parking
+    // here is the proof that it decided the address was available.
+    const restoring = asAdmin(() => parking.restore(person.id, deleted.version));
+    await turnstile.reached[base];
+
+    // A second administrator invites the address the restore has just decided is free. Its own
+    // scope, its own transaction, and it commits before the restore is let go.
+    const invited = await asAdmin(() =>
+      parking.create({ email, displayName: 'Newcomer', roleIds: [], departments: [] }),
+    );
+    expect(invited.id).not.toBe(person.id);
+    expect(await liveWith(email)).toBe(1);
+
+    turnstile.release(base);
+    const outcome = await restoring.then(
+      () => ({ kind: 'restored' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    // The index keeps the data right: one live account for the address, the newcomer's.
+    expect(await liveWith(email)).toBe(1);
+    // And the administrator is told what the ordered one is told, rather than meeting a raw
+    // constraint violation that reaches them as a `500`.
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toBeInstanceOf(DuplicateError);
+  });
+
+  it('refuses a change whose row moved after the service checked its version', async () => {
+    /*
+     * The optimistic guard, under concurrency rather than in sequence — Slice 64's audit question.
+     *
+     * `UserAdminService` calls `checkVersion` against the row it just read, and this suite already
+     * covers that: a caller presenting a stale number is refused. What that cannot cover is a row
+     * that moves *after* the service looked. The repository carries `version` in its own `WHERE`
+     * and reads the affected-row count, and this is what makes that second guard load-bearing
+     * rather than decorative.
+     */
+    const person = await aUser('Contended');
+    const base = turnstile.reached.length;
+    turnstile.arm(1);
+
+    const changing = asAdmin(() =>
+      parking.update(person.id, { displayName: PARK_HERE }, person.version),
+    );
+    await turnstile.reached[base];
+
+    // Somebody else moves the row while the first change is parked, so its version is spent.
+    await asAdmin(() => parking.update(person.id, { displayName: 'Moved' }, person.version));
+
+    turnstile.release(base);
+    const outcome = await changing.then(
+      () => ({ kind: 'changed' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
+    // And the row holds the change that won, not the one that was parked.
+    const after = await owner.user.findUniqueOrThrow({ where: { id: person.id } });
+    expect(after.displayName).toBe('Moved');
+  });
+
+  it('refuses an address change that is claimed while the change is deciding', async () => {
+    const mine = `mover-${uuidv7().slice(-8)}@identity-admin.test`;
+    const wanted = `wanted-${uuidv7().slice(-8)}@identity-admin.test`;
+    const mover = await asAdmin(() =>
+      parking.create({ email: mine, displayName: 'Mover', roleIds: [], departments: [] }),
+    );
+    const base = turnstile.reached.length;
+    turnstile.arm(1);
+
+    const changing = asAdmin(() => parking.update(mover.id, { email: wanted }, mover.version));
+    await turnstile.reached[base];
+
+    // Somebody else takes the address between the check and the write.
+    await asAdmin(() =>
+      parking.create({ email: wanted, displayName: 'Claimant', roleIds: [], departments: [] }),
+    );
+
+    turnstile.release(base);
+    const outcome = await changing.then(
+      () => ({ kind: 'changed' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(await liveWith(wanted)).toBe(1);
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toBeInstanceOf(DuplicateError);
+  });
+});

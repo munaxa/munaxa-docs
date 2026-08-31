@@ -122,8 +122,8 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
      * different exception — so translating at the boundary that knows what the index means is both
      * sufficient and the pattern this repository already uses for `uq_document_signature_live`.
      */
-    try {
-      await requireTransaction().user.create({
+    await this.claimingTheAddress(() =>
+      requireTransaction().user.create({
         data: {
           ...input,
           tenantId: this.tenantId(),
@@ -131,13 +131,8 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
           status: 'INVITED',
           ...this.stamps.creation(),
         },
-      });
-    } catch (error) {
-      if (isTakenEmailViolation(error)) {
-        throw new DuplicateError('user', 'email');
-      }
-      throw error;
-    }
+      }),
+    );
   }
 
   async updateUser(
@@ -150,21 +145,36 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
       status?: UserAdminRow['status'];
     },
   ): Promise<void> {
-    const { count } = await requireTransaction().user.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
-    });
+    // The address is one of the things this patch can move, so this write can meet the index that
+    // `emailTaken` read a moment ago — Slice 64.
+    const { count } = await this.claimingTheAddress(() =>
+      requireTransaction().user.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+      }),
+    );
     this.requireOneRow(count, version);
   }
 
   async setUserDeleted(id: string, version: number, deleted: boolean): Promise<void> {
-    const { count } = await requireTransaction().user.updateMany({
-      where: { id, tenantId: this.tenantId(), version },
-      data: {
-        ...(deleted ? this.stamps.deletion() : this.stamps.restoration()),
-        version: { increment: 1 },
-      },
-    });
+    /*
+     * Restoring re-enters the index — Slice 64.
+     *
+     * `uq_user_tenant_email` is partial on `deleted_at IS NULL`, so a deleted row sits outside it
+     * and clearing the stamp puts the address back under it. The service asks `emailTaken` first
+     * and says why — "the address was released when the account was deleted, and may have been
+     * re-invited since" — but that read and this write are two statements, and an invitation can
+     * land between them.
+     */
+    const { count } = await this.claimingTheAddress(() =>
+      requireTransaction().user.updateMany({
+        where: { id, tenantId: this.tenantId(), version },
+        data: {
+          ...(deleted ? this.stamps.deletion() : this.stamps.restoration()),
+          version: { increment: 1 },
+        },
+      }),
+    );
     this.requireOneRow(count, version);
   }
 
@@ -419,6 +429,30 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
 
   private tenantId(): string {
     return requireContext().tenantId;
+  }
+
+  /**
+   * Runs a write that can meet `uq_user_tenant_email`, and translates that one violation.
+   *
+   * Three statements here can reach that index: inviting an address, changing one, and restoring an
+   * account whose address re-enters the partial index. Each asks `emailTaken` first, and each asks
+   * it a moment before it writes — so each can lose the address in between and must answer the way
+   * the administrator who arrived second in order is answered.
+   *
+   * Translating rather than tolerating, for the reason Slice 63 set out: a unique violation aborts
+   * the transaction, so a loser that needed to *read* could not recover here. None of these do.
+   * They need a different exception, and the boundary that knows what the index means is where it
+   * belongs.
+   */
+  private async claimingTheAddress<TResult>(write: () => Promise<TResult>): Promise<TResult> {
+    try {
+      return await write();
+    } catch (error) {
+      if (isTakenEmailViolation(error)) {
+        throw new DuplicateError('user', 'email');
+      }
+      throw error;
+    }
   }
 
   private requireOneRow(count: number, expectedVersion: number): void {
