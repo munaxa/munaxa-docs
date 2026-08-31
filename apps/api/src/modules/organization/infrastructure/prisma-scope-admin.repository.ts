@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-import { depthOf, subtreePrefix } from '@edms/domain';
+import { ancestorIdsOf, depthOf, subtreePrefix } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
 import { DuplicateError, VersionConflictError } from '../../../core/errors/application-errors';
@@ -449,19 +449,46 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     });
     this.requireOneRow(count, input.version);
 
-    // Then the descendants. Same transaction, so a reader either sees the whole subtree at its old
-    // paths or the whole subtree at its new ones — never a tree with two roots.
+    /*
+     * Then the descendants. Same transaction, so a reader either sees the whole subtree at its old
+     * paths or the whole subtree at its new ones — never a tree with two roots.
+     *
+     * **Each guarded by the parent the snapshot found it under** — Slice 67. There *is* a
+     * concurrent edit to lose to, and it is this same method: a move rewrites a descendant's `path`
+     * and re-parents the node it was asked to move, so two moves inside one subtree are two writers
+     * of one row. The second mover's version guard protects the node it acted on; nothing protected
+     * that node from the first mover's rewrite of it as somebody else's descendant, and the row
+     * that came out named one parent in `parent_id` and another in `path`.
+     *
+     * `path` is the one that decides access — `PrismaAclResolver.departmentsOf` is
+     * `idsInPath(row.path)` — so a member of that department carried the ancestors it had left as
+     * ACL subjects, and not the ones it had joined.
+     *
+     * Guarded on `parent_id` rather than on the version: a descendant that was merely renamed has a
+     * new version and the same place in the tree, and refusing a move because somebody edited a name
+     * would be a conflict about nothing. Zero rows here means the tree moved under the snapshot,
+     * which is a `VersionConflictError` for the same reason the moved node's own guard is.
+     *
+     * `deleted_at` is not in the guard, and that is the other half of "a conflict about nothing".
+     * The snapshot only ever contains live rows, so the only row this can now reach that it could
+     * not before is one soft-deleted since — and rewriting that one is what keeps its path usable
+     * if it is restored. Refusing the move instead would be a false conflict *and* would leave the
+     * deleted row naming an ancestry the tree no longer has.
+     *
+     * What this does not close: a department created under, or moved *into*, this subtree while the
+     * move is deciding is not in the snapshot, so no statement here guards it and it keeps a path
+     * derived from the old ancestry. Closing that needs the arriving child to write its new parent's
+     * row, which changes what `version` means on a parent — an owner's decision, not this slice's.
+     */
     for (const node of input.paths) {
       if (node.id === input.id) {
         continue;
       }
-      await tx.department.updateMany({
-        where: { id: node.id, tenantId: this.tenantId(), deletedAt: null },
-        // No version guard on a descendant, and deliberately: its *path* is derived data owned by
-        // this module, not a field anybody edits, so there is no concurrent edit to lose to. The
-        // guard belongs on the node the administrator actually acted on.
+      const { count: rewritten } = await tx.department.updateMany({
+        where: { id: node.id, tenantId: this.tenantId(), parentId: parentIdIn(node.path) },
         data: { path: node.path, ...stamps },
       });
+      this.requireOneRow(rewritten, input.version);
     }
   }
 
@@ -738,6 +765,19 @@ function toDepartmentRow(
     memberCount: row._count.members,
     childCount: row._count.children,
   };
+}
+
+/**
+ * The parent a rewritten path puts a node under.
+ *
+ * A move swaps a prefix, so the identifiers below the moved node are the ones the subtree already
+ * had: the second-to-last segment of a descendant's *new* path names the same parent its old one
+ * did. Derived from the path being written rather than carried alongside it, so the guard cannot
+ * come to disagree with what it guards.
+ */
+function parentIdIn(path: string): string | null {
+  const ancestors = ancestorIdsOf(path);
+  return ancestors.at(-1) ?? null;
 }
 
 /** The new path of one node in a rewritten subtree. */
