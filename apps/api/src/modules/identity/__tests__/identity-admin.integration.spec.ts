@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Permission, SystemRole, type TenantId, type UserId, UserStatus, asId } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
+import { DuplicateError } from '../../../core/errors/application-errors';
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 
@@ -1020,5 +1021,186 @@ describe('the roles an ACL entry may name', () => {
     );
 
     expect(elsewhere.data).toStrictEqual([]);
+  });
+});
+
+/**
+ * Two callers, each parked at the statement that inserts the account.
+ *
+ * Ordinals are assigned by arrival and the arrival order is fixed rather than observed: the second
+ * caller is not started until the first has parked, so the first is always ordinal zero.
+ */
+class Turnstile<TMarker> {
+  readonly arrivals: TMarker[] = [];
+  readonly reached: Promise<void>[] = [];
+  private readonly announce: (() => void)[] = [];
+  private readonly admissions: Promise<void>[] = [];
+  private readonly admits: (() => void)[] = [];
+  private armed = false;
+
+  arm(callers: number): void {
+    for (let index = 0; index < callers; index += 1) {
+      let arrive: () => void = () => undefined;
+      this.reached.push(
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+      this.announce.push(arrive);
+      let admit: () => void = () => undefined;
+      this.admissions.push(
+        new Promise<void>((resolve) => {
+          admit = resolve;
+        }),
+      );
+      this.admits.push(admit);
+    }
+    this.armed = true;
+  }
+
+  async park(marker: TMarker): Promise<void> {
+    if (!this.armed) {
+      return;
+    }
+    const ordinal = this.arrivals.length;
+    this.arrivals.push(marker);
+    this.announce[ordinal]?.();
+    await this.admissions[ordinal];
+  }
+
+  release(ordinal: number): void {
+    this.admits[ordinal]?.();
+  }
+}
+
+/**
+ * One address, one account, however many administrators invite it at once — Slice 63.
+ *
+ * `create` asks `emailTaken` and then inserts. Those are two statements in one transaction, and two
+ * administrators are two transactions: both read the address as free, and both insert against
+ * `uq_user_tenant_email` — the partial index on `(tenant_id, email_normalized) WHERE deleted_at IS
+ * NULL`, which is the same condition `emailTaken` reads, asked a moment later.
+ *
+ * The data is safe: the index admits one. What the loser is *told* is not. A raw `P2002` is neither
+ * a `DomainError` nor an `HttpException`, so `AllExceptionsFilter` answers `500`, where the same
+ * request a moment later in sequence is refused with `DuplicateError` — "this address is already in
+ * use", which is what an administrator can act on.
+ */
+describe('one address, one account, however many administrators invite it at once', () => {
+  const turnstile = new Turnstile<string>();
+
+  /** The real repository, subclassed: the override only adds a place to stand before the insert. */
+  class ParkingIdentityAdminRepository extends PrismaIdentityAdminRepository {
+    override async insertUser(
+      input: Parameters<PrismaIdentityAdminRepository['insertUser']>[0],
+    ): Promise<void> {
+      await turnstile.park(input.emailNormalized);
+      return super.insertUser(input);
+    }
+  }
+
+  let parking: UserAdminService;
+
+  beforeAll(() => {
+    parking = new UserAdminService(
+      new ParkingIdentityAdminRepository(stamps, cache),
+      passwords,
+      writer,
+      realAclResolver({ clock, unitOfWork, config, cache }),
+    );
+  });
+
+  async function accountsWith(email: string): Promise<number> {
+    return owner.user.count({
+      where: { tenantId, emailNormalized: email.toLowerCase(), deletedAt: null },
+    });
+  }
+
+  it('creates the account when nothing contends', async () => {
+    // The control. Without it every assertion below passes on a service that creates nothing.
+    const email = `solo-${uuidv7().slice(-8)}@identity-admin.test`;
+    const created = await asAdmin(() =>
+      parking.create({ email, displayName: 'Solo', roleIds: [], departments: [] }),
+    );
+
+    expect(created.id).toBeTruthy();
+    expect(await accountsWith(email)).toBe(1);
+  });
+
+  it('refuses a second invitation of the same address when the two are ordered', async () => {
+    // The sequential answer the concurrent one has to match, and the reason the failure below is
+    // about concurrency rather than about the duplicate check being absent.
+    const email = `ordered-${uuidv7().slice(-8)}@identity-admin.test`;
+    await asAdmin(() =>
+      parking.create({ email, displayName: 'First', roleIds: [], departments: [] }),
+    );
+
+    await expect(
+      asAdmin(() => parking.create({ email, displayName: 'Second', roleIds: [], departments: [] })),
+    ).rejects.toThrow(DuplicateError);
+    expect(await accountsWith(email)).toBe(1);
+  });
+
+  it('reports a failure that is not a duplicate as itself', async () => {
+    /*
+     * The narrowing, asserted. Translating *every* failure from this insert into "that address is
+     * already in use" would hide a genuine fault behind a plausible refusal, so the predicate is
+     * `P2002` on `User` and nothing else. A tenant that does not exist violates the foreign key
+     * instead, which must surface as itself.
+     */
+    const nowhere = asId<TenantId>(uuidv7());
+    const outcome = await runWithContext({ ...contextFor(adminId), tenantId: nowhere }, () =>
+      users.create({
+        email: `orphan-${uuidv7().slice(-8)}@identity-admin.test`,
+        displayName: 'Orphan',
+        roleIds: [],
+        departments: [],
+      }),
+    ).then(
+      () => ({ kind: 'created' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).not.toBeInstanceOf(DuplicateError);
+  });
+
+  it('refuses the loser the way the ordered second caller is refused', async () => {
+    const email = `contended-${uuidv7().slice(-8)}@identity-admin.test`;
+    expect(await accountsWith(email)).toBe(0);
+    turnstile.arm(2);
+
+    // Each from its own scope, so each opens its own transaction.
+    const one = asAdmin(() =>
+      parking.create({ email, displayName: 'One', roleIds: [], departments: [] }),
+    );
+    await turnstile.reached[0];
+    const two = asAdmin(() =>
+      parking.create({ email, displayName: 'Two', roleIds: [], departments: [] }),
+    );
+    await turnstile.reached[1];
+
+    // Both read the address as free, and both are about to claim it.
+    expect(turnstile.arrivals).toEqual([email.toLowerCase(), email.toLowerCase()]);
+
+    turnstile.release(0);
+    const winner = await one.then(
+      (value) => ({ kind: 'created' as const, value }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+    turnstile.release(1);
+    const loser = await two.then(
+      () => ({ kind: 'created' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    // The index keeps the data right whatever the callers are told.
+    expect(winner.kind).toBe('created');
+    expect(await accountsWith(email)).toBe(1);
+
+    // And the loser is told what the ordered second caller is told, rather than meeting a raw
+    // constraint violation that reaches the administrator as a `500`.
+    expect(loser.kind).toBe('refused');
+    expect(loser.error).toBeInstanceOf(DuplicateError);
   });
 });

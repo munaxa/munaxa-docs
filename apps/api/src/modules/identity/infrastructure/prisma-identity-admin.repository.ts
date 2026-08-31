@@ -1,10 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 import { type PermissionKey, isPermissionKey } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
-import { VersionConflictError } from '../../../core/errors/application-errors';
+import { DuplicateError, VersionConflictError } from '../../../core/errors/application-errors';
 import {
   RecordStamps,
   deletedCondition,
@@ -107,15 +107,37 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
     emailNormalized: string;
     displayName: string;
   }): Promise<void> {
-    await requireTransaction().user.create({
-      data: {
-        ...input,
-        tenantId: this.tenantId(),
-        // A new account cannot sign in until somebody sets a password, which is what INVITED means.
-        status: 'INVITED',
-        ...this.stamps.creation(),
-      },
-    });
+    /*
+     * `emailTaken` and this insert are the same question asked at two moments — Slice 63.
+     *
+     * `uq_user_tenant_email` is partial on `deleted_at IS NULL`, which is exactly the condition the
+     * check reads, so two administrators inviting one address both saw it free and both arrive
+     * here. The index admits one, and the loser used to meet a raw `P2002` — neither a
+     * `DomainError` nor an `HttpException`, so `AllExceptionsFilter` answered `500` on an invite
+     * form, where the same request a moment later in sequence is refused with "already in use".
+     *
+     * Caught rather than tolerated, and the difference from Slice 61's federated identity is the
+     * whole reason: there the loser had to *read* the account that won, and a unique violation
+     * aborts the transaction so no read could follow it. Here the loser needs no read — only a
+     * different exception — so translating at the boundary that knows what the index means is both
+     * sufficient and the pattern this repository already uses for `uq_document_signature_live`.
+     */
+    try {
+      await requireTransaction().user.create({
+        data: {
+          ...input,
+          tenantId: this.tenantId(),
+          // A new account cannot sign in until somebody sets a password, which is what INVITED means.
+          status: 'INVITED',
+          ...this.stamps.creation(),
+        },
+      });
+    } catch (error) {
+      if (isTakenEmailViolation(error)) {
+        throw new DuplicateError('user', 'email');
+      }
+      throw error;
+    }
   }
 
   async updateUser(
@@ -546,4 +568,26 @@ function toRoleRow(row: RoleSelection): RoleAdminRow {
     deletedBy: row.deletedBy,
     version: row.version,
   };
+}
+
+/**
+ * The one violation `insertUser` translates; anything else is a genuine failure.
+ *
+ * Matched by model rather than by index name, and that is a limitation worth stating rather than
+ * hiding: `uq_user_tenant_email` is a **partial** index, and Prisma reports `target: null` for it —
+ * measured, `{"modelName":"User","target":null}` — so there is no name to compare. Naming it, as
+ * `uq_document_signature_live` is named, would produce a test that never fires.
+ *
+ * What makes the unnamed match exact is the insert itself. `user` carries three unique indexes and
+ * this statement can reach only one of them: `uq_user_external_identity` covers
+ * `(tenant_id, identity_provider_id, external_id)` and this writes neither provider nor subject, so
+ * both are `NULL` and PostgreSQL holds `NULL`s distinct; `user_pkey` is a freshly minted UUIDv7.
+ * The address is the only value here that another row can already hold.
+ */
+function isTakenEmailViolation(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002' &&
+    error.meta?.['modelName'] === 'User'
+  );
 }
