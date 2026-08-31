@@ -309,7 +309,19 @@ export class DefaultFederationService implements FederationService {
       throw new UnauthenticatedError(REJECTED);
     }
 
-    return this.within(tenantId, () =>
+    /*
+     * The transaction below decides the outcome, and a refusal it decides is carried *out* of it
+     * rather than thrown from inside — Slice 62.
+     *
+     * `13-audit-architecture.md` §1 binds an audit row to the change it records, "either both
+     * happened or neither did". A refusal records no change, so there is nothing for it to be bound
+     * to, and a failure written in a transaction that then throws is a failure nobody can see:
+     * `LOGIN_FAILED` is Security-group evidence and the audit sink streams it to the tenant's own
+     * collector. `AuthenticationService` reached this conclusion for the password path and calls the
+     * answer "a second, committing transaction"; `refresh` reached it again for a stolen refresh
+     * token. This is the same shape, for the same reason.
+     */
+    const signIn = await this.within(tenantId, () =>
       this.unitOfWork.run(async () => {
         const now = this.clock.now();
         const existing = await this.users.findByExternalIdentity(provider.id, externalId, email);
@@ -322,8 +334,8 @@ export class DefaultFederationService implements FederationService {
           await this.users.linkToProvider(userId, provider.id, externalId, displayName, now);
         } else {
           if (!provider.jitProvisioning) {
-            await this.recordFailure(tenantId, input, 'NO_ACCOUNT_AND_JIT_OFF');
-            throw new UnauthenticatedError(REJECTED);
+            // Reported, not thrown: recording it here and then throwing would discard the record.
+            return { kind: 'refused', reason: 'NO_ACCOUNT_AND_JIT_OFF' } as const;
           }
           // Exactly what the mapping says, and nothing more. `rolesForClaims` is pure and runs one
           // way; an asserted group nobody mapped contributes nothing, and a mapped role key that
@@ -420,22 +432,35 @@ export class DefaultFederationService implements FederationService {
         });
 
         return {
-          accessToken: access.token,
-          accessTokenExpiresAt: access.expiresAt,
-          refreshToken: refresh.token,
-          refreshTokenExpiresAt: refresh.expiresAt,
-          user: {
-            id: credential.id,
-            email: credential.email,
-            displayName: credential.displayName,
-            roleIds: credential.roleIds,
-            roles: credential.roleKeys,
-            permissions: credential.permissions,
-            mfaEnrolled: credential.mfaEnrolled,
+          kind: 'issued',
+          result: {
+            accessToken: access.token,
+            accessTokenExpiresAt: access.expiresAt,
+            refreshToken: refresh.token,
+            refreshTokenExpiresAt: refresh.expiresAt,
+            user: {
+              id: credential.id,
+              email: credential.email,
+              displayName: credential.displayName,
+              roleIds: credential.roleIds,
+              roles: credential.roleKeys,
+              permissions: credential.permissions,
+              mfaEnrolled: credential.mfaEnrolled,
+            },
           },
-        };
+        } as const;
       }),
     );
+
+    if (signIn.kind === 'refused') {
+      // A second, committing transaction. The attempt is recorded whether or not it succeeded, and
+      // only then does the request fail — the wording `AuthenticationService` uses for the password
+      // path, and the same guarantee.
+      await this.recordFailure(tenantId, input, signIn.reason);
+      throw new UnauthenticatedError(REJECTED);
+    }
+
+    return signIn.result;
   }
 
   /** A failed federated sign-in, recorded exactly as a failed password one is. */
