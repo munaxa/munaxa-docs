@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { type TenantId, type UserId, asId } from '@edms/domain';
+import { type TenantId, type UserId, asId, idsInPath, pathFor } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
@@ -14,6 +14,7 @@ import { type RequestContext, runWithContext } from '../../../core/tenancy/tenan
 import { realAclResolver, realWriteStack } from '../../../testing/real-collaborators';
 import { ScopeAdminService } from '../application/scope-admin.service';
 import { OrganizationNodeKind } from '../domain/node-kind';
+import type { DepartmentRow } from '../application/ports';
 import { PrismaScopeAdminRepository } from '../infrastructure/prisma-scope-admin.repository';
 import { sharedDatabase } from '../../../testing/tenant-database';
 
@@ -972,5 +973,252 @@ describe('one code, one live node, however the second claim arrives', () => {
     expect(await liveDepartments(entityId, code)).toBe(1);
     expect(outcome.kind).toBe('refused');
     expect(outcome.error).toMatchObject({ code: 'DUPLICATE' });
+  });
+});
+
+/**
+ * A move rewrites the paths it read, and only those — Slice 67.
+ *
+ * `moveDepartment` reads its subtree, computes every descendant's new path from that snapshot, and
+ * writes them back. The moved node's own write was version-guarded; the descendants' writes were
+ * not, and the repository said why: a descendant's *path* "is derived data owned by this module,
+ * not a field anybody edits, so there is no concurrent edit to lose to".
+ *
+ * There is one, and it is this same method: `moveDepartment` edits a descendant's `path` **and the
+ * `parent_id` of the node it was asked to move**, so two moves inside one subtree are two writers
+ * of one row. The second mover's guard protected the node it acted on; nothing protected that node
+ * from the first mover's unguarded rewrite of it as somebody else's descendant.
+ *
+ * What came out was a row whose `path` and whose `parent_id` named different parents — and `path`
+ * is the one that decides access. `PrismaAclResolver.departmentsOf` is `idsInPath(row.path)`, so a
+ * member of that department carried the ancestors the path named as ACL subjects: an entry granted
+ * on the ancestry it had left reached them, and the ancestry it had joined did not.
+ *
+ * These tests are the two administrators, at once, in both directions — and the third is the case
+ * the guard must *not* refuse.
+ */
+describe('a move that rewrites a subtree it no longer owns', () => {
+  const turnstile = new Turnstile<string>();
+  /** Which move this test wants to stop at, between its snapshot and its writes. */
+  let parkOn: string | null = null;
+
+  class ParkingMoveRepository extends PrismaScopeAdminRepository {
+    override async moveDepartment(
+      input: Parameters<PrismaScopeAdminRepository['moveDepartment']>[0],
+    ): Promise<void> {
+      // Parked *here*: the service has already read the subtree and computed every new path, and
+      // has written nothing. That is the window the snapshot is stale in.
+      if (parkOn === `move:${input.id}`) {
+        await turnstile.park(`move:${input.id}`);
+      }
+      return super.moveDepartment(input);
+    }
+  }
+
+  const parking = new ScopeAdminService(
+    new ParkingMoveRepository(stamps),
+    outbox,
+    realAclResolver({ clock, unitOfWork }),
+    writer,
+  );
+
+  let treeNumber = 0;
+
+  /** `parent → child → grandchild` with a `sibling` beside the child, plus two roots to move to. */
+  async function tree(): Promise<{
+    parent: DepartmentRow;
+    child: DepartmentRow;
+    grandchild: DepartmentRow;
+    sibling: DepartmentRow;
+    elsewhere: DepartmentRow;
+    destination: DepartmentRow;
+  }> {
+    const { entityId } = fixture(ACME);
+    treeNumber += 1;
+    const suffix = `M${String(treeNumber).padStart(2, '0')}${String(Date.now()).slice(-4)}`;
+    const parent = await asTenant(ACME, () =>
+      parking.createDepartment({ entityId, code: `PA${suffix}`, name: 'Parent' }),
+    );
+    const child = await asTenant(ACME, () =>
+      parking.createDepartment({
+        entityId,
+        parentId: parent.id,
+        code: `CH${suffix}`,
+        name: 'Child',
+      }),
+    );
+    const grandchild = await asTenant(ACME, () =>
+      parking.createDepartment({
+        entityId,
+        parentId: child.id,
+        code: `GC${suffix}`,
+        name: 'Grandchild',
+      }),
+    );
+    const sibling = await asTenant(ACME, () =>
+      parking.createDepartment({
+        entityId,
+        parentId: parent.id,
+        code: `SB${suffix}`,
+        name: 'Sibling',
+      }),
+    );
+    const destination = await asTenant(ACME, () =>
+      parking.createDepartment({ entityId, code: `DE${suffix}`, name: 'Destination' }),
+    );
+    const elsewhere = await asTenant(ACME, () =>
+      parking.createDepartment({ entityId, code: `EL${suffix}`, name: 'Elsewhere' }),
+    );
+    return { parent, child, grandchild, sibling, destination, elsewhere };
+  }
+
+  async function rowOf(id: string): Promise<{ parentId: string | null; path: string }> {
+    const row = await owner.department.findUniqueOrThrow({
+      where: { id },
+      select: { parentId: true, path: true },
+    });
+    return row;
+  }
+
+  /** Every live department's path, derived from the parent it actually points at. */
+  async function pathsDisagreeingWithTheirParent(): Promise<string[]> {
+    const rows = await owner.department.findMany({
+      where: { tenantId: ACME, deletedAt: null },
+      select: { id: true, parentId: true, path: true },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return rows
+      .filter((row) => {
+        const parent = row.parentId === null ? null : byId.get(row.parentId);
+        return row.path !== pathFor(parent?.path ?? null, row.id);
+      })
+      .map((row) => row.id);
+  }
+
+  it('moves a subtree when nothing contends', async () => {
+    // The control. Without it every assertion below passes on a service that moves nothing.
+    const { parent, child, destination } = await tree();
+    const moved = await asTenant(ACME, () =>
+      parking.moveDepartment(parent.id, destination.id, parent.version),
+    );
+
+    expect(moved.path).toBe(pathFor(destination.path, parent.id));
+    expect((await rowOf(child.id)).path).toBe(pathFor(moved.path, child.id));
+    expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
+  });
+
+  it('refuses to rewrite a descendant that moved out while it was deciding', async () => {
+    const { parent, child, destination, elsewhere } = await tree();
+    parkOn = `move:${parent.id}`;
+    const base = turnstile.arm(1);
+
+    // The first administrator moves the parent. Its subtree snapshot, taken before it parks, still
+    // has the child under it.
+    const movingParent = asTenant(ACME, () =>
+      parking.moveDepartment(parent.id, destination.id, parent.version),
+    );
+    await turnstile.reached[base];
+
+    // The second administrator moves the child out, from its own scope and so its own transaction,
+    // and commits. This is the edit the first administrator's snapshot cannot know about.
+    parkOn = null;
+    const movedChild = await asTenant(ACME, () =>
+      parking.moveDepartment(child.id, elsewhere.id, child.version),
+    );
+    expect(movedChild.path).toBe(pathFor(elsewhere.path, child.id));
+
+    turnstile.release(base);
+    const outcome = await movingParent.then(
+      (value) => ({ kind: 'moved' as const, value, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, value: undefined, error }),
+    );
+
+    // Whatever the first move's own fate, the child must not be left describing an ancestry it does
+    // not have: `departmentsOf` is `idsInPath(path)`, so a stale path is a stale set of ACL
+    // subjects — the ancestors it no longer has reaching it, and the one it does not.
+    const after = await rowOf(child.id);
+    expect(after.parentId).toBe(elsewhere.id);
+    expect(after.path).toBe(pathFor(elsewhere.path, child.id));
+    expect(idsInPath(after.path)).not.toContain(parent.id);
+    expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
+
+    // And the loser is told, rather than committing a rewrite of a tree that changed under it.
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
+  });
+
+  it('refuses when a descendant only moved to another branch of the same subtree', async () => {
+    /*
+     * Why the guard refuses rather than quietly skipping the row it no longer recognises.
+     *
+     * Here the node that moved is still inside the subtree being moved, so the rest of the snapshot
+     * is still wrong about it: the grandchild now hangs from the sibling, and the sibling's path is
+     * about to be rewritten. Skipping the one row whose parent changed would rewrite the sibling and
+     * leave the grandchild describing where the sibling used to be — the same divergence, one level
+     * further down. The whole snapshot is stale together, so the whole move is refused together.
+     */
+    const { parent, child, grandchild, sibling, destination } = await tree();
+    parkOn = `move:${parent.id}`;
+    const base = turnstile.arm(1);
+
+    const movingParent = asTenant(ACME, () =>
+      parking.moveDepartment(parent.id, destination.id, parent.version),
+    );
+    await turnstile.reached[base];
+
+    parkOn = null;
+    const moved = await asTenant(ACME, () =>
+      parking.moveDepartment(grandchild.id, sibling.id, grandchild.version),
+    );
+    expect(moved.path).toBe(pathFor(sibling.path, grandchild.id));
+
+    turnstile.release(base);
+    const outcome = await movingParent.then(
+      () => ({ kind: 'moved' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
+    // Refused means nothing was written, so the sibling still holds the path the grandchild names.
+    expect((await rowOf(child.id)).path).toBe(pathFor(parent.path, child.id));
+    expect((await rowOf(sibling.id)).path).toBe(pathFor(parent.path, sibling.id));
+    expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
+  });
+
+  it('still moves when a descendant was only put in the recycle bin', async () => {
+    /*
+     * The other side of the guard: what must *not* become a conflict.
+     *
+     * Soft-deleting a leaf does not move anything, so the snapshot is still right about where every
+     * node sits and the move has nothing to lose to. The deleted row is carried along with the rest
+     * — `departmentSubtree` never sees a row already in the bin, so restoring one whose ancestors
+     * moved meanwhile is a stale path either way, and this is the one window where the move can
+     * still keep it honest.
+     */
+    const { parent, child, grandchild, destination } = await tree();
+    parkOn = `move:${parent.id}`;
+    const base = turnstile.arm(1);
+
+    const movingParent = asTenant(ACME, () =>
+      parking.moveDepartment(parent.id, destination.id, parent.version),
+    );
+    await turnstile.reached[base];
+
+    parkOn = null;
+    await asTenant(ACME, () =>
+      parking.delete(OrganizationNodeKind.DEPARTMENT, grandchild.id, grandchild.version),
+    );
+
+    turnstile.release(base);
+    const moved = await movingParent;
+
+    expect(moved.path).toBe(pathFor(destination.path, parent.id));
+    const movedChild = await rowOf(child.id);
+    expect(movedChild.path).toBe(pathFor(moved.path, child.id));
+    // Carried with the subtree even though it is in the bin, so a restore does not resurrect a row
+    // describing where its ancestors used to be.
+    expect((await rowOf(grandchild.id)).path).toBe(pathFor(movedChild.path, grandchild.id));
+    expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
   });
 });
