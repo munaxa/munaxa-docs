@@ -2499,3 +2499,141 @@ describe('a rebuild and a deletion writing the same build target', () => {
     ).toBe(0);
   }, 180_000);
 });
+
+/**
+ * The reader held at the batch *after* the one that wrote a named document.
+ *
+ * `run()` opens one transaction per batch, so by the time the next batch asks for its ids the
+ * previous batch has committed and its rows are in the build target. Parking there puts a
+ * concurrent projection strictly *after* the rebuild's own write for that document — the
+ * opposite ordering to the one Slice 75 closed, and the one where the projection must win.
+ */
+class ParkedAfterBatchReader extends PrismaSearchSourceReader {
+  /** The candidate whose batch has committed by the time the park is reached. */
+  subject: DocumentId | null = null;
+  private parked = false;
+
+  constructor(
+    unitOfWork: PrismaUnitOfWork,
+    private readonly candidate: DocumentId,
+    private readonly turnstile: Turnstile<string>,
+  ) {
+    super(unitOfWork);
+  }
+
+  override async findableIdsAfter(cursor: DocumentId | null, limit: number) {
+    const ids = await super.findableIdsAfter(cursor, limit);
+    if (this.subject !== null && !this.parked) {
+      this.parked = true;
+      await this.turnstile.park(`after:${this.subject}`);
+    }
+    return ids;
+  }
+
+  override async factsFor(documentId: DocumentId) {
+    const facts = await super.factsFor(documentId);
+    if (this.subject === null && documentId === this.candidate) {
+      this.subject = documentId;
+    }
+    return facts;
+  }
+}
+
+/**
+ * The reverse ordering: the rebuild wrote first, and the projection is the newer truth.
+ *
+ * `SearchProjectionService.project` and `SearchRebuildService.run` both reach the build target
+ * through the *same* `IndexPort.rebuildUpsert`, and they want opposite things from it. The
+ * rebuild's write must give way, because it carries facts captured earlier in its batch. The
+ * projection's dual-write must win, because it re-read current truth immediately before writing
+ * — it is the mechanism the rebuild's own docstring relies on for "a change that lands mid-fill
+ * reaches the build target".
+ *
+ * A rebuild of a real tenant is many batches. Everything that changes between the batch that
+ * wrote a document and the swap arrives through this path, so this is not a narrow window: it is
+ * the rest of the run. The batch size is 1 here only to make the boundary exact — at the shipped
+ * 200 the same ordering happens to every document whose batch has already committed.
+ */
+describe('a projection landing after the rebuild already wrote the document', () => {
+  it('must let the newer projection reach the build target', async () => {
+    const target = await createDocument(
+      'Vibration analysis baseline report',
+      await realPdf(['Vibration baseline, bearing housing.']),
+      'vibration.pdf',
+      'application/pdf',
+    );
+    await project(target.documentId);
+
+    const before = await searchAs(asAlice, 'vibration analysis');
+    expect(before.results.hits.map((hit) => hit.documentId)).toContain(target.documentId);
+    expect(await owner.searchIndexEntryShadow.count({ where: { tenantId: TENANT } })).toBe(0);
+
+    const turnstile = new Turnstile<string>();
+    turnstile.arm(1);
+    const reader = new ParkedAfterBatchReader(unitOfWork, target.documentId, turnstile);
+    const raced = realSearchStack({
+      clock,
+      unitOfWork,
+      config: { ...appConfig, search: { ...appConfig.search, rebuildBatchSize: 1 } },
+      registry,
+      storage: library.storage,
+      storagePort: library.storagePort,
+      source: reader,
+    });
+
+    const requested = await asAlice(() => raced.rebuilds.request());
+    const observed: { shadowBefore: number | null; denyInShadow: readonly string[] | null } = {
+      shadowBefore: null,
+      denyInShadow: null,
+    };
+    const withdrawAccess = (async () => {
+      await turnstile.reached[0];
+      try {
+        // The rebuild's own row for this document is already in the build target.
+        observed.shadowBefore = await owner.searchIndexEntryShadow.count({
+          where: { documentId: target.documentId },
+        });
+        await owner.aclEntry.create({
+          data: {
+            id: uuidv7(),
+            tenantId: TENANT,
+            scopeType: 'DOCUMENT',
+            scopeId: target.documentId,
+            subjectType: 'USER',
+            subjectId: ALICE,
+            permission: 'document:view',
+            effect: 'DENY',
+            createdAt: FIXED_NOW,
+            updatedAt: FIXED_NOW,
+          },
+        });
+        await project(target.documentId);
+        const row = await owner.searchIndexEntryShadow.findUnique({
+          where: { documentId: target.documentId },
+          select: { aclDenySubjects: true },
+        });
+        observed.denyInShadow = row?.aclDenySubjects ?? null;
+      } finally {
+        turnstile.release(0);
+      }
+    })();
+
+    await asSystem(() => raced.rebuilds.run(requested.id));
+    await withdrawAccess;
+
+    expect(turnstile.arrivals).toEqual([`after:${target.documentId}`]);
+    // The ordering the proof needs: the rebuild had already written this document.
+    expect(observed.shadowBefore).toBe(1);
+    // The projection's dual-write must have reached the build target.
+    expect(observed.denyInShadow).toEqual([`user:${ALICE}`]);
+
+    const entry = await owner.searchIndexEntry.findUniqueOrThrow({
+      where: { documentId: target.documentId },
+      select: { aclDenySubjects: true },
+    });
+    expect(entry.aclDenySubjects).toEqual([`user:${ALICE}`]);
+
+    const after = await searchAs(asAlice, 'vibration analysis');
+    expect(after.results.hits.map((hit) => hit.documentId)).not.toContain(target.documentId);
+  }, 180_000);
+});

@@ -163,8 +163,23 @@ export interface IndexPort {
   remove(documentId: DocumentId): Promise<void>;
   /** Empty the build target. Idempotent; a resumed rebuild does NOT call it again. */
   beginRebuild(): Promise<void>;
-  /** Bulk-write a batch into the build target, not the live index. */
-  rebuildUpsert(documents: readonly IndexDocument[]): Promise<void>;
+  /**
+   * The rebuild's own batch, into the build target.
+   *
+   * It carries facts captured earlier in that batch, so it **gives way**: it never overwrites
+   * what a concurrent projection has already put there, and never writes a document that has
+   * stopped being findable. The engine decides both, not arrival order.
+   */
+  rebuildFill(documents: readonly IndexDocument[]): Promise<void>;
+  /**
+   * A live projection's dual-write into the build target, while a rebuild runs.
+   *
+   * This is current truth — the projection re-read the document immediately before calling — so
+   * it **overwrites**, exactly as the live write does. It is the whole of "a change that lands
+   * mid-fill reaches the build target"; a staleness guard here would silently drop every change
+   * made after its document's batch had already been written.
+   */
+  rebuildMirror(document: IndexDocument): Promise<void>;
   /** Remove from the build target, so a document deleted mid-rebuild cannot outlive the swap. */
   rebuildRemove(documentId: DocumentId): Promise<void>;
   /** Atomically make the build target the live index. */

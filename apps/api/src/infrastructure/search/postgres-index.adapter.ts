@@ -43,11 +43,20 @@ export class PostgresIndexAdapter implements IndexPort {
   async upsert(document: IndexDocument): Promise<void> {
     // The projection's own write: it read current truth immediately before this, so it is the
     // freshest thing anyone can say about the document and it overwrites whatever is there.
-    await requireTransaction().$executeRaw(Prisma.sql`
-      INSERT INTO ${Prisma.raw(`"${LIVE_TABLE}"`)} (${COLUMNS})
-      VALUES (${this.rowValues(document)})
-      ON CONFLICT ("document_id") DO UPDATE SET ${ASSIGNMENTS}
-    `);
+    await requireTransaction().$executeRaw(this.overwriteSql(LIVE_TABLE, document));
+  }
+
+  /**
+   * The same write, against the build target, for a projection that lands while a rebuild runs.
+   *
+   * It overwrites for the same reason the live write does, and it must: a rebuild of a real
+   * tenant is many batches, and everything that changes between the batch that wrote a document
+   * and the swap arrives here. `rebuildFill`'s guards belong to the rebuild's write alone —
+   * applied to this one they would drop the change instead of carrying it, which is the inverse
+   * of what the dual-write exists for.
+   */
+  async rebuildMirror(document: IndexDocument): Promise<void> {
+    await requireTransaction().$executeRaw(this.overwriteSql(SHADOW_TABLE, document));
   }
 
   async remove(documentId: DocumentId): Promise<void> {
@@ -86,7 +95,7 @@ export class PostgresIndexAdapter implements IndexPort {
    * own projection runs after it commits, and removes the entry from the build target if the
    * swap has not happened yet, or from the live index if it has.
    */
-  async rebuildUpsert(documents: readonly IndexDocument[]): Promise<void> {
+  async rebuildFill(documents: readonly IndexDocument[]): Promise<void> {
     const tx = requireTransaction();
     for (const document of documents) {
       await tx.$executeRaw(Prisma.sql`
@@ -121,7 +130,16 @@ export class PostgresIndexAdapter implements IndexPort {
     await tx.$executeRaw(Prisma.sql`DELETE FROM ${Prisma.raw(`"${SHADOW_TABLE}"`)}`);
   }
 
-  /** The row's value expressions, in `COLUMNS` order — one source of truth for both writers. */
+  /** The overwriting write — the live index's, and the projection's mirror of it. */
+  private overwriteSql(table: string, doc: IndexDocument): Prisma.Sql {
+    return Prisma.sql`
+      INSERT INTO ${Prisma.raw(`"${table}"`)} (${COLUMNS})
+      VALUES (${this.rowValues(doc)})
+      ON CONFLICT ("document_id") DO UPDATE SET ${ASSIGNMENTS}
+    `;
+  }
+
+  /** The row's value expressions, in `COLUMNS` order — one source of truth for every writer. */
   private rowValues(doc: IndexDocument): Prisma.Sql {
     const cfg = searchConfiguration(doc.language);
     // A: what exact search hits. B: filename and metadata. C: title and description under the

@@ -59,7 +59,7 @@ export class SearchProjectionService implements SearchProjection {
       const document = await this.indexDocumentFrom(facts);
       await this.index.upsert(document);
       if ((await this.rebuilds.findRunning()) !== null) {
-        await this.index.rebuildUpsert([document]);
+        await this.index.rebuildMirror(document);
       }
       await this.outbox.publish([
         documentIndexedEvent(documentId, {
