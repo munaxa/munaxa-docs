@@ -28,6 +28,7 @@ import { requireTransaction } from '../../../core/prisma';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { PrismaFacetLabelReader } from '../infrastructure/prisma-facet-label.reader';
+import { PrismaSearchSourceReader } from '../infrastructure/prisma-search-source.reader';
 import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
@@ -89,6 +90,7 @@ let search: SearchStack;
 let owner: PrismaClient;
 let unitOfWork: PrismaUnitOfWork;
 
+let registry: ReturnType<typeof everyTenantRegistry>;
 let rootFolderId: string;
 let documentTypeId: string;
 let metadataFieldId: string;
@@ -312,7 +314,7 @@ beforeAll(async () => {
 
   const prisma = sharedDatabase(appConfig, logger, APP_URL);
   unitOfWork = new PrismaUnitOfWork(prisma);
-  const registry = everyTenantRegistry(APP_URL);
+  registry = everyTenantRegistry(APP_URL);
   const users = {
     get: (id: string) =>
       id === ALICE
@@ -2091,4 +2093,409 @@ describe('the company placement and the branch filter', () => {
 
     expect(Object.keys(named)).toStrictEqual(['department']);
   });
+});
+
+/**
+ * One caller parked where the rebuild reads, so the two writers of the build target interleave
+ * in a fixed order. `arm` must be called before the run: an unarmed turnstile never parks, so a
+ * setup read cannot consume the slot the proof needs.
+ */
+class Turnstile<TMarker> {
+  readonly arrivals: TMarker[] = [];
+  readonly reached: Promise<void>[] = [];
+  private readonly announce: (() => void)[] = [];
+  private readonly admissions: Promise<void>[] = [];
+  private readonly admits: (() => void)[] = [];
+  private armed = false;
+
+  arm(callers: number): void {
+    for (let index = 0; index < callers; index += 1) {
+      let arrive: () => void = () => undefined;
+      this.reached.push(
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+      this.announce.push(arrive);
+      let admit: () => void = () => undefined;
+      this.admissions.push(
+        new Promise<void>((resolve) => {
+          admit = resolve;
+        }),
+      );
+      this.admits.push(admit);
+    }
+    this.armed = true;
+  }
+
+  async park(marker: TMarker): Promise<void> {
+    if (!this.armed) {
+      return;
+    }
+    const ordinal = this.arrivals.length;
+    this.arrivals.push(marker);
+    this.announce[ordinal]?.();
+    await this.admissions[ordinal];
+  }
+
+  release(ordinal: number): void {
+    this.admits[ordinal]?.();
+  }
+}
+
+/**
+ * The real source reader, held at the second of two named documents.
+ *
+ * The seam is a subclass rather than a double precisely because the property under test is what
+ * PostgreSQL does with two concurrent writers: `super.factsFor` runs the real query inside the
+ * rebuild's real transaction, and the park merely decides *when* the rest of the batch follows.
+ *
+ * Which of the two is held is decided from the batch itself rather than from creation order.
+ * `findableIdsAfter` orders by `id`, and the ids a document gets are not ordered by the moment it
+ * was created — measured, after a first attempt that assumed they were and passed two runs in
+ * three for that reason. Whichever candidate the batch reads first becomes the subject; the other
+ * becomes the park. The subject's facts and ACL are therefore always captured before the park,
+ * which is the whole ordering the proof needs.
+ */
+class ParkedSourceReader extends PrismaSearchSourceReader {
+  /** The candidate the batch read first — the document the race is run against. */
+  subject: DocumentId | null = null;
+  private parkAt: DocumentId | null = null;
+  readonly readOrder: string[] = [];
+  readonly batchSizes: number[] = [];
+
+  constructor(
+    unitOfWork: PrismaUnitOfWork,
+    private readonly candidates: readonly DocumentId[],
+    private readonly turnstile: Turnstile<string>,
+  ) {
+    super(unitOfWork);
+  }
+
+  override async findableIdsAfter(cursor: DocumentId | null, limit: number) {
+    const ids = await super.findableIdsAfter(cursor, limit);
+    this.batchSizes.push(ids.length);
+    const mine = ids.filter((id) => this.candidates.includes(id));
+    if (this.subject === null && mine.length === 2) {
+      this.subject = mine[0] ?? null;
+      this.parkAt = mine[1] ?? null;
+    }
+    return ids;
+  }
+
+  override async factsFor(documentId: DocumentId) {
+    const facts = await super.factsFor(documentId);
+    this.readOrder.push(String(documentId));
+    if (this.parkAt !== null && documentId === this.parkAt) {
+      await this.turnstile.park(`facts:${documentId}`);
+    }
+    return facts;
+  }
+}
+
+/**
+ * Slice 75 — a rebuild publishes what it captured, not what is true when it writes.
+ *
+ * `SearchRebuildService.run` fills the build target one batch at a time, and a batch is one
+ * transaction that reads **every** document's facts and *then* writes them all: with the shipped
+ * `SEARCH_REBUILD_BATCH_SIZE` of 200 the first document's `acl_subjects` are resolved up to two
+ * hundred documents' worth of reads before they are written. `search.index` runs at concurrency 8
+ * and `PrismaUnitOfWork` opens no isolation level, so READ COMMITTED is what decides the race:
+ * a projection that commits inside that window dual-writes current truth into the build target,
+ * and the batch's `ON CONFLICT ("document_id") DO UPDATE` — which carries no `WHERE` guard, and
+ * assigns `"source_version" = EXCLUDED."source_version"` without ever comparing it — puts the
+ * captured representation back on top. `completeRebuild` then makes that the live index.
+ *
+ * The consequence is the one `SearchIndexConsumer` says is bounded. Its own words: "a stale
+ * `acl_subjects` is a search result somebody may not see — or one they should not. The window is
+ * bounded by the subtree's size and the debounce". Through this ordering it is not bounded — the
+ * denial is undone by the swap and stays undone until something else happens to that document.
+ * `PostgresSearchAdapter.query` decides visibility from the index's own `acl_subjects` and
+ * `acl_deny_subjects` columns and re-checks nothing, so the entry is the whole decision.
+ */
+describe('a rebuild and a projection writing the same build target', () => {
+  it('must not republish an ACL the index had already been told to withdraw', async () => {
+    const first = await createDocument(
+      'Turbine borescope inspection dossier',
+      await realPdf(['Borescope findings, stage two.']),
+      'borescope.pdf',
+      'application/pdf',
+    );
+    const second = await createDocument(
+      'Turbine borescope inspection appendix',
+      await realPdf(['Appendix, stage two.']),
+      'borescope-appendix.pdf',
+      'application/pdf',
+    );
+    await project(first.documentId);
+    await project(second.documentId);
+
+    const before = await searchAs(asAlice, 'borescope inspection');
+    const beforeIds = before.results.hits.map((hit) => hit.documentId);
+    expect(beforeIds).toContain(first.documentId);
+    expect(beforeIds).toContain(second.documentId);
+
+    // The build target starts empty — the previous run's swap left it so, and `beginRebuild`
+    // therefore takes no row locks the concurrent projection could block on.
+    expect(await owner.searchIndexEntryShadow.count({ where: { tenantId: TENANT } })).toBe(0);
+
+    const turnstile = new Turnstile<string>();
+    turnstile.arm(1);
+    const reader = new ParkedSourceReader(
+      unitOfWork,
+      [first.documentId, second.documentId],
+      turnstile,
+    );
+    const raced = realSearchStack({
+      clock,
+      unitOfWork,
+      // The shipped default, so the whole tenant is one batch and the ordering is the one
+      // production runs — not a batch size invented to make the window appear.
+      config: { ...appConfig, search: { ...appConfig.search, rebuildBatchSize: 200 } },
+      registry,
+      storage: library.storage,
+      storagePort: library.storagePort,
+      source: reader,
+    });
+
+    const requested = await asAlice(() => raced.rebuilds.request());
+    expect(requested.state).toBe('RUNNING');
+
+    const observed: { subject: DocumentId | null; denySubjects: readonly string[] | null } = {
+      subject: null,
+      denySubjects: null,
+    };
+    const withdrawAccess = (async () => {
+      await turnstile.reached[0];
+      const subject = reader.subject;
+      if (subject === null) {
+        throw new Error('The batch did not carry both candidates.');
+      }
+      observed.subject = subject;
+      // An administrator denies exactly this document to exactly this caller, for real: the
+      // resolver reads the row, and the projection materialises what the resolver says.
+      await owner.aclEntry.create({
+        data: {
+          id: uuidv7(),
+          tenantId: TENANT,
+          scopeType: 'DOCUMENT',
+          scopeId: subject,
+          subjectType: 'USER',
+          subjectId: ALICE,
+          permission: 'document:view',
+          effect: 'DENY',
+          createdAt: FIXED_NOW,
+          updatedAt: FIXED_NOW,
+        },
+      });
+      await project(subject);
+      // Read the row rather than re-running the query: this must stay well inside the
+      // transaction timeout the parked batch is holding open.
+      const live = await owner.searchIndexEntry.findUniqueOrThrow({
+        where: { documentId: subject },
+        select: { aclDenySubjects: true },
+      });
+      observed.denySubjects = live.aclDenySubjects;
+      turnstile.release(0);
+    })();
+
+    await asSystem(() => raced.rebuilds.run(requested.id));
+    await withdrawAccess;
+
+    const subject = observed.subject;
+    expect(subject).not.toBeNull();
+    // One batch, and the subject was read — and its ACL resolved — before the caller was held.
+    // That is the ordering the race needs, asserted rather than assumed.
+    const held = subject === first.documentId ? second.documentId : first.documentId;
+    expect(reader.batchSizes).toHaveLength(1);
+    expect(turnstile.arrivals).toEqual([`facts:${held}`]);
+    expect(reader.readOrder.indexOf(String(subject))).toBeLessThan(
+      reader.readOrder.indexOf(String(held)),
+    );
+    // The projection did its job: the live index carried the denial before the swap.
+    expect(observed.denySubjects).toEqual([`user:${ALICE}`]);
+
+    const entry = await owner.searchIndexEntry.findUniqueOrThrow({
+      where: { documentId: subject as DocumentId },
+      select: { aclDenySubjects: true },
+    });
+    expect(entry.aclDenySubjects).toEqual([`user:${ALICE}`]);
+
+    const after = await searchAs(asAlice, 'borescope inspection');
+    expect(after.results.hits.map((hit) => hit.documentId)).not.toContain(subject);
+  }, 180_000);
+});
+
+/**
+ * The sibling ordering, and the reason the fix cannot be only about overwriting.
+ *
+ * `IndexPort.rebuildRemove` is documented as existing precisely so that "a document deleted
+ * mid-rebuild cannot outlive the swap". It removes the entry from the build target — but the
+ * batch that captured the document before the deletion still writes it back afterwards, and the
+ * row it writes carries the ACL the document had while it was alive. The swap then publishes a
+ * deleted document, with its title and its body, to everyone who could see it before.
+ */
+describe('a rebuild and a deletion writing the same build target', () => {
+  it('must not republish a document the index had already been told to drop', async () => {
+    const first = await createDocument(
+      'Hydrostatic proof test certificate',
+      await realPdf(['Hydrostatic proof, 1.5x design pressure.']),
+      'hydrostatic.pdf',
+      'application/pdf',
+    );
+    const second = await createDocument(
+      'Hydrostatic proof test appendix',
+      await realPdf(['Hydrostatic appendix.']),
+      'hydrostatic-appendix.pdf',
+      'application/pdf',
+    );
+    await project(first.documentId);
+    await project(second.documentId);
+
+    const before = await searchAs(asAlice, 'hydrostatic proof');
+    expect(before.results.hits.map((hit) => hit.documentId)).toContain(first.documentId);
+    expect(await owner.searchIndexEntryShadow.count({ where: { tenantId: TENANT } })).toBe(0);
+
+    const turnstile = new Turnstile<string>();
+    turnstile.arm(1);
+    const reader = new ParkedSourceReader(
+      unitOfWork,
+      [first.documentId, second.documentId],
+      turnstile,
+    );
+    const raced = realSearchStack({
+      clock,
+      unitOfWork,
+      config: { ...appConfig, search: { ...appConfig.search, rebuildBatchSize: 200 } },
+      registry,
+      storage: library.storage,
+      storagePort: library.storagePort,
+      source: reader,
+    });
+
+    const requested = await asAlice(() => raced.rebuilds.request());
+    const observed: { subject: DocumentId | null; liveRows: number | null } = {
+      subject: null,
+      liveRows: null,
+    };
+    const deleteIt = (async () => {
+      await turnstile.reached[0];
+      const subject = reader.subject;
+      if (subject === null) {
+        throw new Error('The batch did not carry both candidates.');
+      }
+      observed.subject = subject;
+      try {
+        // The real soft delete, then the projection the lane would run for it: `factsFor`
+        // answers null for a document that stopped being findable, so this is
+        // `removeEverywhere`.
+        const row = await owner.document.findUniqueOrThrow({
+          where: { id: subject },
+          select: { version: true },
+        });
+        await asAlice(() => library.documents.remove(String(subject), row.version, 'Superseded.'));
+        await project(subject);
+        observed.liveRows = await owner.searchIndexEntry.count({
+          where: { documentId: subject },
+        });
+      } finally {
+        // Never leave the batch parked: a failure here must surface as its own assertion, not
+        // as the suite's timeout.
+        turnstile.release(0);
+      }
+    })();
+
+    await asSystem(() => raced.rebuilds.run(requested.id));
+    await deleteIt;
+
+    const subject = observed.subject;
+    expect(subject).not.toBeNull();
+    // The removal reached the live index before the swap.
+    expect(observed.liveRows).toBe(0);
+
+    expect(
+      await owner.searchIndexEntry.count({ where: { documentId: subject as DocumentId } }),
+    ).toBe(0);
+    const after = await searchAs(asAlice, 'hydrostatic proof');
+    expect(after.results.hits.map((hit) => hit.documentId)).not.toContain(subject);
+  }, 180_000);
+
+  /**
+   * The other way a document stops being findable, and the reason the guard names both.
+   *
+   * `findableIdsAfter` excludes `deleted_at IS NOT NULL` *and* `status = 'PURGED'`, and
+   * `factsFor` answers null for either. A guard that checked only the first would let a purged
+   * record — one whose content the retention policy destroyed on purpose — be written back into
+   * the build target and published by the swap. The purge itself is Retention's; what is under
+   * test here is the index adapter's guard, so the status is set as a fixture and the real
+   * projection is then run over it.
+   */
+  it('must not republish a document whose record was purged', async () => {
+    const first = await createDocument(
+      'Pneumatic leak rate record',
+      await realPdf(['Leak rate, category two.']),
+      'pneumatic.pdf',
+      'application/pdf',
+    );
+    const second = await createDocument(
+      'Pneumatic leak rate appendix',
+      await realPdf(['Pneumatic appendix.']),
+      'pneumatic-appendix.pdf',
+      'application/pdf',
+    );
+    await project(first.documentId);
+    await project(second.documentId);
+    expect(await owner.searchIndexEntryShadow.count({ where: { tenantId: TENANT } })).toBe(0);
+
+    const turnstile = new Turnstile<string>();
+    turnstile.arm(1);
+    const reader = new ParkedSourceReader(
+      unitOfWork,
+      [first.documentId, second.documentId],
+      turnstile,
+    );
+    const raced = realSearchStack({
+      clock,
+      unitOfWork,
+      config: { ...appConfig, search: { ...appConfig.search, rebuildBatchSize: 200 } },
+      registry,
+      storage: library.storage,
+      storagePort: library.storagePort,
+      source: reader,
+    });
+
+    const requested = await asAlice(() => raced.rebuilds.request());
+    const observed: { subject: DocumentId | null; liveRows: number | null } = {
+      subject: null,
+      liveRows: null,
+    };
+    const purgeIt = (async () => {
+      await turnstile.reached[0];
+      const subject = reader.subject;
+      if (subject === null) {
+        throw new Error('The batch did not carry both candidates.');
+      }
+      observed.subject = subject;
+      try {
+        await owner.document.update({
+          where: { id: subject },
+          data: { status: 'PURGED' },
+        });
+        await project(subject);
+        observed.liveRows = await owner.searchIndexEntry.count({ where: { documentId: subject } });
+      } finally {
+        turnstile.release(0);
+      }
+    })();
+
+    await asSystem(() => raced.rebuilds.run(requested.id));
+    await purgeIt;
+
+    const subject = observed.subject;
+    expect(subject).not.toBeNull();
+    expect(observed.liveRows).toBe(0);
+    expect(
+      await owner.searchIndexEntry.count({ where: { documentId: subject as DocumentId } }),
+    ).toBe(0);
+  }, 180_000);
 });

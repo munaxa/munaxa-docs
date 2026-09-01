@@ -41,7 +41,13 @@ export class PostgresIndexAdapter implements IndexPort {
   constructor(private readonly clock: ClockPort) {}
 
   async upsert(document: IndexDocument): Promise<void> {
-    await requireTransaction().$executeRaw(this.upsertSql(LIVE_TABLE, document));
+    // The projection's own write: it read current truth immediately before this, so it is the
+    // freshest thing anyone can say about the document and it overwrites whatever is there.
+    await requireTransaction().$executeRaw(Prisma.sql`
+      INSERT INTO ${Prisma.raw(`"${LIVE_TABLE}"`)} (${COLUMNS})
+      VALUES (${this.rowValues(document)})
+      ON CONFLICT ("document_id") DO UPDATE SET ${ASSIGNMENTS}
+    `);
   }
 
   async remove(documentId: DocumentId): Promise<void> {
@@ -59,10 +65,42 @@ export class PostgresIndexAdapter implements IndexPort {
     );
   }
 
+  /**
+   * The rebuild's write, which is the one that must give way.
+   *
+   * A batch reads every document's facts and *then* writes them all, so what it holds here was
+   * captured up to `SEARCH_REBUILD_BATCH_SIZE` documents' worth of reads ago. A projection that
+   * committed inside that window has already put current truth into the build target — that is
+   * the dual-write the rebuild depends on — and it must not be overwritten by the older
+   * representation. Two guards, both decided by the database rather than by arrival order:
+   *
+   * - `DO NOTHING` keeps a row that is already there. `beginRebuild` empties the build target at
+   *   a genuine start and `findableIdsAfter` walks `id` ascending from the cursor, so a run
+   *   writes each document at most once: a row present here can only be a concurrent
+   *   projection's, and a projection's row is never staler than a batch's.
+   * - `WHERE EXISTS` refuses a document that has stopped being findable. `rebuildRemove` exists
+   *   "so a document deleted mid-rebuild cannot outlive the swap", and without this the batch
+   *   would simply insert it again — deleted title and body included — after the removal.
+   *
+   * A deletion that commits after this statement's snapshot is not this statement's problem: its
+   * own projection runs after it commits, and removes the entry from the build target if the
+   * swap has not happened yet, or from the live index if it has.
+   */
   async rebuildUpsert(documents: readonly IndexDocument[]): Promise<void> {
     const tx = requireTransaction();
     for (const document of documents) {
-      await tx.$executeRaw(this.upsertSql(SHADOW_TABLE, document));
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO ${Prisma.raw(`"${SHADOW_TABLE}"`)} (${COLUMNS})
+        SELECT ${this.rowValues(document)}
+        WHERE EXISTS (
+          SELECT 1 FROM "document"
+          WHERE "id" = ${document.documentId}::uuid
+            AND "tenant_id" = ${document.tenantId}::uuid
+            AND "deleted_at" IS NULL
+            AND "status" <> 'PURGED'::document_status
+        )
+        ON CONFLICT ("document_id") DO NOTHING
+      `);
     }
   }
 
@@ -83,7 +121,8 @@ export class PostgresIndexAdapter implements IndexPort {
     await tx.$executeRaw(Prisma.sql`DELETE FROM ${Prisma.raw(`"${SHADOW_TABLE}"`)}`);
   }
 
-  private upsertSql(table: string, doc: IndexDocument): Prisma.Sql {
+  /** The row's value expressions, in `COLUMNS` order — one source of truth for both writers. */
+  private rowValues(doc: IndexDocument): Prisma.Sql {
     const cfg = searchConfiguration(doc.language);
     // A: what exact search hits. B: filename and metadata. C: title and description under the
     // language's stemmer. D: the body. Arabic fields carry both spellings.
@@ -93,68 +132,75 @@ export class PostgresIndexAdapter implements IndexPort {
     const weightD = withNormalizedArabic(doc.body);
 
     return Prisma.sql`
-      INSERT INTO ${Prisma.raw(`"${table}"`)} (
-        "document_id", "tenant_id", "title_raw", "number_exact", "tsv", "metadata",
-        "document_type_id", "category_id", "status", "confidentiality_rank",
-        "entity_id", "branch_id", "department_id", "library_id", "folder_id", "folder_path",
-        "owner_id", "approver_ids", "revision_ordinal", "revision_label", "filename",
-        "language", "body", "body_source", "content_pending", "low_confidence",
-        "document_created_at", "document_updated_at", "published_at", "effective_from",
-        "acl_subjects", "acl_deny_subjects", "acl_hash", "indexed_at", "source_version"
-      ) VALUES (
-        ${doc.documentId}::uuid, ${doc.tenantId}::uuid, ${doc.title}, ${doc.documentNumber},
-        setweight(to_tsvector('simple', ${weightA}), 'A')
-          || setweight(to_tsvector('simple', ${weightB}), 'B')
-          || setweight(to_tsvector(${Prisma.raw(`'${cfg}'`)}::regconfig, ${weightC}), 'C')
-          || setweight(to_tsvector(${Prisma.raw(`'${cfg}'`)}::regconfig, ${weightD}), 'D'),
-        ${JSON.stringify(doc.metadata)}::jsonb,
-        ${doc.documentTypeId}::uuid, ${doc.categoryId}::uuid, ${doc.status}::document_status,
-        ${doc.confidentialityRank},
-        ${doc.entityId}::uuid, ${doc.branchId}::uuid, ${doc.departmentId}::uuid,
-        ${doc.libraryId}::uuid, ${doc.folderId}::uuid, ${doc.folderPath},
-        ${doc.ownerId}::uuid, ${[...doc.approverIds]}::uuid[], ${doc.revisionOrdinal},
-        ${doc.revisionLabel}, ${doc.filename},
-        ${doc.language}, ${doc.body}, ${doc.bodySource}::search_content_source,
-        ${doc.contentPending}, ${doc.lowConfidence},
-        ${doc.createdAt}, ${doc.updatedAt}, ${doc.publishedAt}, ${doc.effectiveFrom}::date,
-        ${[...doc.aclSubjects]}::text[], ${[...doc.aclDenySubjects]}::text[], ${doc.aclHash},
-        ${this.clock.now()}, ${doc.sourceVersion}
-      )
-      ON CONFLICT ("document_id") DO UPDATE SET
-        "tenant_id" = EXCLUDED."tenant_id",
-        "title_raw" = EXCLUDED."title_raw",
-        "number_exact" = EXCLUDED."number_exact",
-        "tsv" = EXCLUDED."tsv",
-        "metadata" = EXCLUDED."metadata",
-        "document_type_id" = EXCLUDED."document_type_id",
-        "category_id" = EXCLUDED."category_id",
-        "status" = EXCLUDED."status",
-        "confidentiality_rank" = EXCLUDED."confidentiality_rank",
-        "entity_id" = EXCLUDED."entity_id",
-        "branch_id" = EXCLUDED."branch_id",
-        "department_id" = EXCLUDED."department_id",
-        "library_id" = EXCLUDED."library_id",
-        "folder_id" = EXCLUDED."folder_id",
-        "folder_path" = EXCLUDED."folder_path",
-        "owner_id" = EXCLUDED."owner_id",
-        "approver_ids" = EXCLUDED."approver_ids",
-        "revision_ordinal" = EXCLUDED."revision_ordinal",
-        "revision_label" = EXCLUDED."revision_label",
-        "filename" = EXCLUDED."filename",
-        "language" = EXCLUDED."language",
-        "body" = EXCLUDED."body",
-        "body_source" = EXCLUDED."body_source",
-        "content_pending" = EXCLUDED."content_pending",
-        "low_confidence" = EXCLUDED."low_confidence",
-        "document_created_at" = EXCLUDED."document_created_at",
-        "document_updated_at" = EXCLUDED."document_updated_at",
-        "published_at" = EXCLUDED."published_at",
-        "effective_from" = EXCLUDED."effective_from",
-        "acl_subjects" = EXCLUDED."acl_subjects",
-        "acl_deny_subjects" = EXCLUDED."acl_deny_subjects",
-        "acl_hash" = EXCLUDED."acl_hash",
-        "indexed_at" = EXCLUDED."indexed_at",
-        "source_version" = EXCLUDED."source_version"
+      ${doc.documentId}::uuid, ${doc.tenantId}::uuid, ${doc.title}, ${doc.documentNumber},
+      setweight(to_tsvector('simple', ${weightA}), 'A')
+        || setweight(to_tsvector('simple', ${weightB}), 'B')
+        || setweight(to_tsvector(${Prisma.raw(`'${cfg}'`)}::regconfig, ${weightC}), 'C')
+        || setweight(to_tsvector(${Prisma.raw(`'${cfg}'`)}::regconfig, ${weightD}), 'D'),
+      ${JSON.stringify(doc.metadata)}::jsonb,
+      ${doc.documentTypeId}::uuid, ${doc.categoryId}::uuid, ${doc.status}::document_status,
+      ${doc.confidentialityRank},
+      ${doc.entityId}::uuid, ${doc.branchId}::uuid, ${doc.departmentId}::uuid,
+      ${doc.libraryId}::uuid, ${doc.folderId}::uuid, ${doc.folderPath},
+      ${doc.ownerId}::uuid, ${[...doc.approverIds]}::uuid[], ${doc.revisionOrdinal},
+      ${doc.revisionLabel}, ${doc.filename},
+      ${doc.language}, ${doc.body}, ${doc.bodySource}::search_content_source,
+      ${doc.contentPending}, ${doc.lowConfidence},
+      ${doc.createdAt}, ${doc.updatedAt}, ${doc.publishedAt}, ${doc.effectiveFrom}::date,
+      ${[...doc.aclSubjects]}::text[], ${[...doc.aclDenySubjects]}::text[], ${doc.aclHash},
+      ${this.clock.now()}, ${doc.sourceVersion}
     `;
   }
 }
+
+/** The index entry's columns, shared by the live write and the build target's. */
+const COLUMNS = Prisma.raw(
+  [
+    'document_id',
+    'tenant_id',
+    'title_raw',
+    'number_exact',
+    'tsv',
+    'metadata',
+    'document_type_id',
+    'category_id',
+    'status',
+    'confidentiality_rank',
+    'entity_id',
+    'branch_id',
+    'department_id',
+    'library_id',
+    'folder_id',
+    'folder_path',
+    'owner_id',
+    'approver_ids',
+    'revision_ordinal',
+    'revision_label',
+    'filename',
+    'language',
+    'body',
+    'body_source',
+    'content_pending',
+    'low_confidence',
+    'document_created_at',
+    'document_updated_at',
+    'published_at',
+    'effective_from',
+    'acl_subjects',
+    'acl_deny_subjects',
+    'acl_hash',
+    'indexed_at',
+    'source_version',
+  ]
+    .map((column) => `"${column}"`)
+    .join(', '),
+);
+
+/** Every column but the key, reassigned from the row being written. */
+const ASSIGNMENTS = Prisma.raw(
+  COLUMNS.sql
+    .split(', ')
+    .filter((column) => column !== '"document_id"')
+    .map((column) => `${column} = EXCLUDED.${column}`)
+    .join(', '),
+);

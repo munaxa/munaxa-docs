@@ -1208,6 +1208,13 @@ export interface SearchStackOptions {
   readonly registry: TenantRegistry;
   readonly storage: DefaultStorageService;
   readonly storagePort: StoragePort;
+  /**
+   * The source reader the stack is built on. Defaults to the real one, and a suite that supplies
+   * its own is expected to supply a *subclass* of the real one — the seam exists so an ordering
+   * proof can park inside a real read, not so a double can answer from the same belief as the
+   * code it stands in for.
+   */
+  readonly source?: PrismaSearchSourceReader;
 }
 
 export interface SearchStack {
@@ -1232,7 +1239,7 @@ export interface SearchStack {
 export function realSearchStack(options: SearchStackOptions): SearchStack {
   const { stamps, audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
 
-  const source = new PrismaSearchSourceReader(options.unitOfWork);
+  const source = options.source ?? new PrismaSearchSourceReader(options.unitOfWork);
   const acl = realAclResolver(options);
   const index = new PostgresIndexAdapter(options.clock);
   const engine = new TenantScopedSearch(new PostgresSearchAdapter(), options.registry);
