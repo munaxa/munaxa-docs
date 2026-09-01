@@ -119,7 +119,7 @@ export class SearchRebuildService {
             documents.push(await this.projection.indexDocumentFrom(facts));
           }
         }
-        await this.index.rebuildUpsert(documents);
+        await this.index.rebuildFill(documents);
         const last = ids[ids.length - 1];
         if (last !== undefined) {
           await this.rebuilds.advance(rebuildId, last, documents.length);
