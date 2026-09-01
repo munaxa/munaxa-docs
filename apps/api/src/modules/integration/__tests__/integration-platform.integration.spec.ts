@@ -1430,3 +1430,99 @@ describe('one key, revoked twice at once', () => {
     expect(claiming).toHaveLength(1);
   });
 });
+
+/**
+ * A stale `If-Match` on a webhook endpoint — Slice 71.
+ *
+ * Every administered aggregate in this product answers a stale precondition the same way: the write
+ * carries the version in its `WHERE`, zero affected rows is read as the truth, and the caller is
+ * told `VERSION_CONFLICT` — which `AllExceptionsFilter` maps to `409`. That is what `If-Match`
+ * exists to produce.
+ *
+ * `updateEndpoint` carries the version correctly but reports losing with `update`, not `updateMany`
+ * and a count. `update` raises `P2025` when its `where` matches nothing, and nothing translates a
+ * raw Prisma error — the filter maps `DomainError` and `HttpException` and calls everything else
+ * `INTERNAL`. So `PATCH /webhooks/:id` with a version that has moved answers `500`.
+ *
+ * No concurrency is needed to reach it: one caller holding a version that has since changed is
+ * enough, which is exactly what `If-Match` is for. The race is the same defect arrived at by the
+ * other door, and is covered too.
+ */
+describe('a webhook endpoint edited against a version that has moved', () => {
+  async function anEndpoint(): Promise<{ id: string; version: number }> {
+    const created = await asAdmin(() =>
+      webhooks.admin.create({
+        name: 'Version guarded',
+        url: 'https://receiver.test/hooks',
+        eventTypes: ['document'],
+        enabled: true,
+      }),
+    );
+    return { id: created.endpoint.id, version: created.endpoint.version };
+  }
+
+  it('accepts an edit that names the version it read', async () => {
+    // The control. Without it every assertion below passes on a service that never updates.
+    const endpoint = await anEndpoint();
+    const updated = await asAdmin(() =>
+      webhooks.admin.update(endpoint.id, endpoint.version, { eventTypes: ['workflow'] }),
+    );
+
+    expect(updated.eventTypes).toEqual(['workflow']);
+    expect(updated.version).toBe(endpoint.version + 1);
+  });
+
+  it('refuses an edit whose version has already moved, as a conflict rather than a fault', async () => {
+    const endpoint = await anEndpoint();
+    // Somebody else's edit lands first, so the version this caller is holding is now stale. One
+    // caller, one request: this is the ordinary `If-Match` case, not a race.
+    await asAdmin(() => webhooks.admin.update(endpoint.id, endpoint.version, { enabled: false }));
+
+    const outcome = await asAdmin(() =>
+      webhooks.admin.update(endpoint.id, endpoint.version, { eventTypes: ['workflow'] }),
+    ).then(
+      () => ({ kind: 'updated' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(outcome.kind).toBe('refused');
+    // The refusal the rest of the product gives for a stale precondition, which the filter maps to
+    // `409` — not a raw driver error, which it maps to `500`.
+    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
+
+    // And the losing edit changed nothing.
+    const row = await owner.webhookEndpoint.findUniqueOrThrow({
+      where: { id: endpoint.id },
+      select: { eventTypes: true, enabled: true, version: true },
+    });
+    expect(row.eventTypes).toEqual(['document']);
+    expect(row.enabled).toBe(false);
+    expect(row.version).toBe(endpoint.version + 1);
+  });
+
+  it('answers the loser of two simultaneous edits the same way', async () => {
+    const endpoint = await anEndpoint();
+    // Both read the same version and both edit from it. Sequenced by awaiting the winner, so the
+    // loser is holding a version the database has already moved past — the same state the ordered
+    // caller above holds, reached the other way.
+    const winner = await asAdmin(() =>
+      webhooks.admin.update(endpoint.id, endpoint.version, { name: 'Winner' }),
+    );
+    expect(winner.version).toBe(endpoint.version + 1);
+
+    const loser = await asAdmin(() =>
+      webhooks.admin.update(endpoint.id, endpoint.version, { name: 'Loser' }),
+    ).then(
+      () => ({ kind: 'updated' as const, error: undefined }),
+      (error: unknown) => ({ kind: 'refused' as const, error }),
+    );
+
+    expect(loser.kind).toBe('refused');
+    expect(loser.error).toMatchObject({ code: 'VERSION_CONFLICT' });
+    const row = await owner.webhookEndpoint.findUniqueOrThrow({
+      where: { id: endpoint.id },
+      select: { name: true },
+    });
+    expect(row.name).toBe('Winner');
+  });
+});
