@@ -29,6 +29,7 @@ import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { seedRoleGrant } from '../../../testing/acl-seed';
 import {
+  PrismaApiClientRepository,
   type ApiClientStack,
   type AuditSinkStack,
   type DocumentLibraryStack,
@@ -109,6 +110,7 @@ const ADMIN_ROLE = uuidv7();
 let appConfig: AppConfig;
 let owner: PrismaClient;
 let unitOfWork: PrismaUnitOfWork;
+let databases: ReturnType<typeof sharedDatabase>;
 let library: DocumentLibraryStack;
 let permissions: ReturnType<typeof realPermissions>;
 let webhooks: WebhookStack;
@@ -218,7 +220,7 @@ beforeAll(async () => {
   });
 
   unitOfWork = new PrismaUnitOfWork(sharedDatabase(appConfig, logger, APP_URL));
-  const databases = sharedDatabase(appConfig, logger, APP_URL);
+  databases = sharedDatabase(appConfig, logger, APP_URL);
   library = realDocumentLibrary({
     clock,
     unitOfWork,
@@ -1254,5 +1256,177 @@ describe('one delivery, one POST, however many workers meet it', () => {
       select: { attempts: true },
     });
     expect(after.attempts).toBe(settled.attempts + 1);
+  });
+});
+
+/**
+ * Two callers, each parked at a chosen boundary.
+ *
+ * Gated on an explicit marker rather than on "the turnstile is armed", so the ordinary setup this
+ * suite performs through the same repository does not park itself, take ordinals no slot was armed
+ * for, and leave the caller it does want to hold waiting for ever.
+ */
+class Turnstile<TMarker> {
+  readonly arrivals: TMarker[] = [];
+  readonly reached: Promise<void>[] = [];
+  private readonly announce: (() => void)[] = [];
+  private readonly admissions: Promise<void>[] = [];
+  private readonly admits: (() => void)[] = [];
+
+  arm(callers: number): number {
+    const base = this.reached.length;
+    for (let index = 0; index < callers; index += 1) {
+      let arrive: () => void = () => undefined;
+      this.reached.push(
+        new Promise<void>((resolve) => {
+          arrive = resolve;
+        }),
+      );
+      this.announce.push(arrive);
+      let admit: () => void = () => undefined;
+      this.admissions.push(
+        new Promise<void>((resolve) => {
+          admit = resolve;
+        }),
+      );
+      this.admits.push(admit);
+    }
+    return base;
+  }
+
+  async park(marker: TMarker): Promise<void> {
+    const ordinal = this.arrivals.length;
+    this.arrivals.push(marker);
+    this.announce[ordinal]?.();
+    await this.admissions[ordinal];
+  }
+
+  release(ordinal: number): void {
+    this.admits[ordinal]?.();
+  }
+}
+
+/**
+ * Revoking one key twice, at once — Slice 70.
+ *
+ * `revoke` is deliberately idempotent: "revoking a revoked key is the outcome the caller wanted",
+ * so the second of two *ordered* callers reads `revokedAt` already set and is answered with the
+ * row. That is the intended behaviour, and this suite already relies on it.
+ *
+ * Two callers at once both read `revokedAt` as null, so both pass that check and both reach the
+ * write. The write carries the version in its `where` — the optimistic lock every aggregate here
+ * carries — but it is `update`, not the `updateMany` + affected-row count the rest of the product
+ * uses, so the loser does not match its row and Prisma raises `P2025`. Nothing translates it: the
+ * filter maps `DomainError` and `HttpException` and calls everything else `INTERNAL`, so the loser
+ * receives a **500** where the ordered caller receives its row.
+ *
+ * Both callers are held at the write until each has been shown to have read the live key, which is
+ * what makes this the race and not a sequence.
+ */
+describe('one key, revoked twice at once', () => {
+  const turnstile = new Turnstile<string>();
+  /** Which revocation this test wants to stop at, and nothing else stops. */
+  let parkOn: string | null = null;
+
+  class ParkingApiClientRepository extends PrismaApiClientRepository {
+    override async revoke(
+      id: Parameters<PrismaApiClientRepository['revoke']>[0],
+      at: Parameters<PrismaApiClientRepository['revoke']>[1],
+      by: Parameters<PrismaApiClientRepository['revoke']>[2],
+      expectedVersion: Parameters<PrismaApiClientRepository['revoke']>[3],
+    ): ReturnType<PrismaApiClientRepository['revoke']> {
+      // Parked *here*: the service has already read the key and found it live, and has written
+      // nothing. That is the window the read is stale in.
+      if (parkOn === `revoke:${String(id)}`) {
+        await turnstile.park(`revoke:${String(id)}`);
+      }
+      return super.revoke(id, at, by, expectedVersion);
+    }
+  }
+
+  /** The real stack, composed around a repository that only adds a place to stand. */
+  let parking: ApiClientStack['service'];
+  beforeAll(() => {
+    parking = realApiClients({
+      clock,
+      unitOfWork,
+      databases,
+      repository: new ParkingApiClientRepository(databases),
+    }).service;
+  });
+
+  async function aKey(name: string): Promise<{ id: string; version: number }> {
+    const minted = await asAdmin(() =>
+      parking.create({ name, subjectUserId: ADA, scopes: [ApiScope.DOCUMENTS_READ] }),
+    );
+    return { id: minted.client.id, version: minted.client.version };
+  }
+
+  it('revokes when nothing contends, and again idempotently', async () => {
+    // The control, and the sequential answer the race must match. Without it every assertion below
+    // passes on a service that revokes nothing.
+    const key = await aKey('Solo revocation');
+    const first = await asAdmin(() => parking.revoke(key.id, undefined));
+    expect(first.revokedAt).not.toBeNull();
+
+    // The ordered second caller: idempotent, answered with the row rather than refused.
+    const second = await asAdmin(() => parking.revoke(key.id, undefined));
+    expect(second.revokedAt).not.toBeNull();
+    expect(second.id).toBe(key.id);
+  });
+
+  it('answers the loser the way the ordered second caller is answered', async () => {
+    const key = await aKey('Contended revocation');
+    parkOn = `revoke:${key.id}`;
+    const base = turnstile.arm(2);
+
+    // Each from its own scope, so each opens its own transaction. Both reach the write only after
+    // their own read answered "live", which is what parking here proves.
+    const one = asAdmin(() => parking.revoke(key.id, undefined));
+    await turnstile.reached[base];
+    const two = asAdmin(() => parking.revoke(key.id, undefined));
+    await turnstile.reached[base + 1];
+    expect(turnstile.arrivals.slice(-2)).toEqual([`revoke:${key.id}`, `revoke:${key.id}`]);
+
+    turnstile.release(base);
+    const winner = await one.then(
+      (value) => ({ kind: 'revoked' as const, value, error: undefined }),
+      (error: unknown) => ({ kind: 'failed' as const, value: undefined, error }),
+    );
+    turnstile.release(base + 1);
+    const loser = await two.then(
+      (value) => ({ kind: 'revoked' as const, value, error: undefined }),
+      (error: unknown) => ({ kind: 'failed' as const, value: undefined, error }),
+    );
+
+    expect(winner.kind).toBe('revoked');
+    expect(loser.kind).toBe('revoked');
+    expect(loser.value?.revokedAt).not.toBeNull();
+    expect(loser.value?.id).toBe(key.id);
+    // The key is revoked once, by one of them, and stays revoked.
+    const row = await owner.apiClient.findUniqueOrThrow({
+      where: { id: key.id },
+      select: { revokedAt: true, version: true },
+    });
+    expect(row.revokedAt).not.toBeNull();
+    // Moved once, not twice: only the winner's write landed.
+    expect(row.version).toBe(key.version + 1);
+
+    /*
+     * And the trail says so. Answering the loser with the row is only half the behaviour; the other
+     * half is that it does not *claim the revocation*. Exactly one of the two records the act, and
+     * the other records meeting a key already revoked — which is what the ordered second caller
+     * records, and the only thing that distinguishes "I revoked it" from "it was revoked".
+     */
+    const trail = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, action: 'API_CLIENT_REVOKED', subjectId: key.id },
+      orderBy: { sequence: 'asc' },
+    });
+    expect(trail).toHaveLength(2);
+    const claiming = trail.filter(
+      (entry) =>
+        (entry.payload as { after?: { alreadyRevoked?: boolean } })?.after?.alreadyRevoked !== true,
+    );
+    expect(claiming).toHaveLength(1);
   });
 });

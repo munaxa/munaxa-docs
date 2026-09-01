@@ -2141,6 +2141,15 @@ export function realWebhooks(options: {
   };
 }
 
+/**
+ * Re-exported for the suites that compose a subclass of it.
+ *
+ * This file is where tests are allowed to reach production internals; a spec in another module is
+ * not, and `ApiClientStack` already names this type. Exporting the class rather than making every
+ * caller import it directly is what keeps `no-restricted-imports` meaning what it says.
+ */
+export { PrismaApiClientRepository };
+
 export interface ApiClientStack {
   readonly service: DefaultApiClientService;
   readonly repository: PrismaApiClientRepository;
@@ -2152,8 +2161,14 @@ export function realApiClients(options: {
   readonly unitOfWork: UnitOfWork;
   readonly databases: TenantDatabase;
   readonly settings?: Readonly<Record<string, unknown>>;
+  /**
+   * A repository to compose instead of a fresh one — the whole real service around a subclass that
+   * only adds a place to stand before one of its own writes. The service, hasher, writer, settings
+   * and logger are the ones every other caller of this helper gets.
+   */
+  readonly repository?: PrismaApiClientRepository;
 }): ApiClientStack {
-  const repository = new PrismaApiClientRepository(options.databases);
+  const repository = options.repository ?? new PrismaApiClientRepository(options.databases);
   const hasher = new ScryptPasswordHasher();
   const { writer } = realWriteStack(options.clock, options.unitOfWork);
   return {

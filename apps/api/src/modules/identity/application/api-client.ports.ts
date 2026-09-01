@@ -78,7 +78,13 @@ export interface ApiClientRepository {
     readonly scopes: readonly string[];
     readonly expiresAt: Date | null;
   }): Promise<ApiClientRecord>;
-  revoke(id: AnyId, at: Date, by: UserId | null, expectedVersion: number): Promise<ApiClientRecord>;
+  /** The revoked row, or `null` when this caller's version no longer matched. */
+  revoke(
+    id: AnyId,
+    at: Date,
+    by: UserId | null,
+    expectedVersion: number,
+  ): Promise<ApiClientRecord | null>;
   /**
    * Stamps the last use.
    *

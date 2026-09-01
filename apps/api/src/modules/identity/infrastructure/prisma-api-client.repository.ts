@@ -100,19 +100,33 @@ export class PrismaApiClientRepository implements ApiClientRepository {
     return toRecord(row);
   }
 
+  /**
+   * Revokes a key, or reports that this caller did not.
+   *
+   * The version stays in the `where` — the optimistic lock every aggregate in this product carries,
+   * so a concurrent revocation loses rather than overwriting. What changed is how losing is told:
+   * `updateMany` and its count, not `update` and an exception — Slice 70.
+   *
+   * `update` raises `P2025` when its `where` matches nothing, and nothing translates a raw Prisma
+   * error: `AllExceptionsFilter` maps `DomainError` and `HttpException` and calls everything else
+   * `INTERNAL`. Two administrators revoking one key at once both read it live, so both reached this
+   * write and the loser met a `500` where the ordered second caller is answered with the row. The
+   * count is the truth, and what losing *means* is the service's to decide — it is the half that
+   * already knows revoking a revoked key is the outcome the caller wanted.
+   */
   async revoke(
     id: AnyId,
     at: Date,
     by: UserId | null,
     expectedVersion: number,
-  ): Promise<ApiClientRecord> {
-    const row = await requireTransaction().apiClient.update({
-      // The version in the `where`, so a concurrent revocation loses rather than overwriting —
-      // the optimistic lock every aggregate in this product carries.
+  ): Promise<ApiClientRecord | null> {
+    const { count } = await requireTransaction().apiClient.updateMany({
       where: { id, version: expectedVersion },
       data: { revokedAt: at, revokedBy: by, updatedBy: by, version: { increment: 1 } },
     });
-    return toRecord(row);
+    // Zero rows is an ordinary `UPDATE` that matched nothing, not a database error, so this
+    // transaction is still usable and the caller can read what actually happened.
+    return count === 0 ? null : this.findById(id);
   }
 
   /**

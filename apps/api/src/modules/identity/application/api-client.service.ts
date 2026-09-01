@@ -22,9 +22,17 @@ import {
 import { uuidv7 } from '@edms/utils';
 import type { Page, PageRequest } from '@edms/utils';
 
-import { NotFoundError, ValidationError } from '../../../core/errors/application-errors';
+import {
+  NotFoundError,
+  ValidationError,
+  VersionConflictError,
+} from '../../../core/errors/application-errors';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
-import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
+import {
+  AdministeredWriter,
+  type AdministrativeChange,
+  AdministrativeOperation,
+} from '../../../core/persistence';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { SETTINGS_READER, type SettingsReader } from '../../../core/settings';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -189,24 +197,40 @@ export class DefaultApiClientService implements ApiClientService, ApiClientAuthe
       }
       if (existing.revokedAt !== null) {
         // Idempotent, like sign-out: revoking a revoked key is the outcome the caller wanted.
-        return {
-          result: existing,
-          change: {
-            action: IntegrationAudit.API_CLIENT_REVOKED,
-            subjectType: AuditSubjectType.INTEGRATION,
-            subjectId: clientId,
-            operation: AdministrativeOperation.UPDATED,
-            after: { alreadyRevoked: true },
-          },
-        };
+        return this.alreadyRevoked(clientId, existing);
       }
       const context = requireContext();
+      const claimedVersion = expectedVersion ?? existing.version;
       const revoked = await this.repository.revoke(
         clientId,
         this.clock.now(),
         context.userId,
-        expectedVersion ?? existing.version,
+        claimedVersion,
       );
+      if (revoked === null) {
+        /*
+         * The read above said live and the write disagreed — Slice 70.
+         *
+         * Two administrators revoking one key at once both read `revokedAt` as null, so the check
+         * above lets both through and only one of them moves the row. The loser has met exactly
+         * the state the *ordered* second caller meets, and is owed the same answer: reading it
+         * back is what turns "my write matched nothing" into which of the two things happened.
+         *
+         * Note the version is not consulted on this path, and deliberately: it is not consulted on
+         * the ordered path either — a second caller finds `revokedAt` set and is answered before
+         * `expectedVersion` is ever looked at. A key that is somehow still live with a version that
+         * moved is the genuine stale-precondition case, and gets the refusal this product gives
+         * every other aggregate for one.
+         */
+        const settled = await this.repository.findById(clientId);
+        if (!settled) {
+          throw new NotFoundError('API client');
+        }
+        if (settled.revokedAt === null) {
+          throw new VersionConflictError(claimedVersion, settled.version);
+        }
+        return this.alreadyRevoked(clientId, settled);
+      }
       return {
         result: revoked,
         change: {
@@ -219,6 +243,28 @@ export class DefaultApiClientService implements ApiClientService, ApiClientAuthe
         },
       };
     });
+  }
+
+  /**
+   * The answer a caller gets for a key that is already revoked, from whichever door they arrived at.
+   *
+   * One place, because the ordered second caller and the loser of a race have met the same state
+   * and must be told the same thing.
+   */
+  private alreadyRevoked(
+    clientId: AnyId,
+    record: ApiClientRecord,
+  ): { result: ApiClientRecord; change: AdministrativeChange } {
+    return {
+      result: record,
+      change: {
+        action: IntegrationAudit.API_CLIENT_REVOKED,
+        subjectType: AuditSubjectType.INTEGRATION,
+        subjectId: clientId,
+        operation: AdministrativeOperation.UPDATED,
+        after: { alreadyRevoked: true },
+      },
+    };
   }
 
   // --- Authentication -------------------------------------------------------------------
