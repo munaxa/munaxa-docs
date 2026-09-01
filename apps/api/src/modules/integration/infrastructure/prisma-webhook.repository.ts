@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { type AnyId, type WebhookDeliveryStateKey, asId } from '@edms/domain';
 import { type Page, type PageRequest, toPage } from '@edms/utils';
 
+import { VersionConflictError } from '../../../core/errors/application-errors';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import type {
@@ -113,7 +114,23 @@ export class PrismaWebhookRepository implements WebhookRepository {
     },
   ): Promise<WebhookEndpointRecord> {
     const context = requireContext();
-    const row = await requireTransaction().webhookEndpoint.update({
+    /*
+     * `updateMany` and its count, not `update` and an exception — Slice 71.
+     *
+     * The version in the `WHERE` is right and stays: it is the optimistic lock every administered
+     * aggregate here carries, and it is what `If-Match` exists to enforce. What was wrong is how
+     * losing was reported. `update` raises `P2025` when its `where` matches nothing, and nothing
+     * translates a raw Prisma error: `AllExceptionsFilter` maps `DomainError` and `HttpException`
+     * and calls everything else `INTERNAL`. So an administrator editing an endpoint against a
+     * version that had already moved was answered `500` where every other aggregate answers
+     * `VERSION_CONFLICT`, which the filter maps to `409`.
+     *
+     * It takes no concurrency to reach: one caller holding a version somebody else has since
+     * changed is the ordinary `If-Match` case. Zero rows is an ordinary `UPDATE` that matched
+     * nothing rather than a database error, so the transaction stays usable and the row can be
+     * read back on the path that did write.
+     */
+    const { count } = await requireTransaction().webhookEndpoint.updateMany({
       where: { id, version: expectedVersion },
       data: {
         ...(patch.name !== undefined && { name: patch.name }),
@@ -131,9 +148,21 @@ export class PrismaWebhookRepository implements WebhookRepository {
         updatedBy: context.userId,
         version: { increment: 1 },
       },
+    });
+    this.requireOneRow(count, expectedVersion);
+
+    const row = await requireTransaction().webhookEndpoint.findFirstOrThrow({
+      where: { id },
       select: ENDPOINT_FIELDS,
     });
     return toEndpoint(row);
+  }
+
+  /** Zero affected rows is the state having moved under the caller — the product's own convention. */
+  private requireOneRow(count: number, expectedVersion: number): void {
+    if (count === 0) {
+      throw new VersionConflictError(expectedVersion, -1);
+    }
   }
 
   async deleteEndpoint(id: AnyId, at: Date): Promise<void> {
