@@ -443,6 +443,46 @@ export class DefaultRetentionService implements RetentionService {
         };
       }
 
+      /*
+       * The second *schedule* check, for the reason the second hold check exists — Slice 73.
+       *
+       * `executeDue` reads its batch in one transaction and settles each schedule in another, so
+       * the record this method was handed describes a moment that has passed. A restore taken in
+       * that interval cancels the schedule the delete wrote (`RetentionScheduler.onRestored`), and
+       * nothing here noticed: `describe` selects the document without a `deleted_at` predicate, and
+       * `deleteForDocument` removes every schedule the document has whatever state it is in, so its
+       * count cannot report the withdrawal either. The sweep destroyed a document somebody had just
+       * taken back out of the recycle bin, and a purge is the one act that cannot be undone.
+       *
+       * The state is the predicate rather than the document's `deleted_at`, and that distinction is
+       * load-bearing: a restore cancels only the triggers `cancelledByRestore` names, so a published
+       * record keeps the schedule its publication started and is destroyed at its disposition date
+       * while perfectly live. Refusing on `deleted_at` would refuse that legitimate purge. What the
+       * sweep is entitled to act on is what its own selection asked for — `dueScheduleWhere`'s
+       * `PENDING` or `IN_REVIEW` — re-read here, inside the transaction that would destroy.
+       */
+      const current = await this.schedules.findById(schedule.id);
+      if (
+        current === null ||
+        (current.state !== RetentionScheduleState.PENDING &&
+          current.state !== RetentionScheduleState.IN_REVIEW)
+      ) {
+        return {
+          result: undefined,
+          change: {
+            action: RetentionAudit.PURGE_EXECUTED,
+            subjectType: AuditSubjectType.DOCUMENT,
+            subjectId: asId<AnyId>(schedule.documentId),
+            operation: AdministrativeOperation.UPDATED,
+            after: {
+              scheduleId: schedule.id,
+              // Withdrawn under the sweep — the schedule it read is no longer one it may execute.
+              withdrawn: current?.state ?? null,
+            },
+          },
+        };
+      }
+
       // The second hold check, inside the transaction that would destroy. The first kept the
       // sweep's counts honest; this one makes the refusal a property of the database rather than
       // of the interval between two statements.

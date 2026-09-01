@@ -1532,4 +1532,160 @@ describe('a legal hold that arrives while the sweep is deciding', () => {
     await as(() => retention.holds.release(hold.id, 'Matter closed'));
     expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.PENDING);
   });
+
+  /**
+   * The same interleaving, with a **restore** instead of a hold — Slice 73.
+   *
+   * `executeDue` reads its batch in one transaction and settles each schedule in another, so any
+   * restore committing between the two leaves the sweep holding a schedule that has since been
+   * cancelled and a document that is no longer deleted. `purge` re-reads the *holds* inside the
+   * destroying transaction — that is the check the test above proves — but re-reads neither the
+   * schedule's state nor the document's `deleted_at`: `describe` selects the row without a
+   * `deleted_at` predicate, and `deleteForDocument` discards its affected-row count.
+   *
+   * A restore is the one act the recycle bin exists to make possible, and this is destruction that
+   * cannot be undone: the tombstone is the only thing left.
+   */
+  it('destroys nothing when the record was restored while the sweep was deciding', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Restored during'));
+    await advanceToDue(document.id);
+    await approve(document.id);
+
+    const parking = new ParkingHolds(new RecordStamps(clock));
+    parking.target = document.id;
+    const racing = realRetention({
+      clock,
+      unitOfWork,
+      storage: library.storagePort,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      holds: parking,
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    // The sweep, from its own scope. It parks holding a schedule it read as due and a document it
+    // read as deleted — the belief it will carry into the destroying transaction.
+    const sweep = asSystem(() => racing.retention.executeDue(100));
+    await atDecision;
+
+    // Somebody takes it back out of the bin. Its own scope and its own transaction, and it commits
+    // before the sweep is admitted — so the sweep's belief is demonstrably stale, not merely racy.
+    const deleted = await as(() => library.documents.get(document.id));
+    await as(() => library.documents.restore(document.id, deleted.version));
+    const restored = await owner.document.findUniqueOrThrow({
+      where: { id: document.id },
+      select: { deletedAt: true },
+    });
+    expect(restored.deletedAt).toBeNull();
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.CANCELLED);
+
+    admit();
+    await sweep;
+
+    // The document is live and was live before the purge ran. Destroying it anyway is a restore
+    // that did not restore.
+    const after = await owner.document.findUnique({
+      where: { id: document.id },
+      select: { id: true, deletedAt: true },
+    });
+    expect(after).not.toBeNull();
+    expect(after?.deletedAt).toBeNull();
+    // And nothing was tombstoned, because nothing was destroyed.
+    expect(await owner.documentTombstone.count({ where: { documentId: document.id } })).toBe(0);
+  });
+
+  /**
+   * The same withdrawal, with the document deleted again before the sweep is admitted.
+   *
+   * This is what makes the *schedule's state* the predicate rather than the document's
+   * `deleted_at`. Here the document is in the recycle bin at the moment of the purge, so a guard
+   * asking "is it still deleted?" would answer yes and destroy it — but the schedule the sweep is
+   * holding was cancelled by the restore, and the second delete started a fresh retention clock
+   * with a due date a month away. Executing the old schedule would destroy a record whose period
+   * has barely begun.
+   *
+   * The distinction matters in the other direction too, which is why the predicate cannot be
+   * `deleted_at`: only `ON_DELETE` is `cancelledByRestore`, so a published record keeps the
+   * schedule its publication started and is destroyed at its disposition date while perfectly
+   * live. A `deleted_at` guard would refuse that legitimate purge.
+   */
+  it('destroys nothing when the schedule it read was withdrawn, even if the record is deleted again', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Deleted once'));
+    await advanceToDue(document.id);
+    await approve(document.id);
+    const withdrawnScheduleId = (
+      await owner.retentionSchedule.findFirstOrThrow({ where: { documentId: document.id } })
+    ).id;
+
+    const parking = new ParkingHolds(new RecordStamps(clock));
+    parking.target = document.id;
+    const racing = realRetention({
+      clock,
+      unitOfWork,
+      storage: library.storagePort,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      holds: parking,
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const sweep = asSystem(() => racing.retention.executeDue(100));
+    await atDecision;
+
+    // Out of the bin and back into it, both committed before the sweep is admitted. The restore
+    // cancelled the schedule the sweep is holding; the second delete wrote a new one.
+    const deleted = await as(() => library.documents.get(document.id));
+    await as(() => library.documents.restore(document.id, deleted.version));
+    const live = await as(() => library.documents.get(document.id));
+    await as(() => library.documents.remove(document.id, live.version, 'Deleted again'));
+
+    const state = await owner.retentionSchedule.findUniqueOrThrow({
+      where: { id: withdrawnScheduleId },
+      select: { state: true },
+    });
+    expect(state.state).toBe(RetentionScheduleState.CANCELLED);
+    const row = await owner.document.findUniqueOrThrow({
+      where: { id: document.id },
+      select: { deletedAt: true },
+    });
+    // Deleted again — so a guard reading the document's state rather than the schedule's would
+    // find nothing wrong and destroy it.
+    expect(row.deletedAt).not.toBeNull();
+
+    admit();
+    await sweep;
+
+    expect(
+      await owner.document.findUnique({ where: { id: document.id }, select: { id: true } }),
+    ).not.toBeNull();
+    expect(await owner.documentTombstone.count({ where: { documentId: document.id } })).toBe(0);
+  });
 });
