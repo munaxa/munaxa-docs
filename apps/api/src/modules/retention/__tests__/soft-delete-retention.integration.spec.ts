@@ -32,7 +32,10 @@ import { RecordStamps } from '../../../core/persistence/record-stamps';
 import type { LegalHoldRecord } from '../application/ports';
 import { RetentionAudit } from '../domain/audit-actions';
 import { DispositionOutcome } from '../domain/schedule';
-import { PrismaLegalHoldRepository } from '../infrastructure/prisma-retention.repositories';
+import {
+  PrismaLegalHoldRepository,
+  PrismaRetentionScheduleRepository,
+} from '../infrastructure/prisma-retention.repositories';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { decodeTransferToken } from '../../../testing/transfer-token';
@@ -1688,4 +1691,199 @@ describe('a legal hold that arrives while the sweep is deciding', () => {
     ).not.toBeNull();
     expect(await owner.documentTombstone.count({ where: { documentId: document.id } })).toBe(0);
   });
+
+  /**
+   * Two sweeps holding the same schedule — Slice 90.
+   *
+   * `executeDue` reads its batch with `listDue`, which is a select and not a claim, and settles
+   * each schedule in its own transaction. The tests above prove `purge` re-reads the schedule's
+   * state and the holds inside the destroying transaction, which closes every ordering where the
+   * withdrawal *commits* before the purge begins. It does not close the one where two purges run
+   * at once: both re-read a schedule neither has touched, both see `PENDING`, and both go on.
+   *
+   * Reachable because nothing stops a tenant having two sweeps in flight. `retention.run` declares
+   * no `perTenantConcurrency` — only `documents.bulk`, `webhooks.deliver` and `audit.stream` do —
+   * the fan-out's job id is keyed by the firing (`${kind}:${tenantId}:${jobId}`) so a later firing
+   * is a different job, and a handler that outruns the lane's fifteen-minute budget is re-delivered
+   * while the original keeps running rather than being killed.
+   *
+   * What the loser writes is the point. It destroys nothing — its deletes match no rows — and then
+   * records that it did: a second `PURGED` on the document's own trail, a second `PURGE_EXECUTED`
+   * in the disposition register contradicting the first about how many revisions went, and a
+   * second `retention.document-purged` for every webhook subscribed to destruction. The tombstone
+   * is the one thing that survives a purge, and the trail beside it is the only evidence of what
+   * happened; two irreconcilable accounts of one destruction is not a duplicate log line.
+   */
+  it('records one destruction when two sweeps settle the same schedule', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Two sweeps'));
+    await advanceToDue(document.id);
+    await approve(document.id);
+
+    const sweeps = [0, 1].map(() => {
+      const parking = new ParkingSchedules(new RecordStamps(clock));
+      parking.target = document.id;
+      return {
+        parking,
+        stack: realRetention({
+          clock,
+          unitOfWork,
+          storage: library.storagePort,
+          storageService: library.storage,
+          disposition: realDisposition(clock, library.storage, library.writer),
+          schedules: parking,
+          settings: {
+            [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+            [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+          },
+        }),
+      };
+    });
+
+    const started = sweeps.map((sweep) => {
+      let reached: () => void = () => undefined;
+      const atClaim = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      let admit: () => void = () => undefined;
+      sweep.parking.admit = new Promise<void>((resolve) => {
+        admit = resolve;
+      });
+      sweep.parking.reached = reached;
+      return { ...sweep, atClaim, admit };
+    });
+
+    // Both parked between the last guard `purge` has and the first row it would remove, so both
+    // are holding a schedule they have each re-read as live. Started one at a time and awaited to
+    // its park, because which of two concurrent passes reaches the seam first is the scheduler's
+    // business and a test that depends on the answer reports whichever answer it got.
+    const first = asSystem(() => started[0]!.stack.retention.executeDue(100));
+    await started[0]!.atClaim;
+    const second = asSystem(() => started[1]!.stack.retention.executeDue(100));
+    await started[1]!.atClaim;
+
+    started[0]!.admit();
+    await first;
+    started[1]!.admit();
+    await second;
+
+    // One sweep claimed the schedule; the other's delete matched nothing.
+    expect(started[0]!.parking.deleteCounts).toEqual([1]);
+    expect(started[1]!.parking.deleteCounts).toEqual([0]);
+
+    // The document went once, and the tombstone says so once — that half already held, because
+    // `documentId` is the tombstone's primary key and its write is an upsert that updates nothing.
+    expect(
+      await owner.document.findUnique({ where: { id: document.id }, select: { id: true } }),
+    ).toBeNull();
+    expect(await owner.documentTombstone.count({ where: { documentId: document.id } })).toBe(1);
+
+    const trail = await trailFor(document.id);
+    // One destruction, one `PURGED`. The document's own timeline says it was destroyed once.
+    expect(trail.filter((row) => row.action === RetentionAudit.PURGED)).toHaveLength(1);
+
+    // And exactly one disposition record claims to have carried it out. A sweep that met the
+    // schedule and found it gone may say so — the `alreadyPurged` branch does — but it must not
+    // file a second execution reporting a different number of revisions than the first.
+    const executed = trail.filter((row) => row.action === RetentionAudit.PURGE_EXECUTED);
+    const claiming = executed.filter(
+      (row) =>
+        (row.payload as { after?: { revisionsRemoved?: number } } | null)?.after
+          ?.revisionsRemoved !== undefined,
+    );
+    expect(claiming).toHaveLength(1);
+
+    // One destruction, one event. A webhook subscriber is told once that the record is gone.
+    const purgedEvents = await owner.outboxMessage.count({
+      where: { aggregateId: document.id, eventType: 'retention.document-purged' },
+    });
+    expect(purgedEvents).toBe(1);
+  });
+
+  /**
+   * The other side of the same predicate: a claim of *more* than one is still a claim.
+   *
+   * `uq_retention_schedule_live` is unique on `(document_id, trigger)`, not on the document, so a
+   * record whose publication and whose deletion both started a clock has two live schedules — and
+   * `deleteForDocument` removes them together, so the winning sweep's claim counts two. A guard
+   * asking for exactly one would refuse a purge nobody is racing for, which is why the predicate
+   * is "did I claim anything" rather than "did I claim the one I was holding".
+   */
+  it('purges a record whose claim removes more than one schedule', async () => {
+    const publishPurge = await as(() =>
+      library.configuration.createRetention({
+        code: unique('RP'),
+        name: 'Purge one month after publication',
+        trigger: RetentionTrigger.ON_PUBLISH,
+        periodMonths: 1,
+        disposition: Disposition.PURGE,
+        reviewRequired: false,
+      }),
+    );
+
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Two clocks'));
+    // A second live schedule on the same record, through the seam Document itself writes one by.
+    await as(() =>
+      unitOfWork.run(() =>
+        retention.scheduler.onTrigger({
+          documentId: document.id,
+          trigger: RetentionTrigger.ON_PUBLISH,
+          at: now,
+          policyId: publishPurge.id,
+          documentNumber: null,
+        }),
+      ),
+    );
+    const live = await owner.retentionSchedule.count({
+      where: {
+        documentId: document.id,
+        state: { in: [RetentionScheduleState.PENDING, RetentionScheduleState.IN_REVIEW] },
+      },
+    });
+    expect(live).toBe(2);
+
+    // Both are due, and both are approved, so the sweep settles rather than raising for review.
+    const schedules = await owner.retentionSchedule.findMany({
+      where: { documentId: document.id, state: RetentionScheduleState.PENDING },
+      select: { id: true, dueAt: true },
+    });
+    now = new Date(Math.max(...schedules.map((row) => row.dueAt.getTime())) + 86_400_000);
+    for (const schedule of schedules) {
+      await as(() => retention.retention.approveDisposition(schedule.id, 'Reviewed and approved'));
+    }
+
+    await asSystem(() => retention.retention.executeDue(100));
+
+    expect(
+      await owner.document.findUnique({ where: { id: document.id }, select: { id: true } }),
+    ).toBeNull();
+    expect(await owner.documentTombstone.count({ where: { documentId: document.id } })).toBe(1);
+    const trail = await trailFor(document.id);
+    expect(trail.filter((row) => row.action === RetentionAudit.PURGED)).toHaveLength(1);
+  });
+
+  /** The real schedule repository, held between `purge`'s last guard read and its first write. */
+  class ParkingSchedules extends PrismaRetentionScheduleRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+    /** Whose claim to park on — this file leaves plenty of other schedules due. */
+    target: string | null = null;
+    /** What each claim actually removed, which is the whole of what the fix reads. */
+    readonly deleteCounts: number[] = [];
+
+    override async deleteForDocument(documentId: DocumentId): Promise<number> {
+      const gate = this.admit;
+      if (gate !== null && String(documentId) === this.target) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+      const count = await super.deleteForDocument(documentId);
+      if (String(documentId) === this.target) {
+        this.deleteCounts.push(count);
+      }
+      return count;
+    }
+  }
 });

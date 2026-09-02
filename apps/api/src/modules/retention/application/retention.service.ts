@@ -512,7 +512,28 @@ export class DefaultRetentionService implements RetentionService {
       // hold still pointing at the document would refuse its removal. Their work is done — the
       // tombstone and the two audit rows below are the evidence from here on, and a released
       // hold's history is already in the immutable trail.
-      await this.schedules.deleteForDocument(schedule.documentId);
+      //
+      // The count is the claim — Slice 90. `listDue` is a select, so two sweeps in flight for one
+      // tenant hold the same schedule, and the re-read above cannot separate them: neither has
+      // written anything yet, so both see `PENDING` and both go on. This delete is the first
+      // statement that can, because only one transaction removes a row. Zero means the other sweep
+      // took it, and everything below — the tombstone, the event and the two audit rows — would
+      // describe a destruction this transaction did not carry out.
+      const claimed = await this.schedules.deleteForDocument(schedule.documentId);
+      if (claimed === 0) {
+        return {
+          result: undefined,
+          change: {
+            action: RetentionAudit.PURGE_EXECUTED,
+            subjectType: AuditSubjectType.DOCUMENT,
+            subjectId: asId<AnyId>(schedule.documentId),
+            operation: AdministrativeOperation.UPDATED,
+            // The same shape the `subject === null` branch above records, for the same fact
+            // reached a different way: a sweep met this schedule and had nothing left to do.
+            after: { scheduleId: schedule.id, alreadyPurged: true },
+          },
+        };
+      }
       await this.holds.deleteForDocument(schedule.documentId);
 
       const outcome = await this.documents.purge(schedule.documentId);
