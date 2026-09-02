@@ -372,24 +372,43 @@ describe('an event becomes notifications, once', () => {
     expect(await messagesFor(ADA, NotificationType.APPROVAL_TASK_ASSIGNED.key)).toHaveLength(2);
   });
 
+  /**
+   * Its own event, delivered twice inside this test — Slice 85.
+   *
+   * It used to redeliver the *previous* test's `eventId`, which made the assertion depend on that
+   * test having persisted its four rows. Any failure there, for any reason, left nothing for the
+   * idempotency key to collapse against, so this test created four and reported `expected 4 to be
+   * +0` — a failure that reads as "idempotency is broken" and is not. That misdirection was
+   * investigated three times before the coupling was found; the property under test needs no
+   * sibling, so it no longer has one.
+   */
   it('produces none when the same event is redelivered', async () => {
-    const again = await asSystem(() =>
-      stack.events.handle({
-        eventId,
-        eventType: 'workflow.task-assigned',
-        payload: {
-          workflowInstanceId: uuidv7(),
-          documentId: DOCUMENT,
-          stageIndex: 0,
-          stageName: 'Review',
-          assigneeIds: [ADA, BOB],
-          dueAt: '2026-08-12T09:00:00.000Z',
-        },
-      }),
-    );
+    const redelivered = uuidv7();
+    const deliver = (): Promise<number> =>
+      asSystem(() =>
+        stack.events.handle({
+          eventId: redelivered,
+          eventType: 'workflow.task-assigned',
+          payload: {
+            workflowInstanceId: uuidv7(),
+            documentId: DOCUMENT,
+            stageIndex: 0,
+            stageName: 'Review',
+            assigneeIds: [ADA, BOB],
+            dueAt: '2026-08-12T09:00:00.000Z',
+          },
+        }),
+      );
 
-    expect(again).toBe(0);
-    expect(await messagesFor(ADA, NotificationType.APPROVAL_TASK_ASSIGNED.key)).toHaveLength(2);
+    // The first delivery is this test's own precondition, asserted rather than assumed: an
+    // idempotency check that collapses nothing proves nothing.
+    expect(await deliver()).toBe(4);
+    const afterFirst = (await messagesFor(ADA, NotificationType.APPROVAL_TASK_ASSIGNED.key)).length;
+
+    expect(await deliver()).toBe(0);
+    expect(await messagesFor(ADA, NotificationType.APPROVAL_TASK_ASSIGNED.key)).toHaveLength(
+      afterFirst,
+    );
   });
 
   it('tells nobody about an event whose type this phase does not translate', async () => {
