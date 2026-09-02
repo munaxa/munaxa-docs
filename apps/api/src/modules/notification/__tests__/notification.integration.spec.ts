@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   type DocumentId,
+  type NotificationMessageId,
   type TenantId,
   type UserId,
   DeliveryState,
@@ -1661,4 +1662,218 @@ class ParkedClaims extends PrismaNotificationMessageRepository {
   admit(nth: number): void {
     this.gates[nth - 1]?.();
   }
+}
+
+/**
+ * Slice 86 — the last part of the idempotency contract that had only been reasoned about.
+ *
+ * `notify` looks the message up by `{eventId}:{userId}:{channel}` and returns `null` when it finds
+ * one, and `findByIdempotencyKey` filters on the tenant and the key alone — no state predicate.
+ * Slices 83–85 read that early return and concluded a redelivered event cannot disturb an existing
+ * notification whatever state it has reached. Reading is not exercising, and "whatever state" is
+ * seven states, so this asserts each of them against a real row.
+ *
+ * Every state is reached through production code: `notify` itself for the two it produces, and the
+ * repository transitions the delivery service and the digest use for the rest. Nothing is inserted
+ * by hand — a row this suite fabricated would prove only that the suite can fabricate rows.
+ */
+describe('a redelivered event leaves an existing notification alone, whatever state it is in', () => {
+  beforeAll(async () => {
+    // Self-contained: an address another test suppressed would make `notify` write `SUPPRESSED`
+    // rows here and this matrix would be testing that instead. Released through the real
+    // administrator path, and harmless when there is nothing to release.
+    await inTransaction(() => stack.admin.releaseSuppression(addressOf('bob')));
+  });
+
+  /** One EMAIL notification for Bob, and the redelivery of the very event that produced it. */
+  async function existingMessage(): Promise<{
+    id: NotificationMessageId;
+    redeliver: () => Promise<number>;
+    key: string;
+  }> {
+    const eventId = uuidv7();
+    // The committed-event path, not a hand-built `NotifyCommand`: the translator is what decides
+    // the type key, the recipients and the template variables, and a redelivered event is the
+    // production occasion this whole contract exists for.
+    const deliver = (): Promise<number> =>
+      asSystem(() =>
+        stack.events.handle({
+          eventId,
+          eventType: 'workflow.task-assigned',
+          payload: {
+            workflowInstanceId: uuidv7(),
+            documentId: DOCUMENT,
+            stageIndex: 0,
+            stageName: 'Review',
+            assigneeIds: [BOB],
+            dueAt: '2026-08-12T09:00:00.000Z',
+          },
+        }),
+      );
+
+    // One recipient x two channels. Asserted, not assumed: a matrix built on a message that was
+    // never written would pass every case below by finding nothing to disturb.
+    expect(await deliver()).toBe(2);
+    // Found by the key this event *must* have produced, never by "the newest row for Bob":
+    // `created_at` ties across rows written in one instant, so an ordering picks arbitrarily
+    // among them and the assertions below would describe whichever row it happened to return.
+    const key = `${eventId}:${BOB}:${NotificationChannel.EMAIL}`;
+    const email = await owner.notificationMessage.findFirstOrThrow({
+      where: { tenantId: TENANT, idempotencyKey: key },
+    });
+    return { id: asId<NotificationMessageId>(email.id), redeliver: deliver, key };
+  }
+
+  /** Asserts the row is byte-for-byte what it was, and that nothing else was written. */
+  async function expectUndisturbed(
+    key: string,
+    before: NotificationMessageSnapshot,
+  ): Promise<void> {
+    const rows = await owner.notificationMessage.findMany({
+      where: { tenantId: TENANT, idempotencyKey: key },
+    });
+    // One row for this identity, still — the whole of what the key is for.
+    expect(rows).toHaveLength(1);
+    const after = rows[0]!;
+    expect(after.state).toBe(before.state);
+    expect(after.attempts).toBe(before.attempts);
+    expect(after.sentAt?.getTime() ?? null).toBe(before.sentAt?.getTime() ?? null);
+    expect(after.failureReason).toBe(before.failureReason);
+    expect(after.digestMessageId).toBe(before.digestMessageId);
+    expect(after.releaseAt?.getTime() ?? null).toBe(before.releaseAt?.getTime() ?? null);
+  }
+
+  async function snapshot(key: string): Promise<NotificationMessageSnapshot> {
+    const row = await owner.notificationMessage.findFirstOrThrow({
+      where: { tenantId: TENANT, idempotencyKey: key },
+    });
+    return {
+      state: row.state,
+      attempts: row.attempts,
+      sentAt: row.sentAt,
+      failureReason: row.failureReason,
+      digestMessageId: row.digestMessageId,
+      releaseAt: row.releaseAt,
+    };
+  }
+
+  // The four states the delivery service settles a message into, reached through the same
+  // repository call it uses. `SUPPRESSED` is the hard-bounce outcome, not the address's own row.
+  for (const state of [
+    DeliveryState.SENT,
+    DeliveryState.DELIVERED,
+    DeliveryState.FAILED,
+    DeliveryState.SUPPRESSED,
+  ] as const) {
+    it(`creates nothing and changes nothing when the existing message is ${state}`, async () => {
+      const { id, redeliver, key } = await existingMessage();
+      await inTransaction(() =>
+        stack.messages.recordDelivery(id, {
+          state,
+          failureReason: state === DeliveryState.FAILED ? 'the provider gave up' : null,
+          at: new Date(now.getTime() + 1_000),
+        }),
+      );
+      const before = await snapshot(key);
+      expect(before.state).toBe(state);
+
+      expect(await redeliver()).toBe(0);
+      await expectUndisturbed(key, before);
+    });
+  }
+
+  it('creates nothing and changes nothing when the existing message is still QUEUED', async () => {
+    const { redeliver, key } = await existingMessage();
+    const before = await snapshot(key);
+    expect(before.state).toBe(DeliveryState.QUEUED);
+
+    expect(await redeliver()).toBe(0);
+    await expectUndisturbed(key, before);
+  });
+
+  /**
+   * One HELD email for Bob, and the redelivery of the event that produced it.
+   *
+   * A held message needs a type quiet hours may hold, and `workflow.task-assigned` is not one:
+   * it is HIGH urgency, so `mayBeHeldForQuietHours` lets it straight through. `document.approved`
+   * is the suite's established non-urgent type, and 22:00-07:00 with the clock at 23:00 is the
+   * window the quiet-hours tests already use.
+   */
+  async function existingHeldMessage(): Promise<{
+    id: NotificationMessageId;
+    redeliver: () => Promise<number>;
+    key: string;
+  }> {
+    const eventId = uuidv7();
+    const deliver = (): Promise<number> =>
+      asSystem(() =>
+        stack.events.handle({
+          eventId,
+          eventType: 'document.approved',
+          payload: { documentId: DOCUMENT },
+        }),
+      );
+    expect(await deliver()).toBeGreaterThan(0);
+    const key = `${eventId}:${BOB}:${NotificationChannel.EMAIL}`;
+    const email = await owner.notificationMessage.findFirstOrThrow({
+      where: { tenantId: TENANT, idempotencyKey: key },
+    });
+    return { id: asId<NotificationMessageId>(email.id), redeliver: deliver, key };
+  }
+
+  /** Runs `work` with Bob inside quiet hours, and puts his preference back afterwards. */
+  async function inQuietHours<T>(work: () => Promise<T>): Promise<T> {
+    await inTransaction(
+      () =>
+        stack.admin.saveQuietHours(BOB, {
+          startMinute: 22 * 60,
+          endMinute: 7 * 60,
+          timezone: 'UTC',
+        }),
+      BOB,
+    );
+    now = new Date('2026-08-05T23:00:00.000Z');
+    try {
+      return await work();
+    } finally {
+      await inTransaction(() => stack.admin.saveQuietHours(BOB, null), BOB);
+    }
+  }
+
+  it('creates nothing and changes nothing when the existing message is HELD for quiet hours', async () => {
+    await inQuietHours(async () => {
+      const { redeliver, key } = await existingHeldMessage();
+      const before = await snapshot(key);
+      expect(before.state).toBe(DeliveryState.HELD);
+      expect(before.releaseAt).not.toBeNull();
+
+      expect(await redeliver()).toBe(0);
+      await expectUndisturbed(key, before);
+    });
+  });
+
+  it('creates nothing and changes nothing when the existing message was DIGESTED', async () => {
+    await inQuietHours(async () => {
+      // `markDigested` only moves a message out of HELD, which is the state the digest collects
+      // from — so the member is held first, through the same quiet-hours path as above.
+      const member = await existingHeldMessage();
+      const carrier = await existingHeldMessage();
+      await inTransaction(() => stack.messages.markDigested([member.id], carrier.id));
+      const before = await snapshot(member.key);
+      expect(before.state).toBe(DeliveryState.DIGESTED);
+      expect(before.digestMessageId).toBe(carrier.id);
+
+      expect(await member.redeliver()).toBe(0);
+      await expectUndisturbed(member.key, before);
+    });
+  });
+});
+
+interface NotificationMessageSnapshot {
+  readonly state: string;
+  readonly attempts: number;
+  readonly sentAt: Date | null;
+  readonly failureReason: string | null;
+  readonly digestMessageId: string | null;
+  readonly releaseAt: Date | null;
 }
