@@ -654,6 +654,92 @@ describe('a hard bounce suppresses the address', () => {
     };
   });
 
+  /**
+   * Slice 84 — a released address that goes bad again is a second suppression, and says so.
+   *
+   * `releaseSuppression` states the contract this asserts: "lifting one restores the ordinary
+   * state, and the next bounce writes the next suppression **with its own count**". The count
+   * restarts at zero, so the next episode crosses the threshold at the same number the first one
+   * did — and the alert's `eventId` is `suppression:{masked}:{bounceCount}`, which is therefore
+   * the *same key* as the previous episode's. `notify` finds that message and returns null, so
+   * the second suppression is written to the trail and told to nobody.
+   *
+   * 18 §7 is "repeated hard bounces suppress the address **and alert an administrator**", and the
+   * trail disagreeing with the inbox is the shape of the defect: the audit row says an address was
+   * suppressed, and no administrator was told.
+   */
+  it('tells an administrator again when a released address is suppressed a second time', async () => {
+    const address = addressOf('ada');
+    // Self-contained: whatever the suite has already done to this address, start from released.
+    await asSystem(() => strict.admin.releaseSuppression(address));
+
+    const bounceOnce = async (): Promise<void> => {
+      await asSystem(() =>
+        strict.events.handle({
+          eventId: uuidv7(),
+          eventType: 'document.rejected',
+          payload: { documentId: DOCUMENT, comment: 'Section 4 is wrong.' },
+        }),
+      );
+      strict.transport.receipt = {
+        accepted: false,
+        providerMessageId: null,
+        failureReason: 'mailbox does not exist',
+        permanentFailure: true,
+      };
+      await runWithContext(contextFor(null), () =>
+        strict.delivery.deliverBatch(NotificationChannel.EMAIL, 50),
+      );
+    };
+
+    // The first episode: suppressed, and the administrator is told.
+    await bounceOnce();
+    const firstAlerts = (await messagesFor(ADMIN, NotificationType.SECURITY_ADDRESS_SUPPRESSED.key))
+      .length;
+    const firstAudits = await owner.auditEvent.count({
+      where: { tenantId: TENANT, action: NotificationAudit.SUPPRESSED },
+    });
+    expect(firstAlerts).toBeGreaterThan(0);
+
+    // The mailbox is fixed, and an administrator lifts the suppression. The count restarts.
+    expect(await asSystem(() => strict.admin.releaseSuppression(address))).toBe(true);
+    const released = await owner.notificationSuppression.findFirstOrThrow({
+      where: { tenantId: TENANT, address },
+    });
+    expect(released.suppressedAt).toBeNull();
+    expect(released.bounceCount).toBe(0);
+
+    // Time passes, as it must: a mailbox is corrected, released, and goes bad again. The suite's
+    // clock is frozen between scenarios, so it is advanced here the way the rest of the file does
+    // — no production sequence suppresses one address twice inside the same instant.
+    now = new Date(now.getTime() + 3_600_000);
+
+    // It goes bad again. This is a second suppression, not a repeat of the first.
+    await bounceOnce();
+
+    const resuppressed = await owner.notificationSuppression.findFirstOrThrow({
+      where: { tenantId: TENANT, address },
+    });
+    expect(resuppressed.suppressedAt).not.toBeNull();
+    // The trail records the second suppression …
+    expect(
+      await owner.auditEvent.count({
+        where: { tenantId: TENANT, action: NotificationAudit.SUPPRESSED },
+      }),
+    ).toBeGreaterThan(firstAudits);
+    // … so somebody has to have been told about it.
+    expect(
+      (await messagesFor(ADMIN, NotificationType.SECURITY_ADDRESS_SUPPRESSED.key)).length,
+    ).toBeGreaterThan(firstAlerts);
+
+    strict.transport.receipt = {
+      accepted: true,
+      providerMessageId: 'provider-1',
+      failureReason: null,
+      permanentFailure: false,
+    };
+  });
+
   it('does not attempt the next send to that address', async () => {
     const attemptsBefore = strict.transport.sent.filter(
       (message) => message.address === addressOf('ada'),
