@@ -297,25 +297,37 @@ export class PrismaWebhookRepository implements WebhookRepository {
     });
   }
 
+  /**
+   * The counter, and what it says once this write has landed.
+   *
+   * `updateManyAndReturn` rather than an update the caller cannot see the result of — the same
+   * shape `PrismaFileObjectRepository.adjustRefCount` uses, and for the same reason. An attempt
+   * reads the endpoint in its *claim* transaction and settles in another one after the send, so a
+   * count carried across that gap is a number that may no longer be true: a success landing in
+   * between resets the run to zero, and the threshold has to be judged against the row rather
+   * than against the snapshot. `increment` under the row lock is what makes the returned value
+   * the real one for this attempt and no other.
+   */
   async recordEndpointOutcome(
     endpointId: AnyId,
-    outcome: { readonly succeeded: boolean; readonly at: Date; readonly disableReason?: string },
-  ): Promise<void> {
-    await requireTransaction().webhookEndpoint.update({
+    outcome: { readonly succeeded: boolean; readonly at: Date },
+  ): Promise<number> {
+    const updated = await requireTransaction().webhookEndpoint.updateManyAndReturn({
       where: { id: endpointId },
       data: outcome.succeeded
         ? // Reset rather than decrement: the column measures "is this endpoint dead *now*", so one
           // success means the run of failures is over.
           { failureCount: 0, lastSuccessAt: outcome.at }
-        : {
-            failureCount: { increment: 1 },
-            lastFailureAt: outcome.at,
-            ...(outcome.disableReason !== undefined && {
-              enabled: false,
-              disabledAt: outcome.at,
-              disabledReason: outcome.disableReason.slice(0, 500),
-            }),
-          },
+        : { failureCount: { increment: 1 }, lastFailureAt: outcome.at },
+      select: { failureCount: true },
+    });
+    return updated[0]?.failureCount ?? 0;
+  }
+
+  async disableEndpoint(endpointId: AnyId, at: Date, reason: string): Promise<void> {
+    await requireTransaction().webhookEndpoint.updateMany({
+      where: { id: endpointId },
+      data: { enabled: false, disabledAt: at, disabledReason: reason.slice(0, 500) },
     });
   }
 

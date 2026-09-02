@@ -1526,3 +1526,136 @@ describe('a webhook endpoint edited against a version that has moved', () => {
     expect(row.name).toBe('Winner');
   });
 });
+
+/**
+ * The real outbound double, held at one endpoint's send.
+ *
+ * A subclass rather than a replacement: `super.send` answers every other delivery exactly as the
+ * suite's own double does, and the override only decides *when* one named endpoint's attempt
+ * returns. The gate is the endpoint's URL together with the event identifier, so a fan-out that
+ * reaches the suite's other endpoints cannot consume the slot this proof arms.
+ */
+class ParkedOutboundHttp extends RecordingHttp {
+  /** Set immediately before the operation under test; null while the suite is being set up. */
+  parkUrl: string | null = null;
+  parkEvent: string | null = null;
+
+  constructor(private readonly turnstile: Turnstile<string>) {
+    super();
+  }
+
+  override async send(request: {
+    url: string;
+    method: string;
+    headers?: Readonly<Record<string, string>>;
+    body?: string;
+  }): Promise<unknown> {
+    const parks =
+      this.parkUrl !== null &&
+      this.parkEvent !== null &&
+      request.url === this.parkUrl &&
+      (request.body ?? '').includes(this.parkEvent);
+    if (!parks) {
+      return super.send(request);
+    }
+    this.sent.push({
+      url: request.url,
+      method: request.method,
+      headers: request.headers ?? {},
+      body: request.body,
+    });
+    // Held *after* the claim transaction that read `failure_count` and *before* the settle
+    // transaction that decides the threshold — which is the whole of the window under test.
+    await this.turnstile.park(`send:${request.url}`);
+    return { ok: false, failure: { kind: 'NETWORK', reason: 'stubbed', durationMs: 1 } };
+  }
+}
+
+/**
+ * Slice 79 — the auto-disable threshold is decided from a count read before the send.
+ *
+ * `attempt` is three transactions: a claim that reads the endpoint, a send outside any
+ * transaction, and a settle. The settle computes `endpoint.failureCount + 1` in application code
+ * from the *claim-time* snapshot and compares that to `WEBHOOK_FAILURE_DISABLE_THRESHOLD`, while
+ * the write itself uses an atomic `increment`. The counter is therefore never lost — but the
+ * decision is made against a number that may no longer be true.
+ *
+ * `webhooks.deliver` runs at concurrency 12 with four slots per tenant, and every event fans out
+ * to every subscribed endpoint, so two attempts against one endpoint overlapping is ordinary. The
+ * case that matters is a receiver coming back: a success resets the run to zero — the column
+ * "measures 'is this endpoint dead *now*'", in the repository's own words — and an attempt that
+ * read nineteen before the recovery still disables the endpoint it has just been told is alive.
+ */
+describe('a webhook endpoint that recovered while a failing delivery was in flight', () => {
+  it('is not disabled by a failure count the in-flight attempt read before the recovery', async () => {
+    const turnstile = new Turnstile<string>();
+    const parking = new ParkedOutboundHttp(turnstile);
+    const stack = realWebhooks({ clock, unitOfWork, http: parking });
+
+    const url = 'https://hooks.example.com/recovering';
+    const created = await asAdmin(() =>
+      stack.admin.create({
+        name: 'Recovering integration',
+        url,
+        eventTypes: [],
+        enabled: true,
+      }),
+    );
+    const id = created.endpoint.id;
+
+    // Nineteen consecutive failures already recorded — one short of the threshold. A fixture for
+    // the same reason the suite's own auto-disable test uses one: what is under test is the
+    // decision at the threshold, not the arithmetic that reaches it.
+    await owner.webhookEndpoint.update({ where: { id }, data: { failureCount: 19 } });
+
+    const failingEvent = uuidv7();
+    const recoveringEvent = uuidv7();
+    // Armed only around the operation under test, so nothing above can take the slot.
+    parking.parkUrl = url;
+    parking.parkEvent = failingEvent;
+    turnstile.arm(1);
+
+    const failing = asNobody(() =>
+      stack.delivery.fanOut({
+        eventId: asId<AnyId>(failingEvent),
+        tenantId: TENANT,
+        eventType: 'retention.due',
+        aggregateType: 'retention',
+        aggregateId: uuidv7(),
+        occurredAt: FIXED_NOW,
+        payload: {},
+        correlationId: 'webhook-suite',
+      }),
+    );
+    await turnstile.reached[0];
+
+    // The receiver is back. This delivery succeeds and resets the run of failures to zero.
+    parking.parkEvent = null;
+    await asNobody(() =>
+      stack.delivery.fanOut({
+        eventId: asId<AnyId>(recoveringEvent),
+        tenantId: TENANT,
+        eventType: 'retention.due',
+        aggregateType: 'retention',
+        aggregateId: uuidv7(),
+        occurredAt: FIXED_NOW,
+        payload: {},
+        correlationId: 'webhook-suite',
+      }),
+    );
+    const recovered = await owner.webhookEndpoint.findUniqueOrThrow({ where: { id } });
+    expect(recovered.failureCount).toBe(0);
+    expect(recovered.enabled).toBe(true);
+
+    turnstile.release(0);
+    await failing;
+
+    const after = await owner.webhookEndpoint.findUniqueOrThrow({ where: { id } });
+    // One failure since the success, which is what the column now says. An endpoint one failure
+    // into a fresh run is not an endpoint that "has been refusing this long".
+    expect(after.failureCount).toBe(1);
+    expect(after.enabled).toBe(true);
+    expect(after.disabledAt).toBeNull();
+    expect(after.disabledReason).toBeNull();
+  }, 120_000);
+});

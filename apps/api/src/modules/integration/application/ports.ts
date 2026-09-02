@@ -206,11 +206,20 @@ export interface WebhookRepository {
     error: string,
   ): Promise<void>;
   settleDead(id: AnyId, status: number | null, error: string): Promise<void>;
-  /** Consecutive failures, and the success that resets them. Both on the endpoint. */
+  /**
+   * Consecutive failures, and the success that resets them. Both on the endpoint.
+   *
+   * Answers the endpoint's failure count **as this write left it** — zero after a success, and
+   * the incremented value after a failure. The caller compares that to the disable threshold, so
+   * the comparison is made against what the column actually holds rather than against a number
+   * read before the send.
+   */
   recordEndpointOutcome(
     endpointId: AnyId,
-    outcome: { readonly succeeded: boolean; readonly at: Date; readonly disableReason?: string },
-  ): Promise<void>;
+    outcome: { readonly succeeded: boolean; readonly at: Date },
+  ): Promise<number>;
+  /** Stops an endpoint that has failed enough times. Recorded, and reversible by an administrator. */
+  disableEndpoint(endpointId: AnyId, at: Date, reason: string): Promise<void>;
   listDeliveries(
     endpointId: AnyId,
     state: WebhookDeliveryStateKey | null,
