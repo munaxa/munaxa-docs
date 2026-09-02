@@ -234,17 +234,24 @@ export class DefaultWebhookDeliveryService implements WebhookDeliveryService {
         );
       }
 
-      const failures = endpoint.failureCount + 1;
-      await this.repository.recordEndpointOutcome(endpoint.id, {
+      // The count as the write left it, never `endpoint.failureCount + 1`. The endpoint was read
+      // in the claim transaction, before a send that takes as long as somebody else's server —
+      // and a success landing in that window resets the run to zero. Judging the threshold on the
+      // snapshot disables an endpoint that has just proved it is alive.
+      const failures = await this.repository.recordEndpointOutcome(endpoint.id, {
         succeeded: false,
         at: now,
+      });
+      if (failures >= WEBHOOK_FAILURE_DISABLE_THRESHOLD) {
         // An endpoint that has been refusing this long is a URL somebody decommissioned without
         // telling anyone. Disabling is recorded and reversible; continuing would be an outbound
         // request per event, for ever.
-        ...(failures >= WEBHOOK_FAILURE_DISABLE_THRESHOLD && {
-          disableReason: `${failures} consecutive failures. Last: ${reason}`,
-        }),
-      });
+        await this.repository.disableEndpoint(
+          endpoint.id,
+          now,
+          `${failures} consecutive failures. Last: ${reason}`,
+        );
+      }
     });
 
     this.logger.warn('A webhook delivery did not succeed', {
