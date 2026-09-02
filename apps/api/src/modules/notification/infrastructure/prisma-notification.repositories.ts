@@ -379,11 +379,11 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
   async markDigested(
     ids: readonly NotificationMessageId[],
     digestMessageId: NotificationMessageId,
-  ): Promise<void> {
+  ): Promise<number> {
     if (ids.length === 0) {
-      return;
+      return 0;
     }
-    await requireTransaction().notificationMessage.updateMany({
+    const { count } = await requireTransaction().notificationMessage.updateMany({
       where: {
         id: { in: [...ids] },
         tenantId: requireContext().tenantId,
@@ -391,6 +391,10 @@ export class PrismaNotificationMessageRepository implements NotificationMessageR
       },
       data: { state: DeliveryState.DIGESTED, digestMessageId },
     });
+    // Returned rather than discarded: fewer than asked for means another pass summarised some of
+    // these first, and the caller is the only one that knows what it has already written on the
+    // strength of owning them.
+    return count;
   }
 
   async recordDelivery(
