@@ -123,10 +123,25 @@ export class DigestService {
         if (summaryId === null) {
           continue;
         }
-        await this.messages.markDigested(
+        const claimed = await this.messages.markDigested(
           members.map((member) => member.id),
           summaryId,
         );
+        if (claimed !== members.length) {
+          // Another pass summarised some of these first. `claimForDigest` is a select, so both
+          // passes left it holding the same rows and neither learned anything there; this count is
+          // where the two are told apart, and it says the summary just written names messages that
+          // are already in somebody else's.
+          //
+          // Thrown rather than skipped, because the summary is already in this transaction and the
+          // whole pass is one transaction: unwinding is what removes it. The pass is retried, finds
+          // nothing still `HELD`, and produces nothing — which is the same way the identical race
+          // already resolves when the two passes agree on the window and the second one's insert is
+          // refused by `uq_notification_idempotency`.
+          throw new Error(
+            `A digest pass collected ${String(members.length)} messages for one recipient but claimed ${String(claimed)}; another pass has already summarised them.`,
+          );
+        }
         produced += 1;
       }
       return produced;

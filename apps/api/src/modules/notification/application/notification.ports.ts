@@ -194,11 +194,18 @@ export interface NotificationMessageRepository {
     now: Date,
     limit: number,
   ): Promise<readonly NotificationMessageRecord[]>;
-  /** Attaches a set of held messages to the digest that carried them. */
+  /**
+   * Attaches a set of held messages to the digest that carried them, and says how many it moved.
+   *
+   * The count is the claim: `claimForDigest` is a select, so two passes leave it holding the same
+   * rows, and this statement's `HELD` predicate is the only thing that decides which of them the
+   * rows actually belong to. A caller that ignores the number has read the rows rather than
+   * claimed them — the distinction `claimDue` is written around.
+   */
   markDigested(
     ids: readonly NotificationMessageId[],
     digestMessageId: NotificationMessageId,
-  ): Promise<void>;
+  ): Promise<number>;
   recordDelivery(
     id: NotificationMessageId,
     outcome: {

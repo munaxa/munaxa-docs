@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  type DigestFrequencyKey,
   type DocumentId,
   type NotificationMessageId,
   type TenantId,
@@ -23,6 +24,7 @@ import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import type { DocumentRecord, DocumentService } from '../../document/application/ports';
 import { type NotificationStack, realNotifications } from '../../../testing/real-collaborators';
+import type { NotificationMessageRecord } from '../application/notification.ports';
 import {
   type DueForDelivery,
   PrismaNotificationMessageRepository,
@@ -1877,3 +1879,224 @@ interface NotificationMessageSnapshot {
   readonly digestMessageId: string | null;
   readonly releaseAt: Date | null;
 }
+
+/**
+ * The real message repository, held between the digest select and everything that follows it.
+ *
+ * A subclass rather than a substitute, exactly as `ParkedClaims` is for delivery: the production
+ * select runs through `super`, and the only thing this class decides is *when* the pass is allowed
+ * to carry on with the rows it read. That is the instant the digest lane has no claim in — the
+ * select is a read, so two passes reach it together and both leave with the same rows.
+ */
+class ParkedDigest extends PrismaNotificationMessageRepository {
+  /** What each pass selected, in arrival order. */
+  readonly selected: string[][] = [];
+  private readonly gates: (() => void)[] = [];
+  private readonly watchers: (() => void)[] = [];
+
+  override async claimForDigest(
+    frequency: DigestFrequencyKey,
+    now: Date,
+    limit: number,
+  ): Promise<readonly NotificationMessageRecord[]> {
+    const rows = await super.claimForDigest(frequency, now, limit);
+    const admitted = new Promise<void>((resolve) => {
+      this.gates.push(resolve);
+    });
+    this.selected.push(rows.map((row) => row.id));
+    this.watchers.splice(0).forEach((notify) => {
+      notify();
+    });
+    await admitted;
+    return rows;
+  }
+
+  /** Waits for the nth pass to park, or for its `collect` to finish without parking. */
+  async arrivalOf(nth: number, worker: Promise<unknown>): Promise<'parked' | 'finished'> {
+    const arrived = new Promise<'parked'>((resolve) => {
+      const check = (): void => {
+        if (this.selected.length >= nth) {
+          resolve('parked');
+        } else {
+          this.watchers.push(check);
+        }
+      };
+      check();
+    });
+    return Promise.race([arrived, worker.then(() => 'finished' as const)]);
+  }
+
+  /** Lets the nth parked pass carry on. */
+  admit(nth: number): void {
+    this.gates[nth - 1]?.();
+  }
+}
+
+describe('a digest window is summarised by one pass, not by every pass that saw it', () => {
+  /*
+   * Two passes whose clocks straddle a window boundary — the ordering the summary's identity has
+   * to survive, and the one it did not.
+   *
+   * `claimForDigest` is a select with no claim, so both passes leave it holding rows. That is safe
+   * as long as both compute the same summary identity, because the identity is unique per tenant
+   * and the second insert is refused: `windowKey` is documented as "the same instant for every
+   * message a window closed over", and on that premise two passes over one window agree.
+   *
+   * The premise fails as soon as a pass collects *two* closed windows, which is what happens after
+   * a pass is missed — a restart, a lane that was down, a job retried late. The later pass's set
+   * then has a later maximum `release_at`, the two keys differ, the unique index has nothing to
+   * refuse, and both summaries are written and queued. The recipient is emailed twice about the
+   * same notifications.
+   *
+   * Four seconds apart, not an hour: both transactions sit well inside Prisma's interactive
+   * budget, and the top of the hour is exactly when a digest pass and its retry run.
+   *
+   * Both commit orders are exercised, because they fail differently. When the wider pass commits
+   * first the narrower one claims *none* of what it summarised; when the narrower commits first
+   * the wider one claims only *some* of it. A guard that only noticed the first would leave the
+   * second sending the duplicate.
+   */
+  async function twoPassesAcrossABoundary(admitFirst: 1 | 2, day: string): Promise<void> {
+    const parked = new ParkedDigest();
+    const seam = realNotifications({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      documents,
+      messages: parked,
+    });
+
+    await inTransaction(
+      () =>
+        stack.admin.savePreference(ADA, NotificationType.DOCUMENT_APPROVED.key, {
+          channels: [NotificationChannel.EMAIL],
+          digest: DigestFrequency.HOURLY,
+        }),
+      ADA,
+    );
+
+    // Window one closes at 15:00 and its pass never ran, so these two are still held.
+    now = new Date(`${day}T14:30:00.000Z`);
+    for (let index = 0; index < 2; index += 1) {
+      await asSystem(() =>
+        seam.events.handle({
+          eventId: uuidv7(),
+          eventType: 'document.approved',
+          payload: { documentId: DOCUMENT },
+        }),
+      );
+    }
+    // Window two closes at 16:00.
+    now = new Date(`${day}T15:30:00.000Z`);
+    for (let index = 0; index < 2; index += 1) {
+      await asSystem(() =>
+        seam.events.handle({
+          eventId: uuidv7(),
+          eventType: 'document.approved',
+          payload: { documentId: DOCUMENT },
+        }),
+      );
+    }
+
+    const held = await owner.notificationMessage.findMany({
+      where: {
+        tenantId: TENANT,
+        recipientId: ADA,
+        typeKey: NotificationType.DOCUMENT_APPROVED.key,
+        state: DeliveryState.HELD,
+      },
+      select: { id: true, subject: true, releaseAt: true },
+    });
+    // The precondition, asserted rather than assumed: two closed windows, one recipient.
+    expect(new Set(held.map((row) => row.releaseAt?.toISOString())).size).toBe(2);
+    const windowOne = held
+      .filter((row) => row.releaseAt?.toISOString() === `${day}T15:00:00.000Z`)
+      .map((row) => row.subject);
+    expect(windowOne).toHaveLength(2);
+
+    // Only summaries this run writes are the subject. Both cases announce the same document, so
+    // the subjects match a sibling case's summary word for word, and "how many summaries name this
+    // window" would otherwise count that one too — the coupling Slice 85 removed elsewhere.
+    const before = new Set(
+      (
+        await owner.notificationMessage.findMany({
+          where: {
+            tenantId: TENANT,
+            recipientId: ADA,
+            typeKey: NotificationType.DIGEST_SUMMARY.key,
+          },
+          select: { id: true },
+        })
+      ).map((row) => row.id),
+    );
+
+    // The first pass reads the clock two seconds before window two closes, so it sees window one.
+    now = new Date(`${day}T15:59:58.000Z`);
+    const narrow = runWithContext(contextFor(null), () =>
+      seam.digests.collect(DigestFrequency.HOURLY),
+    ).catch(() => -1);
+    expect(await parked.arrivalOf(1, narrow)).toBe('parked');
+
+    // The second reads it four seconds later, after the boundary, so it sees both windows.
+    now = new Date(`${day}T16:00:02.000Z`);
+    const wide = runWithContext(contextFor(null), () =>
+      seam.digests.collect(DigestFrequency.HOURLY),
+    ).catch(() => -1);
+    expect(await parked.arrivalOf(2, wide)).toBe('parked');
+
+    // Both left the select holding rows — the race this test is about, asserted so that a change
+    // which starts claiming fails here rather than passing vacuously.
+    expect(parked.selected[0]).toHaveLength(2);
+    expect(parked.selected[1]).toHaveLength(4);
+
+    const second = admitFirst === 1 ? 2 : 1;
+    parked.admit(admitFirst);
+    await (admitFirst === 1 ? narrow : wide);
+    parked.admit(second);
+    await (second === 1 ? narrow : wide);
+
+    const summaries = (
+      await owner.notificationMessage.findMany({
+        where: {
+          tenantId: TENANT,
+          recipientId: ADA,
+          typeKey: NotificationType.DIGEST_SUMMARY.key,
+        },
+        select: { id: true, bodyText: true },
+      })
+    ).filter((row) => !before.has(row.id));
+
+    // One window, summarised once. Two summaries naming it are two emails about the same
+    // notifications — the duplicate 18 §1's fifth principle exists to prevent.
+    const namingWindowOne = summaries.filter((summary) =>
+      windowOne.every((subject) => summary.bodyText.includes(subject)),
+    );
+    expect(namingWindowOne).toHaveLength(1);
+
+    // And no summary is written that carries nothing: the members' foreign key is how "which
+    // digest would I have read this in" is answered, and a summary no member points at is a
+    // message the recipient receives that the trail cannot account for.
+    const members = await owner.notificationMessage.findMany({
+      where: { tenantId: TENANT, id: { in: held.map((row) => row.id) } },
+      select: { digestMessageId: true },
+    });
+    const carried = new Set(members.map((row) => row.digestMessageId));
+    expect(summaries.filter((summary) => !carried.has(summary.id))).toHaveLength(0);
+
+    await inTransaction(
+      () => stack.admin.clearPreference(ADA, NotificationType.DOCUMENT_APPROVED.key),
+      ADA,
+    );
+  }
+
+  // Its own day per case. The summary's identity is `digest:{frequency}:{recipient}:{window}`, so
+  // two cases over the same instants would produce the same key and the second one's production
+  // path would be decided by the first one's leftover row rather than by the code under test.
+  it('does not email one window twice when the wider pass commits first', async () => {
+    await twoPassesAcrossABoundary(2, '2026-08-11');
+  });
+
+  it('does not email one window twice when the narrower pass commits first', async () => {
+    await twoPassesAcrossABoundary(1, '2026-08-18');
+  });
+});
