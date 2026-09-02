@@ -1478,6 +1478,14 @@ export function realRetention(
      */
     readonly holds?: PrismaLegalHoldRepository;
     /**
+     * The schedule repository, for the same reason and through the same door — Slice 90.
+     *
+     * `purge` forms its belief from guard reads and then writes; a suite proving what two sweeps
+     * holding the same schedule do to each other needs somewhere to stand between the last guard
+     * and the first write, and `deleteForDocument` is that statement.
+     */
+    readonly schedules?: PrismaRetentionScheduleRepository;
+    /**
      * Phase 6.1's `DOCUMENT_EXPIRY`. Optional for the same reason `storageService` is: the suites
      * that never fire `documents.expire-effective` are unchanged, and one that calls the sweep
      * without supplying it fails by name rather than by reporting a pass that never ran.
@@ -1486,7 +1494,7 @@ export function realRetention(
   },
 ): RetentionStack {
   const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
-  const schedules = new PrismaRetentionScheduleRepository(stamps);
+  const schedules = options.schedules ?? new PrismaRetentionScheduleRepository(stamps);
   const holdRepository = options.holds ?? new PrismaLegalHoldRepository(stamps);
   const tombstones = new PrismaTombstoneRepository();
   const reaper = new StorageBlobReaper(
