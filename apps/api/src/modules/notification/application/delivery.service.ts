@@ -285,8 +285,14 @@ export class DeliveryService {
     await this.writer.write(async () => {
       await this.notifications.notify({
         // Deterministic, so a redelivered delivery pass that bounces the same address again
-        // cannot alert twice for one suppression.
-        eventId: `suppression:${maskAddress(address)}:${String(outcome.bounceCount)}`,
+        // cannot alert twice for one suppression — and keyed on *this* suppression rather than
+        // on the count, which is not an identity. `release` sets the count back to zero, so the
+        // next episode crosses the threshold at the same number the last one did: keying on the
+        // count made the second suppression of an address collide with the first, and §7's
+        // "alert an administrator" was answered by an inbox that already held the old alert.
+        // `at` is the instant `recordPermanentFailure` just wrote to `suppressed_at`, and only
+        // the caller that crossed the threshold reaches this line, so it names one episode.
+        eventId: `suppression:${maskAddress(address)}:${at.toISOString()}`,
         typeKey: NotificationType.SECURITY_ADDRESS_SUPPRESSED.key,
         recipientIds: administrators,
         values: {
