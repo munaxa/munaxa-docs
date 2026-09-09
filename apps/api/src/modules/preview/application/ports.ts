@@ -65,6 +65,15 @@ export interface PreviewRenderRepository {
   find(revisionId: RevisionId): Promise<PreviewRenderRecord | null>;
   /** Creates as PENDING or increments the existing row's attempts. */
   claim(revisionId: RevisionId): Promise<PreviewRenderRecord>;
+  /**
+   * Settles the render, and answers whether *this* pass is the one that settled it.
+   *
+   * `claim` counts an attempt without moving the state, so the READY short-circuit only refuses a
+   * render that has already finished — two passes meeting while the first is still rendering both
+   * go on. This statement is the first one only one of them can win, and the caller announces on
+   * the strength of it: the distinction `claimDue` is written around, applied to the lane whose
+   * artefacts already converge on their own.
+   */
   settle(
     revisionId: RevisionId,
     outcome: {
@@ -74,7 +83,7 @@ export interface PreviewRenderRepository {
       rendererVersion: string | null;
       pageCount: number | null;
     },
-  ): Promise<void>;
+  ): Promise<boolean>;
 }
 
 export interface OcrResultRecord {

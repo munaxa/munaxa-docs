@@ -117,20 +117,22 @@ export class PreviewRenderService {
 
     if (!this.preview.canRender(source.mimeType)) {
       await this.uow.run(async () => {
-        await this.renders.settle(revisionId, {
+        const settled = await this.renders.settle(revisionId, {
           state: PreviewRenderState.UNSUPPORTED,
           reason: `No renderer claims ${source.mimeType}.`,
           renderer: null,
           rendererVersion: null,
           pageCount: null,
         });
-        await this.outbox.publish([
-          previewFailedEvent(asId<AnyId>(revisionId), {
-            revisionId,
-            reason: `No renderer claims ${source.mimeType}.`,
-            renderer: null,
-          }),
-        ]);
+        if (settled) {
+          await this.outbox.publish([
+            previewFailedEvent(asId<AnyId>(revisionId), {
+              revisionId,
+              reason: `No renderer claims ${source.mimeType}.`,
+              renderer: null,
+            }),
+          ]);
+        }
       });
       return;
     }
@@ -201,21 +203,28 @@ export class PreviewRenderService {
           await this.storage.dereference(saved.displacedFileObjectId);
         }
       }
-      await this.renders.settle(revisionId, {
+      const settled = await this.renders.settle(revisionId, {
         state: PreviewRenderState.READY,
         reason: null,
         renderer: outcome.renderer,
         rendererVersion: outcome.version,
         pageCount: outcome.pageCount,
       });
-      await this.outbox.publish([
-        previewRenderedEvent(asId<AnyId>(revisionId), {
-          revisionId,
-          pageCount: outcome.pageCount ?? 0,
-          renderer: outcome.renderer,
-          rendererVersion: outcome.version,
-        }),
-      ]);
+      // Only the pass that settled it announces. The rows above converge on their own — the
+      // artefact's unique key and content-addressed blobs see to that — but an event does not: two
+      // carry two ids, so a subscriber deduplicating on the id cannot collapse them, and the
+      // search index and every webhook subscribed to `preview.*` would be told twice about one
+      // render. The same guard `archive` states in as many words, on the lane that lacked it.
+      if (settled) {
+        await this.outbox.publish([
+          previewRenderedEvent(asId<AnyId>(revisionId), {
+            revisionId,
+            pageCount: outcome.pageCount ?? 0,
+            renderer: outcome.renderer,
+            rendererVersion: outcome.version,
+          }),
+        ]);
+      }
     });
 
     await this.maybeQueueOcr(revisionId, fileObjectId, source.mimeType, textCharacters);
@@ -261,14 +270,14 @@ export class PreviewRenderService {
     reason: string,
     publish = true,
   ): Promise<void> {
-    await this.renders.settle(revisionId, {
+    const settled = await this.renders.settle(revisionId, {
       state: PreviewRenderState.FAILED,
       reason,
       renderer,
       rendererVersion: null,
       pageCount: null,
     });
-    if (publish) {
+    if (publish && settled) {
       await this.outbox.publish([
         previewFailedEvent(asId<AnyId>(revisionId), { revisionId, reason, renderer }),
       ]);
