@@ -79,6 +79,8 @@ let transfer: Server;
 let appConfig: AppConfig;
 let library: DocumentLibraryStack;
 let preview: PreviewStack;
+/** The unit of work, hoisted so a suite can compose a second stack against the same database. */
+let unitOfWork: PrismaUnitOfWork;
 let access: DocumentPreviewService;
 /** The buffer a served view lands in, held so this suite can decide when the batch is written. */
 let readAudit: ReadAuditBuffer;
@@ -271,7 +273,7 @@ beforeAll(async () => {
   } as unknown as AppConfig;
 
   const prisma = sharedDatabase(appConfig, logger, APP_URL);
-  const unitOfWork = new PrismaUnitOfWork(prisma);
+  unitOfWork = new PrismaUnitOfWork(prisma);
   const users = {
     get: (id: string) =>
       id === ALICE
@@ -752,4 +754,119 @@ describe('the compare API consuming the artefacts', () => {
     // No render row yet: the comparison is queued and says so — 10 §4's promise, honoured.
     expect(pending.text.state).toBe('PENDING');
   });
+});
+
+/**
+ * Two workers on one revision — Slice 92.
+ *
+ * The lane's own consumer says a restore fires `revision.created` *and* `revision.restored` for
+ * the same revision, so two jobs for one revision is routine rather than exotic; `documents.preview`
+ * runs at concurrency four and declares no per-tenant cap. `claim` is an upsert that counts the
+ * attempt without moving the state, so the READY short-circuit only refuses a render that has
+ * already *finished* — two passes that meet while the first is still rendering both go on, which
+ * is the interleaving here. The window between them is the whole render, seconds wide.
+ *
+ * Everything the design set out to protect survives that: the artefact rows converge through
+ * `uq_preview_artifact`, the derived blobs converge because `storeDerived` is content-addressed,
+ * and the reference counts follow what the rows actually did. The announcement does not.
+ * `settle` writes unconditionally and the publish beside it is unguarded, so both passes announce
+ * a render that happened once — and `preview.*` routes to the search index and to every subscribed
+ * webhook endpoint. Two rows carry two event ids, so a subscriber deduplicating on the id cannot
+ * collapse them; this is the duplicate the sibling lifecycle paths guard against in as many words
+ * ("an event announcing it would tell the search index and every webhook subscriber that something
+ * happened when nothing did").
+ */
+describe('two preview workers meeting on one revision', () => {
+  it('announces the render once, and leaves one artefact set behind', async () => {
+    const created = await createDocument(
+      await realPdf(['Concurrent render, page one.', 'And page two.']),
+      'concurrent.pdf',
+      'application/pdf',
+    );
+    const { revisionId, fileObjectId } = created;
+
+    /*
+     * The seam: the real storage service, wrapped for one caller, holding its first source fetch.
+     *
+     * The park is on `createDownloadUrl` rather than on anything inside the persistence
+     * transaction, and that placement is the whole of what makes this test about production.
+     * `ensureRendered` reads and claims in one transaction, renders with no transaction open, then
+     * opens a second to persist. Parking inside the second holds a transaction past Prisma's
+     * five-second interactive budget and the worker dies of the seam rather than of the race —
+     * which is what the first attempt at this test measured. Parking in the gap holds nothing.
+     */
+    let reached: () => void = () => undefined;
+    const atSource = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let parkedOnce = false;
+    const held = new Proxy(library.storage, {
+      get(target, property, receiver) {
+        if (property === 'createDownloadUrl') {
+          return async (...args: readonly unknown[]) => {
+            if (!parkedOnce) {
+              parkedOnce = true;
+              reached();
+              await parked;
+            }
+            return (target.createDownloadUrl as (...rest: readonly unknown[]) => Promise<unknown>)(
+              ...args,
+            );
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+
+    const stalling = realPreviewStack({
+      clock,
+      unitOfWork,
+      storage: held,
+      storagePort: library.storagePort,
+      config: appConfig,
+    });
+
+    const first = as(() => stalling.render.ensureRendered({ revisionId, fileObjectId }));
+    await atSource;
+
+    // Asserted rather than assumed: the first pass holds a claim and has settled nothing, so the
+    // second passes the same READY check rather than short-circuiting on it.
+    const parkedState = await owner.previewRender.findUniqueOrThrow({ where: { revisionId } });
+    expect(parkedState.state).toBe('PENDING');
+
+    await as(() => preview.render.ensureRendered({ revisionId, fileObjectId }));
+    admit();
+    await first;
+
+    // One render, one announcement. A second reaches every webhook subscribed to `preview.*`
+    // carrying its own event id, which is the duplicate no subscriber can deduplicate away.
+    expect(
+      await owner.outboxMessage.count({
+        where: { tenantId: TENANT, eventType: 'preview.rendered', aggregateId: revisionId },
+      }),
+    ).toBe(1);
+
+    // And the halves that already held, asserted so a change that fixes the announcement by
+    // breaking the artefacts fails here: one artefact per kind and page, one blob each, and the
+    // reference counts unchanged by the second pass.
+    const artifacts = await owner.previewArtifact.findMany({
+      where: { revisionId },
+      select: { fileObjectId: true },
+    });
+    expect(artifacts).toHaveLength(3);
+    expect(new Set(artifacts.map((row) => row.fileObjectId)).size).toBe(3);
+    expect(
+      (await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } })).refCount,
+    ).toBe(2);
+    expect((await owner.previewRender.findUniqueOrThrow({ where: { revisionId } })).state).toBe(
+      'READY',
+    );
+  }, 120_000);
 });

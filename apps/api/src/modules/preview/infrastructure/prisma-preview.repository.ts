@@ -135,9 +135,13 @@ export class PrismaPreviewRenderRepository implements PreviewRenderRepository {
       rendererVersion: string | null;
       pageCount: number | null;
     },
-  ): Promise<void> {
-    await requireTransaction().previewRender.update({
-      where: { revisionId },
+  ): Promise<boolean> {
+    // `state: { not: READY }` is the source-state predicate this transition never had. Every
+    // caller reaches it having already passed `ensureRendered`'s READY short-circuit, so the
+    // guard refuses nothing a single pass does — only the second of two that raced, which would
+    // otherwise settle a row it did not move and let its caller announce on the strength of it.
+    const { count } = await requireTransaction().previewRender.updateMany({
+      where: { revisionId, state: { not: PreviewRenderState.READY } },
       data: {
         state: outcome.state,
         reason: outcome.reason,
@@ -147,6 +151,7 @@ export class PrismaPreviewRenderRepository implements PreviewRenderRepository {
         ...this.stamps.update(),
       },
     });
+    return count > 0;
   }
 }
 
