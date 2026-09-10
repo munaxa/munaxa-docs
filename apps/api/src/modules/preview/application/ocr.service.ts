@@ -126,7 +126,7 @@ export class PreviewOcrService {
           await this.storage.dereference(saved.displacedFileObjectId);
         }
       }
-      await this.results.save({
+      const created = await this.results.save({
         revisionId,
         engine: result.engine,
         engineVersion: result.engineVersion,
@@ -134,14 +134,21 @@ export class PreviewOcrService {
         confidence: Math.round(result.confidence * 100),
         characterCount: result.text.length,
       });
-      await this.outbox.publish([
-        ocrCompletedEvent(asId<AnyId>(revisionId), {
-          revisionId,
-          language: result.language,
-          confidence: result.confidence,
-          characterCount: result.text.length,
-        }),
-      ]);
+      // Only the pass that created the result announces it. The rows above converge on their own
+      // — `uq_ocr_result_revision` for the result, `uq_preview_artifact` for the artefact, and a
+      // content-addressed blob — but an event does not: two carry two ids, so a subscriber
+      // deduplicating on the id cannot collapse them, and the search index and every webhook
+      // subscribed to `preview.*` would be told twice about one extraction.
+      if (created) {
+        await this.outbox.publish([
+          ocrCompletedEvent(asId<AnyId>(revisionId), {
+            revisionId,
+            language: result.language,
+            confidence: result.confidence,
+            characterCount: result.text.length,
+          }),
+        ]);
+      }
     });
   }
 
