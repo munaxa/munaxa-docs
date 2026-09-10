@@ -888,8 +888,13 @@ describe('two preview workers meeting on one revision', () => {
  */
 describe('two OCR workers meeting on one revision', () => {
   it('announces the completion once, and leaves one result, artefact and blob behind', async () => {
+    // A page size no other fixture uses. `scan.pdf` in the block above is a blank 200x200 page,
+    // and pdf-lib's output for two blank pages of the same size is byte-identical whenever both
+    // are produced inside the same second — at which point the product refuses the second as a
+    // duplicate of the first's content, which is the library working correctly and this test
+    // borrowing a sibling's fixture. The dimensions are the whole of what makes it its own.
     const document = await PDFDocument.create();
-    document.addPage([200, 200]);
+    document.addPage([241, 179]);
     const created = await createDocument(
       Buffer.from(await document.save()),
       'concurrent-scan.pdf',
