@@ -176,12 +176,17 @@ export class PrismaOcrResultRepository implements OcrResultRepository {
     };
   }
 
-  async save(result: OcrResultRecord): Promise<void> {
-    await requireTransaction().ocrResult.upsert({
-      where: { revisionId: result.revisionId },
-      create: {
+  async save(result: OcrResultRecord): Promise<boolean> {
+    const tx = requireTransaction();
+    const tenantId = requireContext().tenantId;
+    // An insert that yields to `uq_ocr_result_revision` rather than an upsert — `ON CONFLICT DO
+    // NOTHING`, whose affected-row count is the answer an upsert cannot give: one row means this
+    // pass is the one that created the result, zero means another pass already had. It yields
+    // rather than raising, so the losing pass still commits the work it converged on.
+    const { count } = await tx.ocrResult.createMany({
+      data: {
         id: this.stamps.nextId(),
-        tenantId: requireContext().tenantId,
+        tenantId,
         revisionId: result.revisionId,
         engine: result.engine,
         engineVersion: result.engineVersion,
@@ -190,7 +195,16 @@ export class PrismaOcrResultRepository implements OcrResultRepository {
         characterCount: result.characterCount,
         ...this.stamps.creation(),
       },
-      update: {
+      skipDuplicates: true,
+    });
+    if (count > 0) {
+      return true;
+    }
+    // The overwrite the upsert used to perform, unchanged: the row is whatever the last pass to
+    // reach it read off the pixels. Only the announcement moved.
+    await tx.ocrResult.updateMany({
+      where: { revisionId: result.revisionId, tenantId },
+      data: {
         engine: result.engine,
         engineVersion: result.engineVersion,
         language: result.language,
@@ -199,6 +213,7 @@ export class PrismaOcrResultRepository implements OcrResultRepository {
         ...this.stamps.update(),
       },
     });
+    return false;
   }
 }
 

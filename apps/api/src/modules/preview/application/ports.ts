@@ -98,5 +98,14 @@ export interface OcrResultRecord {
 
 export interface OcrResultRepository {
   findForRevision(revisionId: RevisionId): Promise<OcrResultRecord | null>;
-  save(result: OcrResultRecord): Promise<void>;
+  /**
+   * Records the extraction, and answers whether *this* pass created the result.
+   *
+   * `findForRevision` is read in a transaction that commits before the engine runs, so it refuses
+   * only an extraction that has already finished — two passes meeting while the first is still
+   * reading both reach this write. `uq_ocr_result_revision` is what converges them, and the
+   * insert's own affected-row count is the only thing that says which of them it converged *onto*:
+   * the caller announces on the strength of it, exactly as the render lane's `settle` does.
+   */
+  save(result: OcrResultRecord): Promise<boolean>;
 }

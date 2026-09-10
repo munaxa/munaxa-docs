@@ -870,3 +870,139 @@ describe('two preview workers meeting on one revision', () => {
     );
   }, 120_000);
 });
+
+/**
+ * Two OCR workers meeting on one revision — Slice 93.
+ *
+ * `extractText` guards on `results.findForRevision`, which is a read in a transaction that commits
+ * before any work is done, so it refuses only an extraction that has already *finished*. The
+ * engine then runs with no transaction open, and the window between the guard and the persistence
+ * transaction is the whole OCR run — the slow lane's, deliberately the longest in the product.
+ * `documents.ocr` runs at concurrency two and declares no per-tenant cap.
+ *
+ * The result row, the artefact and the blob all converge on their own: `uq_ocr_result_revision`
+ * makes the upsert idempotent, `uq_preview_artifact` keys the artefact, and `storeDerived` is
+ * content-addressed. The announcement does not — `results.save` returns `void`, so the caller
+ * cannot tell the pass that created the result from the pass that merely overwrote it, and the
+ * publish beside it is unguarded.
+ */
+describe('two OCR workers meeting on one revision', () => {
+  it('announces the completion once, and leaves one result, artefact and blob behind', async () => {
+    const document = await PDFDocument.create();
+    document.addPage([200, 200]);
+    const created = await createDocument(
+      Buffer.from(await document.save()),
+      'concurrent-scan.pdf',
+      'application/pdf',
+    );
+    const { revisionId, fileObjectId } = created;
+
+    /*
+     * The seam: the real storage service, wrapped for one caller, holding its first source fetch.
+     *
+     * `createDownloadUrl` is reached from `fetchSource`, which sits between the guard transaction
+     * and the persistence transaction — so the park holds no transaction open. Parking inside the
+     * persistence transaction instead would hold one past Prisma's five-second interactive budget
+     * and the worker would die of the seam rather than of the race, which is the trap Slice 92
+     * fell into and measured.
+     */
+    let reached: () => void = () => undefined;
+    const atSource = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let parkedOnce = false;
+    const held = new Proxy(library.storage, {
+      get(target, property, receiver) {
+        if (property === 'createDownloadUrl') {
+          return async (...args: readonly unknown[]) => {
+            if (!parkedOnce) {
+              parkedOnce = true;
+              reached();
+              await parked;
+            }
+            return (target.createDownloadUrl as (...rest: readonly unknown[]) => Promise<unknown>)(
+              ...args,
+            );
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+
+    const stalling = realPreviewStack({
+      clock,
+      unitOfWork,
+      storage: held,
+      storagePort: library.storagePort,
+      config: appConfig,
+      ocr: {
+        engine: 'suite-engine',
+        supports: (mimeType: string) =>
+          mimeType.startsWith('image/') || mimeType === 'application/pdf',
+        extract: () =>
+          Promise.resolve({
+            text: 'words read off the pixels',
+            language: 'ara+eng',
+            confidence: 0.55,
+            engine: 'suite-engine',
+            engineVersion: '9.9.9',
+          }),
+      },
+    });
+
+    const first = as(() => stalling.ocr.extractText({ revisionId, fileObjectId }));
+    await atSource;
+
+    // Asserted rather than assumed: the first pass has written nothing, so the second passes the
+    // same `findForRevision` guard rather than short-circuiting on it.
+    expect(await owner.ocrResult.count({ where: { revisionId } })).toBe(0);
+
+    await as(() => preview.ocr.extractText({ revisionId, fileObjectId }));
+
+    // The state the second pass left, read before the first is let go. Its blob is what the first
+    // pass must not reference again — and read as a *delta*, because `storeDerived` is content
+    // addressed across the tenant: another suite storing the same words shares this very row, so
+    // its absolute count is a fact about the file rather than about this test.
+    const settledArtifact = await owner.previewArtifact.findFirstOrThrow({
+      where: { revisionId, kind: 'OCR' },
+      select: { fileObjectId: true },
+    });
+    const refBefore = (
+      await owner.fileObject.findUniqueOrThrow({ where: { id: settledArtifact.fileObjectId } })
+    ).refCount;
+
+    admit();
+    await first;
+
+    // One completion, one announcement. A second reaches the search index and every webhook
+    // subscribed to `preview.*` carrying its own event id, which no subscriber can deduplicate.
+    expect(
+      await owner.outboxMessage.count({
+        where: { tenantId: TENANT, eventType: 'preview.ocr-completed', aggregateId: revisionId },
+      }),
+    ).toBe(1);
+
+    // And the convergence that already held, asserted so a change that fixes the announcement by
+    // breaking the result, the artefact or the blob fails here.
+    expect(await owner.ocrResult.count({ where: { revisionId } })).toBe(1);
+    const artifacts = await owner.previewArtifact.findMany({
+      where: { revisionId, kind: 'OCR' },
+      select: { fileObjectId: true },
+    });
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]?.fileObjectId).toBe(settledArtifact.fileObjectId);
+    // The losing pass took no second reference: its `save` answered UNCHANGED, so the blob is held
+    // once for the one artefact that points at it.
+    expect(
+      (await owner.fileObject.findUniqueOrThrow({ where: { id: settledArtifact.fileObjectId } }))
+        .refCount,
+    ).toBe(refBefore);
+  }, 120_000);
+});
