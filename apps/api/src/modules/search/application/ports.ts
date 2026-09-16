@@ -87,7 +87,8 @@ export interface SearchRebuildRepository {
   /** Refused by `uq_search_rebuild_running` when one already runs — the database decides. */
   start(id: string, startedAt: Date): Promise<void>;
   advance(id: string, cursorDocumentId: string, documentsIndexed: number): Promise<void>;
-  complete(id: string, completedAt: Date): Promise<void>;
+  /** Settles the run, answering whether this caller is the one that settled it. */
+  complete(id: string, completedAt: Date): Promise<boolean>;
   fail(id: string, completedAt: Date, error: string): Promise<void>;
 }
 

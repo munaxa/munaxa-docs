@@ -136,9 +136,25 @@ export class SearchRebuildService {
       if (state === null || state.state !== 'RUNNING') {
         return;
       }
-      await this.index.completeRebuild();
       const completedAt = this.writer.clock.now();
-      await this.rebuilds.complete(rebuildId, completedAt);
+      /*
+       * The claim comes *before* the swap, and the order is the whole of the fix — Slice 96.
+       *
+       * The read three lines up refuses a delivery that arrives after an earlier one committed. It
+       * cannot refuse one already inside its own transaction: neither has committed, so both read
+       * `RUNNING` and both would go on. This statement is what only one of them can win — the
+       * second waits on the row lock, re-reads, and is told it settled nothing.
+       *
+       * It has to be first because `completeRebuild` is the destructive step. It deletes the live
+       * entries, inserts the build target over them and then empties the build target, so a second
+       * pass deletes the live index and re-inserts from a target the first pass already emptied —
+       * and the tenant's documents stop being findable at all. Claiming afterwards would be
+       * claiming after the damage.
+       */
+      if (!(await this.rebuilds.complete(rebuildId, completedAt))) {
+        return;
+      }
+      await this.index.completeRebuild();
       await this.outbox.publish([
         indexRebuildCompletedEvent(asId(rebuildId), {
           documentsIndexed: state.documentsIndexed,

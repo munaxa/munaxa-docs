@@ -203,11 +203,24 @@ export class PrismaSearchRebuildRepository implements SearchRebuildRepository {
     });
   }
 
-  async complete(id: string, completedAt: Date): Promise<void> {
-    await requireTransaction().searchRebuild.update({
-      where: { id },
+  /**
+   * Settles the run, and answers whether *this* caller is the one that settled it.
+   *
+   * `state: 'RUNNING'` is the claim — Slice 96. Two deliveries of one rebuild can both be inside
+   * their own transactions having both read `RUNNING`, because neither has committed; this
+   * statement is where that stops being true. The second one waits on the row lock, re-evaluates
+   * its `WHERE` against the settled row, matches nothing, and is told so.
+   *
+   * `updateMany` rather than `update` for the same reason `settle` uses it: a zero count has to be
+   * an answer the caller can act on, and `update`'s `P2025` would abort the transaction the swap
+   * is about to happen in.
+   */
+  async complete(id: string, completedAt: Date): Promise<boolean> {
+    const { count } = await requireTransaction().searchRebuild.updateMany({
+      where: { id, tenantId: requireContext().tenantId, state: 'RUNNING' },
       data: { state: 'COMPLETED', completedAt, ...this.stamps.update() },
     });
+    return count > 0;
   }
 
   async fail(id: string, completedAt: Date, error: string): Promise<void> {
