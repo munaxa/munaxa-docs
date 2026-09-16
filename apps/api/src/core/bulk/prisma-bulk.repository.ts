@@ -4,6 +4,7 @@ import type { Prisma } from '@prisma/client';
 import {
   type AnyId,
   type BulkItemOutcomeKey,
+  BulkOperationState,
   type BulkOperationKindKey,
   type BulkOperationStateKey,
   type BulkTally,
@@ -174,15 +175,33 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
     });
   }
 
+  /**
+   * Settles the operation, and answers whether *this* delivery is the one that settled it.
+   *
+   * `state: { not: COMPLETED }` is the claim — Slice 95, and `settle`'s idiom for `settle`'s
+   * reason. The lane delivers at least once and a stalled handler keeps running, so two deliveries
+   * of one operation overlap: the consumer's `record.state === COMPLETED` guard turns away the one
+   * that arrives after the first finished, and cannot turn away the one that arrives while it is
+   * still running. Both then reach here.
+   *
+   * Their per-object work converges by design — `recordItem` upserts and `settledTargets` makes
+   * the successor skip what is settled — and that is deliberately untouched. What does not
+   * converge is the announcement beside this call, which is why the affected-row count is now the
+   * caller's answer rather than something thrown away.
+   */
   async finish(input: {
     readonly id: string;
     readonly state: BulkOperationStateKey;
     readonly tally: BulkTally;
     readonly at: Date;
     readonly error: string | null;
-  }): Promise<void> {
-    await requireTransaction().bulkOperation.updateMany({
-      where: { id: input.id, tenantId: this.tenantId() },
+  }): Promise<boolean> {
+    const { count } = await requireTransaction().bulkOperation.updateMany({
+      where: {
+        id: input.id,
+        tenantId: this.tenantId(),
+        state: { not: BulkOperationState.COMPLETED },
+      },
       data: {
         state: input.state,
         requested: input.tally.requested,
@@ -195,6 +214,7 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
         ...this.stamps.update(),
       },
     });
+    return count > 0;
   }
 
   async attachArtifact(input: {

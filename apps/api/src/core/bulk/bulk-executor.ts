@@ -151,13 +151,19 @@ export class DefaultBulkExecutor implements BulkExecutor {
     await this.finalise(plan, operationId, items);
 
     await this.unitOfWork.run(async () => {
-      await this.operations.finish({
+      const settled = await this.operations.finish({
         id: operationId,
         state: BulkOperationState.COMPLETED,
         tally,
         at: this.stamps.now(),
         error: null,
       });
+      // Read here too, though this path opens its own operation and so cannot be raced: an
+      // affected-row count that some callers consult and others discard is how the queued path
+      // came to announce twice, and one of the two shapes has to be the only shape.
+      if (!settled) {
+        return;
+      }
       await this.recordOperation(operationId, plan.kind, plan.parameters, tally);
       // 18 §7's storm control, finally producing a storm to control. Published from inside the
       // same transaction that finishes the operation, so a summary can never describe a run that
@@ -292,13 +298,21 @@ export class DefaultBulkExecutor implements BulkExecutor {
   async complete(operationId: string, plan: BulkPlan, requestedById: string): Promise<void> {
     const tally = await this.unitOfWork.run(() => this.operations.tallyOf(operationId));
     await this.unitOfWork.run(async () => {
-      await this.operations.finish({
+      const settled = await this.operations.finish({
         id: operationId,
         state: BulkOperationState.COMPLETED,
         tally,
         at: this.stamps.now(),
         error: null,
       });
+      // The claim decides who announces. A delivery that overlapped the one which finished this
+      // operation has done its objects — they converge, by the upsert and the resume set — but it
+      // settled nothing, and an operation that completed once is owed one summary. Two rows carry
+      // two event ids, so a reader deduplicating on the id could not collapse them, and the
+      // requester would be told twice that the same run had finished.
+      if (!settled) {
+        return;
+      }
       await this.recordOperation(operationId, plan.kind, plan.parameters, tally);
       await this.outbox.publish([
         bulkOperationCompletedEvent(asId<AnyId>(operationId), {

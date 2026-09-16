@@ -177,6 +177,7 @@ import { BulkLaneConsumer } from '../core/bulk/bulk-lane.consumer';
 import { DefaultBulkPlanRegistry } from '../core/bulk/bulk-plan.registry';
 import { BulkRequesterDirectoryAdapter } from '../modules/identity/infrastructure/bulk-requester.directory';
 import { PrismaBulkOperationRepository } from '../core/bulk/prisma-bulk.repository';
+import type { BulkOperationRepository } from '../core/bulk/bulk.port';
 import { BulkDocumentService } from '../modules/document/application/bulk-document.service';
 import { BulkExportService } from '../modules/document/application/bulk-export.service';
 import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
@@ -2004,7 +2005,7 @@ export function realReporting(options: {
 
 export interface BulkStack {
   readonly executor: DefaultBulkExecutor;
-  readonly operations: PrismaBulkOperationRepository;
+  readonly operations: BulkOperationRepository;
   readonly documents: BulkDocumentService;
   readonly exports: BulkExportService;
   readonly acl: PrismaAclResolver;
@@ -2029,10 +2030,18 @@ export function realBulk(options: {
   readonly config: AppConfig;
   readonly library: DocumentLibraryStack;
   readonly settings?: Readonly<Record<string, unknown>>;
+  /**
+   * The operation record, exposed so a suite can wrap it to order two deliveries.
+   *
+   * The executor and the lane's consumer are both given whatever is passed here, which is what
+   * makes a wrapper able to hold one delivery where the shipped code would have been holding it —
+   * between two of its own transactions — rather than somewhere only a test goes.
+   */
+  readonly operations?: BulkOperationRepository;
 }): BulkStack {
   const { stamps, audit, outbox } = realWriteStack(options.clock, options.unitOfWork);
   const acl = realAclResolver(options);
-  const operations = new PrismaBulkOperationRepository(stamps);
+  const operations = options.operations ?? new PrismaBulkOperationRepository(stamps);
   // Phase 6.2: the registry the modules fill. Real rather than a double — what the suites assert
   // about the queued path is that it runs *the same plan* the synchronous path builds, and a stub
   // registry would be a second source for exactly the thing under test.
