@@ -1122,3 +1122,126 @@ describe('two overlapping deliveries of one bulk operation', () => {
     expect(audit, 'one completion, one audit row').toHaveLength(1);
   }, 60_000);
 });
+
+/**
+ * A delivery that overlaps a finished operation and then finds its requester suspended — Slice 97.
+ *
+ * Slice 95 gave `finish` a write-once predicate, so the delivery that did not settle no longer
+ * announces a second completion. `markFailed` was left as it was: `{ id, tenantId }` and nothing
+ * else, a terminal state written over whatever is there.
+ *
+ * The consumer reaches it without throwing anything. `BulkRequesterDirectoryAdapter` answers null
+ * for a user who is no longer `ACTIVE` — its docblock says so in as many words, "a disabled user
+ * answers null, and the consumer fails the operation rather than running it" — and the consumer's
+ * response is `fail(...)`. A bulk operation runs for as long as five thousand objects take, one
+ * transaction each, so an administrator suspending the requester inside that window is ordinary;
+ * the port exists precisely because it is.
+ *
+ * What the two together produce is an operation that completed, told its requester so, and then
+ * reads `FAILED` with an error on it — while every item row says `APPLIED`. The consumer's own
+ * comment is the invariant this breaks: `FAILED` "is what tells a reader the per-object counts are
+ * incomplete rather than final". A completed operation's counts are final.
+ *
+ * The redelivery model itself is not in question and is not touched: the overlap, the resume set
+ * and the per-object upsert are all the accepted design.
+ */
+describe('a suspended requester and a delivery that already finished', () => {
+  it('does not record a completed operation as failed', async () => {
+    const ids = await seedDocuments(openFolderId, 2, 'suspended-requester');
+
+    /*
+     * The seam: the real authority read, held on entry.
+     *
+     * On entry rather than around the answer, because the suspension has to land *between* the
+     * two deliveries — and on entry the held delivery holds no transaction at all, so the other
+     * one runs past it rather than queueing behind it.
+     */
+    let reached: () => void = () => undefined;
+    const atAuthority = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let parkedOnce = false;
+    const beforeAuthorityRead = async (): Promise<void> => {
+      if (parkedOnce) {
+        return;
+      }
+      parkedOnce = true;
+      reached();
+      await parked;
+    };
+
+    const queueing = { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 };
+    const stalling = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: queueing,
+      beforeAuthorityRead,
+    });
+    const rival = realBulk({ clock, unitOfWork, config: appConfig, library, settings: queueing });
+
+    const queued = await asAda(() => stalling.documents.setMetadata({ ids, categoryId: null }));
+    const operationId = String(queued.operationId);
+    expect(queued.state).toBe('REQUESTED');
+
+    try {
+      // The held delivery gets as far as reading its requester's authority and stops there, having
+      // passed the consumer's `state === COMPLETED` guard while the operation was still REQUESTED.
+      const stalled = stalling.deliver(operationId, TENANT);
+      await atAuthority;
+
+      // The other delivery runs the shipped path end to end underneath it.
+      await rival.deliver(operationId, TENANT);
+
+      const settled = await owner.bulkOperation.findUniqueOrThrow({ where: { id: operationId } });
+      expect(settled.state, 'the other delivery finished the operation').toBe('COMPLETED');
+      expect(settled.applied).toBe(2);
+
+      // And the requester is suspended before the held delivery looks them up — the window the
+      // port is written for.
+      await owner.user.update({ where: { id: ADA }, data: { status: 'DISABLED' } });
+
+      admit();
+      // Resolved rather than merely awaited: the consumer answers a suspended requester by
+      // failing the operation, not by throwing, so a rejection here would mean something else
+      // happened and every assertion below would be about the wrong thing.
+      const outcome = await stalled.then(
+        () => 'ran' as const,
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+      expect(outcome, 'the held delivery must run, not throw').toBe('ran');
+
+      // The assertion this test exists for. The held delivery applied nothing and settled nothing;
+      // it must not overwrite the terminal state of a run that finished, and the requester has
+      // already been told it completed.
+      const after = await owner.bulkOperation.findUniqueOrThrow({ where: { id: operationId } });
+      expect(after.state, 'a completed operation must not be recorded as failed').toBe('COMPLETED');
+      expect(after.error, 'a completed operation carries no failure reason').toBeNull();
+      expect(after.applied, 'the tally of a completed operation is final').toBe(2);
+
+      // The objects were applied once, and the completion announced once — Slice 95's guarantee,
+      // which this must not disturb.
+      const items = await owner.bulkOperationItem.findMany({
+        where: { tenantId: TENANT, operationId },
+      });
+      expect(items).toHaveLength(2);
+      expect(items.every((item) => item.outcome === 'APPLIED')).toBe(true);
+      const announced = await owner.outboxMessage.count({
+        where: {
+          tenantId: TENANT,
+          aggregateId: operationId,
+          eventType: 'bulk.operation-completed',
+        },
+      });
+      expect(announced, 'one completion, one event').toBe(1);
+    } finally {
+      // Restored whatever happened, so a failure here cannot leave the suite's own actor suspended.
+      await owner.user.update({ where: { id: ADA }, data: { status: 'ACTIVE' } });
+    }
+  }, 60_000);
+});

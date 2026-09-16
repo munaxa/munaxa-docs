@@ -124,9 +124,31 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
     return { requested: applied + refused + blocked + failed, applied, refused, blocked, failed };
   }
 
+  /**
+   * Records that the *operation* did not finish — the lane died, a plan factory is missing, the
+   * requester was suspended while it ran.
+   *
+   * `state: { not: COMPLETED }` is the same write-once rule `finish` carries, and it is here for
+   * the case `finish`'s predicate does not cover — Slice 97. The lane delivers at least once and a
+   * stalled handler keeps running, so two deliveries of one operation overlap; that much is the
+   * accepted design, and the per-object work converges under it. But a delivery that overlapped
+   * one which *finished* can still reach this method without throwing anything, because
+   * `BulkRequesterDirectory` answers null for a requester who is no longer `ACTIVE` and the
+   * consumer's answer to that is to fail the operation. Without the predicate it failed a run that
+   * had already completed, and already told its requester so.
+   *
+   * `FAILED` is what tells a reader the per-object counts are incomplete rather than final. A
+   * completed operation's counts are final, so this must not reach one. No caller reads the count:
+   * nothing is published or recorded on the strength of this write, and the database refusing it
+   * is the whole of what was needed.
+   */
   async markFailed(id: string, reason: string, at: Date): Promise<void> {
     await requireTransaction().bulkOperation.updateMany({
-      where: { id, tenantId: this.tenantId() },
+      where: {
+        id,
+        tenantId: this.tenantId(),
+        state: { not: BulkOperationState.COMPLETED },
+      },
       data: { state: 'FAILED', completedAt: at, error: reason, ...this.stamps.update() },
     });
   }
