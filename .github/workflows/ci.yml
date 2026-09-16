@@ -262,27 +262,66 @@ jobs:
       #
       # Pinned to a release rather than `latest`: an unpinned object store is a dependency that can
       # change the meaning of a passing build without a commit.
+      #
+      # ## Why quay.io rather than Docker Hub
+      #
+      # `docker.io/minio/minio` stopped existing. The pull fails with Docker Hub's generic
+      #
+      #   pull access denied for minio/minio, repository does not exist or may require 'docker login'
+      #
+      # which reads like a credential problem and is not one. Docker Hub's own API answers
+      # `404 {"message": "object not found"}` for `/v2/repositories/minio/minio/`, and for
+      # `minio/mc` beside it, so there is no repository left to authenticate against: MinIO
+      # withdrew the images rather than gating them, and withdrew the direct binaries in the same
+      # move — `dl.min.io/server/minio/release/linux-amd64/minio` and the `mc` beside it both
+      # answer `410 Gone`.
+      #
+      # This took the Integration job down on `main` as well as on every pull request, and it took
+      # it down *here* — before the bucket, before the migrations, before `pnpm test:integration` —
+      # so the suite reported nothing at all rather than reporting a failure. A required check that
+      # cannot reach its own subject is worse than a red one, which is the same reasoning the
+      # `paths-ignore` note at the top of this file is built on.
+      #
+      # `quay.io/minio/minio` is MinIO's own long-standing mirror, it is public — an anonymous
+      # token returns the manifest — and it carries this exact release tag. Verified to be the same
+      # image rather than assumed: `Cmd` is still `["minio"]` and the entrypoint is still
+      # `docker-entrypoint.sh`, so the `server /data` argument above is needed for the same reason
+      # and does the same thing. The registry is the only thing that changes.
       - name: Start the object store
         run: |
           set -euo pipefail
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=edms-local \
             -e MINIO_ROOT_PASSWORD=ci-only-not-a-secret \
-            minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
 
       # The bucket, for the same reason the databases are created here: an object store has no
       # bucket until somebody makes one, and the storage guard has nothing to write into without it.
       #
-      # This step is also where readiness is established, now that no health check does it. `mc` is
-      # downloaded fresh rather than taken from the image, so the client is current even though the
-      # server is pinned.
+      # This step is also where readiness is established, now that no health check does it.
+      #
+      # `mc` comes from its own pinned image rather than a download, because the download is gone:
+      # `dl.min.io/client/mc/release/linux-amd64/mc` answers `410 Gone`, the same withdrawal that
+      # took the server off Docker Hub. Correcting only the image above would have moved this job's
+      # failure one step later rather than fixing it, which is why both are in one change.
+      #
+      # The pull is its own command ahead of the loop deliberately. Inside the loop an image that
+      # can never be fetched looks exactly like a store that is slow to accept connections, and the
+      # job would spend eighty seconds and a misleading error proving the wrong thing.
+      #
+      # `MC_HOST_ci` replaces `mc alias set`, because an alias is config file state and a `--rm`
+      # container keeps none between invocations. Same host, same credentials, same alias name,
+      # supplied as environment instead. `mc ls` then stands in for what `alias set` proved: the
+      # store is reachable *and* these credentials work — a bucket cannot be made on either alone.
       - name: Create the object storage bucket
         run: |
           set -euo pipefail
-          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$RUNNER_TEMP/mc"
-          chmod +x "$RUNNER_TEMP/mc"
+          docker pull "$MC_IMAGE"
+          mc() {
+            docker run --rm --network host -e "MC_HOST_ci=$MC_HOST_CI" "$MC_IMAGE" "$@"
+          }
           for attempt in $(seq 1 40); do
-            if "$RUNNER_TEMP/mc" alias set ci http://127.0.0.1:9000 edms-local ci-only-not-a-secret; then
+            if mc ls ci; then
               break
             fi
             if [ "$attempt" -eq 40 ]; then
@@ -292,7 +331,12 @@ jobs:
             fi
             sleep 2
           done
-          "$RUNNER_TEMP/mc" mb --ignore-existing ci/munaxa-docs
+          mc mb --ignore-existing ci/munaxa-docs
+        env:
+          # Pinned for the reason the server is: a client that changes without a commit can change
+          # what a passing build means.
+          MC_IMAGE: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+          MC_HOST_CI: http://edms-local:ci-only-not-a-secret@127.0.0.1:9000
 
       # The same runner an operator uses, reading the same catalogue the API reads. It applies the
       # per-database SQL, the schema and the post-migration SQL to each tenant in turn — so a
