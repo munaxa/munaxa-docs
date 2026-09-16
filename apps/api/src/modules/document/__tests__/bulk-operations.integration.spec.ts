@@ -28,6 +28,8 @@ import { uuidv7 } from '@edms/utils';
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
+import { PrismaBulkOperationRepository } from '../../../core/bulk/prisma-bulk.repository';
+import { RecordStamps } from '../../../core/persistence';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { seedRoleGrant } from '../../../testing/acl-seed';
 import {
@@ -970,4 +972,153 @@ describe('the queued worker', () => {
       expect(bulk.plans.has(kind), `${kind} has no registered plan factory`).toBe(true);
     }
   });
+});
+
+/**
+ * Two deliveries of one operation that **overlap**, which is the case the sequential redelivery
+ * test above does not reach — Slice 95.
+ *
+ * `BulkLaneConsumer` refuses a redelivery with `if (record.state === COMPLETED) return`, and that
+ * is a read followed by an act: it stops a job that arrives *after* the first one finished, which
+ * the comment beside it calls "the cheapest and most common redelivery case". It cannot stop one
+ * that arrives while the first is still running, and the lane is built so that exactly that
+ * happens — `documents.bulk` declares `perTenantConcurrency: 2` and `timeoutMs: 900_000`, the
+ * adapter passes that same value as `stalledInterval` with `maxStalledCount: 1`, and it says in as
+ * many words that the budget is "enforced by stalling detection rather than by killing the
+ * promise". A fifteen-minute operation over five thousand objects, one transaction each, is
+ * redelivered with the original still running.
+ *
+ * The per-object work is safe under that and is *designed* to be: `recordItem` upserts on
+ * `(operation_id, target_id)` because "the second pass must overwrite the first outcome", and
+ * `settledTargets` makes the successor skip what is already settled. None of that is under test
+ * here and none of it is in question.
+ *
+ * The completion is. `finish` names only `{ id, tenantId }`, so it is an assignment rather than a
+ * claim, and the announcement beside it is unguarded — while the event's own comment promises "it
+ * is exactly *one* event however many objects the operation touched".
+ */
+describe('two overlapping deliveries of one bulk operation', () => {
+  it('announces the completion once, from the delivery that settled it', async () => {
+    const ids = await seedDocuments(openFolderId, 3, 'overlapping');
+
+    /*
+     * The seam: the real record, wrapped for one delivery, holding it between two transactions.
+     *
+     * The park is on the way out of `tallyOf` — which `complete` runs in its own unit of work,
+     * immediately before the one that finishes the operation. So the held delivery has done all of
+     * its object work and committed it, and is holding *no* transaction: nothing here sits near
+     * Prisma's interactive budget, and the ordering is the one the lane really produces.
+     */
+    let reached: () => void = () => undefined;
+    const atTally = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let parkedOnce = false;
+    const real = new PrismaBulkOperationRepository(new RecordStamps(clock));
+    const held = new Proxy(real, {
+      get(target, property, receiver) {
+        if (property === 'tallyOf') {
+          return async (...args: readonly unknown[]) => {
+            const answer = await (
+              target.tallyOf as (...rest: readonly unknown[]) => Promise<unknown>
+            )(...args);
+            if (!parkedOnce) {
+              parkedOnce = true;
+              reached();
+              await parked;
+            }
+            return answer;
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+
+    const queueing = { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 };
+    const stalling = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: queueing,
+      operations: held,
+    });
+    const rival = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: queueing,
+    });
+
+    const queued = await asAda(() => stalling.documents.setMetadata({ ids, categoryId: null }));
+    const operationId = String(queued.operationId);
+    expect(queued.state).toBe('REQUESTED');
+
+    // The stalled delivery: it starts, applies every object, and stops on the threshold of
+    // settling. Its `start` has committed, so the row reads RUNNING to anybody who looks.
+    const stalled = stalling.deliver(operationId, TENANT);
+    await atTally;
+
+    const midFlight = await owner.bulkOperation.findUniqueOrThrow({
+      where: { id: operationId },
+    });
+    expect(midFlight.state, 'the held delivery must still read as running').toBe('RUNNING');
+
+    // The redelivery, running the shipped consumer end to end underneath it. It finds the
+    // operation RUNNING rather than COMPLETED, so the guard lets it through — and every object is
+    // already settled, so it applies nothing and finishes.
+    await rival.deliver(operationId, TENANT);
+
+    /*
+     * Announced by the delivery that settled it, and announced as part of settling.
+     *
+     * Read here, before the held delivery is released, because "one event" alone does not say
+     * which delivery produced it: an answer consulted the wrong way round would leave the
+     * settling delivery silent and let the one that settled nothing speak for the operation, and
+     * the final count would look identical. The only moment the two are distinguishable is this
+     * one.
+     */
+    const bySettler = await owner.outboxMessage.count({
+      where: { tenantId: TENANT, aggregateId: operationId, eventType: 'bulk.operation-completed' },
+    });
+    expect(bySettler, 'the delivery that settled the operation is the one that announces it').toBe(
+      1,
+    );
+
+    admit();
+    await stalled;
+
+    // One operation, finished once.
+    const row = await owner.bulkOperation.findUniqueOrThrow({ where: { id: operationId } });
+    expect(row.state).toBe('COMPLETED');
+    expect(row.applied).toBe(3);
+
+    // The objects were applied once, which the design already guarantees and this keeps honest.
+    const items = await owner.bulkOperationItem.findMany({
+      where: { tenantId: TENANT, operationId },
+    });
+    expect(items, 'the per-object work must not be duplicated').toHaveLength(3);
+
+    // The assertion this test exists for: one completion announced, not two. Two rows carry two
+    // event ids, so nothing downstream deduplicating on the id can collapse them — the requester
+    // is told twice that their operation finished.
+    const announced = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, aggregateId: operationId, eventType: 'bulk.operation-completed' },
+    });
+    expect(announced, 'one completion, one event').toHaveLength(1);
+
+    // And one operation-level audit row, exactly as a single delivery writes.
+    const audit = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: operationId, action: 'BULK_OPERATION' },
+    });
+    expect(audit, 'one completion, one audit row').toHaveLength(1);
+  }, 60_000);
 });

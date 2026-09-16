@@ -260,13 +260,14 @@ export interface BulkOperationRepository {
     readonly errorCode: string | null;
     readonly detail: string | null;
   }): Promise<void>;
+  /** Settles the operation, answering whether this caller is the one that settled it. */
   finish(input: {
     readonly id: string;
     readonly state: BulkOperationStateKey;
     readonly tally: BulkTally;
     readonly at: Date;
     readonly error: string | null;
-  }): Promise<void>;
+  }): Promise<boolean>;
   /** Attaches the artefact a bulk export produced. Null for every other kind. */
   attachArtifact(input: {
     readonly id: string;
