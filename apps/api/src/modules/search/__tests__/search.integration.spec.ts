@@ -29,6 +29,9 @@ import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { PrismaFacetLabelReader } from '../infrastructure/prisma-facet-label.reader';
 import { PrismaSearchSourceReader } from '../infrastructure/prisma-search-source.reader';
+import { RecordStamps } from '../../../core/persistence';
+import { PrismaSearchRebuildRepository } from '../infrastructure/prisma-search.repositories';
+import type { SearchRebuildRecord } from '../application/ports';
 import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
@@ -2636,4 +2639,193 @@ describe('a projection landing after the rebuild already wrote the document', ()
     const after = await searchAs(asAlice, 'vibration analysis');
     expect(after.results.hits.map((hit) => hit.documentId)).not.toContain(target.documentId);
   }, 180_000);
+});
+
+/**
+ * The real rebuild record, held between the swap block's read and its decision — Slice 96.
+ *
+ * A subclass rather than a double, on the terms `ParkedSourceReader` is written to: `super.findById`
+ * runs the real query inside the rebuild's real transaction and the park only decides when the rest
+ * of the block follows.
+ *
+ * **The park is after the read and before anything is written**, which is the window the defect
+ * lives in and the only one that reproduces it. Parking on the swap instead would hold whatever
+ * lock the settling statement takes, and the second delivery would queue behind the first rather
+ * than race it — measured, after a first attempt that parked there and died on Prisma's five-second
+ * interactive budget at 5012 ms rather than proving anything.
+ *
+ * The held call is the **second** `findById` this stack makes: `rebuildBatchSize` is larger than
+ * this corpus, so the fill loop runs exactly one iteration — one read there, one in the swap block.
+ * The run is requested through the other stack for the same reason, since `request` reads the row
+ * too. The test asserts the fill really finished before the park, so neither assumption can rot
+ * silently.
+ */
+class ParkedRebuildRepository extends PrismaSearchRebuildRepository {
+  private reads = 0;
+
+  constructor(
+    stamps: RecordStamps,
+    private readonly turnstile: Turnstile<string>,
+  ) {
+    super(stamps);
+  }
+
+  override async findById(id: string): Promise<SearchRebuildRecord | null> {
+    const record = await super.findById(id);
+    this.reads += 1;
+    if (this.reads === 2) {
+      await this.turnstile.park('swap-block-read');
+    }
+    return record;
+  }
+}
+
+/**
+ * Two deliveries of one rebuild that **overlap**, which the rebuild test above does not reach.
+ *
+ * `run` ends with a read followed by an act: it reads the row, refuses unless it is `RUNNING`, and
+ * then swaps. The refusal covers a delivery that arrives after an earlier one *committed*; it
+ * cannot cover one already inside its own transaction, because neither has committed and both read
+ * `RUNNING`. `complete` names only `{ id }` — an assignment, not a claim — so nothing downstream
+ * of that read can tell the two apart either.
+ *
+ * The lane makes it ordinary rather than exotic. `search.index` declares `timeoutMs: 60_000` and
+ * `concurrency: 8`; the adapter passes that same value as `stalledInterval` with
+ * `maxStalledCount: 1` and says the budget is "enforced by stalling detection rather than by
+ * killing the promise". A full rebuild reads every document's facts, ACL subjects and preview
+ * text, batch by batch, and is built to be resumable precisely because it is long — so exceeding
+ * sixty seconds is the expected case, and the redelivery lands while the original is still filling.
+ *
+ * What makes it worth a slice is `completeRebuild` itself: it deletes the live entries, inserts
+ * the build target's over them, and **empties the build target**. Run twice, the second pass
+ * deletes the live index and re-inserts from a shadow the first pass already emptied. The tenant's
+ * documents stop being findable at all — not a duplicate event, an empty index.
+ */
+describe('two overlapping deliveries of one index rebuild', () => {
+  it('swaps once, from the delivery that settled the run', async () => {
+    // Its own corpus, projected into the live index, so the proof neither depends on what earlier
+    // tests left behind nor breaks when this file is run with a filter.
+    const seeded: DocumentId[] = [];
+    for (const subject of ['alpha', 'beta', 'gamma']) {
+      const created = await createDocument(
+        `Slice 96 rebuild subject ${subject}`,
+        await realPdf([`Rebuild subject ${subject}, with body text of its own.`]),
+        `slice96-${subject}.pdf`,
+        'application/pdf',
+      );
+      await project(created.documentId);
+      seeded.push(created.documentId);
+    }
+
+    /*
+     * One of them is taken out from under the index without being reprojected, which is the state
+     * a rebuild exists to correct: the live table keeps an entry for a document that is no longer
+     * findable, and only the swap removes it.
+     *
+     * It is what makes the swap *observable*. Without it the build target and the live index hold
+     * the same rows, so "swapped" and "did not swap" look identical from the outside and an
+     * answer consulted the wrong way round would go unnoticed.
+     */
+    const stale = seeded[2];
+    if (stale === undefined) {
+      throw new Error('The proof needs its third document.');
+    }
+    await owner.document.update({
+      where: { id: stale },
+      data: { deletedAt: new Date(), deleteReason: 'Slice 96 stale index entry' },
+    });
+    expect(
+      await owner.searchIndexEntry.count({ where: { tenantId: TENANT, documentId: stale } }),
+      'the live index must still carry the entry the rebuild is going to drop',
+    ).toBe(1);
+
+    const findable = await owner.document.count({
+      where: { tenantId: TENANT, deletedAt: null, status: { not: 'PURGED' } },
+    });
+    expect(findable, 'the corpus this proof measures must not be empty').toBeGreaterThan(0);
+
+    const turnstile = new Turnstile<string>();
+    turnstile.arm(1);
+    const stackOf = (rebuildRepository?: PrismaSearchRebuildRepository) =>
+      realSearchStack({
+        clock,
+        unitOfWork,
+        // Larger than this corpus, so the fill is a single batch and the held read is the swap
+        // block's — see `ParkedRebuildRepository`.
+        config: { ...appConfig, search: { ...appConfig.search, rebuildBatchSize: 200 } },
+        registry,
+        storage: library.storage,
+        storagePort: library.storagePort,
+        ...(rebuildRepository === undefined ? {} : { rebuildRepository }),
+      });
+    const stalling = stackOf(new ParkedRebuildRepository(new RecordStamps(clock), turnstile));
+    const rival = stackOf();
+
+    // Requested through the plain stack, so the held stack's reads are only the two the run
+    // itself makes: `request` reads the row as well, and counting it would park the fill instead
+    // of the swap. Both stacks are the same database and the same tenant.
+    const requested = await asAlice(() => rival.rebuilds.request());
+    expect(requested.state).toBe('RUNNING');
+
+    // The held delivery fills the build target, then stops on the threshold of the swap with the
+    // run still reading RUNNING to anybody who looks.
+    const stalled = asSystem(() => stalling.rebuilds.run(requested.id));
+    await turnstile.reached[0];
+
+    const midFlight = await owner.searchRebuild.findUniqueOrThrow({ where: { id: requested.id } });
+    expect(midFlight.state, 'the held delivery must still read as running').toBe('RUNNING');
+    // The park is the swap block's read, not one from the middle of the fill: the build target
+    // holds the whole corpus and the cursor has moved.
+    expect(midFlight.documentsIndexed, 'the held delivery must have finished filling').toBe(
+      findable,
+    );
+    expect(await owner.searchIndexEntryShadow.count({ where: { tenantId: TENANT } })).toBe(
+      findable,
+    );
+
+    // The redelivery, running the shipped path end to end underneath it: it finds the cursor at
+    // the end, so it fills nothing, and goes straight to the swap.
+    await asSystem(() => rival.rebuilds.run(requested.id));
+
+    /*
+     * The delivery that settled the run is the one that swapped, and it swapped as part of
+     * settling — read before the held delivery is released, because that is the only moment the
+     * two are distinguishable. The stale entry is the witness: it is present until a swap happens
+     * and absent afterwards, so this fails if the swap was skipped here and left to the other one.
+     */
+    const afterRival = await owner.searchIndexEntry.count({ where: { tenantId: TENANT } });
+    expect(afterRival, 'the delivery that settled the run is the one that swaps').toBe(findable);
+    expect(
+      await owner.searchIndexEntry.count({ where: { tenantId: TENANT, documentId: stale } }),
+      'the settling delivery swaps, so the stale entry is gone by now',
+    ).toBe(0);
+
+    turnstile.release(0);
+    // Resolved rather than merely awaited: a held delivery that died of its own seam would leave
+    // the index untouched and every assertion below would pass for the wrong reason.
+    const outcome = await stalled.then(
+      () => 'ran' as const,
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    expect(outcome, 'the held delivery must run, not die of the seam').toBe('ran');
+
+    // The assertion this test exists for. A second swap deletes the live entries and re-inserts
+    // from a build target the first swap emptied, which leaves the tenant with no index at all.
+    const liveCount = await owner.searchIndexEntry.count({ where: { tenantId: TENANT } });
+    expect(liveCount, 'the live index must survive a second delivery').toBe(findable);
+    expect(await owner.searchIndexEntryShadow.count({ where: { tenantId: TENANT } })).toBe(0);
+
+    // One run, one completion announced.
+    const announced = await owner.outboxMessage.count({
+      where: {
+        tenantId: TENANT,
+        aggregateId: requested.id,
+        eventType: 'search.rebuild-completed',
+      },
+    });
+    expect(announced, 'one rebuild, one completion event').toBe(1);
+
+    const state = await owner.searchRebuild.findUniqueOrThrow({ where: { id: requested.id } });
+    expect(state.state).toBe('COMPLETED');
+  }, 120_000);
 });

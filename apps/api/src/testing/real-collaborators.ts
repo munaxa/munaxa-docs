@@ -1256,6 +1256,12 @@ export interface SearchStackOptions {
    * code it stands in for.
    */
   readonly source?: PrismaSearchSourceReader;
+  /**
+   * The rebuild's own record, on the same terms as `source`: a suite supplying its own supplies a
+   * wrapper over the real repository, so an ordering proof parks around a real read rather than
+   * around a double's idea of one.
+   */
+  readonly rebuildRepository?: PrismaSearchRebuildRepository;
 }
 
 export interface SearchStack {
@@ -1284,7 +1290,7 @@ export function realSearchStack(options: SearchStackOptions): SearchStack {
   const acl = realAclResolver(options);
   const index = new PostgresIndexAdapter(options.clock);
   const engine = new TenantScopedSearch(new PostgresSearchAdapter(), options.registry);
-  const rebuildRepository = new PrismaSearchRebuildRepository(stamps);
+  const rebuildRepository = options.rebuildRepository ?? new PrismaSearchRebuildRepository(stamps);
   const previews = realPreviewQuery(options);
 
   const projection = new SearchProjectionService(
