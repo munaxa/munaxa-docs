@@ -177,7 +177,7 @@ import { BulkLaneConsumer } from '../core/bulk/bulk-lane.consumer';
 import { DefaultBulkPlanRegistry } from '../core/bulk/bulk-plan.registry';
 import { BulkRequesterDirectoryAdapter } from '../modules/identity/infrastructure/bulk-requester.directory';
 import { PrismaBulkOperationRepository } from '../core/bulk/prisma-bulk.repository';
-import type { BulkOperationRepository } from '../core/bulk/bulk.port';
+import type { BulkOperationRepository, BulkRequesterDirectory } from '../core/bulk/bulk.port';
 import { BulkDocumentService } from '../modules/document/application/bulk-document.service';
 import { BulkExportService } from '../modules/document/application/bulk-export.service';
 import { PrismaAclResolver } from '../modules/library/infrastructure/prisma-acl.resolver';
@@ -2044,6 +2044,17 @@ export function realBulk(options: {
    * between two of its own transactions — rather than somewhere only a test goes.
    */
   readonly operations?: BulkOperationRepository;
+  /**
+   * Runs before the requester's authority is read, so a suite can hold a delivery exactly where
+   * the consumer looks its requester up — a point between transactions, holding nothing, which is
+   * what lets another delivery run past it.
+   *
+   * A hook rather than a replacement port: composing the real adapter needs Identity's credential
+   * repository, and a Document suite reaching into Identity's infrastructure is the cross-module
+   * import the boundary lint forbids. This file is the one place that composes across modules on
+   * purpose, so the wrapping happens here and the suite supplies only the ordering.
+   */
+  readonly beforeAuthorityRead?: (userId: string) => Promise<void>;
 }): BulkStack {
   const { stamps, audit, outbox } = realWriteStack(options.clock, options.unitOfWork);
   const acl = realAclResolver(options);
@@ -2084,10 +2095,20 @@ export function realBulk(options: {
   documents.onModuleInit();
   exports.onModuleInit();
 
-  const requesters = new BulkRequesterDirectoryAdapter(
+  const realRequesters = new BulkRequesterDirectoryAdapter(
     new PrismaCredentialRepository(),
     options.unitOfWork,
   );
+  const hold = options.beforeAuthorityRead;
+  const requesters: BulkRequesterDirectory =
+    hold === undefined
+      ? realRequesters
+      : {
+          currentAuthority: async (userId: string) => {
+            await hold(userId);
+            return realRequesters.currentAuthority(userId);
+          },
+        };
   const deliver = async (operationId: string, tenantId: string, times = 1): Promise<void> => {
     let handler: ((job: JobEnvelope) => Promise<void>) | null = null;
     const consumer = new BulkLaneConsumer(
