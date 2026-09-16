@@ -24,12 +24,14 @@ import { uuidv7 } from '@edms/utils';
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
+import { PrismaDocumentSignatureRepository } from '../infrastructure/prisma-signature.repository';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { seedRoleGrant } from '../../../testing/acl-seed';
 import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
   realDocumentLibrary,
+  realDocumentSignatures,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import type { ConfigurationService } from '../../administration/application/configuration.service';
@@ -1353,4 +1355,125 @@ describe('two tenants sharing one database', () => {
     // Two customers holding the same standard form is two objects, by construction.
     expect(await localAdapter.head(scopedPath(OTHER_TENANT, file.storageKey))).toBeNull();
   });
+});
+
+/**
+ * Two withdrawals of one signature — Slice 94.
+ *
+ * `DocumentSignatureRepository.withdraw` is a claim and says so: `withdrawn_at: null` is in its
+ * WHERE and its affected-row count is returned, "so a second withdrawal matches nothing whatever
+ * the caller read a moment earlier". `DocumentSignatureService.withdraw` reads the row, refuses a
+ * withdrawal it can already see, and then calls that claim — and throws the answer away.
+ *
+ * The read and the write are two statements in one READ COMMITTED transaction, so two requests
+ * from the signer — a second click, a retried call, two tabs — both pass the read while neither
+ * has committed. One claim wins. The loser's statement matches nothing, and because nobody asked,
+ * it goes on to file a second withdrawal on the document's timeline carrying *its* reason, which
+ * is not the reason the signature actually holds.
+ *
+ * The service's own docblock is what makes that wrong rather than untidy: "a second audit event
+ * rather than an edit to the first, because a withdrawal is its own act with its own actor". Two
+ * events for one act, one stating a reason that never applied, is the opposite of that — on the
+ * one trail ADR-0017 and 21 CFR Part 11 are about.
+ */
+describe('two withdrawals of one signature', () => {
+  it('records the withdrawal once, with the reason that actually applied', async () => {
+    const document = await createDocument();
+    const revisionId = (
+      await owner.document.findUniqueOrThrow({
+        where: { id: document.id },
+        select: { latestRevisionId: true },
+      })
+    ).latestRevisionId;
+    const signatureId = uuidv7();
+    await owner.documentSignature.create({
+      data: {
+        id: signatureId,
+        tenantId: TENANT,
+        documentId: document.id,
+        revisionId: revisionId ?? '',
+        signerUserId: ALICE,
+        purpose: 'APPROVAL',
+        contentSha256: 'digest',
+        statementBody: 'body',
+        signature: 'witness',
+        algorithm: 'HMAC-SHA256',
+        keyId: 'key',
+        signedAt: FIXED_NOW,
+        reauthenticated: true,
+      },
+    });
+
+    /*
+     * The seam: the real repository, wrapped for one caller, holding its first claim.
+     *
+     * The park is on entry to `withdraw` — after the service's read, before the statement that
+     * decides — which is the instant a read-then-write leaves open and the only one worth
+     * ordering. It holds the loser's transaction, not a lock, and the winner's whole run is two
+     * statements, so nothing sits near Prisma's interactive budget.
+     */
+    let reached: () => void = () => undefined;
+    const atClaim = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let parkedOnce = false;
+    const real = new PrismaDocumentSignatureRepository();
+    const held = new Proxy(real, {
+      get(target, property, receiver) {
+        if (property === 'withdraw') {
+          return async (...args: readonly unknown[]) => {
+            if (!parkedOnce) {
+              parkedOnce = true;
+              reached();
+              await parked;
+            }
+            return (target.withdraw as (...rest: readonly unknown[]) => Promise<unknown>)(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+
+    const stalling = realDocumentSignatures({ clock, unitOfWork: uow, signatures: held });
+    const plain = realDocumentSignatures({ clock, unitOfWork: uow });
+
+    const loser = as(() => stalling.service.withdraw(signatureId, 'Withdrawn by the loser'))
+      .then(() => ({ refused: false }))
+      .catch(() => ({ refused: true }));
+    await atClaim;
+
+    // The winner runs the production path end to end underneath it.
+    await as(() => plain.service.withdraw(signatureId, 'Withdrawn by the winner'));
+
+    admit();
+    const loserResult = await loser;
+
+    // The signature holds one withdrawal, and it is the winner's.
+    const row = await owner.documentSignature.findUniqueOrThrow({ where: { id: signatureId } });
+    expect(row.withdrawnAt).not.toBeNull();
+    expect(row.withdrawnReason).toBe('Withdrawn by the winner');
+
+    // One act, one event. The loser withdrew nothing and must not file a withdrawal saying it did.
+    const filed = (
+      await owner.auditEvent.findMany({
+        where: { tenantId: TENANT, subjectId: document.id, action: 'DOCUMENT_SIGNED' },
+        select: { payload: true, reason: true },
+      })
+    ).filter(
+      (event) =>
+        (event.payload as { after?: { withdrawn?: boolean } } | null)?.after?.withdrawn === true,
+    );
+    expect(filed).toHaveLength(1);
+    expect(filed[0]?.reason).toBe('Withdrawn by the winner');
+
+    // And the loser is told what the sequential caller is already told.
+    expect(loserResult.refused).toBe(true);
+  }, 60_000);
 });

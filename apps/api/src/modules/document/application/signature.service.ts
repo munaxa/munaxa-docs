@@ -338,12 +338,18 @@ export class DocumentSignatureService {
         throw new ForbiddenError("withdraw somebody else's signature");
       }
       if (current.withdrawnAt !== null) {
-        throw new ValidationError('This signature has already been withdrawn.', [
-          { field: 'signatureId', message: 'withdrawn' },
-        ]);
+        throw alreadyWithdrawn();
       }
       const at = this.writer.clock.now();
-      await this.signatures.withdraw({ id: signatureId, by: actor, reason, at });
+      // The claim decides, not the read three lines up. `withdraw` carries `withdrawnAt: null` in
+      // its predicate, so a withdrawal that committed in between matches nothing here and the count
+      // comes back zero — and the caller that files the event anyway puts a second act into a trail
+      // that refuses `UPDATE`, carrying *its* reason rather than the one actually stored. A
+      // withdrawal nobody can undo is the wrong place to trust a read.
+      const withdrawn = await this.signatures.withdraw({ id: signatureId, by: actor, reason, at });
+      if (!withdrawn) {
+        throw alreadyWithdrawn();
+      }
       const saved = await this.signatures.findById(signatureId);
       if (saved === null) {
         throw new NotFoundError('The requested signature');
@@ -552,6 +558,19 @@ export class DocumentSignatureService {
     }
     return userId;
   }
+}
+
+/**
+ * The one refusal for a signature that is already taken back.
+ *
+ * Shared by the read above and the claim below deliberately: the caller that raced and lost must be
+ * told exactly what the caller that arrived second sequentially is told, because from outside the
+ * two are the same fact.
+ */
+function alreadyWithdrawn(): ValidationError {
+  return new ValidationError('This signature has already been withdrawn.', [
+    { field: 'signatureId', message: 'withdrawn' },
+  ]);
 }
 
 /** The witness. `SIGNATURE_STATEMENT_VERSION` is in the signed bytes, so the algorithm is bound. */
