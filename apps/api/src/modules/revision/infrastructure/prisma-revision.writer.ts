@@ -327,10 +327,19 @@ export class PrismaRevisionWriter implements RevisionWriter {
     return rows.map(toCascaded);
   }
 
-  async discard(input: { documentId: string; revisionId: string }): Promise<void> {
+  /**
+   * Discards the draft, and answers whether *this* caller is the one that discarded it.
+   *
+   * `status: DRAFT` has always been the guard; the count is the answer — Slice 98. Two callers can
+   * both read one working draft as `DRAFT` before either writes, and only one of them moves the
+   * row. The other must not go on to give the blob's reference back a second time: on a blob two
+   * documents share through content addressing, that takes the count to zero while a live revision
+   * still holds it, and a blob at zero is one the reaper may delete.
+   */
+  async discard(input: { documentId: string; revisionId: string }): Promise<boolean> {
     // Only a DRAFT can be discarded — the predicate is the guard. The row stays: the ordinal is
     // spent, and a history with a silent gap is unusable as evidence.
-    await requireTransaction().documentRevision.updateMany({
+    const { count } = await requireTransaction().documentRevision.updateMany({
       where: {
         id: input.revisionId,
         documentId: input.documentId,
@@ -343,6 +352,7 @@ export class PrismaRevisionWriter implements RevisionWriter {
         version: { increment: 1 },
       },
     });
+    return count > 0;
   }
 }
 

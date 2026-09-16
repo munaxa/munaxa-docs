@@ -702,7 +702,22 @@ export class RevisionControlService {
     if (draft === null || draft.status !== RevisionStatus.DRAFT) {
       return null;
     }
-    await this.revisions.discard({ documentId: document.id, revisionId: draft.id });
+    /*
+     * The claim decides, not the read two lines up — Slice 98.
+     *
+     * `discard` carries `status: DRAFT` in its predicate, so a draft another caller already ended
+     * matches nothing here. Both paths that reach this method can have read it standing: the
+     * check-out-ending one claims the lock afterwards and its loser's whole transaction rolls
+     * back, but a check-in that keeps the check-out claims nothing and commits whatever it lost.
+     *
+     * The reference is why it matters. Giving it back twice for one draft takes a blob two
+     * documents share through content addressing down to zero while the other document's live
+     * revision still holds it — and a blob at zero is one the reaper may delete. On an unshared
+     * blob `ck_file_object_ref_count` catches the second decrement; on a shared one nothing does.
+     */
+    if (!(await this.revisions.discard({ documentId: document.id, revisionId: draft.id }))) {
+      return null;
+    }
     await this.content.dereference(draft.fileObjectId);
     if (document.currentRevisionId !== null) {
       await this.documents.attachLatestRevision(

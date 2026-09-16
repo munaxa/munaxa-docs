@@ -400,7 +400,8 @@ export interface RevisionWriter {
   }): Promise<{ readonly supersededRevisionId: string | null }>;
 
   /** A draft abandoned by cancel or replaced by a further check-in. Kept, marked, evented. */
-  discard(input: { documentId: string; revisionId: string }): Promise<void>;
+  /** Discards the draft, answering whether this caller is the one that discarded it. */
+  discard(input: { documentId: string; revisionId: string }): Promise<boolean>;
   /**
    * The delete cascade's revision half: soft-deletes every live revision of the document, stamped
    * with the delete's own cascade identifier, and answers which rows held a blob reference — a

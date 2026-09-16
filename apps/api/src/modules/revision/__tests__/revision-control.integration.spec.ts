@@ -34,6 +34,7 @@ import {
   type RevisionControlStack,
   type WorkflowEngineStack,
   realDocumentLibrary,
+  parkedRevisionWriter,
   realRevisionControl,
   realWorkflowEngine,
 } from '../../../testing/real-collaborators';
@@ -1406,4 +1407,145 @@ describe('two archivals of one document', () => {
     // tells the search index and every webhook subscriber that something happened when nothing did.
     expect(await archivals(documentId)).toBe(1);
   });
+});
+
+/**
+ * Two callers ending one working draft, and the reference it gave back — Slice 98.
+ *
+ * `discardWorkingDraft` reads the draft, refuses unless it is `DRAFT`, discards it and then gives
+ * its blob's reference back. `RevisionWriter.discard` *is* a claim — `status: DRAFT` is in its
+ * `WHERE` — but it answers `Promise<void>`, so the affected-row count is thrown away and the
+ * dereference beside it happens whether or not this caller was the one that discarded anything.
+ *
+ * The two paths that reach it end differently, and that is what makes this reachable. `endCheckOut`
+ * claims the lock and `requireEnded` throws when it loses, so the loser's whole transaction rolls
+ * back — its dereference with it. A check-in with `keepCheckedOut` claims nothing: it skips the
+ * lifecycle transition entirely and finishes at `attachDraft`, whose own `releasedAt: null`
+ * predicate also answers `void`. So it commits whatever it lost, and the reference it gave back
+ * stays given back.
+ *
+ * On a blob only this revision holds, `ck_file_object_ref_count` catches the second dereference and
+ * the transaction dies loudly. On a **shared** blob it does not: content addressing is what makes
+ * two documents of the same bytes one row, `uq_file_object_checksum` is the product's own design,
+ * and 2 → 1 → 0 violates no constraint. What is left is a blob the reaper may collect while another
+ * document's live revision still points at it — `listUnreferenced`'s "only retention calls this,
+ * and only at a reference count of zero" is exactly the promise that stops being true.
+ */
+describe('two callers ending one working draft', () => {
+  it('gives the draft’s reference back once, not once per caller', async () => {
+    // The same bytes on two documents, which is one blob — the dedup the product is built around.
+    const shared = unique('shared-content');
+    const keeper = await published();
+    const documentId = await published();
+
+    // The other document's published revision holds one reference on the shared blob.
+    await as(() => revision.control.checkOut(keeper), AUTHOR);
+    const sharedFile = await uploadClean(shared);
+    await as(
+      () =>
+        revision.control.checkIn({
+          documentId: keeper,
+          fileObjectId: sharedFile,
+          filename: 'keeper.pdf',
+          changeNote: 'The bytes both documents share.',
+          keepCheckedOut: false,
+        }),
+      AUTHOR,
+    );
+
+    // The document under test takes the same bytes as its working draft, so the blob now carries
+    // two references: the other document's revision, and this draft.
+    await as(() => revision.control.checkOut(documentId), AUTHOR);
+    const sameBytes = await uploadClean(shared);
+    expect(sameBytes, 'identical content must resolve to one blob').toBe(sharedFile);
+    await as(
+      () =>
+        revision.control.checkIn({
+          documentId,
+          fileObjectId: sameBytes,
+          filename: 'draft.pdf',
+          changeNote: 'A working draft on the shared bytes.',
+          keepCheckedOut: true,
+        }),
+      AUTHOR,
+    );
+    expect(await refCountOf(sharedFile), 'two revisions hold the shared blob').toBe(2);
+
+    let reached: () => void = () => undefined;
+    const atDraftRead = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let parkedOnce = false;
+    const stalling = realRevisionControl({
+      ...revisionOptions,
+      revisions: parkedRevisionWriter({
+        clock,
+        unitOfWork,
+        hold: async () => {
+          if (parkedOnce) {
+            return;
+          }
+          parkedOnce = true;
+          reached();
+          await parked;
+        },
+      }),
+    });
+
+    // The held caller: a second check-in that keeps the check-out, stopped just after it has read
+    // the standing draft and before it discards anything. It has written nothing and holds nothing.
+    const replacement = await uploadClean(unique('replacement'));
+    const stalled = as(
+      () =>
+        stalling.control.checkIn({
+          documentId,
+          fileObjectId: replacement,
+          filename: 'replacement.pdf',
+          changeNote: 'A second check-in, arriving at the same moment.',
+          keepCheckedOut: true,
+        }),
+      AUTHOR,
+    )
+      .then(() => 'ran' as const)
+      .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+    await atDraftRead;
+
+    // The other caller cancels the check-out, running the shipped path end to end: it discards the
+    // same draft, gives its reference back, and releases the lock.
+    await as(() => revision.control.cancelCheckOut(documentId), AUTHOR);
+    expect(
+      await refCountOf(sharedFile),
+      'the caller that discarded the draft gives its reference back',
+    ).toBe(1);
+
+    admit();
+    const outcome = await stalled;
+
+    /*
+     * The assertion this test exists for.
+     *
+     * Whatever became of the held check-in — it may commit or it may be refused — it discarded
+     * nothing, so it owes the blob nothing. One draft ended once, so exactly one reference goes
+     * back, and the other document's revision keeps its own.
+     */
+    expect(
+      await refCountOf(sharedFile),
+      'a draft discarded once releases one reference, however many callers tried',
+    ).toBe(1);
+
+    // The reaper's predicate is exactly this number: `listReclaimable` selects `refCount: 0`, so
+    // a blob left at zero is one it may delete while the other document still reads its content
+    // through this row. Asserting the count is asserting that, without reaching into Storage.
+
+    // The other document is untouched by any of this.
+    const keeperRevision = await owner.documentRevision.findFirstOrThrow({
+      where: { documentId: keeper, fileObjectId: sharedFile, deletedAt: null },
+    });
+    expect(keeperRevision.status).not.toBe('DISCARDED');
+    expect(typeof outcome).toBe('string');
+  }, 60_000);
 });

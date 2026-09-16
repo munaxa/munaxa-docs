@@ -801,6 +801,43 @@ export interface RevisionControlOptions {
    * release lands, and nothing in the service is a seam between those two moments.
    */
   readonly locks?: DocumentLockRepository;
+  /**
+   * The revision writer, on the same terms as `locks` — Slice 98.
+   *
+   * The real one by default, and a suite that passes its own passes the real one *subclassed*:
+   * what is worth proving is the interleaving where two callers both read one working draft as
+   * `DRAFT` and only one of them discards it, and nothing in the service is a seam between those
+   * two moments.
+   */
+  readonly revisions?: PrismaRevisionWriter;
+}
+
+/**
+ * The real revision writer, held on the way out of `describe` — Slice 98.
+ *
+ * Composed here rather than in a suite because it needs the same stamps and outbox
+ * `realRevisionControl` builds, and a subclass rather than a double because what is under test is
+ * what PostgreSQL does with two callers ending one working draft: `super.describe` runs the real
+ * query inside the caller's real transaction and the hold only decides when the rest follows.
+ *
+ * `discardWorkingDraft` is the only caller that describes a *draft on a lock*, so the hold is
+ * given the revision it just read and a suite can park on exactly the one it means.
+ */
+export function parkedRevisionWriter(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  readonly hold: (revisionId: string) => Promise<void>;
+}): PrismaRevisionWriter {
+  const { stamps, outbox } = realWriteStack(options.clock, options.unitOfWork);
+  const hold = options.hold;
+  class HeldRevisionWriter extends PrismaRevisionWriter {
+    override async describe(documentId: string, revisionId: string) {
+      const facts = await super.describe(documentId, revisionId);
+      await hold(revisionId);
+      return facts;
+    }
+  }
+  return new HeldRevisionWriter(stamps, outbox);
 }
 
 export function realRevisionControl(options: RevisionControlOptions): RevisionControlStack {
@@ -816,7 +853,7 @@ export function realRevisionControl(options: RevisionControlOptions): RevisionCo
   const control = new RevisionControlService(
     realDocumentRepository(options),
     locks,
-    new PrismaRevisionWriter(stamps, outbox),
+    options.revisions ?? new PrismaRevisionWriter(stamps, outbox),
     new StorageContentGateAdapter(options.storage),
     new AdministrationConfigurationAdapter(
       options.configuration,
