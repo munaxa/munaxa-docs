@@ -164,6 +164,8 @@ import { PrismaFileObjectRepository } from '../modules/storage/infrastructure/pr
 import { PrismaUploadSessionRepository } from '../modules/storage/infrastructure/prisma-upload-session.repository';
 import { RevisionControlService } from '../modules/document/application/revision-control.service';
 import { PrismaDocumentLockRepository } from '../modules/document/infrastructure/prisma-document-lock.repository';
+import { PrismaDocumentSignatureRepository } from '../modules/document/infrastructure/prisma-signature.repository';
+import { DocumentSignatureService } from '../modules/document/application/signature.service';
 import { RevisionQueryService } from '../modules/revision/application/revision-query.service';
 import { PrismaRevisionQueryRepository } from '../modules/revision/infrastructure/prisma-revision-query.repository';
 import { PostgresIndexAdapter } from '../infrastructure/search/postgres-index.adapter';
@@ -237,6 +239,44 @@ import { FakeCache } from './fake-ports';
  */
 export function realAuditWriter(clock: ClockPort, unitOfWork: UnitOfWork): ChainedAuditWriter {
   return new ChainedAuditWriter(new PrismaAuditRepository(), clock, unitOfWork);
+}
+
+/**
+ * The signature service, composed for the one path that needs no ceremony — Slice 94.
+ *
+ * `withdraw` touches exactly two of the nine collaborators: the repository it claims through and
+ * the administered writer that records the act. The other seven are the signing ceremony's — the
+ * authenticator, the content gate, the revision writer — and a withdrawal reaches none of them, so
+ * they are loud placeholders rather than doubles: a path that started using one fails by name here
+ * instead of quietly passing against a stub nobody wrote assertions for. It is the same trade
+ * `realRetention` makes for `storageService`.
+ */
+export function realDocumentSignatures(options: {
+  readonly clock: ClockPort;
+  readonly unitOfWork: UnitOfWork;
+  /** The repository, exposed so a suite can wrap it to order two callers. */
+  readonly signatures?: PrismaDocumentSignatureRepository;
+}): {
+  readonly service: DocumentSignatureService;
+  readonly signatures: PrismaDocumentSignatureRepository;
+} {
+  const { writer } = realWriteStack(options.clock, options.unitOfWork);
+  const signatures = options.signatures ?? new PrismaDocumentSignatureRepository();
+  const absent = null as never;
+  return {
+    service: new DocumentSignatureService(
+      signatures,
+      absent,
+      absent,
+      absent,
+      absent,
+      absent,
+      absent,
+      absent,
+      writer,
+    ),
+    signatures,
+  };
 }
 
 /**
