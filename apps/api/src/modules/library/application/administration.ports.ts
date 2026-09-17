@@ -133,6 +133,20 @@ export interface LibraryAdminRepository {
     },
   ): Promise<void>;
   folderSubtree(path: string): Promise<readonly FolderSubtreeNode[]>;
+  /**
+   * Takes the folders a move is about to decide from, in a fixed order, for the transaction.
+   *
+   * The serialisation point for a move — Slice 104. A move decides from two paths it read and then
+   * writes, and two moves that name each other both read before either writes: both pass the cycle
+   * check, their writes land on different rows so neither version guard sees the other, and the
+   * tree commits with each folder as the other's parent.
+   *
+   * The two rows a move names are exactly the two a competing move would have to name to close a
+   * cycle with it, so holding them is enough and holding anything more would order moves that have
+   * nothing to do with each other. The order is by identifier, so two callers naming the same pair
+   * queue rather than deadlock.
+   */
+  lockFoldersForMove(folderIds: readonly string[]): Promise<void>;
   moveFolder(input: {
     readonly id: string;
     readonly version: number;

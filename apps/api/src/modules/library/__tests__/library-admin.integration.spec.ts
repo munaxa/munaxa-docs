@@ -1029,3 +1029,251 @@ describe('a folder move that rewrites a subtree it no longer owns', () => {
     expect(await foldersDisagreeingWithTheirParent()).toEqual([]);
   });
 });
+
+/**
+ * Two folder moves that name each other — Slice 104.
+ *
+ * `moveFolder` decides from two rows it reads — the folder and the parent it is going under — and
+ * `checkTreePlacement` refuses the placement when the parent turns out to sit inside the folder's
+ * own subtree. Sequentially that is airtight. Concurrently it was not: two administrators moving X
+ * under Y and Y under X at the same moment each read the tree as it was, so each passed the cycle
+ * rule, and their writes landed on *different* rows — so neither version guard saw the other and
+ * both committed. The tree came out with X named as Y's parent and Y as X's.
+ *
+ * Nothing in the schema catches it. There is no constraint tying `folder.parent_id` to
+ * `folder.path`, and none forbidding a cycle in either.
+ *
+ * What it costs is access, not tidiness. `PrismaScopeChainReader.fromFolder` builds the ACL chain
+ * from `idsInPath(folder.path)`, so after the cycle X's chain walks through Y and Y's through X: an
+ * entry granted on either folder decides permissions for everything filed under the other, and an
+ * inheritance break on either applies to the other's documents. Neither folder is reachable from
+ * the library root any more either.
+ *
+ * ### How the interleaving is forced, and why this way round
+ *
+ * The **winner** is parked, at the repository, between its reads and its writes; the **loser** is
+ * then started and left to run. That ordering makes both decisions fixed before either can be
+ * influenced by the other, in every version of the code:
+ *
+ * - the parked move has already read the tree, so its decision cannot change;
+ * - it has written nothing and stays parked, so the other move reads the same original tree
+ *   whenever it gets there — which is what makes the defect's cycle certain rather than likely.
+ *
+ * Parking the *loser* instead would not: the other move's reads would be racing the parked one's
+ * commit, and whether a cycle appeared would be a question about round trips. It also could not
+ * work once the rows are held, because a move that waits on a lock never reaches the park at all.
+ *
+ * Each move runs from the test's own scope: `PrismaUnitOfWork.run` joins an ambient transaction,
+ * and a move invoked from inside the other's hook would silently become part of it.
+ */
+describe('two folder moves that name each other', () => {
+  const turnstile = new Turnstile<string>();
+  let parkOn: string | null = null;
+
+  class ParkingLibraryRepository extends PrismaLibraryAdminRepository {
+    override async moveFolder(
+      input: Parameters<PrismaLibraryAdminRepository['moveFolder']>[0],
+    ): Promise<void> {
+      // Parked here: the folder and its parent have been read, the placement check has passed, and
+      // nothing has been written. That is the window the other move's decision is made in.
+      if (parkOn === `move:${input.id}`) {
+        await turnstile.park(`move:${input.id}`);
+      }
+      return super.moveFolder(input);
+    }
+  }
+
+  const parking = new LibraryAdminService(
+    new ParkingLibraryRepository(stamps),
+    organization,
+    outbox,
+    realAclResolver({ clock, unitOfWork }),
+    new FolderContentsRegistry(),
+    writer,
+  );
+
+  /** Two folders side by side under a library's root — the smallest pair that can name each other. */
+  async function siblings(): Promise<{
+    library: string;
+    root: string;
+    x: FolderRow;
+    y: FolderRow;
+  }> {
+    const library = await aLibrary();
+    const make = (name: string): Promise<FolderRow> =>
+      asAdmin(() =>
+        parking.createFolder({
+          libraryId: library.id,
+          parentId: library.rootFolderId,
+          name,
+          inheritAcl: true,
+        }),
+      );
+    return {
+      library: library.id,
+      root: library.rootFolderId,
+      x: await make('X'),
+      y: await make('Y'),
+    };
+  }
+
+  /**
+   * Every live folder that is its own ancestor — by the `parent_id` walk and by the path alike.
+   *
+   * Both, because they are two statements of one fact and the defect makes them disagree with each
+   * other as well as with the tree: the walk is what the folder tree renders from, and the path is
+   * what `chainFor` resolves permissions from.
+   */
+  async function foldersInsideThemselves(): Promise<string[]> {
+    const rows = await owner.folder.findMany({
+      where: { tenantId: TENANT, deletedAt: null },
+      select: { id: true, parentId: true, path: true },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return rows
+      .filter((row) => {
+        if (idsInPath(row.path).slice(0, -1).includes(row.id)) {
+          return true;
+        }
+        const seen = new Set<string>([row.id]);
+        let walker = row.parentId;
+        while (walker !== null) {
+          if (seen.has(walker)) {
+            return true;
+          }
+          seen.add(walker);
+          walker = byId.get(walker)?.parentId ?? null;
+        }
+        return false;
+      })
+      .map((row) => row.id);
+  }
+
+  /**
+   * Whether a second session can take a lock of its own on a folder row.
+   *
+   * `NOWAIT` rather than a wait with a deadline: the question is whether the row is held *now*, and
+   * a probe that waited would be a probe that has to be told how long to — which is the sleep this
+   * suite does not write. `55P03` is PostgreSQL's "could not obtain lock", and it is the answer
+   * rather than a failure.
+   *
+   * Both strengths are asked, because both matter. A move has to be the only one deciding: a second
+   * mover that could take a *shared* lock on the same pair would read the same tree and reach the
+   * same wrong conclusion, so "held" here means held exclusively.
+   */
+  async function lockableElsewhere(mode: 'UPDATE' | 'SHARE', folderId: string): Promise<boolean> {
+    try {
+      await owner.$queryRawUnsafe(
+        `SELECT id FROM folder WHERE id = $1::uuid FOR ${mode} NOWAIT`,
+        folderId,
+      );
+      return true;
+    } catch (error) {
+      if (/55P03|could not obtain lock/i.test(String(error))) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  it('holds the folder and the parent it is going under while it decides', async () => {
+    /*
+     * The mechanism, asserted directly rather than through a race.
+     *
+     * The case below forces one interleaving and shows the tree survives it, which is the outcome
+     * that matters — but a fix that held only one of the two rows, or held them only for reading,
+     * produces that same outcome under that same interleaving while leaving the defect reachable
+     * under another. What the invariant actually says is *which* rows a move holds and *how*, and
+     * that is a question a second session can ask of the database while the move is parked.
+     *
+     * The third folder is not decoration. Without it every assertion here passes on a service that
+     * locks the whole table.
+     */
+    const { library, root, x, y } = await siblings();
+    const bystander = await asAdmin(() =>
+      parking.createFolder({ libraryId: library, parentId: root, name: 'Z', inheritAcl: true }),
+    );
+    parkOn = `move:${y.id}`;
+    const base = turnstile.arm(1);
+
+    const movingY = asAdmin(() => parking.moveFolder(y.id, x.id, y.version));
+    await turnstile.reached[base];
+
+    // Parked between the reads and the writes. Both rows the decision was made from are held, and
+    // held exclusively — the folder being moved and the parent it is going under.
+    expect(await lockableElsewhere('UPDATE', y.id)).toBe(false);
+    expect(await lockableElsewhere('SHARE', y.id)).toBe(false);
+    expect(await lockableElsewhere('UPDATE', x.id)).toBe(false);
+    expect(await lockableElsewhere('SHARE', x.id)).toBe(false);
+    // And nothing else is, so this orders the moves that can interact rather than all of them.
+    expect(await lockableElsewhere('UPDATE', bystander.id)).toBe(true);
+
+    turnstile.release(base);
+    await movingY;
+
+    // Held for the transaction and no longer, which is what `FOR UPDATE` means here.
+    expect(await lockableElsewhere('UPDATE', y.id)).toBe(true);
+    expect(await lockableElsewhere('UPDATE', x.id)).toBe(true);
+  }, 60_000);
+
+  it('refuses the second move when they are asked for one after the other', async () => {
+    // The control, and it is mandatory: "no folder is inside itself" passes just as well on a
+    // service that refuses every move, so the first one has to be seen to succeed.
+    const { root, x, y } = await siblings();
+
+    const moved = await asAdmin(() => parking.moveFolder(y.id, x.id, y.version));
+    expect(moved.path).toBe(`${root}.${x.id}.${y.id}`);
+
+    await expect(asAdmin(() => parking.moveFolder(x.id, y.id, x.version))).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      fieldErrors: [{ field: 'parentId', message: 'PARENT_IS_DESCENDANT' }],
+    });
+    expect(await foldersInsideThemselves()).toEqual([]);
+  }, 60_000);
+
+  it('refuses the move that would close the cycle, whichever of the two decides first', async () => {
+    const { root, x, y } = await siblings();
+    parkOn = `move:${y.id}`;
+    const base = turnstile.arm(1);
+
+    // The first administrator moves Y under X, and parks with its decision made and nothing
+    // written. Holding the two rows it decided from is what this slice added.
+    const movingY = asAdmin(() => parking.moveFolder(y.id, x.id, y.version));
+    await turnstile.reached[base];
+
+    // The second administrator moves X under Y, from its own scope and so its own transaction.
+    // Not awaited: with the rows held it waits on them rather than deciding from a tree that is
+    // about to change, so nothing here can wait for it to finish first.
+    parkOn = null;
+    const movingX = asAdmin(() => parking.moveFolder(x.id, y.id, x.version));
+
+    turnstile.release(base);
+    const outcomes = await Promise.allSettled([movingY, movingX]);
+
+    // The invariant, first and on its own terms: whatever the two moves decided between them, no
+    // folder may end up inside itself. This is the assertion the defect fails.
+    expect(await foldersInsideThemselves()).toEqual([]);
+
+    // One of them moved and the other was told why — never both, which is the cycle, and never
+    // neither, which would be a lock refusing the work rather than ordering it.
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes[1]).toMatchObject({
+      status: 'rejected',
+      reason: {
+        code: 'VALIDATION_FAILED',
+        fieldErrors: [{ field: 'parentId', message: 'PARENT_IS_DESCENDANT' }],
+      },
+    });
+
+    // And the ancestry the tree actually has is the one the winner wrote: Y under X, X still under
+    // the root — so the chain `idsInPath` hands the resolver names real ancestors and nothing else.
+    const rows = await owner.folder.findMany({
+      where: { id: { in: [x.id, y.id] } },
+      select: { id: true, parentId: true, path: true },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    expect(byId.get(y.id)).toMatchObject({ parentId: x.id, path: `${root}.${x.id}.${y.id}` });
+    expect(byId.get(x.id)).toMatchObject({ parentId: root, path: `${root}.${x.id}` });
+    expect(idsInPath(byId.get(x.id)?.path ?? '')).not.toContain(y.id);
+  }, 60_000);
+});
