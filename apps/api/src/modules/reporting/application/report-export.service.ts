@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import {
   type AnyId,
+  type FileObjectId,
   type PermissionKey,
   AuditOutcome,
   AuditSubjectType,
@@ -143,7 +144,26 @@ export class ReportExportService {
 
     try {
       const outcome = await this.produceAsRequester(record, report);
-      await this.unitOfWork.run(() => this.exports.complete(id, outcome));
+      await this.unitOfWork.run(async () => {
+        /*
+         * The reference, in the same transaction as the pointer that needs it — Slice 100.
+         *
+         * `storeStreamed` inserts the `file_object` at a count of zero, exactly as `storeDerived`
+         * does, and leaves the reference to whoever ends up pointing at it. That is this row.
+         * Without it `retention.reclaim-blobs` — which selects `ref_count = 0` past the grace
+         * period and does not exempt a derived blob — deletes the bytes of a `COMPLETED` export
+         * and soft-deletes the row, after which `downloadExport` reads through `findById`, which
+         * filters `deleted_at: null`, and can never answer again.
+         *
+         * The bulk export's manifest states the same rule for the same reason: "a reference, so
+         * the reaper does not reclaim the manifest of a release somebody is still reading".
+         *
+         * One transaction with `complete`, so there is no instant in which the row names a file it
+         * does not hold — and none in which a reference is held for a pointer that was not written.
+         */
+        await this.files.reference(asId<FileObjectId>(outcome.fileObjectId));
+        await this.exports.complete(id, outcome);
+      });
       await this.unitOfWork.run(() =>
         this.outbox.publish([
           reportExportReadyEvent(id, {

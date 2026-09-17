@@ -13,6 +13,7 @@ import {
   NumberSegmentKind,
   Permission,
   QueueName,
+  Settings,
   RevisionLabelStyle,
   ScopeType,
   type AnyId,
@@ -32,9 +33,12 @@ import { FakeCache } from '../../../testing/fake-ports';
 import {
   type DocumentLibraryStack,
   type ReportingStack,
+  type RetentionStack,
+  realDisposition,
   realDocumentLibrary,
   realPermissions,
   realReporting,
+  realRetention,
   realRoleAdmin,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
@@ -76,6 +80,13 @@ const APP_URL = process.env['DATABASE_URL'] ?? '';
 
 const FIXED_NOW = new Date('2026-08-06T09:00:00.000Z');
 const clock = { now: () => new Date(FIXED_NOW), timestamp: () => 0, elapsedMs: () => 0 };
+/** A day past `FIXED_NOW`, for the one collaborator that has to run after the grace period. */
+const A_DAY_LATER = new Date(FIXED_NOW.getTime() + 24 * 60 * 60 * 1_000);
+const laterClock = {
+  now: () => new Date(A_DAY_LATER),
+  timestamp: () => 0,
+  elapsedMs: () => 0,
+};
 const logger = {
   info: () => {},
   warn: () => {},
@@ -101,6 +112,7 @@ let unitOfWork: PrismaUnitOfWork;
 let library: DocumentLibraryStack;
 let permissions: ReturnType<typeof realPermissions>;
 let reporting: ReportingStack;
+let sweep: RetentionStack;
 
 let libraryId: string;
 let openFolderId: string;
@@ -215,6 +227,22 @@ beforeAll(async () => {
     unitOfWork,
     config: appConfig,
     storage: library.storage,
+  });
+  /*
+   * The blob reaper, on a clock a day past everything this suite writes — Slice 100.
+   *
+   * `reclaimBlobs` selects `ref_count = 0` and `updated_at` older than the grace period, so a
+   * sweep running on the suite's own fixed instant would select nothing whatever the counts said
+   * and would prove the opposite of what it looks like it proves. A grace of zero days and a
+   * clock one day ahead is the grace period having passed, stated as data rather than as a sleep.
+   */
+  sweep = realRetention({
+    clock: laterClock,
+    unitOfWork,
+    storage: library.storagePort,
+    storageService: library.storage,
+    disposition: realDisposition(laterClock, library.storage, library.writer),
+    settings: { [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0 },
   });
 
   await seedTree();
@@ -800,3 +828,56 @@ async function seedDocument(
   });
   return id;
 }
+
+/**
+ * A finished export and the blob reaper — Slice 100.
+ *
+ * `ReportExportService.run` stores the file with `StorageService.storeStreamed`, which inserts the
+ * `file_object` at a reference count of **zero** exactly as `storeDerived` does, and then records
+ * the identifier on the `report_export` row with `complete`. Nothing in between takes a reference.
+ *
+ * Every other place in this product that points a row at a blob takes one, and says why: a
+ * revision on upload, a preview artefact on render, an OCR result, and the bulk export's manifest
+ * — "a reference, so the reaper does not reclaim the manifest of a release somebody is still
+ * reading". `retention.reclaim-blobs` selects `ref_count = 0` past a grace period and deletes the
+ * bytes, and `listReclaimable` does not exempt a derived blob.
+ *
+ * So a `COMPLETED` export is destroyed by the next sweep while its own row still names the file:
+ * the object is gone from the store, the `file_object` row is soft-deleted, and `downloadExport`
+ * — which reads through `findById`, and that filters `deleted_at: null` — can never answer again.
+ * The export row goes on saying `COMPLETED` with a digest for bytes that no longer exist.
+ */
+describe('a finished export and the blob reaper', () => {
+  it('keeps the file the export points at out of the reaper’s reach', async () => {
+    const record = await runExport(ADA, 'documents');
+    expect(record?.state).toBe(ReportExportState.COMPLETED);
+    const fileObjectId = record?.fileObjectId ?? '';
+    expect(fileObjectId, 'the export records the file it produced').not.toBe('');
+
+    /*
+     * The invariant, read before the sweep: one reference per row that points at the blob.
+     *
+     * Stated as the pointer count rather than as `1`, because content addressing means it need not
+     * be one: the same report run twice by the same caller is byte-for-byte identical, so
+     * `storeStreamed` hands both exports the same `file_object` and both owe it a reference. This
+     * is the assertion that fails before the fix — the count is zero however many rows point at it.
+     */
+    const stored = await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } });
+    const pointing = await owner.reportExport.count({ where: { tenantId: TENANT, fileObjectId } });
+    expect(pointing, 'at least this export points at it').toBeGreaterThan(0);
+    expect(stored.refCount, 'one reference for every row that points at the file').toBe(pointing);
+
+    // The sweep the schedule runs nightly, against the real repository, with the grace period
+    // past. It must find nothing to take.
+    await asConsumer(() => sweep.retention.reclaimBlobs(50));
+
+    const after = await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } });
+    expect(after.deletedAt, 'the reaper must not take a file an export points at').toBeNull();
+
+    // And the point of keeping the row: the bytes it names are still in the store. Asserted
+    // through the same port the reaper deletes with, so this is the object itself rather than the
+    // row's opinion of it.
+    const object = await asAda(() => library.storagePort.head(record?.storageKey ?? ''));
+    expect(object, 'the bytes the export names are still in the store').not.toBeNull();
+  }, 60_000);
+});
