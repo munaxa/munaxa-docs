@@ -13,6 +13,7 @@ import {
   AuditOutcome,
   AuditSubjectType,
   Permission,
+  Settings,
   type TenantId,
   type UserId,
   asId,
@@ -33,8 +34,11 @@ import { type RequestContext, runWithContext } from '../../../core/tenancy/tenan
 import { FakeClock } from '../../../testing/fake-ports';
 import {
   type AuditStack,
+  type RetentionStack,
   realAuditStack,
+  realDisposition,
   realDocumentLibrary,
+  realRetention,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { toChainLink } from '../application/audit-verification.service';
@@ -68,6 +72,8 @@ const SLUG = `audit9-${Date.now()}`;
 const CHECKPOINT_SECRET = 'phase-9-checkpoint-secret-at-least-32';
 
 const clock = new FakeClock(new Date('2026-01-01T00:00:00Z'));
+/** A day later, for the one collaborator that has to run after the blob grace period. */
+const sweepClock = new FakeClock(new Date('2026-01-02T00:00:00Z'));
 
 let storageRoot: string;
 let config: AppConfig;
@@ -75,6 +81,7 @@ let prisma: ReturnType<typeof sharedDatabase>;
 let unitOfWork: PrismaUnitOfWork;
 let stack: AuditStack;
 let library: ReturnType<typeof realDocumentLibrary>;
+let sweep: RetentionStack;
 
 function contextFor(overrides: Partial<RequestContext> = {}): RequestContext {
   return {
@@ -185,6 +192,23 @@ beforeAll(async () => {
     config,
     storage: library.storage,
     storagePort: library.storagePort,
+  });
+
+  /*
+   * The blob reaper, on a clock a day past everything this suite writes — Slice 101.
+   *
+   * `reclaimBlobs` selects `ref_count = 0` and `updated_at` older than the grace period, so a
+   * sweep running on the suite's own instant would select nothing whatever the counts said, and
+   * would prove the opposite of what it looks like it proves. A grace of zero days and a clock one
+   * day ahead is the grace period having passed, stated as data rather than as a sleep.
+   */
+  sweep = realRetention({
+    clock: sweepClock,
+    unitOfWork,
+    storage: library.storagePort,
+    storageService: library.storage,
+    disposition: realDisposition(sweepClock, library.storage, library.writer),
+    settings: { [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0 },
   });
 });
 
@@ -718,3 +742,95 @@ async function grantRole(roleId: AnyId, permission: string): Promise<void> {
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
+
+/**
+ * A completed evidence bundle and the blob reaper — Slice 101.
+ *
+ * `AuditExportService` writes each artefact with `StorageService.storeStreamed`, which inserts the
+ * `file_object` at a reference count of **zero** exactly as `storeDerived` does, and then records
+ * the four identifiers on the `audit_export` row through `complete`. Nothing in between takes a
+ * reference.
+ *
+ * Every other place in this product that points a row at a blob takes one, and says why — a
+ * revision on upload ("a revision holding an uncounted blob is one retention will delete
+ * underneath"), a preview artefact, an OCR result, the bulk export's manifest, and, since Slice
+ * 100, the report export. `retention.reclaim-blobs` selects `ref_count = 0` past a grace period
+ * and `listReclaimable` does not exempt a derived blob.
+ *
+ * So the next sweep destroys a `COMPLETED` bundle's bytes while its own row still names them and
+ * still attests `chainIntact`. The artefacts are stored as JSON rather than behind a foreign key,
+ * so not even `onDelete: Restrict` is in the way — and an evidence bundle is the one artefact in
+ * this product whose whole purpose is to still exist when somebody comes asking.
+ */
+describe('a completed evidence bundle and the blob reaper', () => {
+  it('keeps every artefact the bundle points at out of the reaper’s reach', async () => {
+    const requester = asId<UserId>(uuidv7());
+    const requested = await runWithContext(
+      contextFor({ userId: requester, permissions: [Permission.AUDIT_EXPORT] }),
+      () =>
+        stack.exports.request(new Date('2020-01-01T00:00:00Z'), new Date('2030-01-01T00:00:00Z'), {
+          action: 'SLICE_101',
+        }),
+    );
+    await runWithContext(contextFor(), () => stack.exports.run(requested.id));
+    const produced = await runWithContext(contextFor(), () => stack.exports.get(requested.id));
+    expect(produced?.state).toBe(AuditExportState.COMPLETED);
+    expect(produced?.artefacts).toHaveLength(4);
+
+    const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
+    try {
+      /*
+       * The invariant, read before the sweep: one reference per live row that points at the blob.
+       *
+       * Counted over every bundle's artefacts rather than asserted as `1`, because content
+       * addressing means it need not be one — two narrowed bundles that shipped no rows produce
+       * byte-identical artefacts and share a `file_object`, and each of them owes it a reference.
+       * This is the assertion that fails before the fix: the count is zero however many bundles
+       * name the file.
+       */
+      const bundles = await owner.auditExport.findMany({
+        where: { tenantId: TENANT },
+        select: { artefacts: true },
+      });
+      // Pointers, not rows: the artefacts live in a JSON array, so one bundle can legitimately
+      // name a blob more than once when two of its artefacts came out byte-identical, and each
+      // such pointer is owed its own reference.
+      const pointersTo = (fileObjectId: string): number =>
+        bundles
+          .flatMap((bundle) => (bundle.artefacts ?? []) as { fileObjectId?: string }[])
+          .filter((artefact) => artefact.fileObjectId === fileObjectId).length;
+
+      for (const artefact of produced?.artefacts ?? []) {
+        const blob = await owner.fileObject.findUniqueOrThrow({
+          where: { id: artefact.fileObjectId },
+        });
+        expect(blob.refCount, `${artefact.name}: one reference for every pointer at the file`).toBe(
+          pointersTo(artefact.fileObjectId),
+        );
+      }
+
+      // The sweep the schedule runs nightly, through the real reaper, with the grace period past.
+      // It must find nothing here to take.
+      await runWithContext(contextFor(), () => sweep.retention.reclaimBlobs(100));
+
+      for (const artefact of produced?.artefacts ?? []) {
+        const after = await owner.fileObject.findUniqueOrThrow({
+          where: { id: artefact.fileObjectId },
+        });
+        expect(
+          after.deletedAt,
+          `${artefact.name}: the reaper must not take an artefact a bundle points at`,
+        ).toBeNull();
+
+        // And the point of keeping the row: the evidence itself is still on disk, byte for byte
+        // the thing the manifest attested.
+        const bytes = await readFile(join(storageRoot, TENANT, artefact.storageKey));
+        expect(sha256(bytes), `${artefact.name}: the bytes the manifest attested`).toBe(
+          artefact.sha256,
+        );
+      }
+    } finally {
+      await owner.$disconnect();
+    }
+  }, 120_000);
+});

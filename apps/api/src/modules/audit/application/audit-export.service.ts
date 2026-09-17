@@ -4,6 +4,7 @@ import {
   type AnyId,
   AuditOutcome,
   AuditSubjectType,
+  type FileObjectId,
   QueueName,
   type UserId,
   asId,
@@ -241,7 +242,30 @@ export class AuditExportService {
 
     try {
       const outcome = await this.produce(record);
-      await this.unitOfWork.run(() => this.exports.complete(id, outcome));
+      await this.unitOfWork.run(async () => {
+        /*
+         * A reference per artefact, in the same transaction as the row that names them — Slice 101.
+         *
+         * `storeStreamed` inserts each `file_object` at a count of zero, exactly as `storeDerived`
+         * does, and leaves the reference to whoever ends up pointing at it. That is this row.
+         * Without it `retention.reclaim-blobs` — which selects `ref_count = 0` past the grace
+         * period and does not exempt a derived blob — deletes the bytes of a `COMPLETED` bundle
+         * and soft-deletes the rows, while the export goes on attesting `chainIntact` over
+         * evidence that no longer exists. The artefacts live in a JSON column rather than behind a
+         * foreign key, so not even `onDelete: Restrict` is in the way.
+         *
+         * A reference each rather than one per distinct blob: two artefacts that came out
+         * byte-identical are one content-addressed row with two pointers at it, and each pointer
+         * is owed its own.
+         *
+         * One transaction with `complete`, so there is no instant in which the row names bytes it
+         * does not hold — and none in which a reference is held for a row that was not written.
+         */
+        for (const artefact of outcome.artefacts) {
+          await this.storage.reference(asId<FileObjectId>(artefact.fileObjectId));
+        }
+        await this.exports.complete(id, outcome);
+      });
       await this.unitOfWork.run(() =>
         this.outbox.publish([
           auditExportReadyEvent(id, {
