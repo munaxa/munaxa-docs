@@ -1,4 +1,4 @@
-import type { NotificationChannelKey } from '@edms/domain';
+import { Settings, type NotificationChannelKey } from '@edms/domain';
 
 import { DefaultApiClientService } from '../modules/identity/application/api-client.service';
 import { PrismaApiClientRepository } from '../modules/identity/infrastructure/prisma-api-client.repository';
@@ -67,7 +67,9 @@ import { PrismaConfigurationRepository } from '../modules/administration/infrast
 import { PrismaNumberIssueRepository } from '../modules/administration/infrastructure/prisma-number-issue.repository';
 import { DefaultDocumentNumberService } from '../modules/document/application/document-number.service';
 import { DefaultDocumentService } from '../modules/document/application/document.service';
+import { DocumentTemplateService } from '../modules/document/application/template.service';
 import { AdministrationConfigurationAdapter } from '../modules/document/infrastructure/administration-configuration.adapter';
+import { PrismaDocumentTemplateRepository } from '../modules/document/infrastructure/prisma-template.repository';
 import { DocumentFolderContentsParticipant } from '../modules/document/infrastructure/folder-contents.participant';
 import { LibraryPlacementAdapter } from '../modules/document/infrastructure/library-placement.adapter';
 import { PrismaDocumentActivityRepository } from '../modules/document/infrastructure/prisma-document-activity.repository';
@@ -477,6 +479,14 @@ export interface DocumentLibraryStack {
    * which is a composition nothing ships.
    */
   readonly writer: AdministeredWriter;
+  /**
+   * Authoring templates and starting documents from them — Slice 102.
+   *
+   * Composed here rather than in a suite because it needs six collaborators this stack has already
+   * assembled, the content gate among them: what a template's body reference is worth is only
+   * answerable against the same `file_object` rows the documents made from it touch.
+   */
+  readonly templates: DocumentTemplateService;
 }
 
 export interface DocumentLibraryOptions {
@@ -677,6 +687,25 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     storagePort: scopedStorage,
     readAudit,
     writer,
+    templates: new DocumentTemplateService(
+      new PrismaDocumentTemplateRepository(stamps),
+      new AdministrationConfigurationAdapter(
+        configuration,
+        realOrganizationService(),
+        options.users as UserAdminService,
+      ),
+      new LibraryPlacementAdapter(libraries),
+      new StorageContentGateAdapter(storage),
+      // Templates sit behind a feature flag whose catalogue default is off, so a suite composing
+      // this stack would get "turned off for this organisation" from every call. On here, and
+      // overridable through `documentSettings` like every other setting this stack reads.
+      settingsReaderFor({
+        [Settings.FEATURE_DOCUMENT_TEMPLATES.key]: true,
+        ...(options.documentSettings ?? {}),
+      }),
+      documents,
+      writer,
+    ),
   };
 }
 

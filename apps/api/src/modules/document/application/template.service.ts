@@ -25,7 +25,7 @@ import {
   type DocumentTemplateRecord,
   type DocumentTemplateRepository,
 } from './template.ports';
-import type { DocumentRow } from './ports';
+import { DOCUMENT_CONTENT_GATE, type DocumentContentGate, type DocumentRow } from './ports';
 // A value import: a type-only one erases the `design:paramtypes` metadata Nest resolves by.
 import { DefaultDocumentService } from './document.service';
 
@@ -68,6 +68,7 @@ export class DocumentTemplateService {
     @Inject(DOCUMENT_TEMPLATE_REPOSITORY) private readonly templates: DocumentTemplateRepository,
     @Inject(DOCUMENT_CONFIGURATION) private readonly configuration: DocumentConfiguration,
     @Inject(DOCUMENT_PLACEMENT) private readonly placement: DocumentPlacement,
+    @Inject(DOCUMENT_CONTENT_GATE) private readonly content: DocumentContentGate,
     @Inject(SETTINGS_READER) private readonly settings: SettingsReader,
     private readonly documents: DefaultDocumentService,
     private readonly writer: AdministeredWriter,
@@ -104,6 +105,7 @@ export class DocumentTemplateService {
         throw new DuplicateError('template', 'name', { name });
       }
       await this.validateReferences(input);
+      const body = await this.requireBody(input.fileObjectId ?? null);
 
       const id = this.writer.clock.nextId();
       await this.templates.insert({
@@ -119,6 +121,15 @@ export class DocumentTemplateService {
         defaultMetadata: input.defaultMetadata ?? {},
         isActive: input.isActive ?? true,
       });
+      if (body !== null) {
+        // The template's own reference on its body — Slice 102, and the "and one" in this file's
+        // header: a thousand documents from one template are one blob with a thousand *and one*
+        // references. Without it the blob sits at zero the moment it is uploaded, and
+        // `retention.reclaim-blobs` — which selects `ref_count = 0` past the grace period and does
+        // not exempt a derived blob — destroys the body of a live template. The same transaction
+        // as the row, so the pointer and the reference it owes commit together.
+        await this.content.reference(body);
+      }
       return {
         result: await this.require(id),
         change: this.changed(id, AdministrativeOperation.CREATED, undefined, {
@@ -159,6 +170,9 @@ export class DocumentTemplateService {
         ...(patch.categoryId !== undefined && { categoryId: patch.categoryId }),
         ...(patch.defaultFolderId !== undefined && { defaultFolderId: patch.defaultFolderId }),
       });
+      if (patch.fileObjectId !== undefined) {
+        await this.requireBody(patch.fileObjectId);
+      }
 
       await this.templates.update(id, current.version, {
         ...(name !== undefined && { name }),
@@ -174,6 +188,9 @@ export class DocumentTemplateService {
         ...(patch.defaultMetadata !== undefined && { defaultMetadata: patch.defaultMetadata }),
         ...(patch.isActive !== undefined && { isActive: patch.isActive }),
       });
+      if (patch.fileObjectId !== undefined) {
+        await this.moveBodyReference(current.fileObjectId, patch.fileObjectId);
+      }
       return {
         result: await this.require(id),
         change: this.changed(id, AdministrativeOperation.UPDATED, { name: current.name }, patch),
@@ -332,6 +349,52 @@ export class DocumentTemplateService {
       throw new ValidationError('That folder does not exist.', [
         { field: 'defaultFolderId', message: 'unknown' },
       ]);
+    }
+  }
+
+  /**
+   * The body a template names has to exist — the rule `validateReferences` states, applied to the
+   * one identifier it did not cover.
+   *
+   * Needed for its own sake and for the reference: `adjustRefCount` raises a bare error for a blob
+   * that is not there, and a caller naming an upload that never completed deserves the same
+   * readable refusal every other unknown identifier here gets. Existence only — whether a blob may
+   * be *served* is a scan-status question this method deliberately does not ask.
+   */
+  private async requireBody(fileObjectId: string | null): Promise<string | null> {
+    if (fileObjectId === null) {
+      return null;
+    }
+    if ((await this.content.describe(fileObjectId)) === null) {
+      throw new ValidationError('That upload could not be found.', [
+        { field: 'fileObjectId', message: 'unknown' },
+      ]);
+    }
+    return fileObjectId;
+  }
+
+  /**
+   * The template's one reference, moved from the body it had to the body it now has — Slice 102.
+   *
+   * The same rule the preview pipeline states for the same situation — "a fresh row claims its
+   * blob, a replacement also releases the displaced one" — and the same rule Slice 99 applied to
+   * the bulk export's manifest. The new one is claimed before the old one is released, so a blob
+   * two rows share never dips through zero on the way.
+   *
+   * **Replacing a body with itself moves nothing.** Content addressing means an administrator who
+   * re-uploads identical bytes gets the same `file_object` back, so `A -> A` is a real and ordinary
+   * request — and referencing and dereferencing it would be two statements whose only effect is to
+   * risk one of them being wrong. One pointer, one reference, unchanged.
+   */
+  private async moveBodyReference(before: string | null, after: string | null): Promise<void> {
+    if (before === after) {
+      return;
+    }
+    if (after !== null) {
+      await this.content.reference(after);
+    }
+    if (before !== null) {
+      await this.content.dereference(before);
     }
   }
 
