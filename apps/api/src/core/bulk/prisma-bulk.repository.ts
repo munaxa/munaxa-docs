@@ -239,14 +239,34 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
     return count > 0;
   }
 
+  /**
+   * Attaches the export's artefact, and answers the blob it displaced — Slice 99.
+   *
+   * The row is taken `FOR UPDATE` before it is read, which is what makes the answer true rather
+   * than a moment old. Two deliveries of one export both store a manifest and both take a
+   * reference on it; without the lock both would read the same pointer and neither would learn it
+   * had replaced the other's.
+   *
+   * The caller releases whatever comes back. That is `PreviewArtifactRepository.save`'s contract —
+   * "a fresh row claims its blob, a replacement also releases the displaced one" — and without it
+   * the displaced manifest keeps a reference nothing points at, so `listReclaimable` never selects
+   * it and the bytes can never be disposed of.
+   */
   async attachArtifact(input: {
     readonly id: string;
     readonly fileObjectId: string;
     readonly sizeBytes: number;
     readonly sha256: string;
-  }): Promise<void> {
-    await requireTransaction().bulkOperation.updateMany({
-      where: { id: input.id, tenantId: this.tenantId() },
+  }): Promise<{ readonly displacedFileObjectId: string | null }> {
+    const tx = requireTransaction();
+    const tenantId = this.tenantId();
+    const held = await tx.$queryRaw<{ file_object_id: string | null }[]>`
+      SELECT file_object_id FROM bulk_operation
+      WHERE id = ${input.id}::uuid AND tenant_id = ${tenantId}::uuid
+      FOR UPDATE`;
+    const displaced = held[0]?.file_object_id ?? null;
+    await tx.bulkOperation.updateMany({
+      where: { id: input.id, tenantId },
       data: {
         fileObjectId: input.fileObjectId,
         sizeBytes: BigInt(input.sizeBytes),
@@ -254,6 +274,7 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
         ...this.stamps.update(),
       },
     });
+    return { displacedFileObjectId: displaced };
   }
 
   async findById(id: string): Promise<BulkOperationRecord | null> {

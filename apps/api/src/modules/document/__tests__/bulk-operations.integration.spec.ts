@@ -1,8 +1,10 @@
 import 'reflect-metadata';
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createServer, type Server } from 'node:http';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
 import { Settings } from '@edms/domain';
@@ -16,6 +18,7 @@ import {
   NumberSegmentKind,
   Permission,
   RevisionLabelStyle,
+  ScanStatus,
   ScopeType,
   type ScopeRef,
   type TenantId,
@@ -44,6 +47,7 @@ import {
   realPermissions,
   realRetention,
 } from '../../../testing/real-collaborators';
+import { decodeTransferToken } from '../../../testing/transfer-token';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 /**
@@ -102,7 +106,9 @@ const ADMIN = asId<UserId>(uuidv7());
 const EDITOR_ROLE = uuidv7();
 const ADMIN_ROLE = uuidv7();
 
+const SIGNING_SECRET = 'an-integration-suite-secret-of-at-least-32';
 let root: string;
+let transfer: Server;
 let appConfig: AppConfig;
 let owner: PrismaClient;
 let unitOfWork: PrismaUnitOfWork;
@@ -145,6 +151,53 @@ beforeAll(async () => {
     throw new Error('DATABASE_URL and DATABASE_MIGRATION_URL must both be set.');
   }
   root = await mkdtemp(join(tmpdir(), 'edms-bulk-'));
+
+  /*
+   * The `LOCAL` driver's transfer endpoint, served for real — Slice 99.
+   *
+   * `storeDerived` redeems the presigned target it was just issued rather than writing straight to
+   * the store, deliberately ("writing straight to the store would mean a second code path per
+   * driver, and the second path is the one nobody exercises"). The export manifest goes through it,
+   * so a suite that measures the manifest's accounting has to serve the same endpoint a browser
+   * would PUT to. Copied from the preview suite, which serves it for the same reason.
+   */
+  transfer = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? '/', 'http://localhost:3001');
+      const method = request.method === 'PUT' ? 'PUT' : 'GET';
+      const decoded = decodeTransferToken(
+        SIGNING_SECRET,
+        url.searchParams.get('token') ?? '',
+        method,
+        FIXED_NOW,
+      );
+      if (!('grant' in decoded)) {
+        response.statusCode = 403;
+        response.end();
+        return;
+      }
+      const path = join(root, decoded.grant.key);
+      if (method === 'PUT') {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) {
+          chunks.push(chunk as Buffer);
+        }
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, Buffer.concat(chunks));
+        response.statusCode = 200;
+        response.end();
+        return;
+      }
+      try {
+        response.statusCode = 200;
+        response.end(await readFile(path));
+      } catch {
+        response.statusCode = 404;
+        response.end();
+      }
+    })();
+  });
+  await new Promise<void>((resolve) => transfer.listen(3001, '127.0.0.1', resolve));
 
   appConfig = {
     env: 'test',
@@ -210,7 +263,7 @@ beforeAll(async () => {
     config: appConfig,
     registry: everyTenantRegistry(APP_URL),
     storageRoot: root,
-    signingSecret: 'an-integration-suite-secret-of-at-least-32',
+    signingSecret: SIGNING_SECRET,
     antivirus: {
       scanner: 'unconfigured',
       scan: () => Promise.reject(new Error('AV_DRIVER is NONE')),
@@ -237,6 +290,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner?.$disconnect();
+  if (transfer) {
+    await new Promise<void>((resolve) => transfer.close(() => resolve()));
+  }
   if (root) {
     await rm(root, { recursive: true, force: true });
   }
@@ -699,6 +755,59 @@ async function seedDocuments(
       },
     });
     ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Documents with a revision to release — Slice 99.
+ *
+ * `seedDocuments` makes documents with no revision, which the EXPORT plan blocks rather than
+ * applies ("this document has no revision to release"), so the manifest path is never reached. The
+ * rows are written directly for the reason the rest of this file writes rows directly: what is
+ * under test is the *export's* accounting, and driving a real upload for each one would put the
+ * upload path's own reference counting inside the measurement.
+ *
+ * Each document gets its own blob with a distinct digest, so nothing here is deduplicated into a
+ * shared row and every reference count below belongs to exactly one document.
+ */
+async function seedExportable(count: number, prefix: string): Promise<readonly string[]> {
+  const ids = await seedDocuments(openFolderId, count, prefix);
+  for (const [index, documentId] of ids.entries()) {
+    const fileObjectId = uuidv7();
+    await owner.fileObject.create({
+      data: {
+        id: fileObjectId,
+        tenantId: TENANT,
+        checksumSha256: createHash('sha256')
+          .update(`${prefix}-${String(index)}`)
+          .digest('hex'),
+        sizeBytes: BigInt(64),
+        mimeType: 'application/pdf',
+        storageKey: `tenants/acme/${prefix}-${String(index)}.pdf`,
+        storageDriver: 'LOCAL',
+        scanStatus: ScanStatus.CLEAN,
+        refCount: 1,
+        updatedAt: FIXED_NOW,
+      },
+    });
+    const revisionId = uuidv7();
+    await owner.documentRevision.create({
+      data: {
+        id: revisionId,
+        tenantId: TENANT,
+        documentId,
+        ordinal: 0,
+        label: 'Original',
+        fileObjectId,
+        filename: `${prefix}-${String(index)}.pdf`,
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.document.update({
+      where: { id: documentId },
+      data: { latestRevisionId: revisionId, currentRevisionId: revisionId },
+    });
   }
   return ids;
 }
@@ -1243,5 +1352,212 @@ describe('a suspended requester and a delivery that already finished', () => {
       // Restored whatever happened, so a failure here cannot leave the suite's own actor suspended.
       await owner.user.update({ where: { id: ADA }, data: { status: 'ACTIVE' } });
     }
+  }, 60_000);
+});
+
+/**
+ * Two deliveries of one export, and the manifests they each referenced — Slice 99.
+ *
+ * `BulkExportService.attachManifest` stores the manifest as a derived blob, takes a reference on
+ * it, and writes the pointer with `attachArtifact`. The reference is unconditional and the write
+ * names only `{ id, tenantId }`, so it replaces whatever pointer is already there and says nothing
+ * about the blob it displaced.
+ *
+ * The render pipeline solves exactly this and says so in as many words — "reference counting
+ * follows what the row actually did: a fresh row claims its blob, a replacement also releases the
+ * displaced one" — releasing `displacedFileObjectId` whenever `save` answers `REPLACED`. The
+ * export path takes the reference and never releases anything.
+ *
+ * Two deliveries reach it with *different* manifests rather than the same one, which is why the
+ * blobs differ and the pointer really moves: `finalise` is handed this pass's `items`, and `process`
+ * skips targets an earlier delivery already settled, so a delivery that starts midway names only
+ * what it itself applied. The overlap is the accepted redelivery model and is not in question here.
+ *
+ * What is left is a `file_object` row with a reference count of one and nothing in the database
+ * pointing at it. `listReclaimable` selects `refCount: 0`, so the reaper will never take it: the
+ * bytes cannot be reclaimed, and a record the retention rules say to destroy has become
+ * indestructible.
+ */
+describe('two deliveries of one export', () => {
+  it('leaves no manifest referenced except the one the export points at', async () => {
+    const ids = await seedExportable(2, 'manifest-race');
+
+    /*
+     * The seam: the real record, wrapped for one delivery, held on its *second* item row.
+     *
+     * By then that delivery has committed the first object's outcome, so the other delivery's
+     * resume set names one of the two and it applies only the other — which is what makes the two
+     * manifests differ. The park is inside the object's own transaction, so the other delivery is
+     * given only the small amount of work below and the test asserts this one still ran.
+     */
+    let reached: () => void = () => undefined;
+    const atSecondItem = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let recorded = 0;
+    const real = new PrismaBulkOperationRepository(new RecordStamps(clock));
+    const held = new Proxy(real, {
+      get(target, property, receiver) {
+        if (property === 'recordItem') {
+          return async (...args: readonly unknown[]) => {
+            recorded += 1;
+            if (recorded === 2) {
+              reached();
+              await parked;
+            }
+            return (target.recordItem as (...rest: readonly unknown[]) => Promise<unknown>)(
+              ...args,
+            );
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+
+    const queueing = { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 };
+    const stalling = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: queueing,
+      operations: held,
+    });
+    const rival = realBulk({ clock, unitOfWork, config: appConfig, library, settings: queueing });
+
+    const queued = await asAda(() => stalling.exports.export(ids));
+    const operationId = String(queued.operationId);
+    expect(queued.state).toBe('REQUESTED');
+
+    const stalled = stalling
+      .deliver(operationId, TENANT)
+      .then(() => 'ran' as const)
+      .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+    await atSecondItem;
+
+    // The other delivery, running the shipped path end to end: it resumes past the object already
+    // settled, releases the other one, and writes a manifest naming only that.
+    await rival.deliver(operationId, TENANT);
+
+    admit();
+    const outcome = await stalled;
+    expect(outcome, 'the held delivery must run, not die of the seam').toBe('ran');
+
+    const operation = await owner.bulkOperation.findUniqueOrThrow({ where: { id: operationId } });
+    expect(operation.state).toBe('COMPLETED');
+    expect(operation.fileObjectId, 'the export records a manifest').not.toBeNull();
+
+    /*
+     * The assertion this test exists for.
+     *
+     * Every manifest either is the one the export points at, or is one nothing points at — and a
+     * blob nothing points at must hold no reference, or the reaper can never collect it. This is
+     * the same `file_object.ref_count` invariant the render pipeline keeps by releasing the blob it
+     * displaces, read from the other direction.
+     */
+    const manifests = await owner.fileObject.findMany({
+      where: { tenantId: TENANT, derived: true, mimeType: 'application/json' },
+      select: { id: true, refCount: true },
+    });
+    const orphaned = manifests.filter((blob) => blob.id !== operation.fileObjectId);
+    expect(
+      orphaned.map((blob) => ({ refCount: blob.refCount })),
+      'a manifest the export does not point at must hold no reference',
+    ).toEqual(orphaned.map(() => ({ refCount: 0 })));
+
+    const attached = manifests.find((blob) => blob.id === operation.fileObjectId);
+    expect(attached?.refCount, 'the manifest the export points at holds exactly one').toBe(1);
+  }, 60_000);
+
+  /**
+   * The same two deliveries, but neither resumes past the other — so both release every object and
+   * both produce the *same* manifest.
+   *
+   * Content addressing then makes it one `file_object` row rather than two, which is the case that
+   * looks harmless and is not: two references are taken on one blob and only one pointer survives,
+   * so the count stands one above the truth forever. The blob is still pointed at, so nothing is
+   * lost — it simply can never be disposed of, which is the same records-management failure the
+   * case above produces by a different route.
+   */
+  it('takes one reference when both deliveries produce the same manifest', async () => {
+    const ids = await seedExportable(2, 'same-manifest');
+
+    let reached: () => void = () => undefined;
+    const atFirstItem = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    const parked = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let recorded = 0;
+    const real = new PrismaBulkOperationRepository(new RecordStamps(clock));
+    const held = new Proxy(real, {
+      get(target, property, receiver) {
+        if (property === 'recordItem') {
+          return async (...args: readonly unknown[]) => {
+            recorded += 1;
+            // Held on the *first* item row, so nothing is settled when the other delivery starts
+            // and it releases all of them too.
+            if (recorded === 1) {
+              reached();
+              await parked;
+            }
+            return (target.recordItem as (...rest: readonly unknown[]) => Promise<unknown>)(
+              ...args,
+            );
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...rest: readonly unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+
+    const queueing = { [Settings.BULK_SYNCHRONOUS_LIMIT.key]: 1 };
+    const stalling = realBulk({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      library,
+      settings: queueing,
+      operations: held,
+    });
+    const rival = realBulk({ clock, unitOfWork, config: appConfig, library, settings: queueing });
+
+    const queued = await asAda(() => stalling.exports.export(ids));
+    const operationId = String(queued.operationId);
+
+    const stalled = stalling
+      .deliver(operationId, TENANT)
+      .then(() => 'ran' as const)
+      .catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+    await atFirstItem;
+
+    await rival.deliver(operationId, TENANT);
+
+    admit();
+    expect(await stalled, 'the held delivery must run, not die of the seam').toBe('ran');
+
+    const operation = await owner.bulkOperation.findUniqueOrThrow({ where: { id: operationId } });
+    expect(operation.fileObjectId, 'the export records a manifest').not.toBeNull();
+
+    const manifests = await owner.fileObject.findMany({
+      where: { tenantId: TENANT, derived: true, mimeType: 'application/json' },
+      select: { id: true, refCount: true },
+    });
+    const attachedHere = manifests.find((blob) => blob.id === operation.fileObjectId);
+    expect(
+      attachedHere?.refCount,
+      'one pointer, one reference — however many deliveries stored the same bytes',
+    ).toBe(1);
   }, 60_000);
 });
