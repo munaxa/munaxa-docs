@@ -268,13 +268,18 @@ export interface BulkOperationRepository {
     readonly at: Date;
     readonly error: string | null;
   }): Promise<boolean>;
-  /** Attaches the artefact a bulk export produced. Null for every other kind. */
+  /**
+   * Attaches the artefact a bulk export produced. Null for every other kind.
+   *
+   * Answers the blob it displaced, if it replaced one, so the caller can give that reference back
+   * — `PreviewArtifactRepository.save`'s contract, for `PreviewArtifactRepository.save`'s reason.
+   */
   attachArtifact(input: {
     readonly id: string;
     readonly fileObjectId: string;
     readonly sizeBytes: number;
     readonly sha256: string;
-  }): Promise<void>;
+  }): Promise<{ readonly displacedFileObjectId: string | null }>;
   findById(id: string): Promise<BulkOperationRecord | null>;
   listFor(requestedById: UserId, page: PageRequest): Promise<Page<BulkOperationRecord>>;
   itemsOf(operationId: string, page: PageRequest): Promise<Page<BulkItemResult>>;

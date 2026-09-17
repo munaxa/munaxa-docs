@@ -205,12 +205,30 @@ export class BulkExportService implements OnModuleInit {
       // reading. It comes back when the operation record is disposed of, on the same clock as
       // everything else derived.
       await this.content.reference(stored.fileObjectId);
-      await this.operations.attachArtifact({
+      const { displacedFileObjectId } = await this.operations.attachArtifact({
         id: operationId,
         fileObjectId: stored.fileObjectId,
         sizeBytes: stored.sizeBytes,
         sha256: stored.checksumSha256,
       });
+      /*
+       * Reference counting follows what the row actually did — the render pipeline's rule, applied
+       * to the one other place in the product that attaches a derived artefact to a record.
+       *
+       * Two deliveries of one export both reach here: `finalise` is handed the pass's own applied
+       * targets, and a delivery that resumed past what another had settled names only what it
+       * itself released, so the manifests differ and the pointer really moves. Each took a
+       * reference; only one pointer survives, so the displaced blob's must go back or the reaper —
+       * which selects on a count of zero — can never collect it, and bytes the retention rules say
+       * to destroy become indestructible.
+       *
+       * Unconditional on the identifier, including when it equals the one just attached: two
+       * deliveries that produced identical bytes converge on one content-addressed blob and take
+       * two references on it, and exactly one of them is owed back.
+       */
+      if (displacedFileObjectId !== null) {
+        await this.content.dereference(displacedFileObjectId);
+      }
     });
   }
 
