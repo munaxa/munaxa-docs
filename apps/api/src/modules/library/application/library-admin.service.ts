@@ -430,6 +430,33 @@ export class LibraryAdminService {
     expectedVersion: number | undefined,
   ): Promise<FolderRow> {
     return this.writer.write(async () => {
+      /*
+       * The folder and the parent it is going under, held before either is read — Slice 104.
+       *
+       * Everything below decides from two paths it reads and then writes, and nothing between the
+       * reads and the writes stopped a second move from doing the same. Two administrators moving
+       * X under Y and Y under X at the same moment both read the tree as it was, so both passed
+       * `checkFolderPlacement`'s cycle rule; their writes then land on *different* rows, so neither
+       * version guard sees the other, and both commit. The tree comes out with X named as Y's
+       * parent and Y as X's.
+       *
+       * That is not merely untidy. `PrismaScopeChainReader.fromFolder` builds the ACL chain from
+       * `idsInPath(folder.path)`, so X's chain then walks through Y and Y's through X: a grant on
+       * either folder decides permissions for everything filed under the other, and an inheritance
+       * break on either applies to the other's documents. Neither folder is reachable from the
+       * library root any more, in a tree `checkTreePlacement`'s cycle rule exists to keep acyclic.
+       *
+       * The version guard cannot close it, because there is no contended row to guard: what has to
+       * be ordered is the decision, not the write. So the two rows the decision is made from are
+       * taken first. They are exactly the two a competing move would have to name to close a cycle
+       * with this one — a cycle of any length has consecutive moves sharing a folder — so the
+       * loser waits, re-reads, and is refused by the same cycle check a sequential caller meets.
+       *
+       * Two rows and no more. Locking the library would order every move in it, including the
+       * disjoint ones Slice 68's guard is about, and ordering moves that cannot interact is how a
+       * lock stops being a claim and starts being a queue.
+       */
+      await this.libraries.lockFoldersForMove([id, parentId]);
       const current = await this.requireFolder(id, false);
       requireVersion(expectedVersion, current.version);
       const parent = await this.requireFolder(parentId, false);

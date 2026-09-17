@@ -280,6 +280,34 @@ export class PrismaLibraryAdminRepository implements LibraryAdminRepository {
     });
   }
 
+  /**
+   * `SELECT … FOR UPDATE`, one row at a time, ascending by identifier — Slice 104.
+   *
+   * Raw because Prisma cannot express `FOR UPDATE`, and the same shape
+   * `PrismaWorkflowEngineRepository.lockInstance` uses for the same reason: a decision read from
+   * several rows and then written needs those rows held while it is made.
+   *
+   * **One statement per identifier rather than one `IN (…)`.** A single statement would have to
+   * lean on `ORDER BY` deciding the order rows are locked in, which is a property of the plan
+   * rather than of the statement; two statements in a sorted loop state the order outright, and
+   * the order is the whole of what makes two callers naming the same pair queue instead of
+   * deadlock. Two identifiers, so it is two round trips on an operation an administrator performs
+   * by hand.
+   *
+   * A folder that is not there locks nothing and is not an error here: the caller reads both rows
+   * immediately afterwards and answers `404` for whichever is missing, which is the answer it gave
+   * before this method existed.
+   */
+  async lockFoldersForMove(folderIds: readonly string[]): Promise<void> {
+    const tenantId = this.tenantId();
+    for (const folderId of [...new Set(folderIds)].sort()) {
+      await requireTransaction().$queryRaw`
+        SELECT id FROM folder
+        WHERE id = ${folderId}::uuid AND tenant_id = ${tenantId}::uuid
+        FOR UPDATE`;
+    }
+  }
+
   async moveFolder(input: {
     id: string;
     version: number;
