@@ -517,6 +517,16 @@ export interface DocumentLibraryOptions {
    * the invalidation is real but unobserved.
    */
   readonly aclCache?: CachePort;
+  /**
+   * The upload-time thumbnailer — Slice 103.
+   *
+   * Absent, the stack gets a double that draws nothing, which is right for the fifteen suites that
+   * upload PDFs. A suite that uploads a real PNG and cares what the artefact does to the reference
+   * count passes `new ThumbnailService(...)`, or simply the real one this factory now builds.
+   */
+  readonly thumbnailer?: {
+    generate(revisionId: string, fileObjectId: string, mimeType: string): Promise<void>;
+  };
 }
 
 /**
@@ -603,7 +613,12 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     // The thumbnailer's whole contract is that it never fails a document, and Phase 3 draws one only
     // for PNG. A suite uploading PDFs would get nothing from the real implementation, so a double
     // that does nothing is honest about that rather than pretending to render.
-    { generate: () => Promise.resolve() },
+    //
+    // A suite that uploads a real PNG passes the real one — Slice 103. What the thumbnailer does to
+    // `file_object.ref_count` is only answerable against the real implementation, and this double
+    // being the default everywhere is why nothing had ever asked. The default stays, because
+    // changing it would change fifteen suites that upload PDFs and get nothing either way.
+    options.thumbnailer ?? { generate: () => Promise.resolve() },
     // Phase 10's two seams, both real: the hold that refuses a delete and the scheduler that
     // writes the clock a delete starts. Doubles would defeat the point — what the suites assert is
     // that the refusal and the schedule commit with the delete.

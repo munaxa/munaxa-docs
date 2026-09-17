@@ -78,6 +78,29 @@ export class ThumbnailService implements DocumentThumbnailer {
           ...this.stamps.creation(),
         },
       });
+      /*
+       * The artefact's reference on its blob — Slice 103.
+       *
+       * `storeDerived` inserts the `file_object` at a count of zero and leaves the reference to
+       * whoever ends up pointing at it. That is the row just written, and this is the one path
+       * that creates a `preview_artifact` without going through `PreviewArtifactRepository.save`
+       * — so it is the one that did not follow the rule that repository states: "reference
+       * counting follows what the row actually did".
+       *
+       * Two things go wrong without it, and both are ordinary rather than exotic.
+       * `retention.reclaim-blobs` selects `ref_count = 0` past the grace period and does not
+       * exempt a derived blob, so it deletes the thumbnail of a live revision. And a later
+       * disposition is worse: `RetentionDispositionAdapter.purge` gives back a reference for
+       * *every* preview artefact it finds, so an artefact that never took one drives the count to
+       * -1, `ck_file_object_ref_count` refuses it, and the purge — the one act a records system
+       * must be able to perform — fails for good.
+       *
+       * One per row rather than one per distinct blob, because `storeDerived` is content
+       * addressed: two revisions whose thumbnails came out byte-identical share a `file_object`
+       * and each of them owes it a reference. Same transaction as the row, which is the document's
+       * own creating transaction.
+       */
+      await this.storage.reference(stored.id);
     } catch (error) {
       // Swallowed, and logged with enough to find it. The alternative — letting it propagate — is
       // a document lost to a decoration, inside a transaction that had already stored the bytes.

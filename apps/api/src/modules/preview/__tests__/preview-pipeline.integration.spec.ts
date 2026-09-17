@@ -13,6 +13,8 @@ import {
   NumberSegmentKind,
   RevisionLabelStyle,
   ScanStatus,
+  Settings,
+  type DocumentId,
   type TenantId,
   type UploadSessionId,
   type UserId,
@@ -23,22 +25,28 @@ import { uuidv7 } from '@edms/utils';
 import type { ReadAuditBuffer } from '../../../core/audit/read-audit.port';
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
+import { RecordStamps } from '../../../core/persistence';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
   type PreviewStack,
+  type RetentionStack,
   realAuditWriter,
+  realDisposition,
   realDocumentLibrary,
   realDocumentPreview,
   realPreviewStack,
   realReadAuditBuffer,
+  realRetention,
 } from '../../../testing/real-collaborators';
 
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import type { DocumentPreviewService } from '../../document/application/document-preview.service';
 import { decodePreviewToken } from '../domain/preview-stream-token';
+import { encodePng } from '../domain/png';
+import { ThumbnailService } from '../application/thumbnail.service';
 
 /**
  * The preview pipeline against a real PostgreSQL and a real filesystem store — the assertions
@@ -63,6 +71,9 @@ const APP_URL = process.env['DATABASE_URL'] ?? '';
 
 const FIXED_NOW = new Date('2026-08-21T09:00:00.000Z');
 const clock = { now: () => new Date(FIXED_NOW), timestamp: () => 0, elapsedMs: () => 0 };
+/** A day later, for the one collaborator that has to run after the blob grace period. */
+const A_DAY_LATER = new Date(FIXED_NOW.getTime() + 24 * 60 * 60 * 1_000);
+const sweepClock = { now: () => new Date(A_DAY_LATER), timestamp: () => 0, elapsedMs: () => 0 };
 const logger = {
   info: () => {},
   warn: () => {},
@@ -79,6 +90,7 @@ let transfer: Server;
 let appConfig: AppConfig;
 let library: DocumentLibraryStack;
 let preview: PreviewStack;
+let sweep: RetentionStack;
 /** The unit of work, hoisted so a suite can compose a second stack against the same database. */
 let unitOfWork: PrismaUnitOfWork;
 let access: DocumentPreviewService;
@@ -106,6 +118,12 @@ function contextFor(userId: UserId): RequestContext {
 
 function as<T>(work: () => Promise<T>, userId: UserId = ALICE): Promise<T> {
   return runWithContext(contextFor(userId), work);
+}
+
+let thumbnails: ThumbnailService | null = null;
+function thumbnailer(): ThumbnailService {
+  thumbnails ??= new ThumbnailService(library.storage, logger, new RecordStamps(clock));
+  return thumbnails;
 }
 
 let counter = 0;
@@ -293,6 +311,19 @@ beforeAll(async () => {
       scan: () => Promise.reject(new Error('AV_DRIVER is NONE')),
     },
     users,
+    /*
+     * The real upload-time thumbnailer — Slice 103.
+     *
+     * Every other suite takes the double, which draws nothing, and that is why what the
+     * thumbnailer does to `file_object.ref_count` had never been asked. This one uploads a real
+     * PNG, so it asks the real implementation.
+     */
+    thumbnailer: {
+      // Built lazily because it needs the storage service this very call is constructing. One
+      // instance, made on the first document and reused, which is what the container does too.
+      generate: (revisionId, fileObjectId, mimeType) =>
+        thumbnailer().generate(revisionId, fileObjectId, mimeType),
+    },
   });
   preview = realPreviewStack({
     clock,
@@ -316,6 +347,22 @@ beforeAll(async () => {
           engineVersion: '9.9.9',
         }),
     },
+  });
+  /*
+   * The blob reaper, on a clock a day past everything this suite writes — Slice 103.
+   *
+   * `reclaimBlobs` selects `ref_count = 0` and `updated_at` older than the grace period, so a
+   * sweep on the suite's own instant would select nothing whatever the counts said. A grace of
+   * zero days and a clock a day ahead is the grace period having passed, stated as data rather
+   * than as a sleep.
+   */
+  sweep = realRetention({
+    clock: sweepClock,
+    unitOfWork,
+    storage: library.storagePort,
+    storageService: library.storage,
+    disposition: realDisposition(sweepClock, library.storage, library.writer),
+    settings: { [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0 },
   });
   readAudit = realReadAuditBuffer(clock, unitOfWork, realAuditWriter(clock, unitOfWork));
   access = realDocumentPreview({
@@ -1011,3 +1058,102 @@ describe('two OCR workers meeting on one revision', () => {
     ).toBe(refBefore);
   }, 120_000);
 });
+
+/**
+ * The upload-time thumbnail's own reference — Slice 103.
+ *
+ * `ThumbnailService` is the one path in this product that writes a `preview_artifact` row without
+ * going through `PreviewArtifactRepository.save`, and it was the one that took no reference.
+ * `storeDerived` inserts the `file_object` at a count of zero and leaves the reference to whoever
+ * points at it; the render and OCR lanes take theirs — "reference counting follows what the row
+ * actually did" — and the thumbnailer did not.
+ *
+ * Two ordinary things go wrong, and the test asserts both because they are two consequences of one
+ * missing statement. `retention.reclaim-blobs` selects `ref_count = 0` past the grace period and
+ * does not exempt a derived blob, so it destroys the thumbnail of a live revision. And the
+ * disposition is worse: `RetentionDispositionAdapter.purge` gives a reference back for *every*
+ * preview artefact it finds, so one that never took a reference drives the count to -1,
+ * `ck_file_object_ref_count` refuses the statement, and the purge fails — permanently, for any
+ * document that has an upload-time thumbnail.
+ *
+ * Nothing here is concurrent. The defect is arithmetic in a single transaction, and a proof that
+ * manufactured a race would be proving the wrong thing.
+ */
+describe('the upload-time thumbnail and the blob reaper', () => {
+  it('holds a reference, survives the sweep, and lets the document be purged', async () => {
+    // Large enough that the thumbnail is genuinely downscaled: a source at or under the maximum
+    // edge would be copied through unchanged, and content addressing would then hand the artefact
+    // the *revision's* blob rather than one of its own — a different arrangement from the one this
+    // test is about.
+    const created = await createDocument(bluePng(640, 480), 'diagram.png', 'image/png');
+
+    const artifact = await owner.previewArtifact.findFirstOrThrow({
+      where: { tenantId: TENANT, revisionId: created.revisionId, kind: 'THUMBNAIL' },
+      select: { fileObjectId: true },
+    });
+
+    /*
+     * The invariant: one reference per live pointer at the blob.
+     *
+     * Stated as the pointer count rather than as `1`, because `storeDerived` is content addressed
+     * — two revisions whose thumbnails came out byte-identical share a `file_object` and each owes
+     * it a reference. This is the assertion that fails before the fix, at zero.
+     */
+    expect(await referencesOn(artifact.fileObjectId)).toBe(await pointersAt(artifact.fileObjectId));
+
+    // The nightly sweep, through the real reaper, with the grace period past.
+    await as(() => sweep.retention.reclaimBlobs(200));
+    const afterSweep = await owner.fileObject.findUniqueOrThrow({
+      where: { id: artifact.fileObjectId },
+    });
+    expect(afterSweep.deletedAt, 'the reaper must not take a live revision’s thumbnail').toBeNull();
+
+    /*
+     * And the disposition, which is the sharper half: `purge` dereferences every preview artefact
+     * it finds. An artefact holding no reference takes the count below zero and the check
+     * constraint refuses it, so the destruction a retention policy exists to perform can never
+     * complete. Driven through the real adapter, in a real transaction.
+     */
+    const disposition = realDisposition(clock, library.storage, library.writer);
+    const outcome = await as(() =>
+      unitOfWork.run(() => disposition.purge(asId<DocumentId>(created.documentId))),
+    );
+    expect(outcome.blobsDereferenced, 'the revision’s blob and its thumbnail').toBeGreaterThan(0);
+
+    // The document is gone, and so is every reference it held: both blobs sit at zero, which is
+    // what makes them the reaper's rather than stranded.
+    expect(await referencesOn(artifact.fileObjectId)).toBe(0);
+    expect(await referencesOn(created.fileObjectId)).toBe(0);
+  }, 120_000);
+});
+
+/** A small, non-interlaced, 8-bit RGBA PNG — what the product's own decoder accepts. */
+function bluePng(width: number, height: number): Buffer {
+  const pixels = new Uint8Array(width * height * 4);
+  for (let index = 0; index < width * height; index += 1) {
+    pixels[index * 4] = 20;
+    pixels[index * 4 + 1] = 90;
+    pixels[index * 4 + 2] = 200 - (index % 40);
+    pixels[index * 4 + 3] = 255;
+  }
+  return encodePng({ width, height, pixels });
+}
+
+async function referencesOn(fileObjectId: string): Promise<number> {
+  const row = await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } });
+  return row.refCount;
+}
+
+/**
+ * Live pointers at a blob, counted the way the purge adapter counts them: every preview artefact,
+ * and every revision that is neither DISCARDED nor soft-deleted.
+ */
+async function pointersAt(fileObjectId: string): Promise<number> {
+  const artifacts = await owner.previewArtifact.count({
+    where: { tenantId: TENANT, fileObjectId },
+  });
+  const revisions = await owner.documentRevision.count({
+    where: { tenantId: TENANT, fileObjectId, deletedAt: null, status: { not: 'DISCARDED' } },
+  });
+  return artifacts + revisions;
+}
