@@ -5,6 +5,7 @@ import {
   AuditSubjectType,
   DocumentStatus,
   type DocumentId,
+  NumberReservationState,
   RevisionStatus,
   asId,
 } from '@edms/domain';
@@ -47,7 +48,8 @@ import { DOCUMENT_CONTENT_GATE, type DocumentContentGate } from '../application/
  * No statement here touches `audit_event` — it would raise if one tried, and that refusal is the
  * design (13 §6). No statement touches `retention_schedule` or `legal_hold`: those are Retention's
  * own, and the caller removes them beside its tombstone. And nothing deletes `number_reservation`
- * rows: the number stays spent forever, so the purge severs the pointers and leaves the value.
+ * rows: the number stays spent forever, so the purge severs the pointers, moves an assigned value
+ * to `PURGED` — the state that says it was one and its document is gone — and leaves the row.
  */
 @Injectable()
 export class RetentionDispositionAdapter implements DocumentDisposition {
@@ -140,13 +142,47 @@ export class RetentionDispositionAdapter implements DocumentDisposition {
       data: { escalatedFromId: null },
     });
 
-    // 3. The number stays spent; the pointers to what it was spent on go. The reservation and the
-    //    tombstone are what still tie the value to what it named (`number_reservation` is one of
-    //    the two relations `DOCUMENT_DELETION_RULES` retains).
+    /*
+     * 3. The number stays spent; the pointers to what it was spent on go — and an assigned value
+     *    says so in its state, rather than being left claiming a document that no longer exists.
+     *
+     * `ASSIGNED → PURGED`, Slice 105A. `DOCUMENT_DELETION_RULES` has always said the purge "sets
+     * its document pointer to null" while `ck_number_reservation_state` has always required an
+     * `ASSIGNED` row to name a document, and the two could not both hold: a disposition reaching
+     * a numbered document raised `23514` here, the purge aborted, and since `executeDue` has no
+     * per-document `catch` and `listDue` orders `due_at ASC`, the stuck schedule stalled every
+     * later disposition in the tenant for good. `PURGED` is the state that lets both rules stand.
+     *
+     * Two statements rather than one, because the states mean different things. An assigned value
+     * became a document's number and is now a historical one; a `RESERVED`, `VOIDED` or `HELD`
+     * value never was that document's number, so it keeps the state it has and only loses the
+     * pointers — exactly what this method did before.
+     *
+     * By document *or* by any of its approvals, in both: a reservation drawn at submission may
+     * carry only the instance, and a row still pointing at one would refuse the instance's delete.
+     *
+     * Both are claims by predicate, which is what makes a retried disposition safe. A second pass
+     * finds the assigned rows already `PURGED` — outside both predicates — so it transitions
+     * nothing twice, frees no number, and touches no reservation belonging to another document.
+     */
+    const pointsAtThisDocument = [{ documentId }, { workflowInstance: { documentId } }];
+    const { count: numbersPurged } = await tx.numberReservation.updateMany({
+      where: { tenantId, state: NumberReservationState.ASSIGNED, OR: pointsAtThisDocument },
+      data: {
+        state: NumberReservationState.PURGED,
+        documentId: null,
+        workflowInstanceId: null,
+        // `assigned_at` is deliberately untouched: the instant the number was assigned is the
+        // fact `PURGED` preserves, and the constraint requires it to survive the transition.
+      },
+    });
     await tx.numberReservation.updateMany({
-      // By document *or* by any of its approvals: a reservation drawn at submission may carry
-      // only the instance, and a row still pointing at one would refuse the instance's delete.
-      where: { tenantId, OR: [{ documentId }, { workflowInstance: { documentId } }] },
+      where: {
+        tenantId,
+        // Never `PURGED` — its pointers are already null and its state is terminal.
+        state: { notIn: [NumberReservationState.ASSIGNED, NumberReservationState.PURGED] },
+        OR: pointsAtThisDocument,
+      },
       data: { documentId: null, workflowInstanceId: null },
     });
 
@@ -160,7 +196,7 @@ export class RetentionDispositionAdapter implements DocumentDisposition {
     // 5. The root, last. Metadata values, favourites and views cascade from it at the key.
     await tx.document.deleteMany({ where: { id: documentId, tenantId } });
 
-    return { revisionsRemoved: removed.count, blobsDereferenced };
+    return { revisionsRemoved: removed.count, blobsDereferenced, numbersPurged };
   }
 
   /**

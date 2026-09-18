@@ -18,7 +18,7 @@ import {
 } from '@munaxa/ui';
 
 import type { NumberReservation, NumberingRule } from '@edms/contracts';
-import type { NumberReservationStateKey } from '@edms/domain';
+import { ALL_NUMBER_RESERVATION_STATES, type NumberReservationStateKey } from '@edms/domain';
 
 import { useTranslate } from '../../app/providers';
 import { FormDialog, NumberField, TextField, integer, optionalText } from '../admin-shared';
@@ -29,14 +29,17 @@ const STATE_TONES: Record<NumberReservationStateKey, 'muted' | 'warning' | 'dang
   ASSIGNED: 'success',
   VOIDED: 'muted',
   HELD: 'danger',
+  // Muted like a voided value, because both are history rather than a live assignment — and
+  // distinguishable from one, because the label says which kind of history it is.
+  PURGED: 'muted',
 };
 
+// Derived rather than spelled out — Slice 105A. This list and the one in the page beside it were
+// the two places the four states were written down a second time, so adding a fifth left the
+// filter offering four and the screen rendering rows nobody could filter to.
 const STATE_FILTERS: readonly (NumberReservationStateKey | '')[] = [
   '',
-  'RESERVED',
-  'ASSIGNED',
-  'VOIDED',
-  'HELD',
+  ...ALL_NUMBER_RESERVATION_STATES,
 ];
 
 /**

@@ -487,6 +487,20 @@ export interface DocumentLibraryStack {
    * answerable against the same `file_object` rows the documents made from it touch.
    */
   readonly templates: DocumentTemplateService;
+  /**
+   * Numbering, composed the way the container composes it — Slice 105A.
+   *
+   * The workflow stack has carried this pair since Phase 5, and this one had no numbering at all,
+   * which is why no suite outside Workflow had ever drawn a number through the product. A
+   * retention suite needs it for the plainest of reasons: what a disposition does to an *assigned*
+   * number is only answerable against a reservation the real issuance path wrote.
+   *
+   * `numbers` is Document's service — manual assignment and assignment at approval. `issuance` is
+   * Administration's engine underneath it, for the held blocks and the voided values a suite has
+   * to be able to tell a purged one apart from.
+   */
+  readonly numbers: DefaultDocumentNumberService;
+  readonly issuance: NumberingIssueService;
 }
 
 export interface DocumentLibraryOptions {
@@ -671,6 +685,38 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     ),
   );
 
+  /*
+   * Numbering, wired as the container wires it — Slice 105A.
+   *
+   * Administration's issuance engine over the real counters and reservations, and Document's
+   * number service over that, resolving the document's own codes through the same two adapters
+   * `documents` above is given. Identical composition to the workflow stack's, which is the point:
+   * a number drawn here is a number drawn the way the product draws one.
+   *
+   * This stack had no numbering at all, which is why no suite outside Workflow had ever drawn a
+   * number through the product — and why what a retention disposition does to an *assigned* one
+   * had never been asked. The settings reader is the catalogue's defaults with the suite's
+   * overrides on top, like every other reader here.
+   */
+  const issuance = new NumberingIssueService(
+    new PrismaNumberIssueRepository(),
+    settingsReaderFor(options.documentSettings ?? {}),
+    writer,
+  );
+  const documentNumbers = new DefaultDocumentNumberService(
+    documentRepository,
+    new AdministrationConfigurationAdapter(
+      configuration,
+      realOrganizationService(),
+      options.users as UserAdminService,
+    ),
+    new LibraryPlacementAdapter(libraries),
+    realOrganizationService(),
+    issuance,
+    outbox,
+    writer,
+  );
+
   return {
     documentRepository,
     storage,
@@ -721,6 +767,8 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
       documents,
       writer,
     ),
+    numbers: documentNumbers,
+    issuance,
   };
 }
 

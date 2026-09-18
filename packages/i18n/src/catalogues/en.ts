@@ -518,6 +518,7 @@ export const en = {
           ASSIGNED: 'Assigned',
           VOIDED: 'Voided',
           HELD: 'Held',
+          PURGED: 'Assigned (document purged)',
         },
         origin: {
           AUTOMATIC: 'Automatic',

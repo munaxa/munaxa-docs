@@ -13,6 +13,8 @@ import {
   Disposition,
   type DocumentId,
   type FileObjectId,
+  NumberReservationState,
+  type NumberReservationId,
   RetentionScheduleState,
   NumberSegmentKind,
   RetentionTrigger,
@@ -22,6 +24,7 @@ import {
   type TenantId,
   type UploadSessionId,
   type UserId,
+  type WorkflowInstanceId,
   asId,
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
@@ -102,6 +105,8 @@ let rootFolderId: string;
 let documentTypeId: string;
 /** A type whose policy purges thirty days after a publication — short, so the suite can pass it. */
 let purgingTypeId: string;
+/** The rule the purging type numbers under — Slice 105A draws real numbers from it. */
+let numberingRuleId: string;
 let purgePolicyId: string;
 let archivingTypeId: string;
 
@@ -368,8 +373,8 @@ beforeAll(async () => {
     }),
   );
 
-  // A rule, because a document type names one. Nothing in this suite draws a number through it —
-  // the one purge that needs a number writes it the way a legacy import does.
+  // A rule, because a document type names one. The purge test below writes its number the way a
+  // legacy import does; the Slice 105A cases draw theirs through the real numbering service.
   const rule = await as(() =>
     library.numbering.create({
       key: unique('rule-'),
@@ -396,6 +401,7 @@ beforeAll(async () => {
     }),
   );
   purgePolicyId = purgePolicy.id;
+  numberingRuleId = rule.id;
 
   const archivePolicy = await as(() =>
     library.configuration.createRetention({
@@ -1885,5 +1891,352 @@ describe('a legal hold that arrives while the sweep is deciding', () => {
       }
       return count;
     }
+  }
+});
+
+/**
+ * An assigned number outliving the document it named — Slice 105A.
+ *
+ * ## The contradiction this resolves
+ *
+ * `DOCUMENT_DELETION_RULES` has always said of `number_reservation`: *"A number is never re-issued,
+ * even after a purge (ADR-0004) … The purge sets its document pointer to null — the row outlives
+ * its parent."* `ck_number_reservation_state` has always said an `ASSIGNED` row must name a
+ * document. Both are written down, and they could not both hold.
+ *
+ * Nothing caught it because nothing ever drew a number. The purge case above writes
+ * `document.document_number` directly, "the way a legacy import does", so no `number_reservation`
+ * row exists and its closing assertion — no reservations for this document — passes vacuously.
+ * `realDocumentLibrary` had no numbering composed at all until this slice.
+ *
+ * Through the real issuance path the disposition raised `23514` on the statement that nulls the
+ * pointer. Because `executeDue` has no per-document `catch` and `listDue` orders `due_at ASC`, the
+ * stuck schedule sat at the head of the queue and stalled every later disposition in the tenant.
+ *
+ * ## What it is now
+ *
+ * `PURGED`: assigned once, its document destroyed, the value consumed forever. Distinct from
+ * `VOIDED`, which means a use that was *refused* — the two answer different questions and the
+ * cases below keep them apart.
+ */
+describe('a number whose document was purged', () => {
+  /**
+   * The suite's own numbering rule, driven through the service an administrator drives.
+   *
+   * The value asked for is one past the highest the rule has drawn, which is what a controller
+   * typing "the next free number" does — and what keeps these cases independent of the reservations
+   * the other tests in this block draw through the automatic path.
+   */
+  async function assignManually(documentId: string): Promise<string> {
+    const top = await owner.numberReservation.aggregate({
+      where: { tenantId: TENANT, numberingRuleId },
+      _max: { sequenceValue: true },
+    });
+    const requested = `QA-${String(Number(top._max.sequenceValue ?? 0n) + 1).padStart(3, '0')}`;
+    await as(() => library.numbers.assignManually(asId<DocumentId>(documentId), requested));
+    return requested;
+  }
+
+  async function reservationFor(formatted: string) {
+    return owner.numberReservation.findFirstOrThrow({ where: { tenantId: TENANT, formatted } });
+  }
+
+  /** Delete, wait out the policy, approve the disposition, sweep. The whole real road to a purge. */
+  async function purgeThrough(documentId: string): Promise<{ purged: number }> {
+    const fresh = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    await as(() => library.documents.remove(documentId, fresh.version, 'Due for disposition'));
+    await advanceToDue(documentId);
+    await approve(documentId);
+    const outcome = await asSystem(() => retention.retention.executeDue(100));
+    return { purged: outcome.purged };
+  }
+
+  it('purges the document and keeps the number as PURGED', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    const formatted = await assignManually(document.id);
+
+    // Assigned, for real: the state, the instant and the document pointer the constraint requires.
+    const assigned = await reservationFor(formatted);
+    expect(assigned.state).toBe(NumberReservationState.ASSIGNED);
+    expect(assigned.documentId).toBe(document.id);
+    expect(assigned.assignedAt).not.toBeNull();
+
+    // The whole point: this used to raise `23514` and leave the document standing.
+    expect((await purgeThrough(document.id)).purged).toBeGreaterThanOrEqual(1);
+    expect(await owner.document.findUnique({ where: { id: document.id } })).toBeNull();
+
+    const after = await reservationFor(formatted);
+    expect(after.state).toBe(NumberReservationState.PURGED);
+    expect(after.documentId).toBeNull();
+    expect(after.workflowInstanceId).toBeNull();
+    // The instant of assignment survives: it is the fact that makes `PURGED` different from a
+    // value that was never anybody's number, and the constraint requires it to.
+    expect(after.assignedAt).not.toBeNull();
+    expect(after.assignedAt).toEqual(assigned.assignedAt);
+    expect(after.formatted).toBe(formatted);
+    expect(after.voidedAt).toBeNull();
+    expect(after.id).toBe(assigned.id);
+  }, 120_000);
+
+  it('refuses the same number to a new document, through the product rather than the constraint', async () => {
+    const first = await createDocument({ documentTypeId: purgingTypeId });
+    const formatted = await assignManually(first.id);
+    await purgeThrough(first.id);
+    expect((await reservationFor(formatted)).state).toBe(NumberReservationState.PURGED);
+
+    // The application's own refusal, from the application's own path. A direct insert would only
+    // prove `uq_number_reservation_formatted` works, which was never in doubt; what has to be true
+    // is that `assignManual` reads the purged row and declines before the index has to.
+    const second = await createDocument({ documentTypeId: purgingTypeId });
+    await expect(
+      as(() => library.numbers.assignManually(asId<DocumentId>(second.id), formatted)),
+    ).rejects.toMatchObject({ code: 'DUPLICATE' });
+
+    // And the loser is untouched: no second document holds the number, and the purged row did not
+    // move. A refusal that had side effects would be the worse failure.
+    const still = await reservationFor(formatted);
+    expect(still.state).toBe(NumberReservationState.PURGED);
+    expect(still.documentId).toBeNull();
+    expect(
+      await owner.document.findUnique({
+        where: { id: second.id },
+        select: { documentNumber: true },
+      }),
+    ).toMatchObject({ documentNumber: null });
+  }, 120_000);
+
+  it('keeps VOIDED meaning refused, and PURGED meaning assigned-then-destroyed', async () => {
+    /*
+     * One document carrying both histories, which is the arrangement that keeps the two states
+     * honest: a first approval drew a number and was refused, so that value is `VOIDED`; the
+     * document was then numbered by hand and eventually purged, so *that* value is `PURGED`.
+     *
+     * Both rows point at the same document when the disposition runs, so the purge has to treat
+     * them differently — and a transition that forgot to ask which state it was looking at would
+     * either stamp the voided value `PURGED` (losing "this use was refused") or trip the
+     * constraint, which requires a `PURGED` row to carry the instant it was assigned.
+     */
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    const instanceId = await seedWorkflowInstance(document.id);
+    const reserved = await as(() =>
+      library.issuance.reserve({
+        numberingRuleId: asId(numberingRuleId),
+        codes: {},
+        documentId: asId<DocumentId>(document.id),
+        workflowInstanceId: asId<WorkflowInstanceId>(instanceId),
+      }),
+    );
+    await as(() =>
+      library.issuance.release(
+        asId<NumberReservationId>(reserved.reservationId),
+        'Approval refused',
+      ),
+    );
+    const purgedNumber = await assignManually(document.id);
+
+    expect((await purgeThrough(document.id)).purged).toBeGreaterThanOrEqual(1);
+
+    const voided = await reservationFor(reserved.formatted);
+    const purged = await reservationFor(purgedNumber);
+
+    // Two histories, told apart by their own columns — not by a reader's guesswork.
+    expect(voided.state).toBe(NumberReservationState.VOIDED);
+    expect(voided.voidedAt).not.toBeNull();
+    expect(voided.assignedAt).toBeNull();
+    expect(voided.voidReason).toBe('Approval refused');
+    // Its pointers go with the record, exactly as they did before this slice — the purge changes
+    // what an *assigned* value becomes and nothing about the others.
+    expect(voided.documentId).toBeNull();
+    expect(voided.workflowInstanceId).toBeNull();
+
+    expect(purged.state).toBe(NumberReservationState.PURGED);
+    expect(purged.voidedAt).toBeNull();
+    expect(purged.assignedAt).not.toBeNull();
+    expect(purged.voidReason).toBeNull();
+    expect(purged.documentId).toBeNull();
+  }, 120_000);
+
+  it('will not hand a purged number back even to the path that claims a held one', async () => {
+    /*
+     * The reuse refusal, asked of the statement that actually writes an assignment.
+     *
+     * `assignManual` has two doors: a held block becomes the assignment, and everything else is
+     * refused. The refusal above is the first door being shut; this is the second — `markAssigned`
+     * names the states it may claim from and `PURGED` is not among them, so a value that reached
+     * the claim anyway still moves nothing. Two statements of one rule, and the invariant is that
+     * neither alone is what stops a number being issued twice.
+     */
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    const formatted = await assignManually(document.id);
+    await purgeThrough(document.id);
+    const purged = await reservationFor(formatted);
+    expect(purged.state).toBe(NumberReservationState.PURGED);
+
+    const second = await createDocument({ documentTypeId: purgingTypeId });
+    await expect(
+      as(() =>
+        unitOfWork.run(() =>
+          library.issuance.commit(
+            asId<NumberReservationId>(purged.id),
+            asId<DocumentId>(second.id),
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const still = await reservationFor(formatted);
+    expect(still.state).toBe(NumberReservationState.PURGED);
+    expect(still.documentId).toBeNull();
+  }, 120_000);
+
+  it('is idempotent: a second purge transition leaves the purged row exactly as it was', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    const formatted = await assignManually(document.id);
+    await purgeThrough(document.id);
+    const once = await reservationFor(formatted);
+    expect(once.state).toBe(NumberReservationState.PURGED);
+
+    // The disposition's own statements, run again against the identifier of a document that is
+    // already gone — which is what a redelivered or retried purge does. Through the real adapter,
+    // in a real transaction, so the predicates are the ones production uses.
+    await asSystem(() =>
+      unitOfWork.run(() =>
+        realDisposition(clock, library.storage, library.writer).purge(
+          asId<DocumentId>(document.id),
+        ),
+      ),
+    );
+
+    const twice = await reservationFor(formatted);
+    // Not transitioned twice, not voided, not freed, and no duplicate row invented.
+    expect(twice).toMatchObject({
+      id: once.id,
+      state: NumberReservationState.PURGED,
+      documentId: null,
+      workflowInstanceId: null,
+      formatted,
+      voidedAt: null,
+    });
+    expect(twice.assignedAt).toEqual(once.assignedAt);
+    expect(await owner.numberReservation.count({ where: { tenantId: TENANT, formatted } })).toBe(1);
+  }, 120_000);
+
+  it('purges a number assigned through the approval path, clearing both pointers', async () => {
+    // The other production road to `ASSIGNED`, and the one that matters for the constraint's
+    // second half: a reservation drawn at submission carries the *workflow instance* as well as
+    // the document, and `PURGED` requires both pointers gone.
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    const instanceId = await seedWorkflowInstance(document.id);
+    // Wrapped in a unit of work because that is how the engine calls it: `assignAtApproval` runs
+    // inside the approval's own transaction rather than opening one, which is what makes the
+    // number and the approval commit together.
+    const { documentNumber } = await as(() =>
+      unitOfWork.run(() =>
+        library.numbers.assignAtApproval(asId<DocumentId>(document.id), instanceId),
+      ),
+    );
+
+    const assigned = await reservationFor(documentNumber);
+    expect(assigned.state).toBe(NumberReservationState.ASSIGNED);
+    expect(assigned.documentId).toBe(document.id);
+    expect(assigned.workflowInstanceId).toBe(instanceId);
+
+    expect((await purgeThrough(document.id)).purged).toBeGreaterThanOrEqual(1);
+
+    const after = await reservationFor(documentNumber);
+    expect(after.state).toBe(NumberReservationState.PURGED);
+    expect(after.documentId).toBeNull();
+    expect(after.workflowInstanceId).toBeNull();
+    expect(after.assignedAt).not.toBeNull();
+    // The instance row itself went with the record; the number did not.
+    expect(await owner.workflowInstance.findUnique({ where: { id: instanceId } })).toBeNull();
+  }, 120_000);
+
+  it('does not stall the sweep: a numbered document and the schedules queued behind it', async () => {
+    /*
+     * The operational consequence, which is worse than one document surviving.
+     *
+     * `executeDue` has no per-document `catch`, so the exception aborted the whole pass — and
+     * `listDue` orders `due_at ASC`, so the stuck schedule sat at the head of the queue and every
+     * later disposition in the tenant went unprocessed, every night, for good.
+     *
+     * The numbered document is deleted *first*, so its schedule is the earlier one and is reached
+     * first by the sweep. A fix that merely stopped this document throwing, without the later one
+     * also purging, would pass a test that only looked at the first.
+     */
+    const numbered = await createDocument({ documentTypeId: purgingTypeId });
+    const formatted = await assignManually(numbered.id);
+    const numberedRow = await owner.document.findUniqueOrThrow({ where: { id: numbered.id } });
+    await as(() =>
+      library.documents.remove(numbered.id, numberedRow.version, 'First in the queue'),
+    );
+
+    const behind = await createDocument({ documentTypeId: purgingTypeId });
+    const behindRow = await owner.document.findUniqueOrThrow({ where: { id: behind.id } });
+    await as(() => library.documents.remove(behind.id, behindRow.version, 'Queued behind it'));
+
+    await advanceToDue(behind.id);
+    await approve(numbered.id);
+    await approve(behind.id);
+
+    const outcome = await asSystem(() => retention.retention.executeDue(100));
+    expect(outcome.purged).toBeGreaterThanOrEqual(2);
+
+    // Both gone, which is the assertion: the second one is the one that used to be collateral.
+    expect(await owner.document.findUnique({ where: { id: numbered.id } })).toBeNull();
+    expect(await owner.document.findUnique({ where: { id: behind.id } })).toBeNull();
+    expect((await reservationFor(formatted)).state).toBe(NumberReservationState.PURGED);
+  }, 120_000);
+
+  /**
+   * A workflow instance for a document, seeded.
+   *
+   * Reaching a real one needs a published definition, a submission and an approval — none of which
+   * these assertions are about, and all of which the workflow suite already proves. What is *not*
+   * seeded is the reservation: that is drawn through the real issuance path, because the
+   * reservation is precisely what the purge has to get right.
+   */
+  async function seedWorkflowInstance(documentId: string): Promise<string> {
+    const revision = await owner.documentRevision.findFirstOrThrow({ where: { documentId } });
+    const definitionId = uuidv7(now.getTime());
+    const versionId = uuidv7(now.getTime());
+    await owner.workflowDefinition.create({
+      data: {
+        id: definitionId,
+        tenantId: TENANT,
+        key: `purge-${definitionId.slice(0, 8)}`,
+        name: 'Purge numbering',
+        updatedAt: now,
+      },
+    });
+    await owner.workflowVersion.create({
+      data: {
+        id: versionId,
+        tenantId: TENANT,
+        definitionId,
+        version: 1,
+        state: 'PUBLISHED',
+        definition: {},
+        publishedAt: now,
+        updatedAt: now,
+      },
+    });
+    const id = uuidv7(now.getTime());
+    await owner.workflowInstance.create({
+      data: {
+        id,
+        tenantId: TENANT,
+        documentId,
+        revisionId: revision.id,
+        definitionId,
+        workflowVersionId: versionId,
+        state: 'RUNNING',
+        currentStageIndex: 0,
+        startedBy: ALICE,
+        startedAt: now,
+        updatedAt: now,
+      },
+    });
+    return id;
   }
 });
