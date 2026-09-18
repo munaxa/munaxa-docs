@@ -504,6 +504,7 @@ export const ar: Catalogue = {
           ASSIGNED: 'مُسند',
           VOIDED: 'ملغى',
           HELD: 'محجوز',
+          PURGED: 'مُسند (أُتلفت الوثيقة)',
         },
         origin: {
           AUTOMATIC: 'تلقائي',

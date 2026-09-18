@@ -1,13 +1,18 @@
 import type { ReactNode } from 'react';
 
 import type { Collection, NumberReservation, NumberingRule } from '@edms/contracts';
-import { type NumberReservationStateKey, Permission } from '@edms/domain';
+import {
+  ALL_NUMBER_RESERVATION_STATES,
+  type NumberReservationStateKey,
+  Permission,
+} from '@edms/domain';
 
 import { NumberingReservationsScreen } from '../../../../../../features/admin-configuration/numbering-reservations-screen';
 import { AdminForbidden } from '../../../../../../features/admin-shared';
 import { adminAccess, adminGet } from '../../../../../../lib/admin/api';
 
-const STATES: readonly NumberReservationStateKey[] = ['RESERVED', 'ASSIGNED', 'VOIDED', 'HELD'];
+/** Derived, so a state added to the domain is one this route already accepts — Slice 105A. */
+const STATES: readonly NumberReservationStateKey[] = ALL_NUMBER_RESERVATION_STATES;
 
 /** One rule's reservations — where a gap in the series is explained, and held blocks live. */
 export default async function NumberingReservationsPage({

@@ -288,8 +288,11 @@ export class NumberingIssueService implements NumberingService {
         }
         issued = toIssued({ ...existing, documentId: input.documentId });
       } else {
-        // Assigned, reserved or voided: the value is spent, and a deleted document's number is
-        // spent forever. The same refusal the unique constraints would give, said politely.
+        // Assigned, reserved, voided or purged: the value is spent, and a purged document's
+        // number is spent forever. `findByFormatted` reads by value and filters on no state at
+        // all, which is what makes that true — a `PURGED` row names no document and is reached
+        // here exactly as an assigned one is. The same refusal the unique constraints would give,
+        // said politely.
         throw new DuplicateError('document number', 'documentNumber');
       }
 

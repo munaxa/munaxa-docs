@@ -66,12 +66,26 @@ export const ALL_NUMBER_SEGMENT_KINDS: readonly NumberSegmentKindKey[] = Object.
  * `VOIDED` is a value whose approval was refused — retained forever, never returned to the pool;
  * `HELD` is a value a controller set aside for an offline process
  * (`09-numbering-architecture.md` §2–§3).
+ *
+ * `PURGED` is the fifth, and it names a lifecycle the product already had and could not write
+ * down — Slice 105A. A number that was genuinely assigned, whose document a retention disposition
+ * has since destroyed: the value stays consumed forever, and the row is what keeps it so.
+ *
+ * It is deliberately **not** `VOIDED`. A voided value is one whose use was *refused* — a rejected
+ * approval, a withdrawal, an expiry — and a compliance reader asking "was this number ever a
+ * document's" must be able to tell the two apart. Nor does it stay `ASSIGNED`: that state means a
+ * live document holds the number, and `ck_number_reservation_state` says so by requiring the
+ * document pointer, which a purged record no longer has.
+ *
+ * The transition is one-way and terminal. Every other transition claims by an explicit `from`
+ * list, and none of those lists names `PURGED`, so nothing re-assigns, re-reserves or voids it.
  */
 export const NumberReservationState = {
   RESERVED: 'RESERVED',
   ASSIGNED: 'ASSIGNED',
   VOIDED: 'VOIDED',
   HELD: 'HELD',
+  PURGED: 'PURGED',
 } as const;
 
 export type NumberReservationStateKey =
