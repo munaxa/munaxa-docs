@@ -598,6 +598,23 @@ export class DefaultRetentionService implements RetentionService {
             documentNumber: subject.documentNumber,
             revisionsRemoved: outcome.revisionsRemoved,
             blobsDereferenced: outcome.blobsDereferenced,
+            /*
+             * The number outlives the record, and this row is where the trail says so — Slice 105A.
+             *
+             * Deliberately a fact in this payload rather than a fifth numbering action.
+             * `AdministrationAudit`'s own header states the rule: the catalogue "names one action
+             * per *area*, and `before`/`after` plus an `operation` in the payload carry what
+             * actually happened". The assignment already has its `NUMBER_ASSIGNED` row and this
+             * act already has two of its own — `PURGED` on the document's timeline and
+             * `PURGE_EXECUTED` here, both carrying `documentNumber` — so what was missing was
+             * never an event, only the statement that the value is still spent.
+             *
+             * `NUMBER_VOIDED` would have been the wrong row twice over: it is Administration's
+             * act, not Retention's, and it means a value whose use was *refused*. A reader asking
+             * "was this number ever a document's" must not be answered "no" about one that was.
+             */
+            numbersPurged: outcome.numbersPurged,
+            numberReusable: false,
           },
           ...(schedule.reviewNote !== null && { reason: schedule.reviewNote }),
         },

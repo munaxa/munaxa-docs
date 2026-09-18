@@ -246,6 +246,15 @@ export interface DispositionSubject {
 export interface PurgeOutcome {
   readonly revisionsRemoved: number;
   readonly blobsDereferenced: number;
+  /**
+   * Assigned numbers this purge moved to `PURGED` — Slice 105A.
+   *
+   * Reported because it is the one thing the disposition does that *outlives* the record: every
+   * other count above describes something destroyed, and this one describes a value kept. It
+   * reaches the `PURGE_EXECUTED` payload, where "the number is still spent" becomes a fact the
+   * trail states rather than one a reader has to know.
+   */
+  readonly numbersPurged: number;
 }
 
 /**

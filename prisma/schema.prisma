@@ -1322,7 +1322,8 @@ model NumberReservation {
   formatted          String
   state              NumberReservationState @default(RESERVED)
   origin             NumberOrigin           @default(AUTOMATIC)
-  /// Null for a `HELD` value nothing has claimed yet; set for everything else.
+  /// Null for a `HELD` value nothing has claimed yet and for a `PURGED` one whose document a
+  /// disposition destroyed; set for everything else.
   documentId         String?                @map("document_id") @db.Uuid
   /// The approval that drew the value. Null for a manual assignment or a held block.
   workflowInstanceId String?                @map("workflow_instance_id") @db.Uuid
@@ -1759,6 +1760,9 @@ enum NumberReservationState {
   ASSIGNED
   VOIDED
   HELD
+  /// Assigned, and its document since destroyed by a disposition — Slice 105A. The value stays
+  /// consumed forever; this row is what keeps it so once the document row is gone.
+  PURGED
 
   @@map("number_reservation_state")
 }
