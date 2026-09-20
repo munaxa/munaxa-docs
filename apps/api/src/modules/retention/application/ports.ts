@@ -88,6 +88,16 @@ export interface RetentionScheduleRepository {
   /** Suspends or resumes every live schedule of a document, as a hold is placed or released. */
   setSuspended(documentId: DocumentId, suspended: boolean): Promise<number>;
   /**
+   * Holds a document's schedules for the rest of the transaction — Slice 107.
+   *
+   * Taken by a hold release before it claims, because "am I the last matter out" is a question
+   * about a *set* and the answer is written to these rows. Two releases of one document lock the
+   * same rows and therefore queue; two releases of different documents lock disjoint rows and do
+   * not meet. A document with no schedules locks nothing, which is the right answer for a record
+   * with no disposition to resume.
+   */
+  lockForDocument(documentId: DocumentId): Promise<void>;
+  /**
    * Removes every schedule of a purged document.
    *
    * The one hard delete in this module's own tables, performed only inside a purge: the evidence

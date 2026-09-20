@@ -2240,3 +2240,272 @@ describe('a number whose document was purged', () => {
     return id;
   }
 });
+
+/**
+ * Two matters closed at the same moment, and the record left suspended for ever — Slice 107.
+ *
+ * ## What the product says
+ *
+ * `RetentionScheduleState.SUSPENDED` is documented in `@edms/domain` as *"A legal hold blocks it.
+ * Resumes at `PENDING` when the last hold is released."* `dueScheduleWhere` leaves `SUSPENDED` out
+ * of the sweep on the strength of that sentence — *"a held schedule is not due, it is waiting, and
+ * the release is what puts it back"* — and nothing else in the product ever looks at a suspended
+ * schedule again. No sweep, no timer, no reconciliation. The release is the only thing standing
+ * between a suspended record and a disposition that never runs.
+ *
+ * ## What it did
+ *
+ * `DefaultLegalHoldService.release` decided whether it was the last one out by *reading*:
+ *
+ * ```
+ * const remaining = await this.holds.listLiveFor(hold.documentId);
+ * const resumed = remaining.length === 0 ? await this.schedules.setSuspended(...) : 0;
+ * ```
+ *
+ * Two matters holding one record is ordinary — the method's own comment says so — and counsel
+ * closing both at once is two `POST /v1/documents/:documentId/holds/:holdId/release` requests in
+ * flight together. The two claims are different rows, so neither blocks the other; each read then
+ * saw the *other* hold still live, because the other release had not committed. Both concluded
+ * somebody else was still holding the record. Neither resumed. Both committed, and the document
+ * was left with zero live holds and a `SUSPENDED` schedule — a state the domain says cannot exist
+ * and nothing will ever correct.
+ *
+ * ## What proves it
+ *
+ * The fix is mutual exclusion, so no barrier can hold both releases open at once after it: the
+ * interleaving the defect needs is exactly the one the fix forbids, and a two-caller turnstile
+ * placed downstream of the lock would simply hang. The evidence is therefore in two parts, the
+ * shape Slice 104 settled on:
+ *
+ * - **The outcome**, from two genuinely concurrent releases with no barrier at all. After the fix
+ *   the result is the same whichever wins the lock, so the assertion is deterministic; before it
+ *   the two run in lock-step and the record is stranded.
+ * - **The mechanism**, from a second database session probing with `FOR UPDATE NOWAIT` while a
+ *   release is parked mid-transaction. `55P03` is the lock, observed directly rather than inferred
+ *   from an outcome — and the same probe against another document's schedules must *succeed*, or
+ *   the lock is not the one that was asked for.
+ */
+describe('two legal holds released at the same moment', () => {
+  /**
+   * The real repository, subclassed: a place to stand inside a release's transaction, after it has
+   * taken its lock and made its claim.
+   *
+   * `listLiveFor` is the statement the decision is read from, so parking there holds the release
+   * open at precisely the moment it is deciding — which is when the probe below asks what it is
+   * holding. Only the named document is parked: this file leaves plenty of other holds about.
+   */
+  class ParkedRelease extends PrismaLegalHoldRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+    target: string | null = null;
+
+    override async listLiveFor(documentId: DocumentId): Promise<readonly LegalHoldRecord[]> {
+      const gate = this.admit;
+      if (gate !== null && String(documentId) === this.target) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+      return super.listLiveFor(documentId);
+    }
+  }
+
+  function stackWith(holds: PrismaLegalHoldRepository): RetentionStack {
+    return realRetention({
+      clock,
+      unitOfWork,
+      storage: library.storagePort,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      holds,
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+  }
+
+  /** A deleted, due document with two matters on it, its schedule suspended by them. */
+  async function suspendedUnderTwoHolds(): Promise<{
+    documentId: string;
+    first: string;
+    second: string;
+  }> {
+    const document = await createDocument({ documentTypeId: archivingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Two matters'));
+    await advanceToDue(document.id);
+
+    const first = await as(() => retention.holds.place(document.id, 'Matter 2026-301'));
+    const second = await as(() => retention.holds.place(document.id, 'Matter 2026-302'));
+    expect(await scheduleStateOf(document.id)).toBe(RetentionScheduleState.SUSPENDED);
+
+    return { documentId: document.id, first: first.id, second: second.id };
+  }
+
+  async function scheduleStateOf(documentId: string): Promise<string> {
+    return (await owner.retentionSchedule.findFirstOrThrow({ where: { documentId } })).state;
+  }
+
+  async function liveHoldsOf(documentId: string): Promise<number> {
+    return owner.legalHold.count({ where: { documentId, releasedAt: null } });
+  }
+
+  /**
+   * What a second session finds when it asks for a document's schedules without waiting.
+   *
+   * `owner` is a separate `PrismaClient` and therefore a separate backend, which is the only way
+   * to ask whether a lock is held: a probe on the same connection would be inside the transaction
+   * holding it and would always succeed. `NOWAIT` rather than a wait with a deadline, for the
+   * reason `lockableElsewhere` states in the library suite — the question is whether the rows are
+   * held *now*, and a probe that waited would be a probe somebody has to choose a duration for.
+   * `55P03` is PostgreSQL's "could not obtain lock", and here it is the answer rather than a fault.
+   *
+   * Both strengths are asked, because both matter. Releases that could each take a *shared* lock
+   * on the same schedules would read the same live set and reach the same wrong conclusion, so
+   * "held" has to mean held exclusively.
+   */
+  async function probeSchedulesOf(
+    mode: 'UPDATE' | 'SHARE',
+    documentId: string,
+  ): Promise<'LOCKED' | 'FREE'> {
+    try {
+      await owner.$queryRawUnsafe(
+        `SELECT id FROM retention_schedule WHERE document_id = $1::uuid ORDER BY id FOR ${mode} NOWAIT`,
+        documentId,
+      );
+      return 'FREE';
+    } catch (error) {
+      if (/55P03|could not obtain lock/i.test(String(error))) {
+        return 'LOCKED';
+      }
+      throw error;
+    }
+  }
+
+  it('resumes the schedule when the two are released one after the other', async () => {
+    // The serial answer the concurrent one has to match. Without it every assertion below would
+    // pass against a product that never resumed a schedule at all.
+    const { documentId, first, second } = await suspendedUnderTwoHolds();
+
+    await as(() => retention.holds.release(first, 'Matter 2026-301 closed'));
+    expect(await liveHoldsOf(documentId)).toBe(1);
+    expect(await scheduleStateOf(documentId)).toBe(RetentionScheduleState.SUSPENDED);
+
+    await as(() => retention.holds.release(second, 'Matter 2026-302 closed'));
+    expect(await liveHoldsOf(documentId)).toBe(0);
+    expect(await scheduleStateOf(documentId)).toBe(RetentionScheduleState.PENDING);
+  });
+
+  it('resumes the schedule when the two are released at the same moment', async () => {
+    const { documentId, first, second } = await suspendedUnderTwoHolds();
+
+    // Two requests, two scopes, two transactions — counsel closing two matters at once. No
+    // barrier: the lock is what decides the order, and either order gives the same answer.
+    await Promise.all([
+      as(() => retention.holds.release(first, 'Matter 2026-301 closed')),
+      as(() => retention.holds.release(second, 'Matter 2026-302 closed')),
+    ]);
+
+    expect(await liveHoldsOf(documentId)).toBe(0);
+    expect(await scheduleStateOf(documentId)).toBe(RetentionScheduleState.PENDING);
+  });
+
+  it('leaves the schedule suspended while a third matter is still open', async () => {
+    // The other side of the claim. Serialising the releases must not resume a record somebody is
+    // still holding, which is the failure a fix that simply always resumed would produce.
+    const { documentId, first, second } = await suspendedUnderTwoHolds();
+    await as(() => retention.holds.place(documentId, 'Matter 2026-303'));
+
+    await Promise.all([
+      as(() => retention.holds.release(first, 'Matter 2026-301 closed')),
+      as(() => retention.holds.release(second, 'Matter 2026-302 closed')),
+    ]);
+
+    expect(await liveHoldsOf(documentId)).toBe(1);
+    expect(await scheduleStateOf(documentId)).toBe(RetentionScheduleState.SUSPENDED);
+  });
+
+  it('holds the document’s schedules from before its claim until it commits', async () => {
+    // The mechanism, observed rather than inferred. The parked release is *not* the last one out —
+    // it has another matter beside it — so before the fix it never touched `retention_schedule` at
+    // all and this probe found the rows free.
+    const { documentId, first } = await suspendedUnderTwoHolds();
+
+    const parking = new ParkedRelease(new RecordStamps(clock));
+    parking.target = documentId;
+    const racing = stackWith(parking);
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const release = as(() => racing.holds.release(first, 'Matter 2026-301 closed'));
+    await atDecision;
+
+    expect(await probeSchedulesOf('UPDATE', documentId)).toBe('LOCKED');
+    expect(await probeSchedulesOf('SHARE', documentId)).toBe('LOCKED');
+
+    admit();
+    await release;
+
+    // And released with the transaction, not held past it.
+    expect(await probeSchedulesOf('UPDATE', documentId)).toBe('FREE');
+  });
+
+  it('holds only its own document’s schedules', async () => {
+    // A lock that took the tenant's schedules would pass the probe above and stall every unrelated
+    // release in the tenant behind one matter. The scope is asserted, not assumed.
+    const held = await suspendedUnderTwoHolds();
+    const bystander = await suspendedUnderTwoHolds();
+
+    const parking = new ParkedRelease(new RecordStamps(clock));
+    parking.target = held.documentId;
+    const racing = stackWith(parking);
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const release = as(() => racing.holds.release(held.first, 'Matter 2026-301 closed'));
+    await atDecision;
+
+    expect(await probeSchedulesOf('UPDATE', held.documentId)).toBe('LOCKED');
+    expect(await probeSchedulesOf('UPDATE', bystander.documentId)).toBe('FREE');
+
+    admit();
+    await release;
+  });
+
+  it('puts the resumed schedule back in front of the sweep', async () => {
+    // What the state is *for*. A schedule left `SUSPENDED` is absent from `dueScheduleWhere`, so
+    // the cost of the defect is a disposition that never runs — asserted against the sweep rather
+    // than inferred from the column.
+    const { documentId, first, second } = await suspendedUnderTwoHolds();
+
+    await Promise.all([
+      as(() => retention.holds.release(first, 'Matter 2026-301 closed')),
+      as(() => retention.holds.release(second, 'Matter 2026-302 closed')),
+    ]);
+
+    const due = await as(() => retention.retention.listDue(100));
+    expect(due.map((schedule) => String(schedule.documentId))).toContain(documentId);
+
+    await asSystem(() => retention.retention.executeDue(100));
+    expect((await owner.document.findUniqueOrThrow({ where: { id: documentId } })).status).toBe(
+      'ARCHIVED',
+    );
+    expect(await scheduleStateOf(documentId)).toBe(RetentionScheduleState.EXECUTED);
+  });
+});
