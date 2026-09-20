@@ -40,9 +40,30 @@ function searchConfiguration(language: string): 'arabic' | 'english' {
 export class PostgresIndexAdapter implements IndexPort {
   constructor(private readonly clock: ClockPort) {}
 
+  /**
+   * The projection's own write: the freshest thing anyone can say about the document, overwriting
+   * whatever is there — **for as long as the document is still findable** (Slice 106).
+   *
+   * The projection reads current truth, builds the whole entry from it, and arrives here. Between
+   * those two moments a delete can commit, and then this write is not the freshest thing anyone
+   * can say: the delete's own projection read `factsFor` → null and removed the entry, and an
+   * overwrite lands after it and puts the deleted title and body back. Nothing corrects that — a
+   * deleted document produces no further event — so the entry survives, and search is gated on
+   * `document:view` while the recycle bin holding the document is gated on `document:restore`.
+   *
+   * It is an ordinary lane, not a corner: `search.index` runs at `concurrency: 8` and the consumer
+   * coalesces per document into `debounceMs` buckets, so an edit and a delete a moment apart are
+   * two jobs from two adjacent buckets — which overlap whenever a projection outlives
+   * `SEARCH_DEBOUNCE_MS`, a second by default and configurable down to a tenth of one.
+   *
+   * So the write asks the same question the read asked, at the moment it writes. This is
+   * `rebuildFill`'s guard, applied to the other writer that reads first and writes later; its own
+   * comment is this one's reasoning verbatim — "without this the batch would simply insert it
+   * again — deleted title and body included — after the removal". A deletion committing after
+   * *this* statement's snapshot is not this statement's problem either, for the reason stated
+   * there: its own projection runs after it commits and removes the entry.
+   */
   async upsert(document: IndexDocument): Promise<void> {
-    // The projection's own write: it read current truth immediately before this, so it is the
-    // freshest thing anyone can say about the document and it overwrites whatever is there.
     await requireTransaction().$executeRaw(this.overwriteSql(LIVE_TABLE, document));
   }
 
@@ -51,9 +72,11 @@ export class PostgresIndexAdapter implements IndexPort {
    *
    * It overwrites for the same reason the live write does, and it must: a rebuild of a real
    * tenant is many batches, and everything that changes between the batch that wrote a document
-   * and the swap arrives here. `rebuildFill`'s guards belong to the rebuild's write alone —
-   * applied to this one they would drop the change instead of carrying it, which is the inverse
-   * of what the dual-write exists for.
+   * and the swap arrives here. `rebuildFill`'s `ON CONFLICT DO NOTHING` belongs to the rebuild's
+   * write alone — applied to this one it would drop the change instead of carrying it, which is
+   * the inverse of what the dual-write exists for. Its *findability* guard is a different thing
+   * and belongs to both, which is why `overwriteSql` carries it: a document deleted mid-rebuild
+   * must not be carried into the build target by the dual-write either, or it outlives the swap.
    */
   async rebuildMirror(document: IndexDocument): Promise<void> {
     await requireTransaction().$executeRaw(this.overwriteSql(SHADOW_TABLE, document));
@@ -130,11 +153,25 @@ export class PostgresIndexAdapter implements IndexPort {
     await tx.$executeRaw(Prisma.sql`DELETE FROM ${Prisma.raw(`"${SHADOW_TABLE}"`)}`);
   }
 
-  /** The overwriting write — the live index's, and the projection's mirror of it. */
+  /**
+   * The overwriting write — the live index's, and the projection's mirror of it.
+   *
+   * `WHERE EXISTS` is `rebuildFill`'s, for `rebuildFill`'s reason and this time on the writer that
+   * every ordinary change goes through — Slice 106. `SELECT … WHERE EXISTS` rather than `VALUES`
+   * so the condition is part of the statement the row is produced by, decided by the database at
+   * the moment of the write rather than by what the caller read a while ago.
+   */
   private overwriteSql(table: string, doc: IndexDocument): Prisma.Sql {
     return Prisma.sql`
       INSERT INTO ${Prisma.raw(`"${table}"`)} (${COLUMNS})
-      VALUES (${this.rowValues(doc)})
+      SELECT ${this.rowValues(doc)}
+      WHERE EXISTS (
+        SELECT 1 FROM "document"
+        WHERE "id" = ${doc.documentId}::uuid
+          AND "tenant_id" = ${doc.tenantId}::uuid
+          AND "deleted_at" IS NULL
+          AND "status" <> 'PURGED'::document_status
+      )
       ON CONFLICT ("document_id") DO UPDATE SET ${ASSIGNMENTS}
     `;
   }
