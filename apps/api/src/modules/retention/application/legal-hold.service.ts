@@ -118,6 +118,28 @@ export class DefaultLegalHoldService implements LegalHoldService {
         ]);
       }
 
+      /*
+       * The set this release is about to decide over, held before it claims — Slice 107.
+       *
+       * "Is this the last matter?" is answered a few lines below by *reading* the live holds, and
+       * two releases of two matters on one record used to be able to read at the same moment:
+       * neither claim blocks the other — they are different rows — and each read, in its own
+       * `READ COMMITTED` transaction, still saw the other hold live because the other release had
+       * not committed. Both concluded somebody else was still holding the record; neither resumed;
+       * and the schedule was left `SUSPENDED` with no live hold behind it.
+       *
+       * Nothing revisits a suspended schedule. `dueScheduleWhere` leaves `SUSPENDED` out on the
+       * stated grounds that "the release is what puts it back", and `RetentionScheduleState` says
+       * of it: *"Resumes at `PENDING` when the last hold is released."* So the record was never
+       * disposed of — the mirror image of the destruction the hold exists to prevent, and just as
+       * permanent, with the row itself claiming a matter that had closed.
+       *
+       * The decision has to be a claim rather than a read, and the claim has to cover the rows the
+       * decision is written to. Two releases of one document take these same rows and queue; the
+       * second then reads the live set the first left behind and resumes on it.
+       */
+      await this.schedules.lockForDocument(hold.documentId);
+
       const releasedBy = this.requireActor();
       const released = await this.holds.release(
         asId<LegalHoldId>(id),

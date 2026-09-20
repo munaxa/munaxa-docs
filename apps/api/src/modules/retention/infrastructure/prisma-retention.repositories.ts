@@ -203,6 +203,31 @@ export class PrismaRetentionScheduleRepository implements RetentionScheduleRepos
     return count;
   }
 
+  /**
+   * `SELECT … FOR UPDATE` over a document's schedules — Slice 107.
+   *
+   * Raw because Prisma cannot express `FOR UPDATE`, the same shape `lockFoldersForMove` and
+   * `lockInstance` use for the same reason: a decision read from several rows and then written
+   * needs those rows held while it is made.
+   *
+   * One statement rather than a sorted loop, because the deadlock the loop exists to prevent
+   * cannot arise here. `lockFoldersForMove` names two folders chosen by the caller, so two callers
+   * can name overlapping pairs in opposite orders; this names *every* schedule of one document, so
+   * two callers' row sets are either identical or disjoint. `ORDER BY id` is kept anyway so the
+   * order is a property of the statement rather than of the plan.
+   *
+   * Every schedule, not only the suspended ones: the predicate is then one a reader can check
+   * against the row's identity rather than against a state that the very transaction taking the
+   * lock is about to change.
+   */
+  async lockForDocument(documentId: DocumentId): Promise<void> {
+    await requireTransaction().$queryRaw`
+      SELECT id FROM retention_schedule
+      WHERE tenant_id = ${this.tenantId()}::uuid AND document_id = ${documentId}::uuid
+      ORDER BY id
+      FOR UPDATE`;
+  }
+
   async setSuspended(documentId: DocumentId, suspended: boolean): Promise<number> {
     const tx = requireTransaction();
     if (suspended) {
