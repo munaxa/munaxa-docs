@@ -742,6 +742,22 @@ export class ConfigurationService {
       const current = await this.requireAny(kind, id, false);
       requireVersion(expectedVersion, current.version);
 
+      /*
+       * The row this delete is about to remove, held before it asks what points at it — Slice 110.
+       *
+       * The dependent check below is a read of *other* tables, and nothing stopped one of those
+       * tables gaining a pointer between the count and the delete: a document type named this row
+       * in a transaction of its own, resolved it through `liveIds` while it was still live, and
+       * committed beside this one. Both succeeded, and the result was the state this method exists
+       * to prevent — a live type pointing at a row that is gone, "unusable in a way that only shows
+       * up when somebody tries to create a document".
+       *
+       * Neither side can hold the *dependants*: the dependency is created by an `UPDATE` of a row
+       * that already exists, so there is nothing for a count to have locked. The one row both sides
+       * name is this one, so this is where they meet — exclusively here, shared in `liveIds`.
+       */
+      await this.config.lockForDelete(kind, id);
+
       const dependents = await this.config.dependentsOf(kind, id);
       const blocking = Object.entries(dependents).filter(([, count]) => count > 0);
       if (blocking.length > 0) {
