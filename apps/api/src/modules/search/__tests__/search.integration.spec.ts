@@ -2829,3 +2829,122 @@ describe('two overlapping deliveries of one index rebuild', () => {
     expect(state.state).toBe('COMPLETED');
   }, 120_000);
 });
+
+/**
+ * A projection overtaken by the delete it did not see — Slice 106.
+ *
+ * `SearchProjectionService.project` reads the document's current truth, builds the whole entry from
+ * it — the ACL subjects and the extracted body text, which is the slow part — and then overwrites
+ * the index row. Its header calls that "idempotent by construction", and for two projections it is:
+ * both read current truth and converge on the same row.
+ *
+ * An upsert and a *removal* do not converge, because they are not the same operation. The delete's
+ * own projection reads `factsFor` → null and removes the entry; a projection that read the document
+ * while it was still live and writes afterwards puts it straight back. Nothing corrects it: the
+ * document is deleted, so no further event for it will ever be produced, and the entry survives
+ * with the deleted title, description and body text in it.
+ *
+ * That is reachable on the ordinary lane rather than in a corner. `search.index` runs at
+ * `concurrency: 8`, and the consumer coalesces per document into `debounceMs` buckets — so an edit
+ * and a delete a moment apart are two jobs from two adjacent buckets. The coalescing itself is
+ * sound (a bucket's job is delayed past the end of its own bucket, so it always sees everything the
+ * bucket collected); what is not is two buckets' jobs *running at once*, which is what happens
+ * whenever a projection outlives `SEARCH_DEBOUNCE_MS` — a second by default, and configurable down
+ * to a tenth of one.
+ *
+ * The cost is not a stale row. `PrismaSearchSourceReader.factsFor` states the rule this breaks —
+ * "Soft-deleted and purged documents are not findable: the entry is removed, never filtered at
+ * query time" — and search is gated on `document:view` over the entry's own ACL subjects while the
+ * recycle bin holding the document is gated on `document:restore`. A reader who may not open the
+ * bin goes on finding the record's title and its text.
+ *
+ * `rebuildFill` in the same adapter has carried the guard for this since Phase 8, in its own words:
+ * "`WHERE EXISTS` refuses a document that has stopped being findable … without this the batch would
+ * simply insert it again — deleted title and body included — after the removal." The batch reads
+ * and writes later; so does the projection. Only the batch was guarded.
+ *
+ * The interleaving is forced inside a real read, through the `source` seam the stack already
+ * exposes for exactly that, rather than by hoping two promises land in the right order.
+ */
+describe('a projection overtaken by the delete it did not see', () => {
+  const turnstile = new Turnstile<string>();
+  /** The document whose `factsFor` should park, once, after it has read live facts. */
+  let parkOn: DocumentId | null = null;
+
+  class OvertakenSourceReader extends PrismaSearchSourceReader {
+    override async factsFor(documentId: DocumentId) {
+      const facts = await super.factsFor(documentId);
+      // Parked *after* the read: the projection now holds a live document's facts and has written
+      // nothing. That is the window the delete lands in.
+      if (parkOn === documentId) {
+        parkOn = null;
+        await turnstile.park(String(documentId));
+      }
+      return facts;
+    }
+  }
+
+  it('leaves a deleted document unfindable, whichever projection writes last', async () => {
+    const overtaken = realSearchStack({
+      clock,
+      unitOfWork,
+      config: appConfig,
+      registry,
+      storage: library.storage,
+      storagePort: library.storagePort,
+      source: new OvertakenSourceReader(unitOfWork),
+    });
+
+    const document = await createDocument(
+      'Overtaken by its own deletion',
+      Buffer.from('%PDF-1.7\n% overtaken\n1 0 obj\n<<>>\nendobj\n'),
+      'overtaken.pdf',
+      'application/pdf',
+    );
+    await project(document.documentId);
+
+    // The control, and it is mandatory: an assertion that the document is unfindable passes just as
+    // well on a projection that never indexed it.
+    const before = await searchAs(asAlice, 'Overtaken');
+    expect(before.results.hits.map((hit) => hit.documentId)).toContain(String(document.documentId));
+
+    parkOn = document.documentId;
+    turnstile.arm(1);
+
+    // The edit's projection: it reads the document while it is live and parks with the entry it is
+    // about to write already built.
+    const stale = asSystem(() => overtaken.projection.project(document.documentId));
+    await turnstile.reached[0];
+
+    // The delete, and then the projection the lane runs for it — both from the test's own scope, so
+    // each opens its own transaction. `PrismaUnitOfWork.run` joins an ambient one, and a delete
+    // invoked from inside the parked projection's hook would silently become part of it.
+    const row = await owner.document.findUniqueOrThrow({
+      where: { id: String(document.documentId) },
+      select: { version: true },
+    });
+    await asAlice(() =>
+      library.documents.remove(String(document.documentId), row.version, 'Gone.'),
+    );
+    await project(document.documentId);
+    expect(
+      await owner.searchIndexEntry.count({ where: { documentId: String(document.documentId) } }),
+    ).toBe(0);
+
+    turnstile.release(0);
+    await stale;
+
+    // The invariant: the entry stays gone. This is the assertion the defect fails — the parked
+    // projection's write lands after the removal and puts the deleted document back.
+    expect(
+      await owner.searchIndexEntry.count({ where: { documentId: String(document.documentId) } }),
+    ).toBe(0);
+
+    // And said the way a reader would meet it, because a row nobody can find is a different claim
+    // from a row that is not there: the title is what search returns, and the body text with it.
+    const after = await searchAs(asAlice, 'Overtaken');
+    expect(after.results.hits.map((hit) => hit.documentId)).not.toContain(
+      String(document.documentId),
+    );
+  }, 120_000);
+});
