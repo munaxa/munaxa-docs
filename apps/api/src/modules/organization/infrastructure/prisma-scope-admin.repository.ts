@@ -414,6 +414,41 @@ export class PrismaScopeAdminRepository implements ScopeAdminRepository {
     this.requireOneRow(count, version);
   }
 
+  /**
+   * `FOR UPDATE` over the node, everything below it, and the parent it is moving to.
+   *
+   * The subtree is matched by prefix against the node's own path rather than resolved first, so
+   * nothing has to be read — and so nothing can be read *before* the lock — to know what to lock.
+   * A path is identifiers and separators, and neither `%` nor `_` can appear in one, so there is
+   * nothing in it for `LIKE` to interpret.
+   *
+   * Holding a row is what makes its path stable: a department's path changes only when its own row
+   * is written, so once this holds the node and the parent, no ancestor of either can move away
+   * underneath the comparison that follows.
+   *
+   * `ORDER BY id`, over a set that contains every row the move goes on to write, is what makes two
+   * moves queue instead of deadlock: nothing here waits for a row after its own locking is done.
+   * The tenant predicate is here for the reason every other one in this file is: row-level
+   * security already scopes it, and the explicit condition is what makes the intent readable.
+   */
+  async lockForMove(id: string, parentId: string | null): Promise<void> {
+    const tenantId = this.tenantId();
+    await requireTransaction().$queryRaw`
+      SELECT id
+      FROM department
+      WHERE tenant_id = ${tenantId}::uuid
+        AND (
+          id = ${id}::uuid
+          OR id = ${parentId}::uuid
+          OR path LIKE (
+            SELECT path FROM department
+            WHERE id = ${id}::uuid AND tenant_id = ${tenantId}::uuid
+          ) || '.%'
+        )
+      ORDER BY id
+      FOR UPDATE`;
+  }
+
   async departmentSubtree(path: string): Promise<readonly SubtreeNode[]> {
     const rows = await requireTransaction().department.findMany({
       where: {

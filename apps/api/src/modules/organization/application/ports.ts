@@ -191,6 +191,24 @@ export interface ScopeAdminRepository {
   /** Everything at or below a department, by path prefix. Live rows only. */
   departmentSubtree(path: string): Promise<readonly SubtreeNode[]>;
   /**
+   * Holds everything a move will write, and the row it is moving to, before it reads any of it.
+   *
+   * A move decides from a *set* — `checkPlacement` compares this node's path with the candidate
+   * parent's, and `subtreeFitsUnder` measures the snapshot about to be rewritten — and the version
+   * guard underneath covers one row, the node the caller named. So two moves could each decide
+   * from where the other used to be and both commit, leaving two departments naming each other as
+   * parent. Either half of that is the cycle `checkTreePlacement` exists to refuse.
+   *
+   * The node's subtree is the whole of what the move writes, and the parent is the one row outside
+   * it whose answer the move depends on. Holding both is enough for two crossing moves to meet:
+   * for this node to end up inside the other's subtree, the other's destination must lie inside
+   * this one's — so each is holding a row the other must have.
+   *
+   * Ordered by identifier, and a superset of what the move writes, so two moves that reach for the
+   * same rows queue rather than deadlock.
+   */
+  lockForMove(id: string, parentId: string | null): Promise<void>;
+  /**
    * Re-parents a department and rewrites its whole subtree's paths, atomically.
    *
    * The subtree is rewritten in the same transaction rather than node by node afterwards: a move
