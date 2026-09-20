@@ -210,6 +210,26 @@ export class WorkflowAdminService {
     expectedVersion: number | undefined,
   ): Promise<WorkflowDefinitionRow> {
     return this.writer.write(async () => {
+      /*
+       * The set this publication decides over, held before anything reads it — Slice 108.
+       *
+       * "Exactly one live version" is a statement about the set, and it was made by two statements
+       * with nothing holding the rows between them: `publish` claims one draft, `deprecateOthers`
+       * retires whatever else is `PUBLISHED`. Two administrators publishing two drafts of one
+       * definition claim different rows, so neither blocks the other, and each then retires "the
+       * others" from a `READ COMMITTED` snapshot in which the other draft is still a draft. Both
+       * retire nothing, both succeed, and the definition is left with two published versions.
+       *
+       * Nothing detects it afterwards. `publishedVersionFor` orders by version descending and takes
+       * the first — its comment says the ordering is "what makes that true rather than assumed" —
+       * so the older publication simply waits, invisible, until the newer one is retired, and then
+       * becomes the rules every new approval runs by without anybody having published it.
+       *
+       * Taken before the reads as well as before the writes, so `current.publishedVersion` — which
+       * becomes the audit row's `before` — is the value this publication actually replaced.
+       */
+      await this.workflows.lockVersionsForPublish(definitionId);
+
       const current = await this.require(definitionId, false);
       requireVersion(expectedVersion, current.recordVersion);
 

@@ -391,3 +391,252 @@ describe('reaching across definitions', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });
+
+/**
+ * Two administrators publishing two drafts of one definition — Slice 108.
+ *
+ * ## What the product says
+ *
+ * "Exactly one live version" is written down four times. The port: *"Marks the previously published
+ * version deprecated, so exactly one is live at a time."* The service: *"Exactly one live version,
+ * so 'which rules apply to a new submission' has one answer."* `PrismaWorkflowVersionReader`, on the
+ * query that chooses the rules an approval runs by: *"Publishing deprecates the previous one in the
+ * same transaction, so there is only ever one — the ordering is what makes that true rather than
+ * assumed."* And the admin projection, taking a maximum instead of the first row *"because reading
+ * `[0]` would quietly pick a wrong answer if that invariant ever broke."*
+ *
+ * ## What it did
+ *
+ * The invariant is a statement about a *set*, and it was made by two statements with nothing holding
+ * the rows between them: `publish` claims one draft `DRAFT → PUBLISHED`, and `deprecateOthers`
+ * retires whatever else is `PUBLISHED`. Two administrators publishing two different drafts claim
+ * different rows, so neither blocks the other, and each then retires "the others" from a
+ * `READ COMMITTED` snapshot in which the other draft is *still a draft*. Both retire nothing. Both
+ * succeed. The definition is left with two published versions.
+ *
+ * Nothing detects it afterwards, and the defensive reads are what hide it: `publishedVersionFor`
+ * orders by version descending, so the newer publication answers for both and the older one simply
+ * waits. It surfaces when somebody retires the live version — an ordinary administrative act, which
+ * should leave the definition with no published version and new submissions refused with "this
+ * workflow has no published version". Instead the stale version silently becomes the rules every new
+ * approval runs by, without anybody having published it.
+ *
+ * ## What proves it
+ *
+ * The fix is mutual exclusion, so no barrier can hold two publications open at once after it — the
+ * interleaving the defect needs is exactly the one the fix forbids, and a two-caller turnstile
+ * downstream of the lock would hang rather than reproduce. The evidence is therefore in two parts,
+ * the shape Slices 104 and 107 settled on: the **outcome**, from genuinely concurrent publications,
+ * and the **mechanism**, from a second database session probing with `FOR UPDATE NOWAIT` while a
+ * publication is parked mid-transaction.
+ *
+ * The probe names a draft the publication never writes — `publish` touches only its own row and
+ * `deprecateOthers` only published ones — so before the fix that row was free and after it is held.
+ */
+describe('two versions of one definition published at the same moment', () => {
+  /**
+   * The real repository, subclassed: a place to stand inside a publication's transaction, after it
+   * has taken its lock, made its claim and retired the others.
+   *
+   * `deprecateOthers` is the last statement of the unit of work, so parking there holds the whole
+   * decision open — which is the moment the probe below asks what it is holding. One caller only:
+   * a second would be blocked by the very lock under test and could never arrive.
+   */
+  class ParkedPublish extends PrismaWorkflowAdminRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+
+    override async deprecateOthers(definitionId: string, exceptVersionId: string): Promise<void> {
+      await super.deprecateOthers(definitionId, exceptVersionId);
+      const gate = this.admit;
+      if (gate !== null) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+    }
+  }
+
+  /** A definition with three drafts: one to publish, one to race it, one for the probe to name. */
+  async function threeDrafts(): Promise<{
+    id: string;
+    recordVersion: number;
+    v1: string;
+    v2: string;
+    v3: string;
+  }> {
+    const definition = await aDefinition();
+    await asAdmin(() => workflows.addDraft(definition.id, definitionWith('Second')));
+    const read = await asAdmin(() => workflows.addDraft(definition.id, definitionWith('Third')));
+    const at = (n: number): string =>
+      read.versions.find((version) => version.version === n)?.id ?? '';
+    return {
+      id: definition.id,
+      recordVersion: read.recordVersion,
+      v1: at(1),
+      v2: at(2),
+      v3: at(3),
+    };
+  }
+
+  async function statesOf(definitionId: string): Promise<Record<number, string>> {
+    const rows = await owner.workflowVersion.findMany({
+      where: { definitionId },
+      orderBy: { version: 'asc' },
+      select: { version: true, state: true },
+    });
+    return Object.fromEntries(rows.map((row) => [row.version, row.state]));
+  }
+
+  async function publishedCount(definitionId: string): Promise<number> {
+    return owner.workflowVersion.count({
+      where: { definitionId, state: WorkflowVersionState.PUBLISHED },
+    });
+  }
+
+  /**
+   * Whether a second session can take a lock of its own on a version row.
+   *
+   * `owner` is a separate `PrismaClient` and therefore a separate backend, which is the only way to
+   * ask whether a lock is held: a probe on the same connection would be inside the transaction
+   * holding it and would always succeed. `NOWAIT` rather than a wait with a deadline — the question
+   * is whether the row is held *now*, and a probe that waited would be one somebody has to choose a
+   * duration for. `55P03` is PostgreSQL's "could not obtain lock", and here it is the answer.
+   *
+   * Both strengths are asked. Two publications that could each take a *shared* lock would read the
+   * same set and reach the same wrong conclusion, so "held" has to mean held exclusively.
+   */
+  async function probeVersion(
+    mode: 'UPDATE' | 'SHARE',
+    versionId: string,
+  ): Promise<'LOCKED' | 'FREE'> {
+    try {
+      await owner.$queryRawUnsafe(
+        `SELECT id FROM workflow_version WHERE id = $1::uuid FOR ${mode} NOWAIT`,
+        versionId,
+      );
+      return 'FREE';
+    } catch (error) {
+      if (/55P03|could not obtain lock/i.test(String(error))) {
+        return 'LOCKED';
+      }
+      throw error;
+    }
+  }
+
+  it('retires the previous one when the two are published one after the other', async () => {
+    // The serial answer the concurrent one has to match. Without it every assertion below could
+    // pass against a product that never published anything at all.
+    const definition = await threeDrafts();
+
+    await asAdmin(() => workflows.publish(definition.id, definition.v2, definition.recordVersion));
+    expect(await statesOf(definition.id)).toMatchObject({ 2: WorkflowVersionState.PUBLISHED });
+
+    await asAdmin(() => workflows.publish(definition.id, definition.v3, definition.recordVersion));
+    expect(await statesOf(definition.id)).toMatchObject({
+      1: WorkflowVersionState.DRAFT,
+      2: WorkflowVersionState.DEPRECATED,
+      3: WorkflowVersionState.PUBLISHED,
+    });
+    expect(await publishedCount(definition.id)).toBe(1);
+  });
+
+  it('leaves exactly one published when the two are published at the same moment', async () => {
+    const definition = await threeDrafts();
+
+    // Two requests, two scopes, two transactions — two administrators pressing publish at once. No
+    // barrier: the lock decides the order, and either order gives the same answer.
+    await Promise.all([
+      asAdmin(() => workflows.publish(definition.id, definition.v2, definition.recordVersion)),
+      asAdmin(() => workflows.publish(definition.id, definition.v3, definition.recordVersion)),
+    ]);
+
+    expect(await publishedCount(definition.id)).toBe(1);
+  });
+
+  it('refuses new approvals once the live version is retired, rather than promoting a stale one', async () => {
+    // The cost of the defect, asserted where it is actually paid. With two versions left published,
+    // retiring the live one does not retire the definition — it silently hands every new approval
+    // to rules nobody published.
+    const definition = await threeDrafts();
+
+    await Promise.all([
+      asAdmin(() => workflows.publish(definition.id, definition.v2, definition.recordVersion)),
+      asAdmin(() => workflows.publish(definition.id, definition.v3, definition.recordVersion)),
+    ]);
+
+    const live = await asAdmin(() => workflows.get(definition.id));
+    const liveVersionId =
+      live.versions.find((version) => version.state === WorkflowVersionState.PUBLISHED)?.id ?? '';
+    await asAdmin(() => workflows.deprecate(definition.id, liveVersionId, live.recordVersion));
+
+    const after = await asAdmin(() => workflows.get(definition.id));
+    expect(after.publishedVersion).toBeNull();
+    expect(await publishedCount(definition.id)).toBe(0);
+  });
+
+  it('holds the definition’s versions from before its first read until it commits', async () => {
+    // The mechanism, observed rather than inferred. The probe names version 1 — a draft this
+    // publication never writes, since `publish` touches only its own row and `deprecateOthers` only
+    // published ones — so before the fix this row was free while the publication was in flight.
+    const definition = await threeDrafts();
+
+    const parking = new ParkedPublish(stamps);
+    const racing = new WorkflowAdminService(parking, writer);
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const publishing = asAdmin(() =>
+      racing.publish(definition.id, definition.v3, definition.recordVersion),
+    );
+    await atDecision;
+
+    expect(await probeVersion('UPDATE', definition.v1)).toBe('LOCKED');
+    expect(await probeVersion('SHARE', definition.v1)).toBe('LOCKED');
+
+    admit();
+    await publishing;
+
+    // And released with the transaction, not held past it.
+    expect(await probeVersion('UPDATE', definition.v1)).toBe('FREE');
+  });
+
+  it('holds only its own definition’s versions', async () => {
+    // A lock that took the tenant's versions would pass the probe above and stall every unrelated
+    // publication in the tenant behind one. The scope is asserted, not assumed.
+    const definition = await threeDrafts();
+    const bystander = await threeDrafts();
+
+    const parking = new ParkedPublish(stamps);
+    const racing = new WorkflowAdminService(parking, writer);
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const publishing = asAdmin(() =>
+      racing.publish(definition.id, definition.v3, definition.recordVersion),
+    );
+    await atDecision;
+
+    expect(await probeVersion('UPDATE', definition.v1)).toBe('LOCKED');
+    expect(await probeVersion('UPDATE', bystander.v1)).toBe('FREE');
+
+    admit();
+    await publishing;
+  });
+});

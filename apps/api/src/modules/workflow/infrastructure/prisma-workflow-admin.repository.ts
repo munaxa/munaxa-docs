@@ -203,6 +203,31 @@ export class PrismaWorkflowAdminRepository implements WorkflowAdminRepository {
     }
   }
 
+  /**
+   * `SELECT … FOR UPDATE` over a definition's versions — Slice 108.
+   *
+   * Raw because Prisma cannot express `FOR UPDATE`, the same shape `lockFoldersForMove`,
+   * `lockForDocument` and `lockInstance` use for the same reason: a decision read from several rows
+   * and then written needs those rows held while it is made.
+   *
+   * One statement rather than a sorted loop, because the deadlock a loop prevents cannot arise
+   * here. `lockFoldersForMove` names two folders chosen by the caller, so two callers can name
+   * overlapping pairs in opposite orders; this names *every* version of one definition, so two
+   * callers' row sets are either identical or disjoint. `ORDER BY id` is kept anyway so the order
+   * is a property of the statement rather than of the plan.
+   *
+   * Every version, not only the published one: the row this publication is about to retire is the
+   * row a concurrent publication has not written yet, so a predicate on `state` would leave exactly
+   * the row that matters unlocked.
+   */
+  async lockVersionsForPublish(definitionId: string): Promise<void> {
+    await requireTransaction().$queryRaw`
+      SELECT id FROM workflow_version
+      WHERE tenant_id = ${this.tenantId()}::uuid AND definition_id = ${definitionId}::uuid
+      ORDER BY id
+      FOR UPDATE`;
+  }
+
   async publish(versionId: string, at: Date, by: string | null): Promise<void> {
     const { count } = await requireTransaction().workflowVersion.updateMany({
       where: { id: versionId, tenantId: this.tenantId(), state: WorkflowVersionState.DRAFT },

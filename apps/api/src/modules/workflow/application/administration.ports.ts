@@ -105,6 +105,16 @@ export interface WorkflowAdminRepository {
   }): Promise<number>;
   /** Replaces a draft's body. Refused for anything else by the service, and by the state check here. */
   updateDraft(versionId: string, definition: unknown): Promise<void>;
+  /**
+   * Holds a definition's versions for the rest of the transaction — Slice 108.
+   *
+   * Taken by `publish` before it claims, because "exactly one live version" is a statement about
+   * the *set*: the claim moves one row to `PUBLISHED` and `deprecateOthers` retires the rest, and
+   * between the two there is nothing stopping a second publication of a different draft from
+   * reading the set before this one has committed. Two publications of one definition lock the
+   * same rows and therefore queue; two of different definitions lock disjoint rows and do not meet.
+   */
+  lockVersionsForPublish(definitionId: string): Promise<void>;
   publish(versionId: string, at: Date, by: string | null): Promise<void>;
   /** Marks the previously published version deprecated, so exactly one is live at a time. */
   deprecateOthers(definitionId: string, exceptVersionId: string): Promise<void>;
