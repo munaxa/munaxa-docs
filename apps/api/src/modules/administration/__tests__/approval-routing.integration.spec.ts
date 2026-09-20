@@ -19,6 +19,7 @@ import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
+import type { AdministeredWriter, RecordStamps } from '../../../core/persistence';
 import { realWriteStack } from '../../../testing/real-collaborators';
 import { sharedDatabase } from '../../../testing/tenant-database';
 import { ApprovalRoutingService } from '../application/approval-routing.service';
@@ -61,6 +62,9 @@ const GRACE = asId<UserId>(uuidv7());
 
 let owner: PrismaClient;
 let routing: ApprovalRoutingService;
+/** Hoisted so a case can compose a subclassed repository against the same clock — Slice 111. */
+let stamps: RecordStamps;
+let writer: AdministeredWriter;
 
 let counter = 0;
 function unique(prefix: string): string {
@@ -91,7 +95,7 @@ beforeAll(async () => {
     database: { url: APP_URL, poolSize: 10 },
   } as unknown as AppConfig;
   const unitOfWork = new PrismaUnitOfWork(sharedDatabase(appConfig, logger, APP_URL));
-  const { stamps, writer } = realWriteStack(clock, unitOfWork);
+  ({ stamps, writer } = realWriteStack(clock, unitOfWork));
   routing = new ApprovalRoutingService(new PrismaApprovalRoutingRepository(stamps), writer);
 
   owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
@@ -352,5 +356,64 @@ describe('working calendars', () => {
     // calendar, so the deadline a screen promises is the deadline the engine enforces.
     const due = deadlineFor(FIXED_NOW, parseDuration('P3D')!, 'WORKING_DAYS', view);
     expect(due.toISOString()).toBe('2026-03-06T09:00:00.000Z');
+  });
+});
+
+/**
+ * Two administrators creating one group key at the same moment — Slice 111.
+ *
+ * `uq_approval_group_tenant_key` is the only index a caller can collide on here, so the refusal is
+ * determined: the loser of the race is owed exactly what the second-comer a moment later already
+ * gets. Before the translation it met a raw `P2002`, which `AllExceptionsFilter` could only render
+ * as a `500` — the shape Slice 63 set out to remove and `PrismaIdentityAdminRepository` already
+ * removes for `user` and `role`.
+ */
+describe('two administrators creating one group key at once', () => {
+  it('refuses the second of two sequential creates', async () => {
+    // The answer the concurrent loser has to match.
+    const key = unique('group-');
+    await as(() => routing.createGroup({ key, name: 'First', memberIds: [ADA] }));
+    await expect(
+      as(() => routing.createGroup({ key, name: 'Second', memberIds: [ADA] })),
+    ).rejects.toMatchObject({ code: 'DUPLICATE' });
+  });
+
+  it('gives the concurrent loser the same refusal, not a raw database error', async () => {
+    const key = unique('group-');
+    let waiting: (() => void)[] = [];
+    let armed = false;
+    const gate = async (): Promise<void> => {
+      if (waiting.length + 1 >= 2) {
+        for (const admit of waiting) admit();
+        waiting = [];
+        return;
+      }
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    };
+    class Paired extends PrismaApprovalRoutingRepository {
+      override async groupKeyTaken(candidate: string, exceptId: string | null): Promise<boolean> {
+        const taken = await super.groupKeyTaken(candidate, exceptId);
+        if (armed) await gate();
+        return taken;
+      }
+    }
+    const racing = new ApprovalRoutingService(new Paired(stamps), writer);
+
+    armed = true;
+    const results = await Promise.allSettled([
+      as(() => racing.createGroup({ key, name: 'One', memberIds: [ADA] })),
+      as(() => racing.createGroup({ key, name: 'Two', memberIds: [GRACE] })),
+    ]);
+    armed = false;
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const loser = results.find((r) => r.status === 'rejected');
+    expect((loser?.status === 'rejected' ? loser.reason : null) as unknown).toMatchObject({
+      code: 'DUPLICATE',
+      details: { field: 'key' },
+    });
+    expect(
+      await owner.approvalGroup.count({ where: { tenantId: TENANT, key, deletedAt: null } }),
+    ).toBe(1);
   });
 });

@@ -4,7 +4,8 @@ import { Prisma } from '@prisma/client';
 import { UserStatus, WorkflowVersionState } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
-import { VersionConflictError } from '../../../core/errors/application-errors';
+import { DuplicateError, VersionConflictError } from '../../../core/errors/application-errors';
+import { isUniqueViolationOn } from './prisma-configuration.repository';
 import {
   RecordStamps,
   deletedCondition,
@@ -101,9 +102,11 @@ export class PrismaApprovalRoutingRepository implements ApprovalRoutingRepositor
     readonly name: string;
     readonly description: string | null;
   }): Promise<void> {
-    await requireTransaction().approvalGroup.create({
-      data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
-    });
+    await this.claimingTheGroupKey(() =>
+      requireTransaction().approvalGroup.create({
+        data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+      }),
+    );
   }
 
   async updateGroup(
@@ -111,10 +114,12 @@ export class PrismaApprovalRoutingRepository implements ApprovalRoutingRepositor
     version: number,
     patch: { name?: string; description?: string | null; isActive?: boolean },
   ): Promise<void> {
-    const { count } = await requireTransaction().approvalGroup.updateMany({
-      where: { id, tenantId: this.tenantId(), version },
-      data: { ...patch, ...this.stamps.update(), version: version + 1 },
-    });
+    const { count } = await this.claimingTheGroupKey(() =>
+      requireTransaction().approvalGroup.updateMany({
+        where: { id, tenantId: this.tenantId(), version },
+        data: { ...patch, ...this.stamps.update(), version: version + 1 },
+      }),
+    );
     if (count === 0) {
       throw new VersionConflictError(version, version);
     }
@@ -139,13 +144,15 @@ export class PrismaApprovalRoutingRepository implements ApprovalRoutingRepositor
   }
 
   async setGroupDeleted(id: string, version: number, deleted: boolean): Promise<void> {
-    const { count } = await requireTransaction().approvalGroup.updateMany({
-      where: { id, tenantId: this.tenantId(), version },
-      data: {
-        ...(deleted ? this.stamps.deletion() : this.stamps.restoration()),
-        version: version + 1,
-      },
-    });
+    const { count } = await this.claimingTheGroupKey(() =>
+      requireTransaction().approvalGroup.updateMany({
+        where: { id, tenantId: this.tenantId(), version },
+        data: {
+          ...(deleted ? this.stamps.deletion() : this.stamps.restoration()),
+          version: version + 1,
+        },
+      }),
+    );
     if (count === 0) {
       throw new VersionConflictError(version, version);
     }
@@ -382,6 +389,26 @@ export class PrismaApprovalRoutingRepository implements ApprovalRoutingRepositor
            )
       GROUP BY k.key`;
     return new Map(rows.map((row) => [row.key, Number(row.uses)]));
+  }
+
+  /**
+   * The group key claim: one live approval group per key in a tenant — Slice 111.
+   *
+   * `uq_approval_group_tenant_key` is the only index a caller can collide on here, so the refusal
+   * is determined and the same one `groupKeyTaken` produces a moment earlier. The reason it is
+   * needed at all is that the read is a moment old: two administrators creating the same key, or
+   * one restoring a group whose key another has just taken, both reach the index having each been
+   * told the key was free.
+   */
+  private async claimingTheGroupKey<TResult>(write: () => Promise<TResult>): Promise<TResult> {
+    try {
+      return await write();
+    } catch (error) {
+      if (isUniqueViolationOn(error, 'ApprovalGroup')) {
+        throw new DuplicateError('approval group', 'key');
+      }
+      throw error;
+    }
   }
 
   private tenantId(): string {

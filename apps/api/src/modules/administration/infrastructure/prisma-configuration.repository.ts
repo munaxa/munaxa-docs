@@ -1,11 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 import type { SequenceResetScopeKey } from '@edms/domain';
 import { ancestorIdsOf, subtreePrefix } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
-import { VersionConflictError } from '../../../core/errors/application-errors';
+import { DuplicateError, VersionConflictError } from '../../../core/errors/application-errors';
 import {
   RecordStamps,
   deletedCondition,
@@ -49,6 +49,64 @@ import {
  * a row written by an older release, or edited by hand, must not reach a formatter as a shape it
  * cannot render.
  */
+/**
+ * What a caller can collide on, per configuration kind — Slice 111.
+ *
+ * Every write below reaches a unique index after a `…Taken` read that is already a moment old, so
+ * the loser of two administrators typing the same code meets `P2002` rather than the refusal the
+ * second-comer gets a second later. Slice 63 settled how that is repaired: *translate* rather than
+ * tolerate, because a unique violation aborts the transaction and a loser that needed to read
+ * could not recover — "they need a different exception, and the boundary that knows what the index
+ * means is where it belongs". `PrismaIdentityAdminRepository.claimingUnique` is that boundary for
+ * `user` and `role`; this is the same boundary for the administration kinds.
+ *
+ * **Only the kinds whose answer is determined.** Prisma reports `P2002` for these indexes with
+ * `meta.target` null — the model, and nothing about which index was hit. That is enough for a kind
+ * with one collidable index and not enough for one with several: a confidentiality level can
+ * collide on its code or on its rank, a category on its code or its sibling name, a working
+ * calendar on three. Naming one of those in the refusal would be guessing at which, so those kinds
+ * are absent here and their losers keep the error they had. What the caller should be told when the
+ * index is ambiguous is a product decision, not this repository's to make.
+ */
+const CLAIMS: Readonly<
+  Partial<Record<ConfigurationKindKey, { model: string; resource: string; field: string }>>
+> = Object.freeze({
+  [ConfigurationKind.RETENTION]: {
+    model: 'RetentionPolicy',
+    resource: 'retention policy',
+    field: 'code',
+  },
+  [ConfigurationKind.METADATA_FIELD]: {
+    model: 'MetadataField',
+    resource: 'metadata field',
+    field: 'key',
+  },
+  [ConfigurationKind.DOCUMENT_TYPE]: {
+    model: 'DocumentType',
+    resource: 'document type',
+    field: 'code',
+  },
+  [ConfigurationKind.NUMBERING_RULE]: {
+    model: 'NumberingRule',
+    resource: 'numbering rule',
+    field: 'key',
+  },
+});
+
+/**
+ * A unique violation on one named model, and nothing else.
+ *
+ * The model matters: a write that touches a parent and its children can raise `P2002` from either,
+ * and a translation that ignored which would rename somebody else's collision.
+ */
+export function isUniqueViolationOn(error: unknown, model: string): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002' &&
+    error.meta?.['modelName'] === model
+  );
+}
+
 @Injectable()
 export class PrismaConfigurationRepository implements ConfigurationRepository {
   constructor(private readonly stamps: RecordStamps) {}
@@ -181,8 +239,10 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     disposition: RetentionPolicyRow['disposition'];
     reviewRequired: boolean;
   }): Promise<void> {
-    await requireTransaction().retentionPolicy.create({
-      data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+    return this.claimingUnique(ConfigurationKind.RETENTION, async () => {
+      await requireTransaction().retentionPolicy.create({
+        data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+      });
     });
   }
 
@@ -191,11 +251,13 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     version: number,
     patch: Prisma.RetentionPolicyUpdateManyMutationInput,
   ): Promise<void> {
-    const { count } = await requireTransaction().retentionPolicy.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+    return this.claimingUnique(ConfigurationKind.RETENTION, async () => {
+      const { count } = await requireTransaction().retentionPolicy.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+      });
+      this.requireOneRow(count, version);
     });
-    this.requireOneRow(count, version);
   }
 
   // --- Categories ------------------------------------------------------------------------
@@ -404,16 +466,18 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     validation: MetadataValidation;
     isSearchable: boolean;
   }): Promise<void> {
-    await requireTransaction().metadataField.create({
-      data: {
-        ...input,
-        // Spread into a mutable array and object: Prisma's `InputJsonValue` is not satisfied by a
-        // `readonly` type, and casting instead would hide a genuine mismatch if the shape changed.
-        options: [...input.options],
-        validation: { ...input.validation },
-        tenantId: this.tenantId(),
-        ...this.stamps.creation(),
-      },
+    return this.claimingUnique(ConfigurationKind.METADATA_FIELD, async () => {
+      await requireTransaction().metadataField.create({
+        data: {
+          ...input,
+          // Spread into a mutable array and object: Prisma's `InputJsonValue` is not satisfied by a
+          // `readonly` type, and casting instead would hide a genuine mismatch if the shape changed.
+          options: [...input.options],
+          validation: { ...input.validation },
+          tenantId: this.tenantId(),
+          ...this.stamps.creation(),
+        },
+      });
     });
   }
 
@@ -428,19 +492,21 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
       isSearchable?: boolean;
     },
   ): Promise<void> {
-    const { count } = await requireTransaction().metadataField.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: {
-        ...(patch.name !== undefined && { name: patch.name }),
-        ...(patch.description !== undefined && { description: patch.description }),
-        ...(patch.options !== undefined && { options: [...patch.options] }),
-        ...(patch.validation !== undefined && { validation: { ...patch.validation } }),
-        ...(patch.isSearchable !== undefined && { isSearchable: patch.isSearchable }),
-        ...this.stamps.update(),
-        version: { increment: 1 },
-      },
+    return this.claimingUnique(ConfigurationKind.METADATA_FIELD, async () => {
+      const { count } = await requireTransaction().metadataField.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: {
+          ...(patch.name !== undefined && { name: patch.name }),
+          ...(patch.description !== undefined && { description: patch.description }),
+          ...(patch.options !== undefined && { options: [...patch.options] }),
+          ...(patch.validation !== undefined && { validation: { ...patch.validation } }),
+          ...(patch.isSearchable !== undefined && { isSearchable: patch.isSearchable }),
+          ...this.stamps.update(),
+          version: { increment: 1 },
+        },
+      });
+      this.requireOneRow(count, version);
     });
-    this.requireOneRow(count, version);
   }
 
   // --- Document types --------------------------------------------------------------------
@@ -497,8 +563,10 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     revisionLabelStyle: DocumentTypeRow['revisionLabelStyle'];
     isActive: boolean;
   }): Promise<void> {
-    await requireTransaction().documentType.create({
-      data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+    return this.claimingUnique(ConfigurationKind.DOCUMENT_TYPE, async () => {
+      await requireTransaction().documentType.create({
+        data: { ...input, tenantId: this.tenantId(), ...this.stamps.creation() },
+      });
     });
   }
 
@@ -507,11 +575,13 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     version: number,
     patch: Prisma.DocumentTypeUpdateManyMutationInput,
   ): Promise<void> {
-    const { count } = await requireTransaction().documentType.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+    return this.claimingUnique(ConfigurationKind.DOCUMENT_TYPE, async () => {
+      const { count } = await requireTransaction().documentType.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: { ...patch, ...this.stamps.update(), version: { increment: 1 } },
+      });
+      this.requireOneRow(count, version);
     });
-    this.requireOneRow(count, version);
   }
 
   async replaceTypeFields(documentTypeId: string, fields: readonly TypeField[]): Promise<void> {
@@ -588,14 +658,16 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     reserveOnSubmit: boolean;
     strictGapless: boolean;
   }): Promise<void> {
-    await requireTransaction().numberingRule.create({
-      data: {
-        ...input,
-        segments: [...input.segments],
-        resetScope: [...input.resetScope],
-        tenantId: this.tenantId(),
-        ...this.stamps.creation(),
-      },
+    return this.claimingUnique(ConfigurationKind.NUMBERING_RULE, async () => {
+      await requireTransaction().numberingRule.create({
+        data: {
+          ...input,
+          segments: [...input.segments],
+          resetScope: [...input.resetScope],
+          tenantId: this.tenantId(),
+          ...this.stamps.creation(),
+        },
+      });
     });
   }
 
@@ -613,22 +685,24 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
       strictGapless?: boolean;
     },
   ): Promise<void> {
-    const { count } = await requireTransaction().numberingRule.updateMany({
-      where: { id, tenantId: this.tenantId(), version, deletedAt: null },
-      data: {
-        ...(patch.key !== undefined && { key: patch.key }),
-        ...(patch.name !== undefined && { name: patch.name }),
-        ...(patch.description !== undefined && { description: patch.description }),
-        ...(patch.separator !== undefined && { separator: patch.separator }),
-        ...(patch.segments !== undefined && { segments: [...patch.segments] }),
-        ...(patch.resetScope !== undefined && { resetScope: [...patch.resetScope] }),
-        ...(patch.reserveOnSubmit !== undefined && { reserveOnSubmit: patch.reserveOnSubmit }),
-        ...(patch.strictGapless !== undefined && { strictGapless: patch.strictGapless }),
-        ...this.stamps.update(),
-        version: { increment: 1 },
-      },
+    return this.claimingUnique(ConfigurationKind.NUMBERING_RULE, async () => {
+      const { count } = await requireTransaction().numberingRule.updateMany({
+        where: { id, tenantId: this.tenantId(), version, deletedAt: null },
+        data: {
+          ...(patch.key !== undefined && { key: patch.key }),
+          ...(patch.name !== undefined && { name: patch.name }),
+          ...(patch.description !== undefined && { description: patch.description }),
+          ...(patch.separator !== undefined && { separator: patch.separator }),
+          ...(patch.segments !== undefined && { segments: [...patch.segments] }),
+          ...(patch.resetScope !== undefined && { resetScope: [...patch.resetScope] }),
+          ...(patch.reserveOnSubmit !== undefined && { reserveOnSubmit: patch.reserveOnSubmit }),
+          ...(patch.strictGapless !== undefined && { strictGapless: patch.strictGapless }),
+          ...this.stamps.update(),
+          version: { increment: 1 },
+        },
+      });
+      this.requireOneRow(count, version);
     });
-    this.requireOneRow(count, version);
   }
 
   // --- Shared ----------------------------------------------------------------------------
@@ -646,24 +720,26 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
       version: { increment: 1 },
     };
 
-    const { count } = await (() => {
-      switch (kind) {
-        case ConfigurationKind.CONFIDENTIALITY:
-          return tx.confidentialityLevel.updateMany({ where, data });
-        case ConfigurationKind.RETENTION:
-          return tx.retentionPolicy.updateMany({ where, data });
-        case ConfigurationKind.CATEGORY:
-          return tx.category.updateMany({ where, data });
-        case ConfigurationKind.METADATA_FIELD:
-          return tx.metadataField.updateMany({ where, data });
-        case ConfigurationKind.DOCUMENT_TYPE:
-          return tx.documentType.updateMany({ where, data });
-        case ConfigurationKind.NUMBERING_RULE:
-          return tx.numberingRule.updateMany({ where, data });
-        default:
-          return Promise.resolve({ count: 0 });
-      }
-    })();
+    const { count } = await this.claimingUnique(kind, () =>
+      (() => {
+        switch (kind) {
+          case ConfigurationKind.CONFIDENTIALITY:
+            return tx.confidentialityLevel.updateMany({ where, data });
+          case ConfigurationKind.RETENTION:
+            return tx.retentionPolicy.updateMany({ where, data });
+          case ConfigurationKind.CATEGORY:
+            return tx.category.updateMany({ where, data });
+          case ConfigurationKind.METADATA_FIELD:
+            return tx.metadataField.updateMany({ where, data });
+          case ConfigurationKind.DOCUMENT_TYPE:
+            return tx.documentType.updateMany({ where, data });
+          case ConfigurationKind.NUMBERING_RULE:
+            return tx.numberingRule.updateMany({ where, data });
+          default:
+            return Promise.resolve({ count: 0 });
+        }
+      })(),
+    );
     this.requireOneRow(count, version);
   }
 
@@ -883,6 +959,35 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     includeDeleted: boolean,
   ): { id: string; tenantId: string; deletedAt?: null } {
     return { id, tenantId: this.tenantId(), ...(includeDeleted ? {} : { deletedAt: null }) };
+  }
+
+  /**
+   * Runs a write that can reach a unique index, and answers the way the second-comer is answered.
+   *
+   * Translating rather than tolerating, Slice 63's rule: the violation has already aborted the
+   * transaction, so there is nothing left to read and nothing to recover — only the exception the
+   * caller meets, which must be the refusal rather than a `PrismaClientKnownRequestError` that
+   * `AllExceptionsFilter` can only render as a `500`.
+   *
+   * A kind with no entry in `CLAIMS` is left exactly as it was: its index is not determined by the
+   * error, and a refusal naming the wrong field would be worse than the one it replaced.
+   */
+  private async claimingUnique<TResult>(
+    kind: ConfigurationKindKey,
+    write: () => Promise<TResult>,
+  ): Promise<TResult> {
+    const claim = CLAIMS[kind];
+    if (claim === undefined) {
+      return write();
+    }
+    try {
+      return await write();
+    } catch (error) {
+      if (isUniqueViolationOn(error, claim.model)) {
+        throw new DuplicateError(claim.resource, claim.field);
+      }
+      throw error;
+    }
   }
 
   private tenantId(): string {
