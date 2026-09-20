@@ -714,11 +714,67 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     }
   }
 
+  /**
+   * The table a kind lives in, for the two statements that must name it in SQL — Slice 110.
+   *
+   * A map rather than a second `switch`, because the pair below has to agree: a kind whose
+   * reference is resolved under a lock and whose deletion takes a different lock would be a kind
+   * the two halves never meet on, which is the whole of the defect this closes.
+   */
+  private static readonly TABLES: Readonly<Record<ConfigurationKindKey, string>> = {
+    [ConfigurationKind.CONFIDENTIALITY]: 'confidentiality_level',
+    [ConfigurationKind.RETENTION]: 'retention_policy',
+    [ConfigurationKind.CATEGORY]: 'category',
+    [ConfigurationKind.METADATA_FIELD]: 'metadata_field',
+    [ConfigurationKind.DOCUMENT_TYPE]: 'document_type',
+    [ConfigurationKind.NUMBERING_RULE]: 'numbering_rule',
+    // Workflow's table. `liveIds` already reads it to answer "does this reference resolve"; holding
+    // the row it read is the same question asked so the answer survives the transaction.
+    [ConfigurationKind.WORKFLOW_DEFINITION]: 'workflow_definition',
+  };
+
+  /**
+   * Holds a configuration row for the rest of the transaction, exclusively — Slice 110.
+   *
+   * Taken by a delete before it counts what points at it. "Nothing live still points at this" is a
+   * decision about *other* tables, so no predicate on this row can carry it and no lock on those
+   * rows can either: the dependency is created by an `UPDATE` of a row that already exists, and a
+   * count cannot hold a row that is not there yet. What the two sides *can* meet on is the row
+   * being deleted, which is the one row both of them name — the delete exclusively here, and the
+   * reference resolution shared in `liveIds`.
+   */
+  async lockForDelete(kind: ConfigurationKindKey, id: string): Promise<void> {
+    const table = PrismaConfigurationRepository.TABLES[kind];
+    await requireTransaction().$queryRawUnsafe(
+      `SELECT id FROM ${table} WHERE id = $1::uuid AND tenant_id = $2::uuid FOR UPDATE`,
+      id,
+      this.tenantId(),
+    );
+  }
+
+  /**
+   * Resolves references, holding what it resolved — Slice 110.
+   *
+   * `FOR SHARE` rather than `FOR UPDATE`: two document types naming one confidentiality level are
+   * not in conflict with each other and must not queue, but either of them is in conflict with the
+   * deletion of that level. `FOR SHARE` conflicts with the plain `UPDATE` `setDeleted` issues, so
+   * the two orders both come out right — the delete waits and then sees the new dependant, or it
+   * goes first and this read comes back without the row, which is the refusal a caller naming a
+   * deleted reference already gets.
+   */
   async liveIds(kind: ConfigurationKindKey, ids: readonly string[]): Promise<readonly string[]> {
     if (ids.length === 0) {
       return [];
     }
     const tx = requireTransaction();
+    await tx.$queryRawUnsafe(
+      `SELECT id FROM ${PrismaConfigurationRepository.TABLES[kind]}
+       WHERE id = ANY($1::uuid[]) AND tenant_id = $2::uuid AND deleted_at IS NULL
+       ORDER BY id
+       FOR SHARE`,
+      [...ids],
+      this.tenantId(),
+    );
     const where = { tenantId: this.tenantId(), id: { in: [...ids] }, deletedAt: null };
     const select = { id: true } as const;
 

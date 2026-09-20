@@ -25,7 +25,7 @@ import { type RequestContext, runWithContext } from '../../../core/tenancy/tenan
 import { FakeCache } from '../../../testing/fake-ports';
 import { realWriteStack } from '../../../testing/real-collaborators';
 import { ConfigurationService } from '../application/configuration.service';
-import { ConfigurationKind } from '../application/administration.ports';
+import { ConfigurationKind, type ConfigurationKindKey } from '../application/administration.ports';
 import { NumberingAdminService } from '../application/numbering-admin.service';
 import { SettingsAdminService } from '../application/settings-admin.service';
 import { CachedSettingsReader } from '../infrastructure/cached-settings.reader';
@@ -1126,5 +1126,364 @@ describe('a category move that rewrites a subtree it no longer owns', () => {
     // describing where its ancestors used to be.
     expect((await rowOf(grandchild.id)).path).toBe(`${movedChild.path}.${grandchild.id}`);
     expect(await categoriesDisagreeingWithTheirParent()).toEqual([]);
+  });
+});
+
+/**
+ * Deleting a configuration row while something is being pointed at it — Slice 110.
+ *
+ * ## What the product says
+ *
+ * `ConfigurationService.delete` states the rule and its cost in the same breath: a row is removed
+ * only "provided nothing live still points at it", because otherwise "a document created afterwards
+ * would reference a row that is gone, and the type would be unusable in a way that only shows up
+ * when somebody tries to create a document". `NumberingAdminService.delete` carries the same guard
+ * for rules, with the same sentence for the administrator: *"Something still uses this rule. Change
+ * or remove it first."*
+ *
+ * ## What it did
+ *
+ * The guard is a count of *other* tables, and nothing held anything between the count and the
+ * delete. A rule with no dependants counts zero; a document type pointed at that rule in a
+ * transaction of its own resolves it through `liveIds` while it is still live and writes the
+ * pointer. The two touch different rows, so neither blocks the other. Both commit.
+ *
+ * The result is the state the guard exists to prevent: a **live** document type naming a
+ * **soft-deleted** numbering rule. `PrismaNumberIssueRepository.ruleShape` reads rules with
+ * `deleted_at IS NULL`, so the reference resolves to nothing — documents of that type can never be
+ * numbered, and `ck_document_numbered_when_published` means a document that cannot be numbered can
+ * never be published. Nothing reports it, because from each administrator's side the operation
+ * succeeded.
+ *
+ * ## What proves it
+ *
+ * The fix is mutual exclusion, so no barrier can hold both sides open at once after it — the
+ * interleaving the defect needs is the one the fix forbids, and a two-caller turnstile downstream
+ * of the lock would hang rather than reproduce. The evidence is therefore in two parts, the shape
+ * Slices 104, 107 and 108 settled on: the **outcome**, from the two operations run concurrently
+ * with no barrier, asserted in both orders; and the **mechanism**, from a second database session
+ * probing with `FOR UPDATE NOWAIT` while a delete is parked mid-transaction.
+ */
+describe('a configuration row deleted while something is being pointed at it', () => {
+  /**
+   * The real repository, subclassed: a place to stand inside a delete's transaction, after it has
+   * taken its lock and counted what points at it.
+   *
+   * `dependentsOf` is the statement whose answer the delete acts on, so parking there holds the
+   * decision open — which is the moment the probe asks what the transaction is holding. One caller
+   * only: a second would be blocked by the very lock under test and could never arrive.
+   */
+  class ParkedDelete extends PrismaConfigurationRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+    target: string | null = null;
+
+    override async dependentsOf(
+      kind: ConfigurationKindKey,
+      id: string,
+    ): Promise<Readonly<Record<string, number>>> {
+      const result = await super.dependentsOf(kind, id);
+      const gate = this.admit;
+      if (gate !== null && id === this.target) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+      return result;
+    }
+  }
+
+  /**
+   * One confidentiality level for the whole block.
+   *
+   * `ck_confidentiality_rank` caps a rank at 100 and `uq_confidentiality_tenant_rank` makes live
+   * ranks unique, so a helper that derived a fresh rank per call would run out by the time this
+   * block runs. Nothing here is about confidentiality — the types only need a valid one.
+   */
+  let sharedLevelId: string | null = null;
+  async function theLevel(): Promise<string> {
+    sharedLevelId ??= (await aLevel(97)).id;
+    return sharedLevelId;
+  }
+
+  /** A rule nothing uses, and a live type pointed at a different one. */
+  async function aSpareRuleAndType(): Promise<{
+    ruleId: string;
+    ruleVersion: number;
+    typeId: string;
+    typeVersion: number;
+  }> {
+    const spare = await asAdmin(() =>
+      numbering.create({
+        key: uniqueCode('rule-').toLowerCase(),
+        name: 'Spare',
+        separator: '-',
+        segments: [{ kind: NumberSegmentKind.SEQUENCE, padding: 4 }],
+        resetScope: [SequenceResetScope.NEVER],
+        reserveOnSubmit: true,
+        strictGapless: false,
+      }),
+    );
+    const held = await aRule();
+    const levelId = await theLevel();
+    const type = await asAdmin(() =>
+      config_.createDocumentType({
+        code: uniqueCode('DT'),
+        name: 'Procedure',
+        numberingRuleId: held.id,
+        defaultConfidentialityId: levelId,
+        revisionLabelStyle: RevisionLabelStyle.NUMERIC,
+        isActive: true,
+        fields: [],
+      }),
+    );
+    return {
+      ruleId: spare.id,
+      ruleVersion: spare.version,
+      typeId: type.id,
+      typeVersion: type.version,
+    };
+  }
+
+  /**
+   * Whether a second session can take the rule row for itself without waiting.
+   *
+   * `owner` is a separate `PrismaClient` and so a separate backend, which is the only way to ask
+   * whether a lock is held: a probe on the same connection would be inside the transaction holding
+   * it. `NOWAIT` rather than a wait with a deadline — the question is whether the row is held *now*.
+   * `55P03` is PostgreSQL's "could not obtain lock", and here it is the answer.
+   */
+  async function probeRule(mode: 'UPDATE' | 'SHARE', ruleId: string): Promise<'LOCKED' | 'FREE'> {
+    try {
+      await owner.$queryRawUnsafe(
+        `SELECT id FROM numbering_rule WHERE id = $1::uuid FOR ${mode} NOWAIT`,
+        ruleId,
+      );
+      return 'FREE';
+    } catch (error) {
+      if (/55P03|could not obtain lock/i.test(String(error))) {
+        return 'LOCKED';
+      }
+      throw error;
+    }
+  }
+
+  async function ruleIsLive(ruleId: string): Promise<boolean> {
+    return (await owner.numberingRule.count({ where: { id: ruleId, deletedAt: null } })) === 1;
+  }
+
+  async function typePointsAt(typeId: string): Promise<string> {
+    return (await owner.documentType.findUniqueOrThrow({ where: { id: typeId } })).numberingRuleId;
+  }
+
+  it('refuses the delete when the pointer was written first', async () => {
+    // The serial answer the concurrent one has to match, in one order.
+    const spare = await aSpareRuleAndType();
+
+    await asAdmin(() =>
+      config_.updateDocumentType(
+        spare.typeId,
+        { numberingRuleId: spare.ruleId },
+        spare.typeVersion,
+      ),
+    );
+    await expect(
+      asAdmin(() => numbering.delete(spare.ruleId, spare.ruleVersion)),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    expect(await ruleIsLive(spare.ruleId)).toBe(true);
+  });
+
+  it('refuses the pointer when the delete went first', async () => {
+    // And the other order: a reference to a row that is gone is refused by name.
+    const spare = await aSpareRuleAndType();
+
+    await asAdmin(() => numbering.delete(spare.ruleId, spare.ruleVersion));
+    await expect(
+      asAdmin(() =>
+        config_.updateDocumentType(
+          spare.typeId,
+          { numberingRuleId: spare.ruleId },
+          spare.typeVersion,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    expect(await typePointsAt(spare.typeId)).not.toBe(spare.ruleId);
+  });
+
+  it('never leaves a live type pointing at a deleted rule when the two run at once', async () => {
+    // Two administrators, two scopes, two transactions, no barrier: the lock decides the order and
+    // either order has to give one of the two serial answers above — never both succeeding.
+    const spare = await aSpareRuleAndType();
+
+    const results = await Promise.allSettled([
+      asAdmin(() => numbering.delete(spare.ruleId, spare.ruleVersion)),
+      asAdmin(() =>
+        config_.updateDocumentType(
+          spare.typeId,
+          { numberingRuleId: spare.ruleId },
+          spare.typeVersion,
+        ),
+      ),
+    ]);
+
+    // Exactly one of the two may succeed; which one is the lock's business, not this test's.
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+
+    // The invariant, whichever won: a live type never names a rule that is gone.
+    if ((await typePointsAt(spare.typeId)) === spare.ruleId) {
+      expect(await ruleIsLive(spare.ruleId)).toBe(true);
+    } else {
+      expect(await ruleIsLive(spare.ruleId)).toBe(false);
+    }
+  });
+
+  it('holds the rule from before it counts what points at it until it commits', async () => {
+    // The mechanism, observed rather than inferred. Before the fix the delete touched this row only
+    // at its final `UPDATE`, so while it was deciding the row was free for anyone to take.
+    const spare = await aSpareRuleAndType();
+
+    const parking = new ParkedDelete(stamps);
+    parking.target = spare.ruleId;
+    const racing = new NumberingAdminService(parking, outbox, writer);
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const deleting = asAdmin(() => racing.delete(spare.ruleId, spare.ruleVersion));
+    await atDecision;
+
+    expect(await probeRule('UPDATE', spare.ruleId)).toBe('LOCKED');
+    expect(await probeRule('SHARE', spare.ruleId)).toBe('LOCKED');
+
+    admit();
+    await deleting;
+
+    // And released with the transaction, not held past it.
+    expect(await probeRule('UPDATE', spare.ruleId)).toBe('FREE');
+  });
+
+  /**
+   * The same two statements, on the other delete that carries this guard.
+   *
+   * `ConfigurationService.delete` serves six kinds through one method, so a fix wired only into the
+   * numbering rule's own service would leave confidentiality levels, retention policies, categories
+   * and metadata fields exactly as they were. Deleting a confidentiality level a type is being
+   * pointed at is the same race with a different table, and it is asserted rather than assumed.
+   */
+  it('refuses a confidentiality level a type is being pointed at, when the two run at once', async () => {
+    const spare = await aLevel(95);
+    const held = await aRule();
+    const existingLevelId = await theLevel();
+    const type = await asAdmin(() =>
+      config_.createDocumentType({
+        code: uniqueCode('DT'),
+        name: 'Procedure',
+        numberingRuleId: held.id,
+        defaultConfidentialityId: existingLevelId,
+        revisionLabelStyle: RevisionLabelStyle.NUMERIC,
+        isActive: true,
+        fields: [],
+      }),
+    );
+
+    const results = await Promise.allSettled([
+      asAdmin(() => config_.delete(ConfigurationKind.CONFIDENTIALITY, spare.id, spare.version)),
+      asAdmin(() =>
+        config_.updateDocumentType(type.id, { defaultConfidentialityId: spare.id }, type.version),
+      ),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+
+    const stored = await owner.documentType.findUniqueOrThrow({ where: { id: type.id } });
+    const levelLive =
+      (await owner.confidentialityLevel.count({
+        where: { id: spare.id, deletedAt: null },
+      })) === 1;
+    // A live type never defaults to a level that is gone.
+    expect(stored.defaultConfidentialityId === spare.id ? levelLive : true).toBe(true);
+  });
+
+  it('holds the confidentiality level it is deleting, from before it counts', async () => {
+    // The mechanism on the shared delete, so the lock there is load-bearing too.
+    const spare = await aLevel(96);
+
+    const parking = new ParkedDelete(stamps);
+    parking.target = spare.id;
+    const racing = new ConfigurationService(parking, outbox, writer);
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const deleting = asAdmin(() =>
+      racing.delete(ConfigurationKind.CONFIDENTIALITY, spare.id, spare.version),
+    );
+    await atDecision;
+
+    const probe = async (mode: 'UPDATE' | 'SHARE'): Promise<'LOCKED' | 'FREE'> => {
+      try {
+        await owner.$queryRawUnsafe(
+          `SELECT id FROM confidentiality_level WHERE id = $1::uuid FOR ${mode} NOWAIT`,
+          spare.id,
+        );
+        return 'FREE';
+      } catch (error) {
+        if (/55P03|could not obtain lock/i.test(String(error))) {
+          return 'LOCKED';
+        }
+        throw error;
+      }
+    };
+    expect(await probe('UPDATE')).toBe('LOCKED');
+    expect(await probe('SHARE')).toBe('LOCKED');
+
+    admit();
+    await deleting;
+    expect(await probe('UPDATE')).toBe('FREE');
+  });
+
+  it('holds only the rule it is deleting', async () => {
+    // A lock that took the tenant's rules would pass the probe above and stall every unrelated
+    // administrative edit behind one delete. The scope is asserted, not assumed.
+    const spare = await aSpareRuleAndType();
+    const bystander = await aRule();
+
+    const parking = new ParkedDelete(stamps);
+    parking.target = spare.ruleId;
+    const racing = new NumberingAdminService(parking, outbox, writer);
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const deleting = asAdmin(() => racing.delete(spare.ruleId, spare.ruleVersion));
+    await atDecision;
+
+    expect(await probeRule('UPDATE', spare.ruleId)).toBe('LOCKED');
+    expect(await probeRule('UPDATE', bystander.id)).toBe('FREE');
+
+    admit();
+    await deleting;
   });
 });

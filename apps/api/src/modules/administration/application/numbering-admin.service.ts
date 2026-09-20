@@ -209,6 +209,11 @@ export class NumberingAdminService {
       const current = await this.require(id, false);
       requireVersion(expectedVersion, current.version);
 
+      // The rule, held before this asks what points at it — Slice 110, and the same reason
+      // `ConfigurationService.delete` states in full: the dependent count reads another table, and
+      // a document type can be pointed at this rule between the count and the delete.
+      await this.config.lockForDelete(ConfigurationKind.NUMBERING_RULE, id);
+
       const dependents = await this.config.dependentsOf(ConfigurationKind.NUMBERING_RULE, id);
       const blocking = Object.entries(dependents).filter(([, count]) => count > 0);
       if (blocking.length > 0) {

@@ -385,7 +385,18 @@ export interface ConfigurationRepository {
   ): Promise<void>;
   /** What still points at a configuration row, by kind, so a refusal can name it. */
   dependentsOf(kind: ConfigurationKindKey, id: string): Promise<Readonly<Record<string, number>>>;
-  /** Live identifiers among these, for validating a reference before it is written. */
+  /**
+   * Holds a configuration row exclusively for the rest of the transaction — Slice 110.
+   *
+   * Taken by a delete before it counts its dependants. The count is a question about other tables
+   * and the answer can change under it, so the two sides meet on the row being deleted instead:
+   * exclusively here, and shared in `liveIds` by whoever is about to point at it.
+   */
+  lockForDelete(kind: ConfigurationKindKey, id: string): Promise<void>;
+  /**
+   * Live identifiers among these, for validating a reference before it is written — and holding
+   * them, so the answer is still true when the reference is written (Slice 110).
+   */
   liveIds(kind: ConfigurationKindKey, ids: readonly string[]): Promise<readonly string[]>;
 }
 
