@@ -1487,3 +1487,270 @@ describe('a configuration row deleted while something is being pointed at it', (
     await deleting;
   });
 });
+
+/**
+ * Two administrators typing the same code at the same moment — Slice 111.
+ *
+ * ## What the product says
+ *
+ * Slice 63 settled what the loser of a read-then-write race is owed, and the rule is written into
+ * two repositories in as many words: the loser "must receive the same answer as somebody who simply
+ * signed twice in a row — which the service already produces — rather than a raw constraint error
+ * or a `500`". `PrismaIdentityAdminRepository.claimingUnique` is that rule implemented, for `user`
+ * and `role`, and its docblock states where such a translation belongs: *"the boundary that knows
+ * what the index means"*.
+ *
+ * ## What it did
+ *
+ * Administration never had that boundary. Every create here asks `…Taken` and then inserts, and the
+ * read is a moment old: two administrators creating the same code both read "free" and both insert.
+ * The index admits one. The loser met `P2002` — a `PrismaClientKnownRequestError`, which is neither
+ * a `DomainError` nor an `HttpException`, so `AllExceptionsFilter` could only render it as a **500**
+ * while the same request a second later is a clean `DUPLICATE`.
+ *
+ * Measured against the unfixed code, two creates of one code held at a turnstile between the
+ * `…Taken` read and the insert:
+ *
+ * ```
+ * CALLER-0 REJECTED {"domainCode":"P2002","className":"PrismaClientKnownRequestError",
+ *                    "meta":{"modelName":"ConfidentialityLevel","target":null}}
+ * CALLER-1 FULFILLED
+ * SEQUENTIAL-SECOND-COMER domainCode DUPLICATE
+ * ```
+ *
+ * ## What is deliberately not translated
+ *
+ * `meta.target` is null: Prisma names the model and not the index. That is enough for a kind with
+ * one collidable index and not enough for one with several — a confidentiality level can collide on
+ * its code or its rank, a category on its code or its sibling name, a working calendar on three.
+ * Those kinds keep the error they had, because a refusal naming the wrong field would be worse than
+ * the one it replaced, and choosing what to tell the caller there is a product decision. The cases
+ * below assert that boundary rather than leaving it to be discovered.
+ */
+describe('two administrators claiming one code at the same moment', () => {
+  /** Holds both callers between the `…Taken` read and the insert that follows it. */
+  function pairedRepository(): { repository: PrismaConfigurationRepository; arm: () => void } {
+    let waiting: (() => void)[] = [];
+    let armed = false;
+    const gate = async (): Promise<void> => {
+      if (waiting.length + 1 >= 2) {
+        for (const admit of waiting) admit();
+        waiting = [];
+        return;
+      }
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    };
+    class Paired extends PrismaConfigurationRepository {
+      override async numberingRuleKeyTaken(key: string, exceptId: string | null) {
+        const taken = await super.numberingRuleKeyTaken(key, exceptId);
+        if (armed) await gate();
+        return taken;
+      }
+      override async documentTypeCodeTaken(code: string, exceptId: string | null) {
+        const taken = await super.documentTypeCodeTaken(code, exceptId);
+        if (armed) await gate();
+        return taken;
+      }
+      override async confidentialityCodeTaken(code: string, exceptId: string | null) {
+        const taken = await super.confidentialityCodeTaken(code, exceptId);
+        if (armed) await gate();
+        return taken;
+      }
+    }
+    return {
+      repository: new Paired(stamps),
+      arm: () => {
+        armed = true;
+      },
+    };
+  }
+
+  function ruleInput(key: string, name: string) {
+    return {
+      key,
+      name,
+      separator: '-',
+      segments: [{ kind: NumberSegmentKind.SEQUENCE, padding: 4 }],
+      resetScope: [SequenceResetScope.NEVER],
+      reserveOnSubmit: true,
+      strictGapless: false,
+    };
+  }
+
+  it('refuses the second of two sequential creates with DUPLICATE', async () => {
+    // The answer the concurrent loser has to match. Without it the assertions below could pass
+    // against a product that refused every create.
+    const key = uniqueCode('rule-').toLowerCase();
+    await asAdmin(() => numbering.create(ruleInput(key, 'First')));
+    await expect(asAdmin(() => numbering.create(ruleInput(key, 'Second')))).rejects.toMatchObject({
+      code: 'DUPLICATE',
+    });
+  });
+
+  it('gives the concurrent loser the same DUPLICATE, not a raw database error', async () => {
+    const key = uniqueCode('rule-').toLowerCase();
+    const { repository, arm } = pairedRepository();
+    const racing = new NumberingAdminService(repository, outbox, writer);
+
+    arm();
+    const results = await Promise.allSettled([
+      asAdmin(() => racing.create(ruleInput(key, 'One'))),
+      asAdmin(() => racing.create(ruleInput(key, 'Two'))),
+    ]);
+
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    // The whole of the defect: a refusal the caller can read, rather than a 500.
+    // The field too, not only the code: a translation that named the wrong one would be a refusal
+    // pointing the administrator at a value they did not type.
+    expect(rejected[0]?.status === 'rejected' ? rejected[0].reason : null).toMatchObject({
+      code: 'DUPLICATE',
+      details: { field: 'key' },
+    });
+    // And the index still admitted exactly one.
+    expect(
+      await owner.numberingRule.count({ where: { tenantId: TENANT, key, deletedAt: null } }),
+    ).toBe(1);
+  });
+
+  it('gives the same answer on the document-type path', async () => {
+    // The translation is per kind, so a second kind is asserted: a fix wired into one insert would
+    // leave every other administration create exactly as it was.
+    const code = uniqueCode('DT');
+    const rule = await aRule();
+    const level = await aLevel(88);
+    const input = {
+      code,
+      name: 'Procedure',
+      numberingRuleId: rule.id,
+      defaultConfidentialityId: level.id,
+      revisionLabelStyle: RevisionLabelStyle.NUMERIC,
+      isActive: true,
+      fields: [],
+    };
+
+    const { repository, arm } = pairedRepository();
+    const racing = new ConfigurationService(repository, outbox, writer);
+
+    arm();
+    const results = await Promise.allSettled([
+      asAdmin(() => racing.createDocumentType(input)),
+      asAdmin(() => racing.createDocumentType({ ...input, name: 'Other' })),
+    ]);
+
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(rejected[0]?.status === 'rejected' ? rejected[0].reason : null).toMatchObject({
+      code: 'DUPLICATE',
+      details: { field: 'code' },
+    });
+    expect(
+      await owner.documentType.count({ where: { tenantId: TENANT, code, deletedAt: null } }),
+    ).toBe(1);
+  });
+
+  it('gives the same answer when a restore meets a key somebody else has taken', async () => {
+    // Restoring is the third write that reaches the index — `setDeleted` un-deletes a row whose key
+    // a live row may now hold — and it had the same raw error. The service re-checks first, so this
+    // is the same read-then-write a moment apart.
+    const key = uniqueCode('rule-').toLowerCase();
+    const original = await asAdmin(() => numbering.create(ruleInput(key, 'Original')));
+    await asAdmin(() => numbering.delete(original.id, original.version));
+
+    // Somebody takes the key while the first is in the recycle bin.
+    await asAdmin(() => numbering.create(ruleInput(key, 'Replacement')));
+
+    // The version the delete left behind — the restore is a write against the current row, and a
+    // stale version would be refused for the wrong reason.
+    const deleted = await owner.numberingRule.findUniqueOrThrow({ where: { id: original.id } });
+
+    // The restore is refused, and refused readably — through the repository, so the service's own
+    // re-check is bypassed exactly as a concurrent caller would bypass it.
+    await expect(
+      asAdmin(() =>
+        unitOfWork.run(() =>
+          repository.setDeleted(
+            ConfigurationKind.NUMBERING_RULE,
+            original.id,
+            deleted.version,
+            false,
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'DUPLICATE', details: { field: 'key' } });
+  });
+
+  it('does not dress a foreign-key refusal up as a duplicate', async () => {
+    /*
+     * The translation is narrow on purpose, and this is the narrowness asserted.
+     *
+     * `P2002` is a collision on a unique index; a `document_type` write can also fail on a
+     * reference that is not there, and the two are different refusals to a different question.
+     * Straight at the repository, skipping the service's `requireReferences` — the same door the
+     * workflow suite uses to prove a statement's own guard holds when the check above it is
+     * bypassed — so the error reaching the boundary is a foreign-key violation and nothing else.
+     */
+    const level = await aLevel(89);
+    await expect(
+      asAdmin(() =>
+        unitOfWork.run(() =>
+          repository.insertDocumentType({
+            id: uuidv7(),
+            code: uniqueCode('DT'),
+            name: 'Dangling',
+            description: null,
+            numberingRuleId: uuidv7(),
+            workflowDefinitionId: null,
+            retentionPolicyId: null,
+            defaultConfidentialityId: level.id,
+            revisionLabelStyle: RevisionLabelStyle.NUMERIC,
+            isActive: true,
+          }),
+        ),
+      ),
+    ).rejects.not.toMatchObject({ code: 'DUPLICATE' });
+  });
+
+  it('leaves a kind whose index the error does not name exactly as it was', async () => {
+    /*
+     * The boundary, asserted rather than assumed.
+     *
+     * A confidentiality level can collide on `uq_confidentiality_tenant_code` or on
+     * `uq_confidentiality_tenant_rank`, and `P2002` arrives with `meta.target` null — the model and
+     * nothing more. Translating here would mean naming a field this repository cannot know, so the
+     * kind is absent from `CLAIMS` and its loser keeps the error it had. This case exists so that
+     * the omission is a recorded decision rather than something a later reader repairs by guessing.
+     */
+    const code = uniqueCode('CL');
+    const { repository, arm } = pairedRepository();
+    const racing = new ConfigurationService(repository, outbox, writer);
+    const level = (rank: number, name: string) => ({
+      code,
+      name,
+      rank,
+      allowDownload: true,
+      allowPrint: true,
+      watermark: false,
+      requireReason: false,
+    });
+
+    arm();
+    const results = await Promise.allSettled([
+      asAdmin(() => racing.createConfidentiality(level(81, 'One'))),
+      asAdmin(() => racing.createConfidentiality(level(82, 'Two'))),
+    ]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const loser = results.find((r) => r.status === 'rejected');
+    expect(
+      (loser?.status === 'rejected' ? loser.reason : null) as { code?: string } | null,
+    ).toMatchObject({ code: 'P2002' });
+    // The data is still right — the index did its job; only the answer is undetermined.
+    expect(
+      await owner.confidentialityLevel.count({
+        where: { tenantId: TENANT, code, deletedAt: null },
+      }),
+    ).toBe(1);
+  });
+});
