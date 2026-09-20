@@ -996,32 +996,21 @@ describe('one code, one live node, however the second claim arrives', () => {
  *
  * These tests are the two administrators, at once, in both directions — and the third is the case
  * the guard must *not* refuse.
+ *
+ * **What changed under them in Slice 112, and what did not.** A move now holds the subtree it is
+ * about to rewrite, and the parent it is moving to, before it reads any of it. Every pair below
+ * touches a row inside the other's subtree, so none of them can both be deciding any more: they
+ * queue, and whichever goes second reads the tree the first one left and is right about it. The
+ * barriers are therefore gone — parking the first move now holds the very row the second one needs,
+ * which is the interleaving the lock exists to forbid — and what each test asserts is the ordered
+ * outcome rather than the race.
+ *
+ * The guard the block is named for is untouched and still in the repository, and the reason it is
+ * kept rather than removed is that it is what makes the ordering *checkable*: it is the statement
+ * that would refuse if a snapshot ever were stale, and every assertion below is that it does not
+ * have to.
  */
 describe('a move that rewrites a subtree it no longer owns', () => {
-  const turnstile = new Turnstile<string>();
-  /** Which move this test wants to stop at, between its snapshot and its writes. */
-  let parkOn: string | null = null;
-
-  class ParkingMoveRepository extends PrismaScopeAdminRepository {
-    override async moveDepartment(
-      input: Parameters<PrismaScopeAdminRepository['moveDepartment']>[0],
-    ): Promise<void> {
-      // Parked *here*: the service has already read the subtree and computed every new path, and
-      // has written nothing. That is the window the snapshot is stale in.
-      if (parkOn === `move:${input.id}`) {
-        await turnstile.park(`move:${input.id}`);
-      }
-      return super.moveDepartment(input);
-    }
-  }
-
-  const parking = new ScopeAdminService(
-    new ParkingMoveRepository(stamps),
-    outbox,
-    realAclResolver({ clock, unitOfWork }),
-    writer,
-  );
-
   let treeNumber = 0;
 
   /** `parent → child → grandchild` with a `sibling` beside the child, plus two roots to move to. */
@@ -1037,10 +1026,10 @@ describe('a move that rewrites a subtree it no longer owns', () => {
     treeNumber += 1;
     const suffix = `M${String(treeNumber).padStart(2, '0')}${String(Date.now()).slice(-4)}`;
     const parent = await asTenant(ACME, () =>
-      parking.createDepartment({ entityId, code: `PA${suffix}`, name: 'Parent' }),
+      service.createDepartment({ entityId, code: `PA${suffix}`, name: 'Parent' }),
     );
     const child = await asTenant(ACME, () =>
-      parking.createDepartment({
+      service.createDepartment({
         entityId,
         parentId: parent.id,
         code: `CH${suffix}`,
@@ -1048,7 +1037,7 @@ describe('a move that rewrites a subtree it no longer owns', () => {
       }),
     );
     const grandchild = await asTenant(ACME, () =>
-      parking.createDepartment({
+      service.createDepartment({
         entityId,
         parentId: child.id,
         code: `GC${suffix}`,
@@ -1056,7 +1045,7 @@ describe('a move that rewrites a subtree it no longer owns', () => {
       }),
     );
     const sibling = await asTenant(ACME, () =>
-      parking.createDepartment({
+      service.createDepartment({
         entityId,
         parentId: parent.id,
         code: `SB${suffix}`,
@@ -1064,10 +1053,10 @@ describe('a move that rewrites a subtree it no longer owns', () => {
       }),
     );
     const destination = await asTenant(ACME, () =>
-      parking.createDepartment({ entityId, code: `DE${suffix}`, name: 'Destination' }),
+      service.createDepartment({ entityId, code: `DE${suffix}`, name: 'Destination' }),
     );
     const elsewhere = await asTenant(ACME, () =>
-      parking.createDepartment({ entityId, code: `EL${suffix}`, name: 'Elsewhere' }),
+      service.createDepartment({ entityId, code: `EL${suffix}`, name: 'Elsewhere' }),
     );
     return { parent, child, grandchild, sibling, destination, elsewhere };
   }
@@ -1099,7 +1088,7 @@ describe('a move that rewrites a subtree it no longer owns', () => {
     // The control. Without it every assertion below passes on a service that moves nothing.
     const { parent, child, destination } = await tree();
     const moved = await asTenant(ACME, () =>
-      parking.moveDepartment(parent.id, destination.id, parent.version),
+      service.moveDepartment(parent.id, destination.id, parent.version),
     );
 
     expect(moved.path).toBe(pathFor(destination.path, parent.id));
@@ -1107,118 +1096,631 @@ describe('a move that rewrites a subtree it no longer owns', () => {
     expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
   });
 
-  it('refuses to rewrite a descendant that moved out while it was deciding', async () => {
-    const { parent, child, destination, elsewhere } = await tree();
-    parkOn = `move:${parent.id}`;
-    const base = turnstile.arm(1);
+  it('orders the two when a descendant moves out of the subtree', async () => {
+    /*
+     * Two administrators, at once: one moves the parent, the other moves the child out from under
+     * it. The second one's snapshot used to be able to go stale, and the guard refused it. The two
+     * now share the child and the grandchild — they are in the first move's subtree and are the
+     * second move's own — so they queue instead, and both are right.
+     */
+    const { parent, child, grandchild, destination, elsewhere } = await tree();
 
-    // The first administrator moves the parent. Its subtree snapshot, taken before it parks, still
-    // has the child under it.
-    const movingParent = asTenant(ACME, () =>
-      parking.moveDepartment(parent.id, destination.id, parent.version),
-    );
-    await turnstile.reached[base];
+    const outcomes = await Promise.allSettled([
+      asTenant(ACME, () => service.moveDepartment(parent.id, destination.id, parent.version)),
+      asTenant(ACME, () => service.moveDepartment(child.id, elsewhere.id, child.version)),
+    ]);
 
-    // The second administrator moves the child out, from its own scope and so its own transaction,
-    // and commits. This is the edit the first administrator's snapshot cannot know about.
-    parkOn = null;
-    const movedChild = await asTenant(ACME, () =>
-      parking.moveDepartment(child.id, elsewhere.id, child.version),
-    );
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(['fulfilled', 'fulfilled']);
+
+    // Whichever order they took, the child describes the ancestry it has and not the one it left:
+    // `departmentsOf` is `idsInPath(path)`, so a stale path is a stale set of ACL subjects.
+    const movedChild = await rowOf(child.id);
+    expect(movedChild.parentId).toBe(elsewhere.id);
     expect(movedChild.path).toBe(pathFor(elsewhere.path, child.id));
-
-    turnstile.release(base);
-    const outcome = await movingParent.then(
-      (value) => ({ kind: 'moved' as const, value, error: undefined }),
-      (error: unknown) => ({ kind: 'refused' as const, value: undefined, error }),
-    );
-
-    // Whatever the first move's own fate, the child must not be left describing an ancestry it does
-    // not have: `departmentsOf` is `idsInPath(path)`, so a stale path is a stale set of ACL
-    // subjects — the ancestors it no longer has reaching it, and the one it does not.
-    const after = await rowOf(child.id);
-    expect(after.parentId).toBe(elsewhere.id);
-    expect(after.path).toBe(pathFor(elsewhere.path, child.id));
-    expect(idsInPath(after.path)).not.toContain(parent.id);
+    expect(idsInPath(movedChild.path)).not.toContain(parent.id);
+    // And the grandchild went with it rather than being left behind under either mover's snapshot.
+    expect((await rowOf(grandchild.id)).path).toBe(pathFor(movedChild.path, grandchild.id));
+    expect((await rowOf(parent.id)).path).toBe(pathFor(destination.path, parent.id));
     expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
-
-    // And the loser is told, rather than committing a rewrite of a tree that changed under it.
-    expect(outcome.kind).toBe('refused');
-    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
   });
 
-  it('refuses when a descendant only moved to another branch of the same subtree', async () => {
+  it('orders the two when the descendant only moved within the same subtree', async () => {
     /*
-     * Why the guard refuses rather than quietly skipping the row it no longer recognises.
+     * The case the guard used to answer here, and what answers it now — Slice 112.
      *
-     * Here the node that moved is still inside the subtree being moved, so the rest of the snapshot
-     * is still wrong about it: the grandchild now hangs from the sibling, and the sibling's path is
-     * about to be rewritten. Skipping the one row whose parent changed would rewrite the sibling and
-     * leave the grandchild describing where the sibling used to be — the same divergence, one level
-     * further down. The whole snapshot is stale together, so the whole move is refused together.
+     * This was the second half of Slice 67: a descendant that moves to another branch of the *same*
+     * subtree leaves the rest of the snapshot wrong about it too, so the whole move was refused
+     * together rather than the one unrecognised row being skipped.
+     *
+     * It is no longer a stale snapshot, because the two moves can no longer both be deciding. The
+     * grandchild's new parent is the sibling, whose path names the parent, and a move now holds the
+     * node, the parent and the parent's ancestors before it reads anything — so these two meet on
+     * the parent and queue. Whichever goes second reads the tree the first one left and is right
+     * about it, which is why both succeed and nothing is refused.
+     *
+     * The guard itself is untouched and still proven, by the test above: there the descendant moves
+     * *out* of the subtree, to a root of its own, so the two moves share no row, both decide at
+     * once exactly as before, and the loser is still told `VERSION_CONFLICT`. Barriered here would
+     * only park the first move holding the row the second one needs, which is the interleaving the
+     * lock exists to forbid, so this runs them with nothing holding either.
      */
     const { parent, child, grandchild, sibling, destination } = await tree();
-    parkOn = `move:${parent.id}`;
-    const base = turnstile.arm(1);
 
-    const movingParent = asTenant(ACME, () =>
-      parking.moveDepartment(parent.id, destination.id, parent.version),
-    );
-    await turnstile.reached[base];
+    const outcomes = await Promise.allSettled([
+      asTenant(ACME, () => service.moveDepartment(parent.id, destination.id, parent.version)),
+      asTenant(ACME, () => service.moveDepartment(grandchild.id, sibling.id, grandchild.version)),
+    ]);
 
-    parkOn = null;
-    const moved = await asTenant(ACME, () =>
-      parking.moveDepartment(grandchild.id, sibling.id, grandchild.version),
-    );
-    expect(moved.path).toBe(pathFor(sibling.path, grandchild.id));
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(['fulfilled', 'fulfilled']);
 
-    turnstile.release(base);
-    const outcome = await movingParent.then(
-      () => ({ kind: 'moved' as const, error: undefined }),
-      (error: unknown) => ({ kind: 'refused' as const, error }),
-    );
-
-    expect(outcome.kind).toBe('refused');
-    expect(outcome.error).toMatchObject({ code: 'VERSION_CONFLICT' });
-    // Refused means nothing was written, so the sibling still holds the path the grandchild names.
-    expect((await rowOf(child.id)).path).toBe(pathFor(parent.path, child.id));
-    expect((await rowOf(sibling.id)).path).toBe(pathFor(parent.path, sibling.id));
+    // Whichever order they took, the tree they left agrees with itself: the subtree hangs from the
+    // destination, and the grandchild hangs from the sibling inside it.
+    const movedParent = await rowOf(parent.id);
+    expect(movedParent.path).toBe(pathFor(destination.path, parent.id));
+    expect((await rowOf(child.id)).path).toBe(pathFor(movedParent.path, child.id));
+    const movedSibling = await rowOf(sibling.id);
+    expect(movedSibling.path).toBe(pathFor(movedParent.path, sibling.id));
+    expect((await rowOf(grandchild.id)).path).toBe(pathFor(movedSibling.path, grandchild.id));
     expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
   });
 
-  it('still moves when a descendant was only put in the recycle bin', async () => {
+  it('still moves when a descendant is put in the recycle bin at the same time', async () => {
     /*
      * The other side of the guard: what must *not* become a conflict.
      *
-     * Soft-deleting a leaf does not move anything, so the snapshot is still right about where every
-     * node sits and the move has nothing to lose to. The deleted row is carried along with the rest
-     * — `departmentSubtree` never sees a row already in the bin, so restoring one whose ancestors
-     * moved meanwhile is a stale path either way, and this is the one window where the move can
-     * still keep it honest.
+     * Soft-deleting a leaf does not move anything, so a move has nothing to lose to it, and neither
+     * operation may be refused because the other happened. The two now order — the delete writes a
+     * row inside the subtree the move holds — and both still succeed, which is the guarantee this
+     * test has always been about.
+     *
+     * Which path the deleted row ends up with depends on which went first, and deliberately is not
+     * asserted: `departmentSubtree` never sees a row already in the bin, so a leaf deleted before
+     * the move keeps the ancestry it had, and one deleted after it is carried. That was true before
+     * this lock and is unchanged by it.
      */
     const { parent, child, grandchild, destination } = await tree();
-    parkOn = `move:${parent.id}`;
-    const base = turnstile.arm(1);
 
-    const movingParent = asTenant(ACME, () =>
-      parking.moveDepartment(parent.id, destination.id, parent.version),
-    );
-    await turnstile.reached[base];
+    const outcomes = await Promise.allSettled([
+      asTenant(ACME, () => service.moveDepartment(parent.id, destination.id, parent.version)),
+      asTenant(ACME, () =>
+        service.delete(OrganizationNodeKind.DEPARTMENT, grandchild.id, grandchild.version),
+      ),
+    ]);
 
-    parkOn = null;
-    await asTenant(ACME, () =>
-      parking.delete(OrganizationNodeKind.DEPARTMENT, grandchild.id, grandchild.version),
-    );
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(['fulfilled', 'fulfilled']);
 
-    turnstile.release(base);
-    const moved = await movingParent;
-
-    expect(moved.path).toBe(pathFor(destination.path, parent.id));
-    const movedChild = await rowOf(child.id);
-    expect(movedChild.path).toBe(pathFor(moved.path, child.id));
-    // Carried with the subtree even though it is in the bin, so a restore does not resurrect a row
-    // describing where its ancestors used to be.
-    expect((await rowOf(grandchild.id)).path).toBe(pathFor(movedChild.path, grandchild.id));
+    const movedParent = await rowOf(parent.id);
+    expect(movedParent.path).toBe(pathFor(destination.path, parent.id));
+    expect((await rowOf(child.id)).path).toBe(pathFor(movedParent.path, child.id));
+    expect(
+      await owner.department.count({ where: { id: grandchild.id, deletedAt: { not: null } } }),
+    ).toBe(1);
     expect(await pathsDisagreeingWithTheirParent()).toEqual([]);
+  });
+});
+
+/**
+ * Two moves that would put each department inside the other — Slice 112.
+ *
+ * ## What the code says
+ *
+ * `moveDepartment` is documented as the operation the permission model depends on: it "rewrites
+ * derived data the ACL resolver reads", and the tree arithmetic it uses says why a cycle may never
+ * be written — "a node cannot be its own parent, and it cannot move under one of its own
+ * descendants. Either produces a path containing the node twice and a walk that never terminates —
+ * cheap to refuse here, and expensive to discover afterwards, because by then the tree is already
+ * corrupt." The check that refuses it is `checkPlacement`, and this suite already pins it for one
+ * administrator: a move under the node's own descendant is `PARENT_IS_DESCENDANT`.
+ *
+ * ## What it did
+ *
+ * `checkPlacement` compares two rows — the node's path and the candidate parent's — and
+ * `subtreeFitsUnder` measures a third thing, the snapshot about to be rewritten. All of it is
+ * read. The only thing held is the version of the single row the caller named, and Slice 67 added
+ * a guard on the *descendants'* parents; neither covers the department at the other end of the
+ * move.
+ *
+ * So two administrators reorganising at once decided from the same tree and wrote different parts
+ * of it. Two roots moved under each other read each other's old paths, neither saw a cycle, and
+ * both commits stood: each row named the other as its parent and carried the other in its path.
+ * The same held one level down, where the two lock sets a narrower fix would have taken are
+ * disjoint — moving each root under the *other's child* crossed the two subtrees with nothing in
+ * common to contend on.
+ *
+ * That state is the one the guard exists to prevent. `PrismaAclResolver.departmentsOf` is
+ * `idsInPath(row.path)`, so each department's members then carried the other department as an ACL
+ * subject — a grant reaching upward, against the direction this model says permission flows — and
+ * neither department was reachable from the top of its entity's tree at all.
+ *
+ * ## What proves it
+ *
+ * The fix is mutual exclusion, so the interleaving the defect needs is the one the fix forbids and
+ * a two-caller turnstile downstream of the lock would hang rather than reproduce. The evidence is
+ * the shape Slices 104, 107, 108 and 110 settled on: the **outcome**, from the two moves run
+ * concurrently with no barrier — deterministic because the situation is symmetric, so whichever
+ * move arrives second is refused for the same reason a single administrator would be — and the
+ * **mechanism**, from a second database session probing with `FOR UPDATE NOWAIT` while a move is
+ * parked mid-transaction, including the probes that must come back free.
+ *
+ * What is held is the subtree the move rewrites and the row it is moving to: everything the move
+ * writes, plus the one row outside it that its answer depends on. That is what makes two crossing
+ * moves meet — for this node to end up inside the other's subtree, the other's destination has to
+ * lie inside this one's — and it is also what keeps the lock free of deadlock, because a move that
+ * has finished locking never waits for a department row again.
+ */
+describe('two moves that would put each department inside the other', () => {
+  /**
+   * The real repository, subclassed: a place to stand inside a move's transaction, after the
+   * service has taken its lock and read the tree, and before anything is written.
+   *
+   * One caller only. A second would be held by the very lock under test and could never arrive.
+   */
+  class ParkedMove extends PrismaScopeAdminRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+    target: string | null = null;
+
+    override async moveDepartment(
+      input: Parameters<PrismaScopeAdminRepository['moveDepartment']>[0],
+    ): Promise<void> {
+      const gate = this.admit;
+      if (gate !== null && input.id === this.target) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+      return super.moveDepartment(input);
+    }
+  }
+
+  let crossings = 0;
+  /** A second entity under the same company, so "only this entity" is falsifiable. */
+  let elsewhereEntityId = '';
+
+  beforeAll(async () => {
+    const { companyId } = fixture(ACME);
+    const entity = await asTenant(ACME, () =>
+      service.createEntity({ companyId, code: 'X112', name: 'Second Operations' }),
+    );
+    elsewhereEntityId = entity.id;
+  });
+
+  /** A root department, or a child of one, in whichever entity is named. */
+  function department(
+    entityId: string,
+    code: string,
+    parentId: string | null,
+  ): Promise<DepartmentRow> {
+    return asTenant(ACME, () =>
+      service.createDepartment({
+        entityId,
+        ...(parentId === null ? {} : { parentId }),
+        code,
+        name: code,
+      }),
+    );
+  }
+
+  /** Two independent roots in the tenant's main entity, each with a child of its own. */
+  async function twoSubtrees(): Promise<{
+    left: DepartmentRow;
+    leftChild: DepartmentRow;
+    right: DepartmentRow;
+    rightChild: DepartmentRow;
+  }> {
+    const { entityId } = fixture(ACME);
+    crossings += 1;
+    const suffix = `X${String(crossings).padStart(2, '0')}${String(Date.now()).slice(-4)}`;
+    const left = await department(entityId, `LF${suffix}`, null);
+    const leftChild = await department(entityId, `LC${suffix}`, left.id);
+    const right = await department(entityId, `RG${suffix}`, null);
+    const rightChild = await department(entityId, `RC${suffix}`, right.id);
+    return { left, leftChild, right, rightChild };
+  }
+
+  /** Every live department whose path disagrees with the parent it points at. */
+  async function inconsistentPaths(): Promise<string[]> {
+    const rows = await owner.department.findMany({
+      where: { tenantId: ACME, deletedAt: null },
+      select: { id: true, parentId: true, path: true },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return rows
+      .filter((row) => {
+        const parent = row.parentId === null ? null : byId.get(row.parentId);
+        return row.path !== pathFor(parent?.path ?? null, row.id);
+      })
+      .map((row) => row.id);
+  }
+
+  async function pathOf(id: string): Promise<string> {
+    return (await owner.department.findUniqueOrThrow({ where: { id }, select: { path: true } }))
+      .path;
+  }
+
+  /**
+   * Whether a second session can take a department row for itself without waiting.
+   *
+   * `owner` is a separate `PrismaClient` and so a separate backend, which is the only way to ask
+   * whether a lock is held: a probe on the same connection would be inside the transaction holding
+   * it. `NOWAIT` rather than a wait with a deadline — the question is whether the row is held
+   * *now*. `55P03` is PostgreSQL's "could not obtain lock", and here it is the answer.
+   */
+  async function probe(departmentId: string): Promise<'LOCKED' | 'FREE'> {
+    try {
+      await owner.$queryRawUnsafe(
+        'SELECT id FROM department WHERE id = $1::uuid FOR UPDATE NOWAIT',
+        departmentId,
+      );
+      return 'FREE';
+    } catch (error) {
+      if (/55P03|could not obtain lock/i.test(String(error))) {
+        return 'LOCKED';
+      }
+      throw error;
+    }
+  }
+
+  /** Both moves at once, with nothing holding either: the fix is what has to order them. */
+  async function bothAtOnce(
+    first: { id: string; parentId: string; version: number },
+    second: { id: string; parentId: string; version: number },
+  ): Promise<{ moved: number; refusals: unknown[] }> {
+    const outcomes = await Promise.allSettled([
+      asTenant(ACME, () => service.moveDepartment(first.id, first.parentId, first.version)),
+      asTenant(ACME, () => service.moveDepartment(second.id, second.parentId, second.version)),
+    ]);
+    return {
+      moved: outcomes.filter((outcome) => outcome.status === 'fulfilled').length,
+      refusals: outcomes.flatMap((outcome) =>
+        outcome.status === 'rejected' ? [outcome.reason as unknown] : [],
+      ),
+    };
+  }
+
+  it('moves one root under another when nothing contends', async () => {
+    // The control. Without it every assertion below passes on a service that moves nothing, and
+    // it is also what says the lock did not turn an ordinary reorganisation into a refusal.
+    const { left, right } = await twoSubtrees();
+    const moved = await asTenant(ACME, () =>
+      service.moveDepartment(left.id, right.id, left.version),
+    );
+
+    expect(moved.path).toBe(pathFor(right.path, left.id));
+    expect(await inconsistentPaths()).toEqual([]);
+  });
+
+  it('lets one of two crossing moves through and refuses the other', async () => {
+    const { left, right } = await twoSubtrees();
+
+    const { moved, refusals } = await bothAtOnce(
+      { id: left.id, parentId: right.id, version: left.version },
+      { id: right.id, parentId: left.id, version: right.version },
+    );
+
+    // Symmetric, so it does not matter which one arrives second: the loser is told what a single
+    // administrator is told for the same request.
+    expect(moved).toBe(1);
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      fieldErrors: [{ field: 'parentId', message: 'PARENT_IS_DESCENDANT' }],
+    });
+
+    // One inside the other, and only one way round: whichever went first, exactly one of the two
+    // now carries the other in its path, so neither set of members holds the other department as
+    // an ACL subject in both directions.
+    const [leftPath, rightPath] = [await pathOf(left.id), await pathOf(right.id)];
+    expect(
+      Number(idsInPath(leftPath).includes(right.id)) +
+        Number(idsInPath(rightPath).includes(left.id)),
+    ).toBe(1);
+    expect(await inconsistentPaths()).toEqual([]);
+  });
+
+  it('refuses the crossing move when neither department is a root', async () => {
+    /*
+     * One level down, where two roots are not the whole of it: each root moves under the *other's*
+     * child. The two sets meet because each move's destination lies inside the other's subtree —
+     * which is exactly the condition a cycle needs — so holding the subtree and the destination is
+     * enough for them to find each other.
+     */
+    const { left, leftChild, right, rightChild } = await twoSubtrees();
+
+    const { moved, refusals } = await bothAtOnce(
+      { id: left.id, parentId: rightChild.id, version: left.version },
+      { id: right.id, parentId: leftChild.id, version: right.version },
+    );
+
+    expect(moved).toBe(1);
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      fieldErrors: [{ field: 'parentId', message: 'PARENT_IS_DESCENDANT' }],
+    });
+    expect(
+      Number(idsInPath(await pathOf(left.id)).includes(right.id)) +
+        Number(idsInPath(await pathOf(right.id)).includes(left.id)),
+    ).toBe(1);
+    expect(await inconsistentPaths()).toEqual([]);
+  });
+
+  it('holds the subtree it will rewrite and the parent it is moving to', async () => {
+    const { left, leftChild, right, rightChild } = await twoSubtrees();
+    const bystander = await department(
+      fixture(ACME).entityId,
+      `BY${String(Date.now()).slice(-6)}`,
+      null,
+    );
+    const outside = await department(elsewhereEntityId, `OU${String(Date.now()).slice(-6)}`, null);
+
+    const parking = new ParkedMove(stamps);
+    parking.target = left.id;
+    const racing = new ScopeAdminService(
+      parking,
+      outbox,
+      realAclResolver({ clock, unitOfWork }),
+      writer,
+    );
+
+    let reached: () => void = () => undefined;
+    const atTheWrite = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    // Moved under the *child* of the other root, so the destination has a parent of its own — a
+    // row the move reads through and must leave alone.
+    const moving = asTenant(ACME, () =>
+      racing.moveDepartment(left.id, rightChild.id, left.version),
+    );
+    await atTheWrite;
+
+    // The node, everything under it — which is every row this move goes on to write — and the
+    // parent it is moving to, which the comparison read but will not write.
+    expect(await probe(left.id)).toBe('LOCKED');
+    expect(await probe(leftChild.id)).toBe('LOCKED');
+    expect(await probe(rightChild.id)).toBe('LOCKED');
+
+    /*
+     * And the probes that must come back free, which are what say this is a lock and not a table.
+     *
+     * `right` is the destination's own parent: the move reads it only through the destination's
+     * path, never writes it, and cannot make it a descendant of anything, so it is not held. The
+     * bystander shares the entity and the outsider does not, and neither is anywhere this move
+     * reaches.
+     */
+    expect(await probe(right.id)).toBe('FREE');
+    expect(await probe(bystander.id)).toBe('FREE');
+    expect(await probe(outside.id)).toBe('FREE');
+
+    admit();
+    await moving;
+
+    expect(await probe(left.id)).toBe('FREE');
+    expect(await inconsistentPaths()).toEqual([]);
+  });
+
+  /**
+   * A department planted with an identifier and a path this suite chooses.
+   *
+   * The scope tree never lets a caller choose either — the path "is the only field a client can
+   * never send" — so the two cases below reach past the service to the table, exactly as
+   * `organization.integration.spec.ts` does for its own prefix case. What is under test is still
+   * the production statement: the move that reads these rows goes through `ScopeAdminService`.
+   */
+  async function plant(input: {
+    id: string;
+    code: string;
+    entityId: string;
+    parentId: string | null;
+    path: string;
+  }): Promise<void> {
+    await owner.department.create({
+      data: {
+        id: input.id,
+        tenantId: ACME,
+        entityId: input.entityId,
+        code: input.code,
+        name: input.code,
+        ...(input.parentId !== null && { parentId: input.parentId }),
+        path: input.path,
+        updatedAt: new Date(now),
+      },
+    });
+  }
+
+  /**
+   * Identifiers whose *order* this suite fixes, and whose uniqueness survives a second run.
+   *
+   * The leading group decides where each row sorts; the trailing group is drawn fresh, because
+   * `id` is unique across the whole table and a literal would collide the next time the suite runs
+   * against the same database.
+   */
+  function orderedIds(): { a: string; b: string; node: string; destination: string } {
+    const suffix = uuidv7().replaceAll('-', '').slice(-12);
+    const tail = `0000-4000-8000-${suffix}`;
+    return {
+      a: `00000000-${tail}`,
+      b: `00000001-${tail}`,
+      node: `88888888-${tail}`,
+      destination: `ffffffff-${tail}`,
+    };
+  }
+
+  /**
+   * Waits until some backend is blocked behind another transaction.
+   *
+   * The database's own view of who is waiting, polled — not a delay picked to be long enough.
+   * This returns the moment the move is genuinely parked and never before.
+   *
+   * Narrowed to a backend running *this* statement and blocked by somebody, rather than to any
+   * ungranted lock anywhere: a suite that happened to hold a row elsewhere would otherwise satisfy
+   * the condition before the move had reached its lock at all.
+   */
+  async function waitUntilBlocked(): Promise<void> {
+    for (let attempt = 0; attempt < 20_000; attempt += 1) {
+      const [row] = await owner.$queryRaw<{ waiting: bigint }[]>`
+        SELECT count(*) AS waiting
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND cardinality(pg_blocking_pids(pid)) > 0
+          AND query LIKE '%FROM department%FOR UPDATE%'`;
+      if (Number(row?.waiting ?? 0) > 0) {
+        return;
+      }
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+    }
+    throw new Error('The move never blocked on the held row.');
+  }
+
+  it('takes the rows it locks in identifier order', async () => {
+    /*
+     * Why `ORDER BY id` is load-bearing, made observable — Slice 112.
+     *
+     * The clause is what stops two moves deadlocking: every move acquires its whole set in one
+     * total order, so the wait-for graph between them cannot contain a cycle. Nothing about a
+     * *single* move's outcome shows that, and a second mover cannot be barriered into place —
+     * it would be held by the very lock under test. So this asserts the ordering directly: while
+     * a move is blocked on one row of its set, every row below that one must already be held and
+     * every row above it must not.
+     *
+     * The four rows are planted with identifiers whose order is fixed and deliberately disagrees
+     * with both of the orders the statement would otherwise be served in — the order they were
+     * written (`node`, `destination`, `a`, `b`) and the order of their paths (`node`, `a`, `b`,
+     * `destination`, because a child sorts directly under its parent). In identifier order the
+     * node is third, so a move blocked on it has taken its two children and not yet reached its
+     * destination. Under either of the other orders the node comes first and nothing else is held.
+     */
+    const { entityId } = fixture(ACME);
+    const id = orderedIds();
+    const suffix = String(Date.now()).slice(-6);
+
+    // Written first, so "the order they were written" puts the node ahead of everything else.
+    await plant({ id: id.node, code: `ON${suffix}`, entityId, parentId: null, path: id.node });
+    await plant({
+      id: id.destination,
+      code: `OD${suffix}`,
+      entityId,
+      parentId: null,
+      path: id.destination,
+    });
+    await plant({
+      id: id.a,
+      code: `OA${suffix}`,
+      entityId,
+      parentId: id.node,
+      path: pathFor(id.node, id.a),
+    });
+    await plant({
+      id: id.b,
+      code: `OB${suffix}`,
+      entityId,
+      parentId: id.node,
+      path: pathFor(id.node, id.b),
+    });
+
+    // A second session holds the node — the third row the move must take — and nothing else.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let taken: () => void = () => undefined;
+    const holding = new Promise<void>((resolve) => {
+      taken = resolve;
+    });
+    const holder = owner.$transaction(async (tx) => {
+      await tx.$queryRawUnsafe('SELECT id FROM department WHERE id = $1::uuid FOR UPDATE', id.node);
+      taken();
+      await held;
+    });
+    await holding;
+
+    const moving = asTenant(ACME, () => service.moveDepartment(id.node, id.destination, 1));
+    await waitUntilBlocked();
+
+    // Below the row it is blocked on: already taken. Above it: not yet reached.
+    expect(await probe(id.a)).toBe('LOCKED');
+    expect(await probe(id.b)).toBe('LOCKED');
+    expect(await probe(id.destination)).toBe('FREE');
+
+    release();
+    await holder;
+    const moved = await moving;
+
+    expect(moved.path).toBe(pathFor(id.destination, id.node));
+    expect(await inconsistentPaths()).toEqual([]);
+  });
+
+  it('does not lock a department whose path merely shares a prefix', async () => {
+    /*
+     * Why the separator in `|| '.%'` is load-bearing — Slice 112.
+     *
+     * `organization.integration.spec.ts` already plants a department whose path is another's
+     * identifier with the next one appended and no dot between them, and says why: "The separator
+     * is the whole defence. A path stored without it would make any department whose identifier
+     * merely begins with another's a member of its subtree." That case pins the read side. This
+     * one pins the lock, which asks the same question of the same column and would otherwise
+     * answer it differently: without the dot the move would hold a row that is not in its subtree,
+     * is not its destination, and that it will never write.
+     */
+    const { entityId } = fixture(ACME);
+    const suffix = String(Date.now()).slice(-6);
+    const node = await department(entityId, `PN${suffix}`, null);
+    const impostorId = uuidv7();
+
+    try {
+      await plant({
+        id: impostorId,
+        code: `PI${suffix}`,
+        entityId,
+        parentId: null,
+        // Deliberately malformed: the same characters as a child of the node, without the dot.
+        path: `${node.path}${impostorId}`,
+      });
+
+      const parking = new ParkedMove(stamps);
+      parking.target = node.id;
+      const racing = new ScopeAdminService(
+        parking,
+        outbox,
+        realAclResolver({ clock, unitOfWork }),
+        writer,
+      );
+
+      let reached: () => void = () => undefined;
+      const atTheWrite = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      let admit: () => void = () => undefined;
+      parking.admit = new Promise<void>((resolve) => {
+        admit = resolve;
+      });
+      parking.reached = reached;
+
+      const destination = await department(entityId, `PD${suffix}`, null);
+      const moving = asTenant(ACME, () =>
+        racing.moveDepartment(node.id, destination.id, node.version),
+      );
+      await atTheWrite;
+
+      expect(await probe(node.id)).toBe('LOCKED');
+      expect(await probe(destination.id)).toBe('LOCKED');
+      // The whole of the case: a shared prefix is not a subtree.
+      expect(await probe(impostorId)).toBe('FREE');
+
+      admit();
+      await moving;
+    } finally {
+      await owner.department.delete({ where: { id: impostorId } });
+    }
+
+    expect(await inconsistentPaths()).toEqual([]);
   });
 });

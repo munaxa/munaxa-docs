@@ -440,6 +440,29 @@ export class ScopeAdminService {
     expectedVersion: number | undefined,
   ): Promise<DepartmentRow> {
     return this.writer.write(async () => {
+      /*
+       * What the move will write is held before the move reads it — Slice 112.
+       *
+       * `checkPlacement` compares this node's path with the candidate parent's, and the reason it
+       * exists is that either half of a cycle "produces a path containing the node twice and a
+       * walk that never terminates". But it compares two rows that were only *read*, and the
+       * version guard underneath covers one of them — the node being moved. Two administrators
+       * moving two different departments therefore never contended, however completely their two
+       * decisions depended on each other.
+       *
+       * They can depend on each other completely. Two departments moved under one another read
+       * each other's old paths, neither saw a cycle, and both commits stood: each row then named
+       * the other as its parent and carried the other in its path. `departmentsOf` is
+       * `idsInPath(row.path)`, so each department's members held the other department as an ACL
+       * subject — a grant reaching upward, against the direction this model says permission flows
+       * — and neither department was reachable from the top of the tree at all.
+       *
+       * A decision about a set of rows cannot be carried by a read of them. This takes the subtree
+       * the move rewrites and the parent it is moving to, so the second mover decides from the
+       * tree the first one left rather than from the one they both started with.
+       */
+      await this.scopes.lockForMove(id, parentId);
+
       const current = await this.requireDepartment(id, false);
       requireVersion(expectedVersion, current.version);
 
