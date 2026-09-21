@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 
 import type { FileObjectId, IntegrityStatusKey, ScanStatusKey } from '@edms/domain';
 
+import { NotFoundError } from '../../../core/errors/application-errors';
 import { RecordStamps } from '../../../core/persistence';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -30,7 +31,7 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
 
   async findById(id: FileObjectId): Promise<FileObjectRecord | null> {
     const row = await requireTransaction().fileObject.findFirst({
-      where: { id, tenantId: this.tenantId(), deletedAt: null },
+      where: { id, deletedAt: null },
     });
     return row === null ? null : toRecord(row);
   }
@@ -99,19 +100,37 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
     });
   }
 
+  /**
+   * A reference, taken or given back — and only on a blob that is still there.
+   *
+   * `deleted_at IS NULL` is in the predicate rather than assumed from the caller's read — Slice
+   * 113. The reaper is the other half of this statement: it claims the row `FOR UPDATE` at a
+   * reference count of zero and then removes the bytes, and its own comment says why that claim is
+   * enough — *"a revision attaching the blob between the two would have moved the count off
+   * zero"*. That is true only of an attach that got there first. Under `READ COMMITTED` an
+   * `UPDATE` held up by that claim re-checks its `WHERE` against the row the reaper left, and
+   * neither `id` nor `tenant_id` changes when a blob is reclaimed — so without this condition the
+   * loser incremented the count of a row that was already soft-deleted and whose object had
+   * already been removed from the store.
+   *
+   * What came out was a revision, template, export or artefact pointing at a blob nothing can
+   * serve: `findById` and `isReachable` both exclude deleted rows, so the content is unreachable,
+   * and `listReclaimable` excludes them too, so no later sweep ever looks at it again. The count
+   * says one thing and the bytes say another, permanently.
+   *
+   * Zero rows is `NotFoundError`, which is the sentence `StorageService.require` already gives for
+   * a blob that is not there — so the caller that loses this race is told what the caller that
+   * arrives a moment later is told, rather than being handed a fault.
+   */
   async adjustRefCount(id: FileObjectId, by: number): Promise<number> {
     const updated = await requireTransaction().fileObject.updateManyAndReturn({
-      where: { id, tenantId: this.tenantId() },
+      where: { id, tenantId: this.tenantId(), deletedAt: null },
       data: { refCount: { increment: by }, ...this.stamps.update() },
       select: { refCount: true },
     });
     const row = updated[0];
     if (row === undefined) {
-      // Not a "not found" for the caller to handle: a reference is being recorded for a blob the
-      // caller has just read inside this transaction, so its absence means the row went away
-      // underneath a transaction that holds a lock on it — which cannot happen, and if it does,
-      // continuing would leave a revision pointing at nothing.
-      throw new Error(`No file object ${id} to reference in this tenant.`);
+      throw new NotFoundError('The requested file');
     }
     return row.refCount;
   }
