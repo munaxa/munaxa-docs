@@ -23,6 +23,7 @@ import {
   asId,
 } from '@edms/domain';
 
+import { ValidationError } from '../../../core/errors/application-errors';
 import { RecordStamps } from '../../../core/persistence';
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -126,20 +127,48 @@ export class PrismaWorkflowEngineRepository implements WorkflowEngineRepository 
 
   // --- Creating -----------------------------------------------------------------------------
 
+  /**
+   * Starts the approval, and translates the one violation that is a *business* outcome.
+   *
+   * `uq_workflow_instance_live` is the partial unique index on `(document_id) WHERE state IN
+   * (RUNNING, PAUSED)`, and the service's `loadLiveForDocument` check reads exactly that predicate.
+   * The two are the same question asked at two moments: `TenantDatabase.withTenant` opens its
+   * transaction with no `isolationLevel`, so under READ COMMITTED two submissions of one document
+   * both see no live instance and both arrive here. The index admits one.
+   *
+   * The loser met a raw `P2002` — neither a `DomainError` nor an `HttpException`, so
+   * `AllExceptionsFilter` answered `500` to somebody who pressed Submit twice, where the same
+   * request a moment later in sequence is refused with a sentence. It is translated here, at the
+   * boundary that knows what the index means, into the refusal the service already produces for
+   * that condition, and every other failure is rethrown untouched — the pattern
+   * `prisma-signature.repository.ts` and `prisma-identity-admin.repository.ts` established for the
+   * other partial `_live` indexes.
+   */
   async createInstance(instance: NewInstance): Promise<void> {
-    await requireTransaction().workflowInstance.create({
-      data: {
-        id: instance.id,
-        tenantId: this.tenantId(),
-        documentId: instance.documentId,
-        revisionId: instance.revisionId,
-        definitionId: instance.definitionId,
-        workflowVersionId: instance.workflowVersionId,
-        startedAt: instance.startedAt,
-        startedBy: this.actorId(),
-        ...this.stamps.creation(),
-      },
-    });
+    try {
+      await requireTransaction().workflowInstance.create({
+        data: {
+          id: instance.id,
+          tenantId: this.tenantId(),
+          documentId: instance.documentId,
+          revisionId: instance.revisionId,
+          definitionId: instance.definitionId,
+          workflowVersionId: instance.workflowVersionId,
+          startedAt: instance.startedAt,
+          startedBy: this.actorId(),
+          ...this.stamps.creation(),
+        },
+      });
+    } catch (error) {
+      if (isLiveInstanceViolation(error)) {
+        // Word for word the service's own refusal, because the loser of the race must be told what
+        // somebody submitting the same document twice in a row is told.
+        throw new ValidationError('This document is already in approval.', [
+          { field: 'status', message: 'in approval' },
+        ]);
+      }
+      throw error;
+    }
   }
 
   async createStages(stages: readonly NewStage[]): Promise<void> {
@@ -546,6 +575,24 @@ export class PrismaWorkflowEngineRepository implements WorkflowEngineRepository 
   private actorId(): string | null {
     return requireContext().userId;
   }
+}
+
+/**
+ * The one unique violation `createInstance` translates; anything else is a genuine failure.
+ *
+ * `uq_workflow_instance_live` is created in raw SQL because Prisma's schema language has no partial
+ * unique index, so Prisma reports the violation with `target: null` and cannot name it. The model
+ * is enough to make the attribution determinate all the same: `workflow_instance` carries exactly
+ * two unique indexes — its primary key and this one — and the key is a UUIDv7 the engine mints from
+ * its own clock a few lines before it calls this, never reused and never supplied by a caller.
+ * `document_id` under the live predicate is the only value another row can already hold.
+ */
+function isLiveInstanceViolation(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002' &&
+    error.meta?.['modelName'] === 'WorkflowInstance'
+  );
 }
 
 const AGGREGATE = {

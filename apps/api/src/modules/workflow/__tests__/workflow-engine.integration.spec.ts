@@ -31,7 +31,9 @@ import {
 import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
+import { ValidationError } from '../../../core/errors/application-errors';
 import type { Logger } from '../../../core/observability/logger';
+import { RecordStamps } from '../../../core/persistence';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { decodeTransferToken } from '../../../testing/transfer-token';
@@ -43,6 +45,7 @@ import {
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import type { WorkflowDirectory } from '../application/ports';
+import { PrismaWorkflowEngineRepository } from '../infrastructure/prisma-workflow-engine.repository';
 
 /**
  * The approval engine, against a real PostgreSQL.
@@ -267,6 +270,68 @@ async function aDocument(documentTypeId: string): Promise<string> {
   return document.id;
 }
 
+/** A promise somebody else settles, which is how one caller is held inside its own transaction. */
+function deferred(): { readonly promise: Promise<void>; readonly release: () => void } {
+  let release = (): void => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+/**
+ * Waits until PostgreSQL says a backend is waiting on another to insert into `workflow_instance`.
+ *
+ * A condition the database answers, not a delay: `pg_blocking_pids` is non-empty exactly while a
+ * transaction is stuck behind somebody else's lock — here the speculative insertion into
+ * `uq_workflow_instance_live`. Polled on the macrotask queue so the awaited submissions get to run.
+ */
+async function waitUntilBlockedOnAnInstance(): Promise<void> {
+  for (;;) {
+    const [row] = await owner.$queryRaw<{ waiting: bigint }[]>`
+      SELECT count(*) AS waiting
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND cardinality(pg_blocking_pids(pid)) > 0
+        AND query LIKE '%workflow_instance%'`;
+    if ((row?.waiting ?? 0n) > 0n) {
+      return;
+    }
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+}
+
+/**
+ * A second engine over the same database whose participant resolution can be held open.
+ *
+ * The seam is the suite's own directory rather than a stubbed repository: `holdersOfRole` is called
+ * from `advanceFrom`, which runs *after* the instance row is inserted and before the submission's
+ * transaction commits, so parking there holds a real submission at exactly the moment a second one
+ * has to be able to see nothing and try anyway.
+ */
+function anEngineParkedAtResolution(held: Promise<void>, arrived: () => void): WorkflowEngineStack {
+  let first = true;
+  return realWorkflowEngine({
+    clock,
+    unitOfWork,
+    documents: library.documents,
+    configuration: library.configuration,
+    directory: {
+      ...directory,
+      holdersOfRole: async (roleKey, scope) => {
+        if (first) {
+          first = false;
+          arrived();
+          await held;
+        }
+        return directory.holdersOfRole(roleKey, scope);
+      },
+    },
+  });
+}
+
 beforeAll(async () => {
   if (!OWNER_URL || !APP_URL) {
     throw new Error('DATABASE_URL and DATABASE_MIGRATION_URL must both be set.');
@@ -484,6 +549,73 @@ describe('submission', () => {
         where: { documentId, state: { in: ['RUNNING', 'PAUSED'] } },
       }),
     ).toBe(1);
+  });
+
+  /**
+   * What the loser of that race is *told* — Slice 63's rule, applied to the partial `_live` index
+   * the approval engine runs on.
+   *
+   * The two submissions are ordered by the database rather than by the scheduler: the winner is
+   * held inside its own transaction after its instance row is in, the loser is released only once
+   * `pg_blocking_pids` reports it waiting on that row, and the winner is let go last. So the loser
+   * always reaches the index and always loses to it, on every run.
+   */
+  it('refuses the submission the index beat, in the words a second submission gets', async () => {
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+
+    const held = deferred();
+    const parked = deferred();
+    const holder = anEngineParkedAtResolution(held.promise, parked.release);
+
+    const winner = as(() => holder.engine.submit(asId<DocumentId>(documentId), null));
+    await parked.promise;
+
+    const loser = as(() => workflow.engine.submit(asId<DocumentId>(documentId), null));
+    await waitUntilBlockedOnAnInstance();
+    held.release();
+
+    await expect(winner).resolves.toMatchObject({ status: DocumentStatus.UNDER_REVIEW });
+    // A sentence an author can act on, not `500`. The same refusal, word for word and field for
+    // field, that the service produces when it can see the live approval for itself.
+    const refusal: unknown = await loser.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(refusal).toBeInstanceOf(ValidationError);
+    expect(refusal).toMatchObject({
+      message: 'This document is already in approval.',
+      fieldErrors: [{ field: 'status', message: 'in approval' }],
+    });
+  });
+
+  it('leaves the document exactly as the winning submission left it', async () => {
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+
+    const held = deferred();
+    const parked = deferred();
+    const holder = anEngineParkedAtResolution(held.promise, parked.release);
+
+    const winner = as(() => holder.engine.submit(asId<DocumentId>(documentId), null));
+    await parked.promise;
+    const loser = as(() => workflow.engine.submit(asId<DocumentId>(documentId), null));
+    await waitUntilBlockedOnAnInstance();
+    held.release();
+
+    const started = await winner;
+    await expect(loser).rejects.toThrow(/already in approval/i);
+
+    // The refusal is a refusal, not a partial submission: one instance, one stage, one pending
+    // number, and a document under review rather than half-submitted.
+    expect(await owner.workflowInstance.findMany({ where: { documentId } })).toHaveLength(1);
+    expect(await owner.workflowStage.count({ where: { instanceId: started.instanceId } })).toBe(1);
+    expect(await owner.numberReservation.count({ where: { documentId, state: 'RESERVED' } })).toBe(
+      1,
+    );
+    expect(await owner.document.findUniqueOrThrow({ where: { id: documentId } })).toMatchObject({
+      status: DocumentStatus.UNDER_REVIEW,
+    });
   });
 });
 
@@ -1115,6 +1247,63 @@ describe('what the database refuses on its own', () => {
         },
       }),
     ).rejects.toThrow();
+  });
+
+  /**
+   * The other half of the translation: what it must *not* claim.
+   *
+   * `uq_workflow_instance_live` is raw SQL, so Prisma reports its violation with `target: null` and
+   * the repository attributes it by model. The model alone is not the whole guard — a foreign key
+   * this table also carries fails on the same statement, against the same model, and telling an
+   * author "this document is already in approval" because a revision went missing would be a
+   * confident lie. So the boundary is asked both questions here, one after the other.
+   */
+  it('translates the live index and leaves every other failure as it found it', async () => {
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+    const running = await as(() => workflow.engine.submit(asId<DocumentId>(documentId), null));
+    const live = await owner.workflowInstance.findUniqueOrThrow({
+      where: { id: running.instanceId },
+    });
+    const repository = new PrismaWorkflowEngineRepository(new RecordStamps(clock));
+
+    await expect(
+      as(() =>
+        unitOfWork.run(() =>
+          repository.createInstance({
+            id: uuidv7(),
+            documentId,
+            revisionId: live.revisionId,
+            definitionId: live.definitionId,
+            workflowVersionId: live.workflowVersionId,
+            startedAt: FIXED_NOW,
+          }),
+        ),
+      ),
+    ).rejects.toThrow(/already in approval/i);
+
+    // A fresh document, so the live index has nothing to say, and a revision that does not exist,
+    // so the foreign key does. It comes back as the constraint failure it is.
+    const freeDocumentId = await aDocument(typeId);
+    const failure: unknown = await as(() =>
+      unitOfWork
+        .run(() =>
+          repository.createInstance({
+            id: uuidv7(),
+            documentId: freeDocumentId,
+            revisionId: uuidv7(),
+            definitionId: live.definitionId,
+            workflowVersionId: live.workflowVersionId,
+            startedAt: FIXED_NOW,
+          }),
+        )
+        .then(
+          () => null,
+          (error: unknown) => error,
+        ),
+    );
+    expect(failure).not.toBeInstanceOf(ValidationError);
+    expect(failure).toMatchObject({ code: 'P2003' });
   });
 });
 
