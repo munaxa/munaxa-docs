@@ -73,6 +73,27 @@ export class DefaultLegalHoldService implements LegalHoldService {
     const stated = this.requireReason(reason);
 
     return this.writer.write<LegalHoldRecord>(async () => {
+      /*
+       * The same rows `release` takes, and for the reason a placement needs them even more.
+       *
+       * A disposition decides "nothing holds this record" by *reading* `legal_hold` inside the
+       * transaction that destroys, and then writes the document's schedules, its holds and the
+       * document itself. None of those rows is held while that decision is taken, so a matter
+       * opened in the interval commits into the gap: the sweep's re-read ran a moment too early,
+       * its `deleteForDocument` carries no state predicate, and `holds.deleteForDocument` removes
+       * every hold the document has rather than the ones it saw. The record is destroyed and the
+       * hold protecting it is destroyed with it — no suspension, no refusal, nothing in the trail
+       * to say a matter was ever open.
+       *
+       * The document's schedules are the one row set both sides name, so that is where they meet:
+       * taken here before anything is written, and taken by `purge` and `archive` before either
+       * asks what holds the record. Whichever gets them first, the other reads a settled answer.
+       * Taken *before* the insert as well as before the suspension, because the insert itself
+       * takes a key-share lock on the document row that a purge in flight is about to delete —
+       * locking after it would trade the destruction for a deadlock.
+       */
+      await this.schedules.lockForDocument(asId<DocumentId>(documentId));
+
       const id = this.writer.clock.nextId();
       const placedById = this.requireActor();
       const placedAt = this.writer.clock.now();

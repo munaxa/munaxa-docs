@@ -358,6 +358,12 @@ export class DefaultRetentionService implements RetentionService {
 
   private async archive(schedule: RetentionScheduleRecord): Promise<void> {
     await this.writer.write(async () => {
+      // The rows this disposition writes, held before it asks what holds the record — Slice 115.
+      // The second check below is a *read*, and a matter opened between it and the `EXECUTED`
+      // further down commits into the gap. `place` takes these same rows first, so whichever
+      // arrives first, the other reads a settled answer rather than a moment-old one.
+      await this.schedules.lockForDocument(schedule.documentId);
+
       // The second hold check, inside the transaction that would archive — the one `purge` has
       // taken since it was written, for exactly the same reason and now for the same disposition.
       // `settle` read the holds in a transaction that has since committed, and a matter opened in
@@ -426,6 +432,25 @@ export class DefaultRetentionService implements RetentionService {
    */
   private async purge(schedule: RetentionScheduleRecord): Promise<void> {
     await this.writer.write(async () => {
+      /*
+       * Everything this transaction decides over, held before it decides — Slice 115.
+       *
+       * The schedule re-read and the hold re-read below are both *reads*, and neither holds
+       * anything: a legal hold placed after them and committed before the claim used to be
+       * destroyed along with the record it was protecting. `deleteForDocument` carries no state
+       * predicate, so the suspension the placement wrote was deleted rather than noticed, and
+       * `holds.deleteForDocument` removes every hold the document has rather than the ones this
+       * transaction saw — leaving a purged record, no hold, and nothing in the trail to say a
+       * matter had been open.
+       *
+       * The document's schedules are the one row set the placement also names, and `place` now
+       * takes them first too. Taken here before `describe` rather than beside the re-reads,
+       * because this transaction's other lock — the document row itself, at `documents.purge` —
+       * must come second in every path that takes both, and a placement's `legal_hold` insert
+       * takes a key-share lock on that same document row.
+       */
+      await this.schedules.lockForDocument(schedule.documentId);
+
       const subject = await this.documents.describe(schedule.documentId);
       if (subject === null) {
         // Already gone — the schedule outlived its document, which one crashed half-purge could

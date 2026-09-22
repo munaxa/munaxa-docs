@@ -1480,6 +1480,315 @@ describe('a legal hold that arrives while the sweep is deciding', () => {
     expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.SUSPENDED);
   });
 
+  /**
+   * The same read, one statement later — Slice 115.
+   *
+   * The test above parks the sweep's *first* hold read and lets the matter open before the
+   * disposition's own transaction begins, so the second read sees it and stands down. Nothing
+   * covered the interleaving one statement further on: the disposition's second read runs, answers
+   * "nothing holds this", and only then does the matter commit — into a transaction that holds
+   * none of the rows its answer depends on.
+   *
+   * What followed was the worst outcome this module has. `deleteForDocument` carries no state
+   * predicate, so the `SUSPENDED` the placement had just written was deleted rather than noticed;
+   * `holds.deleteForDocument` removes every hold the document has rather than the ones the
+   * transaction saw, so the live hold went with it; and the record was destroyed. A matter was
+   * open, a hold was accepted, and afterwards there was no record, no hold and nothing in the
+   * trail to say either had existed.
+   *
+   * The invariant is stated as the implication rather than as "the record survives", because both
+   * orderings are legitimate: a placement that loses the race outright never happens, and a record
+   * destroyed before any hold was accepted was destroyed correctly. What may never happen is a
+   * hold that is *accepted* and then destroyed with the record it was placed to preserve.
+   */
+  class ParkingHoldRead extends PrismaLegalHoldRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+    target: string | null = null;
+    /** Reads of the target so far. The first is `settle`'s; the second is the disposition's. */
+    seen = 0;
+
+    override async listLiveFor(documentId: DocumentId): Promise<readonly LegalHoldRecord[]> {
+      const live = await super.listLiveFor(documentId);
+      if (String(documentId) !== this.target) {
+        return live;
+      }
+      this.seen += 1;
+      const gate = this.admit;
+      if (this.seen === 2 && gate !== null) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+      return live;
+    }
+  }
+
+  /** Parks on the hold row's own insert, which in a fixed build is under the schedules' lock. */
+  class ParkingPlacement extends PrismaLegalHoldRepository {
+    reached: (() => void) | null = null;
+    admit: Promise<void> | null = null;
+    target: string | null = null;
+
+    override async place(input: Parameters<PrismaLegalHoldRepository['place']>[0]): Promise<void> {
+      const gate = this.admit;
+      if (gate !== null && input.documentId === this.target) {
+        this.admit = null;
+        this.reached?.();
+        await gate;
+      }
+      await super.place(input);
+    }
+  }
+
+  /**
+   * Waits until PostgreSQL says somebody is waiting on somebody else over `retention_schedule`.
+   *
+   * A condition the database answers rather than a delay. Raced against a promise that settles
+   * when the other side has finished instead, so an unfixed build — where nothing blocks at all —
+   * reaches its assertions rather than hanging on a wait that can never end.
+   */
+  async function blockedOnASchedule(): Promise<boolean> {
+    const [row] = await owner.$queryRaw<{ waiting: bigint }[]>`
+      SELECT count(*) AS waiting
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND cardinality(pg_blocking_pids(pid)) > 0
+        AND query LIKE '%retention_schedule%'`;
+    return (row?.waiting ?? 0n) > 0n;
+  }
+
+  async function untilBlockedOr(settled: Promise<unknown>): Promise<boolean> {
+    let done = false;
+    void settled.then(
+      () => {
+        done = true;
+      },
+      () => {
+        done = true;
+      },
+    );
+    for (;;) {
+      if (await blockedOnASchedule()) {
+        return true;
+      }
+      if (done) {
+        return false;
+      }
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+    }
+  }
+
+  /**
+   * Settles everything else this file has left due, so the sweep under test reaches its own
+   * document quickly. `listDue` orders by `dueAt`, and the document created here is the newest, so
+   * without this it would be settled last — behind however many schedules the file has
+   * accumulated, while a transaction is parked.
+   */
+  async function drainOtherDue(): Promise<void> {
+    await asSystem(() => retention.retention.executeDue(500));
+  }
+
+  it('never destroys a hold it accepted, whichever of the two arrives first', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Held mid-purge'));
+    await advanceToDue(document.id);
+    // Before the approval, so this document's own schedule is raised for review and left
+    // `PENDING` rather than settled.
+    await drainOtherDue();
+    await approve(document.id);
+
+    const parking = new ParkingHoldRead(new RecordStamps(clock));
+    parking.target = document.id;
+    const racing = realRetention({
+      clock,
+      unitOfWork,
+      storage: library.storagePort,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      holds: parking,
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+
+    let reached: () => void = () => undefined;
+    const atDecision = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    // Parked *after* the disposition's own hold read, holding the answer "nothing holds this".
+    const sweep = asSystem(() => racing.retention.executeDue(100));
+    await atDecision;
+
+    // The matter opens, in its own transaction. Not awaited: in a fixed build it waits on the
+    // rows the disposition is holding, and awaiting it here would be this test deadlocking rather
+    // than the product being asked a question.
+    const placing = as(() => retention.holds.place(document.id, 'Matter 2026-303'));
+    await untilBlockedOr(placing);
+
+    admit();
+    await sweep;
+    const placed = await placing.then(
+      (hold) => hold,
+      () => null,
+    );
+
+    const survives = await owner.document.findUnique({ where: { id: document.id } });
+    if (placed !== null) {
+      // The hold was accepted. Then it holds — the record is still there, the hold is still live,
+      // and the schedule is suspended rather than executed.
+      expect(survives).not.toBeNull();
+      expect(await owner.legalHold.findUnique({ where: { id: placed.id } })).not.toBeNull();
+      expect(
+        (await owner.retentionSchedule.findFirstOrThrow({ where: { documentId: document.id } }))
+          .state,
+      ).toBe(RetentionScheduleState.SUSPENDED);
+    } else {
+      // The placement lost the race outright and never happened, which is the other legitimate
+      // ordering. Nothing was accepted, so nothing was destroyed that had been.
+      expect(await owner.legalHold.count({ where: { documentId: document.id } })).toBe(0);
+    }
+  });
+
+  it('lets a placement already under way finish before the sweep decides', async () => {
+    const document = await createDocument({ documentTypeId: purgingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Held first'));
+    await advanceToDue(document.id);
+    await drainOtherDue();
+    await approve(document.id);
+
+    const parking = new ParkingPlacement(new RecordStamps(clock));
+    parking.target = document.id;
+    const placer = realRetention({
+      clock,
+      unitOfWork,
+      storage: library.storagePort,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      holds: parking,
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+
+    let reached: () => void = () => undefined;
+    const atPlacement = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    // The matter opens first and parks on the hold row's own insert — in a fixed build, holding
+    // the document's schedules while it does.
+    const placing = as(() => placer.holds.place(document.id, 'Matter 2026-304'));
+    await atPlacement;
+
+    const sweep = asSystem(() => retention.retention.executeDue(100));
+    // The database, not the scheduler, says the sweep is waiting on the placement.
+    expect(await untilBlockedOr(sweep)).toBe(true);
+
+    admit();
+    const hold = await placing;
+    await sweep;
+
+    expect(await owner.document.findUnique({ where: { id: document.id } })).not.toBeNull();
+    expect(await owner.legalHold.findUniqueOrThrow({ where: { id: hold.id } })).toMatchObject({
+      releasedAt: null,
+    });
+    expect(
+      (await owner.retentionSchedule.findFirstOrThrow({ where: { documentId: document.id } }))
+        .state,
+    ).toBe(RetentionScheduleState.SUSPENDED);
+
+    // And the trail says the sweep stood down rather than silently doing nothing. It is the
+    // *schedule* re-read that refuses here rather than the hold re-read, and that ordering is the
+    // point: the placement suspends the schedule in the same transaction as the hold, so by the
+    // time the disposition holds the rows the schedule is already one it may not execute. Slice
+    // 73's guard and this lock are the same refusal reached one statement apart.
+    const stoodDown = (await trailFor(document.id)).filter(
+      (event) =>
+        event.action === RetentionAudit.PURGE_EXECUTED &&
+        JSON.stringify(event.payload).includes(RetentionScheduleState.SUSPENDED),
+    );
+    expect(stoodDown).toHaveLength(1);
+  });
+
+  /**
+   * The archive half of the same interleaving.
+   *
+   * Less final than a purge and not less wrong. `SUSPENDED` is one of `LIVE_STATES`, so an archive
+   * that decided before the matter committed writes `EXECUTED` straight over the suspension the
+   * placement had just recorded — and a release then finds nothing suspended to resume, leaving
+   * the schedule terminal, the record archived, and the hold with nothing left to hold.
+   */
+  it('lets a placement already under way finish before the archive decides', async () => {
+    const document = await createDocument({ documentTypeId: archivingTypeId });
+    await as(() => library.documents.remove(document.id, document.version, 'Archive held first'));
+    await advanceToDue(document.id);
+    // An archiving schedule needs no approval, so the drain would settle this one too. Held
+    // across it and released afterwards — both production paths — which leaves it `PENDING` and
+    // every other due schedule settled.
+    const shield = await as(() => retention.holds.place(document.id, 'Held across the drain'));
+    await drainOtherDue();
+    await as(() => retention.holds.release(shield.id, 'Drain finished'));
+
+    const parking = new ParkingPlacement(new RecordStamps(clock));
+    parking.target = document.id;
+    const placer = realRetention({
+      clock,
+      unitOfWork,
+      storage: library.storagePort,
+      storageService: library.storage,
+      disposition: realDisposition(clock, library.storage, library.writer),
+      holds: parking,
+      settings: {
+        [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS,
+        [Settings.RETENTION_BLOB_GRACE_DAYS.key]: 0,
+      },
+    });
+
+    let reached: () => void = () => undefined;
+    const atPlacement = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    const placing = as(() => placer.holds.place(document.id, 'Matter 2026-305'));
+    await atPlacement;
+
+    const sweep = asSystem(() => retention.retention.executeDue(100));
+    expect(await untilBlockedOr(sweep)).toBe(true);
+
+    admit();
+    const hold = await placing;
+    await sweep;
+
+    // Not archived, and the schedule is still the release's to resume. An `EXECUTED` here would
+    // be terminal: nothing revisits it, and the matter would hold a record nothing can dispose of
+    // and nothing can put back.
+    expect(await statusOf(document.id)).not.toBe('ARCHIVED');
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.SUSPENDED);
+    await as(() => retention.holds.release(hold.id, 'Matter closed'));
+    expect((await scheduleOf(document.id)).state).toBe(RetentionScheduleState.PENDING);
+  });
+
   it('refuses to archive a record a hold reached while the sweep was deciding', async () => {
     const document = await createDocument({ documentTypeId: archivingTypeId });
     await as(() => library.documents.remove(document.id, document.version, 'Held during'));
@@ -1759,23 +2068,31 @@ describe('a legal hold that arrives while the sweep is deciding', () => {
       return { ...sweep, atClaim, admit };
     });
 
-    // Both parked between the last guard `purge` has and the first row it would remove, so both
-    // are holding a schedule they have each re-read as live. Started one at a time and awaited to
-    // its park, because which of two concurrent passes reaches the seam first is the scheduler's
-    // business and a test that depends on the answer reports whichever answer it got.
+    // Both parked on the way into the lock, holding nothing, so both are inside a transaction that
+    // has re-read the schedule as live and neither has ordered the other yet. Started one at a
+    // time and awaited to its park, because which of two concurrent passes reaches the seam first
+    // is the scheduler's business and a test that depends on the answer reports whichever answer
+    // it got.
     const first = asSystem(() => started[0]!.stack.retention.executeDue(100));
     await started[0]!.atClaim;
     const second = asSystem(() => started[1]!.stack.retention.executeDue(100));
     await started[1]!.atClaim;
 
+    // Released together. From here PostgreSQL decides which of them takes the rows, and the loser
+    // arrives at its claim against a schedule the winner has already removed.
     started[0]!.admit();
-    await first;
     started[1]!.admit();
+    await first;
     await second;
 
-    // One sweep claimed the schedule; the other's delete matched nothing.
-    expect(started[0]!.parking.deleteCounts).toEqual([1]);
-    expect(started[1]!.parking.deleteCounts).toEqual([0]);
+    // One sweep claimed the schedule; the other's delete matched nothing. Which of them won is
+    // PostgreSQL's to decide now that both are released together, so the assertion is over the
+    // pair rather than over a named sweep — the property is that exactly one claim landed.
+    const counts = [
+      ...started[0]!.parking.deleteCounts,
+      ...started[1]!.parking.deleteCounts,
+    ].sort();
+    expect(counts).toEqual([0, 1]);
 
     // The document went once, and the tombstone says so once — that half already held, because
     // `documentId` is the tombstone's primary key and its write is an upsert that updates nothing.
@@ -1873,18 +2190,34 @@ describe('a legal hold that arrives while the sweep is deciding', () => {
   class ParkingSchedules extends PrismaRetentionScheduleRepository {
     reached: (() => void) | null = null;
     admit: Promise<void> | null = null;
-    /** Whose claim to park on — this file leaves plenty of other schedules due. */
+    /** Whose disposition to park on — this file leaves plenty of other schedules due. */
     target: string | null = null;
     /** What each claim actually removed, which is the whole of what the fix reads. */
     readonly deleteCounts: number[] = [];
 
-    override async deleteForDocument(documentId: DocumentId): Promise<number> {
+    /**
+     * Parked on the way *into* the lock rather than on the claim — Slice 115.
+     *
+     * The park used to sit between the last guard and the first row removed, which was the only
+     * seam there was while `purge` took no lock. It cannot sit there any more: the second sweep
+     * now waits in PostgreSQL for the first one's `FOR UPDATE`, so it never reaches a park beyond
+     * it and a barrier of two would hold both transactions until they expired.
+     *
+     * Before the lock is the stronger place in any case. Both passes are admitted holding
+     * nothing, so both are genuinely in flight and it is the *database* that orders them — which
+     * is what the claim count below is being asked about.
+     */
+    override async lockForDocument(documentId: DocumentId): Promise<void> {
       const gate = this.admit;
       if (gate !== null && String(documentId) === this.target) {
         this.admit = null;
         this.reached?.();
         await gate;
       }
+      await super.lockForDocument(documentId);
+    }
+
+    override async deleteForDocument(documentId: DocumentId): Promise<number> {
       const count = await super.deleteForDocument(documentId);
       if (String(documentId) === this.target) {
         this.deleteCounts.push(count);
