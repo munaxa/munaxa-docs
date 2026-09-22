@@ -286,28 +286,33 @@ export class PrismaDocumentRepository implements DocumentRepository {
     path: string;
     cascadeId: string;
   }): Promise<readonly CascadedDocument[]> {
-    const tx = requireTransaction();
-    const tenantId = this.tenantId();
-    // Read first, then stamp: the caller needs each document's number and frozen policy to write
-    // its schedule, and the update alone would not say which rows it took.
-    const rows = await tx.document.findMany({
+    // One statement, and the rows it returns are the rows it took — Slice 117.
+    //
+    // This was a read and then a stamp, and the read's answer was what the caller acted on. A
+    // document deleted on its own in the interval was still in that answer, and the stamp carried
+    // no `deleted_at` predicate, so it took the row anyway: the individual delete's cascade
+    // identifier was overwritten with this one while its `delete_reason` still named the other
+    // act. `LibraryAdminService.restoreFolder` then restored it — "a document deleted on its own
+    // beforehand carries its own cascade identifier and stays deleted" is the invariant that
+    // states, and the restore brought it back with every revision still deleted, because those
+    // were stamped with the cascade it no longer carried.
+    //
+    // `deleted_at IS NULL` in the predicate makes the claim the truth: under `READ COMMITTED` the
+    // update re-evaluates against the row the other delete left, matches nothing, and the document
+    // keeps its own cascade. The relation filter goes in the same statement, so there is no window
+    // between deciding and claiming rather than a smaller one.
+    return requireTransaction().document.updateManyAndReturn({
       where: {
-        tenantId,
+        tenantId: this.tenantId(),
         deletedAt: null,
         folder: { OR: [{ path: input.path }, { path: { startsWith: `${input.path}.` } }] },
       },
-      select: { id: true, documentNumber: true, retentionPolicyId: true, status: true },
-    });
-    if (rows.length === 0) {
-      return [];
-    }
-    await tx.document.updateMany({
-      where: { id: { in: rows.map((row) => row.id) }, tenantId },
       // No reason of its own: the folder delete is the reason, recorded on the folder's audit
       // event, and the shared cascade identifier is what ties each row to it.
       data: { ...this.stamps.deletion(), deleteCascadeId: input.cascadeId },
+      // The caller needs each document's number and frozen policy to write its schedule.
+      select: { id: true, documentNumber: true, retentionPolicyId: true, status: true },
     });
-    return rows;
   }
 
   async listCascade(cascadeId: string): Promise<readonly CascadedDocument[]> {

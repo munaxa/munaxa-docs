@@ -1044,6 +1044,39 @@ export function realPermissions(options: {
   };
 }
 
+/**
+ * The real document repository, with a place to stand inside a delete — Slice 117.
+ *
+ * `setDeleted` is where an individual delete takes its row, and a suite proving what a folder
+ * cascade does to a document somebody is deleting underneath it needs to hold one transaction
+ * open there while the other runs. Every statement below the override is the production one; the
+ * seam lives here rather than in the suite because a module's test may not reach into another
+ * module's internals, and the cascade is Document's while the folder is Library's.
+ */
+export class ParkingDocumentRepository extends PrismaDocumentRepository {
+  /** Settled once the target's row is taken and this transaction is still open. */
+  reached: (() => void) | null = null;
+  /** Awaited before the delete goes on, so the caller decides when it commits. */
+  admit: Promise<void> | null = null;
+  /** Whose delete to park on; a suite deletes plenty of other documents. */
+  target: string | null = null;
+
+  override async setDeleted(
+    id: Parameters<PrismaDocumentRepository['setDeleted']>[0],
+    expectedVersion: number,
+    deleted: boolean,
+    marks?: Parameters<PrismaDocumentRepository['setDeleted']>[3],
+  ): Promise<void> {
+    await super.setDeleted(id, expectedVersion, deleted, marks);
+    const gate = this.admit;
+    if (gate !== null && deleted && String(id) === this.target) {
+      this.admit = null;
+      this.reached?.();
+      await gate;
+    }
+  }
+}
+
 export function realDocumentRepository(options: {
   readonly clock: ClockPort;
   readonly unitOfWork: UnitOfWork;

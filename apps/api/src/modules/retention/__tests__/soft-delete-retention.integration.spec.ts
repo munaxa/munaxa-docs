@@ -46,6 +46,8 @@ import {
   type DocumentLibraryStack,
   type RetentionStack,
   realDisposition,
+  ParkingDocumentRepository,
+  realAclResolver,
   realDocumentLibrary,
   realRetention,
 } from '../../../testing/real-collaborators';
@@ -97,6 +99,8 @@ const RECYCLE_BIN_DAYS = 30;
 let root: string;
 let owner: PrismaClient;
 let unitOfWork: PrismaUnitOfWork;
+/** The config `beforeAll` built, so a test can compose a second stack on the same terms. */
+let libraryConfig: AppConfig;
 let library: DocumentLibraryStack;
 let retention: RetentionStack;
 
@@ -284,6 +288,7 @@ beforeAll(async () => {
     },
   } as unknown as AppConfig;
 
+  libraryConfig = appConfig;
   const prisma = sharedDatabase(appConfig, logger, APP_URL);
   unitOfWork = new PrismaUnitOfWork(prisma);
 
@@ -627,6 +632,172 @@ describe('restore', () => {
     expect((await owner.fileObject.findUniqueOrThrow({ where: { id: secondFile } })).refCount).toBe(
       0,
     );
+  });
+
+  /**
+   * The cascade is the *subtree*, not the folder — Slice 117.
+   *
+   * `cascadeDeleteUnderFolder`'s predicate is the folder's own path **or** anything beneath it, and
+   * a cascade that took only the named folder's own documents would leave every document in a
+   * subfolder live inside a deleted branch: reachable by search, absent from the recycle bin that
+   * holds the branch, and restored by nothing.
+   */
+  it('takes the documents in a subfolder with the folder above them', async () => {
+    const parent = await as(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: unique('Parent '),
+        inheritAcl: true,
+      }),
+    );
+    const child = await as(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: parent.id,
+        name: unique('Child '),
+        inheritAcl: true,
+      }),
+    );
+    const atTheTop = await createDocument({ folderId: parent.id });
+    const underneath = await createDocument({ folderId: child.id });
+
+    const parentRow = await as(() => library.libraries.getFolder(parent.id));
+    await as(() => library.libraries.deleteFolder(parent.id, parentRow.version));
+
+    const top = await owner.document.findUniqueOrThrow({ where: { id: atTheTop.id } });
+    const nested = await owner.document.findUniqueOrThrow({ where: { id: underneath.id } });
+    expect(nested.deletedAt).not.toBeNull();
+    // One cascade over the whole subtree, so one restore returns all of it.
+    expect(nested.deleteCascadeId).toBe(top.deleteCascadeId);
+    expect(
+      await owner.documentRevision.count({ where: { documentId: underneath.id, deletedAt: null } }),
+    ).toBe(0);
+
+    const deleted = await as(() => library.libraries.getFolder(parent.id));
+    await as(() => library.libraries.restoreFolder(parent.id, deleted.version));
+    expect(
+      (await owner.document.findUniqueOrThrow({ where: { id: underneath.id } })).deletedAt,
+    ).toBeNull();
+  });
+
+  /**
+   * The same two deletes, overlapping — Slice 117.
+   *
+   * The test below is the sequential pair and states the invariant: *"a document deleted on its
+   * own beforehand carries its own cascade identifier and stays deleted"*. The folder cascade used
+   * to read the documents under the path and then stamp them, and the stamp carried no
+   * `deleted_at` predicate — so a delete that committed in the interval was taken anyway. The row
+   * ended up carrying the folder's cascade identifier and the individual delete's reason, the
+   * folder's restore brought it back, and it came back with every revision still deleted, because
+   * those were stamped with the cascade the document no longer carried.
+   *
+   * The park is on the individual delete's own `setDeleted`, which is upstream of the claim in
+   * every build, so the ordering this asserts is the same one before and after the fix: the
+   * cascade meets a row somebody else is in the middle of deleting.
+   */
+  it('leaves a document deleted under it out of the cascade it is claiming', async () => {
+    /** A condition PostgreSQL answers: the cascade is waiting on the row being deleted under it. */
+    async function untilBlockedOnADocument(): Promise<void> {
+      for (;;) {
+        const [row] = await owner.$queryRaw<{ waiting: bigint }[]>`
+          SELECT count(*) AS waiting
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND cardinality(pg_blocking_pids(pid)) > 0
+            AND query LIKE '%document%'`;
+        if ((row?.waiting ?? 0n) > 0n) {
+          return;
+        }
+        await new Promise((resolve) => {
+          setImmediate(resolve);
+        });
+      }
+    }
+
+    const folder = await as(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: unique('Race '),
+        inheritAcl: true,
+      }),
+    );
+    const own = await createDocument({ folderId: folder.id });
+    const inside = await createDocument({ folderId: folder.id });
+
+    const parking = new ParkingDocumentRepository(
+      new RecordStamps(clock),
+      realAclResolver({ clock, unitOfWork }),
+    );
+    parking.target = own.id;
+    const racing = realDocumentLibrary({
+      documentRepository: parking,
+      clock,
+      unitOfWork,
+      config: libraryConfig,
+      registry: everyTenantRegistry(APP_URL),
+      storageRoot: root,
+      signingSecret: SIGNING_SECRET,
+      antivirus: {
+        scanner: 'unconfigured',
+        scan: () => Promise.reject(new Error('AV_DRIVER is NONE')),
+      },
+      users: { get: (id: string) => Promise.resolve({ id } as never) },
+      retentionSettings: { [Settings.RETENTION_RECYCLE_BIN_DAYS.key]: RECYCLE_BIN_DAYS },
+    });
+
+    let reached: () => void = () => undefined;
+    const atDelete = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let admit: () => void = () => undefined;
+    parking.admit = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    parking.reached = reached;
+
+    // One document deleted on its own, parked with its row taken and its transaction open.
+    const individually = as(() =>
+      racing.documents.remove(own.id, own.version, 'Deleted on its own'),
+    );
+    await atDelete;
+
+    // The folder above both, from its own scope. Not awaited: it waits on the row above.
+    const folderRow = await as(() => library.libraries.getFolder(folder.id));
+    const cascading = as(() => library.libraries.deleteFolder(folder.id, folderRow.version));
+    await untilBlockedOnADocument();
+
+    admit();
+    await individually;
+    await cascading;
+
+    const ownRow = await owner.document.findUniqueOrThrow({ where: { id: own.id } });
+    const insideRow = await owner.document.findUniqueOrThrow({ where: { id: inside.id } });
+    // Two acts, two cascades. One identifier over both would make the row say it was deleted by
+    // the folder while its own reason names the other act.
+    expect(ownRow.deleteCascadeId).not.toBe(insideRow.deleteCascadeId);
+    expect(ownRow.deleteReason).toBe('Deleted on its own');
+    expect(insideRow.deletedAt).not.toBeNull();
+
+    const deletedFolder = await as(() => library.libraries.getFolder(folder.id));
+    await as(() => library.libraries.restoreFolder(folder.id, deletedFolder.version));
+
+    // The restore returns exactly what the folder's delete took.
+    expect(
+      (await owner.document.findUniqueOrThrow({ where: { id: inside.id } })).deletedAt,
+    ).toBeNull();
+    expect(
+      await owner.documentRevision.count({ where: { documentId: inside.id, deletedAt: null } }),
+    ).toBeGreaterThan(0);
+
+    // And leaves the other one where its own delete put it — rather than bringing back a document
+    // nobody restored, with no live revision behind it.
+    const after = await owner.document.findUniqueOrThrow({ where: { id: own.id } });
+    expect(after.deletedAt).not.toBeNull();
+    expect(
+      await owner.documentRevision.count({ where: { documentId: own.id, deletedAt: null } }),
+    ).toBe(0);
   });
 
   it('restores exactly one folder cascade, and leaves an earlier delete deleted', async () => {
