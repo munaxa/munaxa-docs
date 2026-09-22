@@ -1307,6 +1307,39 @@ describe('what the database refuses on its own', () => {
   });
 });
 
+/**
+ * Suspension reaches a remark on an approval too — Slice 116.
+ *
+ * `comment` writes no audit row, and rightly: a remark is not a decision, and 13 §2 gives the
+ * engine its actions for the decisions. That is why it went through the unit of work alone — and
+ * why it was one of eleven writes exempt from the refusal `08-permission-model.md` §4 asks for
+ * *everywhere*. A suspended organisation kept accumulating commentary on its approvals.
+ */
+describe('a read-only organisation', () => {
+  it('refuses a remark on an approval, and still answers the approval itself', async () => {
+    const typeId = await typeWithWorkflow(oneStage());
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+
+    await owner.tenant.update({ where: { id: TENANT }, data: { status: 'SUSPENDED' } });
+    try {
+      await expect(as(() => workflow.engine.comment(instanceId, 'A remark'))).rejects.toThrow(
+        /read-only/i,
+      );
+      expect(await owner.workflowComment.count({ where: { instanceId } })).toBe(0);
+
+      // Reads are untouched: a suspended tenant can still see what is in flight.
+      await expect(
+        as(() => workflow.approvals.forDocument(asId<DocumentId>(documentId))),
+      ).resolves.toBeDefined();
+    } finally {
+      await owner.tenant.update({ where: { id: TENANT }, data: { status: 'ACTIVE' } });
+    }
+  });
+});
+
 describe('the audit trail', () => {
   it('records the decision, the revision decided on, and both identities', async () => {
     const typeId = await typeWithWorkflow(oneStage());

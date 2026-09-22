@@ -49,7 +49,7 @@ export class SavedSearchService {
     readonly query: string;
     readonly filters: Readonly<Record<string, readonly string[]>>;
   }): Promise<SavedSearchRecord> {
-    return this.writer.read(async () => {
+    return this.writer.change(async () => {
       const id = this.writer.clock.nextId();
       await this.saved.create({ id, ownerId: this.actor(), ...input });
       return this.requireOwn(id);
@@ -65,7 +65,7 @@ export class SavedSearchService {
       readonly filters?: Readonly<Record<string, readonly string[]>>;
     },
   ): Promise<SavedSearchRecord> {
-    return this.writer.read(async () => {
+    return this.writer.change(async () => {
       const current = await this.requireOwn(id);
       requireVersion(expectedVersion, current.version);
       await this.saved.update(id, current.version, changes);
@@ -74,7 +74,7 @@ export class SavedSearchService {
   }
 
   async remove(id: string, expectedVersion: number | undefined): Promise<void> {
-    await this.writer.read(async () => {
+    await this.writer.change(async () => {
       const current = await this.requireOwn(id);
       requireVersion(expectedVersion, current.version);
       await this.saved.softDelete(id, current.version);

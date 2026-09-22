@@ -233,16 +233,24 @@ describe('the outbox dispatcher', () => {
     const holding = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let acquired: () => void = () => {};
+    // Settled by the lock itself rather than by a timer. A fixed pause is a guess about how long
+    // another connection takes to reach `FOR UPDATE`, and a guess that is wrong on a loaded
+    // machine dispatches against an unlocked row and claims both — which is this assertion
+    // failing for a reason that has nothing to do with `SKIP LOCKED`.
+    const lockTaken = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
     const locked = other.$transaction(async (tx) => {
       await tx.$queryRawUnsafe(
         'SELECT id FROM outbox_message WHERE id = $1::uuid FOR UPDATE',
         held,
       );
+      acquired();
       await holding;
     });
 
-    // Give the lock a moment to be taken before dispatching against it.
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await lockTaken;
     const result = await dispatcher.dispatchBatch(10);
     release();
     await locked;
