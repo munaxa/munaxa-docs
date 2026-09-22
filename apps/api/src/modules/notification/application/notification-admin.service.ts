@@ -124,13 +124,13 @@ export class NotificationAdminService {
       ? (input.digest as StoredPreference['digest'])
       : DigestFrequency.IMMEDIATE;
 
-    await this.writer.read(() =>
+    await this.writer.change(() =>
       this.preferences.save(userId, typeKey, { channels: input.channels, digest }),
     );
   }
 
   clearPreference(userId: UserId, typeKey: string): Promise<void> {
-    return this.writer.read(() => this.preferences.clear(userId, typeKey));
+    return this.writer.change(() => this.preferences.clear(userId, typeKey));
   }
 
   findQuietHours(userId: UserId): Promise<QuietHoursWindow | null> {
@@ -148,7 +148,7 @@ export class NotificationAdminService {
     if (window !== null && localMinuteOfDay(new Date(), window.timezone) === null) {
       throw new ValidationError(`'${window.timezone}' is not a timezone this runtime knows.`);
     }
-    await this.writer.read(() => this.preferences.saveQuietHours(userId, window));
+    await this.writer.change(() => this.preferences.saveQuietHours(userId, window));
   }
 
   // --- Tenant template overrides --------------------------------------------------------------
@@ -253,7 +253,7 @@ export class NotificationAdminService {
    * "we tried again" would answer no question the first row does not.
    */
   releaseSuppression(address: string): Promise<boolean> {
-    return this.writer.read(() => this.suppressions.release(address));
+    return this.writer.change(() => this.suppressions.release(address));
   }
 }
 

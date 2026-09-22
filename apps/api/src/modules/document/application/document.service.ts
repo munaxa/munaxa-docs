@@ -873,7 +873,7 @@ export class DefaultDocumentService {
    * investigation (`13-audit-architecture.md` §3).
    */
   async setFavorite(id: string, favorite: boolean): Promise<void> {
-    await this.writer.read(async () => {
+    await this.writer.change(async () => {
       await this.require(id, false);
       const userId = this.requireActor();
       if (favorite) {

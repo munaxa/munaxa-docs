@@ -802,6 +802,26 @@ describe('navigating the library', () => {
     expect(alices.data.map((row) => row.id)).not.toContain(document.id);
   });
 
+  /**
+   * Suspension reaches this too — Slice 116.
+   *
+   * A favourite writes no audit row, which is right (13 §3: the trail is evidence about controlled
+   * records, and a star is a fact about a menu), and it used to be the reason it wrote through the
+   * unit of work alone and skipped the refusal `08-permission-model.md` §4 asks for *everywhere*.
+   */
+  it('refuses to star anything while the organisation is read-only', async () => {
+    const document = await createDocument({});
+    await owner.tenant.update({ where: { id: TENANT }, data: { status: 'SUSPENDED' } });
+    try {
+      await expect(as(() => documents.setFavorite(document.id, true))).rejects.toThrow(
+        /read-only/i,
+      );
+      expect(await owner.documentFavorite.count({ where: { documentId: document.id } })).toBe(0);
+    } finally {
+      await owner.tenant.update({ where: { id: TENANT }, data: { status: 'ACTIVE' } });
+    }
+  });
+
   it('is idempotent about starring something already starred', async () => {
     const document = await createDocument({});
     await as(() => documents.setFavorite(document.id, true));

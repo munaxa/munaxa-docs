@@ -97,19 +97,23 @@ export class ReportDefinitionService {
     // No audit row. 13 §2 gives this phase one action and it is spent on the export, which is what
     // produces a file that leaves the product. Saving a set of filters for oneself changes nothing
     // anybody else can observe — the same reasoning that gives a saved *search* no audit row.
-    await this.writer.read(() => this.definitions.save(record));
+    await this.writer.change(() => this.definitions.save(record));
     return record;
   }
 
   async remove(id: ReportDefinitionId): Promise<void> {
-    const existing = await this.writer.read(() => this.definitions.findById(id));
-    // A definition belonging to somebody else is a `404` rather than a `403`: 08 §7's rule, and it
-    // applies here because the existence of a saved report is itself a fact about what that person
-    // has been looking at.
-    if (existing === null || existing.ownerId !== this.caller()) {
-      throw new NotFoundError('The requested resource');
-    }
-    await this.writer.read(() => this.definitions.softDelete(id));
+    // One transaction rather than two, so the ownership read and the delete it authorises cannot
+    // be separated — and so a read-only organisation is told so before either of them runs.
+    await this.writer.change(async () => {
+      const existing = await this.definitions.findById(id);
+      // A definition belonging to somebody else is a `404` rather than a `403`: 08 §7's rule, and
+      // it applies here because the existence of a saved report is itself a fact about what that
+      // person has been looking at.
+      if (existing === null || existing.ownerId !== this.caller()) {
+        throw new NotFoundError('The requested resource');
+      }
+      await this.definitions.softDelete(id);
+    });
   }
 
   private caller(): UserId {

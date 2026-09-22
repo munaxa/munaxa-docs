@@ -124,6 +124,32 @@ export class AdministeredWriter {
   }
 
   /**
+   * A change that writes no audit row of its own.
+   *
+   * There is a real category of these and `13-audit-architecture.md` §3 draws the line: the trail
+   * is evidence about controlled records, so a saved search, a favourite, a notification
+   * preference and a remark on an approval each change something and none of them is a fact about
+   * a record. Writing a hash-chained, immutable, retention-governed row per click on a star would
+   * dilute the trail with the one kind of event that can never matter to an investigation.
+   *
+   * Until this existed they went through `read`, which is a unit of work and nothing else — and
+   * that quietly exempted every one of them from the refusal above. "A suspended tenant is
+   * read-only, *everywhere*" was true of the eighteen resources that make an audited change and
+   * false of the eleven call sites that make an unaudited one, which is precisely the failure the
+   * refusal was centralised here to prevent.
+   *
+   * So the seam is the write's, not the read's: the same transaction and the same refusal, minus
+   * the audit row. `read` keeps its meaning — genuine reads, and the system's own bookkeeping,
+   * which must keep running for a suspended tenant or suspension would become data loss.
+   */
+  change<TResult>(work: () => Promise<TResult>): Promise<TResult> {
+    return this.unitOfWork.run(async () => {
+      await this.refuseWhenReadOnly();
+      return work();
+    });
+  }
+
+  /**
    * A *second* audit event inside the unit of work already running.
    *
    * `write` records one event per change, which is right for a change with one meaning, and it is

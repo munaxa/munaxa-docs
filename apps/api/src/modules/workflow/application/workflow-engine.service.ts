@@ -623,7 +623,7 @@ export class WorkflowEngine {
 
   /** A remark that is not a decision. Not audited: a comment is not a change to a controlled record. */
   async comment(instanceId: WorkflowInstanceId, body: string): Promise<void> {
-    await this.writer.read(async () => {
+    await this.writer.change(async () => {
       const aggregate = await this.requireAggregate(instanceId);
       await this.repository.addComment({
         id: this.writer.clock.nextId(),
