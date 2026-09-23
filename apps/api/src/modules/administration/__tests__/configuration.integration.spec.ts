@@ -725,6 +725,124 @@ describe('categories', () => {
       asAdmin(() => config_.delete(ConfigurationKind.CATEGORY, tree.root, root.version)),
     ).rejects.toMatchObject({ fieldErrors: [{ field: 'subCategories' }] });
   });
+
+  /**
+   * Slice 126 — `underId` narrows the list to one subtree.
+   *
+   * The subtree filter and the search box are both an `OR`, and an object literal keeps the last of
+   * two keys with one name: the search's `OR` — `undefined` when nothing was typed — overwrote the
+   * subtree's, and a list asked for one branch answered for the whole tenant.
+   */
+  describe('listing beneath one category', () => {
+    const LIST = { page: 1, pageSize: 100, sortDirection: 'asc', deleted: 'live' } as const;
+
+    /**
+     * `top` holds `inner`, which holds `deep` and then `deeper`; `sibling` sits beside `inner`, and
+     * `far` is another root with a child of its own. The word is in names inside and outside.
+     */
+    async function twoBranches(): Promise<{
+      word: string;
+      top: string;
+      inner: string;
+      deep: string;
+      deeper: string;
+      sibling: string;
+      far: string;
+      farChild: string;
+    }> {
+      const word = uniqueCode('Needle');
+      const make = async (name: string, parentId?: string): Promise<string> =>
+        (
+          await asAdmin(() =>
+            config_.createCategory({
+              ...(parentId !== undefined && { parentId }),
+              code: uniqueCode('UN'),
+              name,
+            }),
+          )
+        ).id;
+      const top = await make(`Top ${word}`.replace('Needle', 'T'));
+      const inner = await make(`${word} inner`, top);
+      const deep = await make(`${word} deep`, inner);
+      const deeper = await make('Deeper', deep);
+      const sibling = await make(`${word} sibling`, top);
+      const far = await make(`Far ${word}`.replace('Needle', 'F'));
+      const farChild = await make(`${word} far`, far);
+      return { word, top, inner, deep, deeper, sibling, far, farChild };
+    }
+
+    const ids = (page: { data: readonly { id: string }[] }): string[] =>
+      page.data.map((row) => row.id);
+
+    it('returns the node and everything below it, and nothing else', async () => {
+      const tree = await twoBranches();
+
+      const page = await asAdmin(() => config_.listCategories({ ...LIST, underId: tree.inner }));
+
+      // Path order, so the subtree reads as a tree.
+      expect(ids(page)).toEqual([tree.inner, tree.deep, tree.deeper]);
+      expect(page.meta.total).toBe(3);
+    });
+
+    it('searches inside the subtree rather than instead of it', async () => {
+      const tree = await twoBranches();
+
+      const page = await asAdmin(() =>
+        config_.listCategories({ ...LIST, underId: tree.inner, search: tree.word }),
+      );
+
+      expect(ids(page)).toEqual([tree.inner, tree.deep]);
+      expect(page.meta.total).toBe(2);
+    });
+
+    it('still searches the whole tenant when no subtree is named', async () => {
+      const tree = await twoBranches();
+
+      const page = await asAdmin(() => config_.listCategories({ ...LIST, search: tree.word }));
+
+      expect(new Set(ids(page))).toEqual(
+        new Set([tree.inner, tree.deep, tree.sibling, tree.farChild]),
+      );
+    });
+
+    it('reaches every depth from a root, and stops at its own branch', async () => {
+      const tree = await twoBranches();
+
+      const page = await asAdmin(() => config_.listCategories({ ...LIST, underId: tree.top }));
+
+      expect(new Set(ids(page))).toEqual(
+        new Set([tree.top, tree.inner, tree.deep, tree.deeper, tree.sibling]),
+      );
+      expect(page.meta.total).toBe(5);
+    });
+
+    it('pages the subtree, and leaves the recycle bin out of it', async () => {
+      const tree = await twoBranches();
+      const deeper = await asAdmin(() => config_.getCategory(tree.deeper));
+      await asAdmin(() => config_.delete(ConfigurationKind.CATEGORY, tree.deeper, deeper.version));
+
+      const first = await asAdmin(() =>
+        config_.listCategories({ ...LIST, pageSize: 2, underId: tree.top }),
+      );
+      const binned = await asAdmin(() =>
+        config_.listCategories({ ...LIST, deleted: 'deleted', underId: tree.top }),
+      );
+
+      expect(first.data).toHaveLength(2);
+      expect(first.meta.total).toBe(4);
+      expect(first.meta.hasMore).toBe(true);
+      expect(ids(binned)).toEqual([tree.deeper]);
+    });
+
+    it('lists nothing beneath a category that does not exist', async () => {
+      await twoBranches();
+
+      const page = await asAdmin(() => config_.listCategories({ ...LIST, underId: uuidv7() }));
+
+      expect(page.data).toHaveLength(0);
+      expect(page.meta.total).toBe(0);
+    });
+  });
 });
 
 describe('numbering rules', () => {

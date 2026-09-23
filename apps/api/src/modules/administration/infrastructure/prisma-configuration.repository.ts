@@ -270,8 +270,12 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
       ...(request.parentId !== undefined && {
         parentId: request.parentId === 'null' ? null : request.parentId,
       }),
-      ...(await this.categoryUnder(request.underId)),
-      OR: searchConditions(request.search, ['name', 'code', 'description']),
+      // Both are an `OR`. Side by side in one literal the later key replaces the earlier, and the
+      // subtree was dropped whether or not anything had been typed.
+      AND: [
+        await this.categoryUnder(request.underId),
+        { OR: searchConditions(request.search, ['name', 'code', 'description']) },
+      ],
     };
 
     const [rows, total] = await Promise.all([
