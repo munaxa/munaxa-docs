@@ -12,6 +12,7 @@ import {
   DocumentStatus,
   type DocumentStatusKey,
   MetadataDataType,
+  Permission,
   RetentionTrigger,
   RevisionStatus,
   ScanStatus,
@@ -440,7 +441,7 @@ export class DefaultDocumentService {
       this.refuseWhenFrozen(current);
 
       const folder = await this.placement.folder(folderId);
-      if (folder === null) {
+      if (folder === null || !(await this.mayPlaceIn(folder.id))) {
         throw new ValidationError('That folder does not exist.', [
           { field: 'folderId', message: 'unknown' },
         ]);
@@ -1445,6 +1446,52 @@ export class DefaultDocumentService {
       throw new ForbiddenError('create a document without a signed-in user');
     }
     return userId;
+  }
+
+  /**
+   * Whether the caller reaches the folder a move is putting a document into — the decision
+   * `AclGuard` would have made, made here because it cannot.
+   *
+   * `@ScopedTo` binds **one** route parameter to **one** object, and `POST /documents/{id}/move`
+   * has two: the document, which the decorator names, and the destination, which arrives in the
+   * body. `BulkDocumentsController` states the same problem and the same answer for
+   * `POST /documents/bulk/upload` — "a decorator naming a body field would silently resolve
+   * `undefined` and refuse every request … so the folder's reach is resolved by the executor too".
+   * Nothing resolved it here, so `document:move` on the document was the whole of the check and a
+   * caller could push a controlled record into any folder in the tenant, including one they cannot
+   * see.
+   *
+   * That is not a small gap, because of what a move *is*: this method's own header says "the folder
+   * is the chain the ACL resolver walks, so every grant along the old chain stops applying and
+   * every grant along the new one starts". `document:move` is `S` in `08 §6`'s matrix for
+   * `LIBRARY_MANAGER` — granted on the nodes they manage — and without this they could move a
+   * document out of the library they manage and into one they hold nothing on.
+   *
+   * **The route's own permission, not a new one.** `AclGuard` resolves exactly the keys
+   * `@RequirePermission` declares, against the object it is pointed at; asking the same question
+   * about the second object invents no policy and requires no grant a mover does not already need.
+   *
+   * **Refused as "that folder does not exist".** `LibraryPlacementAdapter` answers `null` for a
+   * folder that is missing, deleted or another tenant's, and says why: "that they are
+   * indistinguishable is the point". A folder the caller may not reach joins that set, for the
+   * reason `08 §7` gives for `404` over `403` — otherwise the refusal is a way to enumerate the
+   * tree.
+   */
+  private async mayPlaceIn(folderId: string): Promise<boolean> {
+    const context = requireContext();
+    const decision = await this.acl.resolve(
+      {
+        userId: asId<UserId>(context.userId ?? ''),
+        roleIds: context.roles.map((role) => asId<AnyId>(role)),
+        // Left empty so the resolver derives them, exactly as `AclGuard` does — Slice 24 made a
+        // supplied list an unvalidated authorization input everywhere.
+        departmentIds: [],
+        delegationIds: [],
+      },
+      { type: ScopeType.FOLDER, id: asId<AnyId>(folderId) },
+      Permission.DOCUMENT_MOVE,
+    );
+    return decision.allowed;
   }
 
   private changed(
