@@ -780,6 +780,93 @@ describe('navigating the library', () => {
     expect(result.data).toHaveLength(0);
   });
 
+  /**
+   * Slice 127 — a library named beside a subtree narrows the list; it does not replace the subtree.
+   *
+   * Both filters are conditions on the document's folder, and both were written as a `folder` key in
+   * one object literal, where the later key replaces the earlier. The library page always carries
+   * `libraryId` in its URL, so "include subfolders" on one folder listed the whole library.
+   */
+  describe('a subtree and a library, together', () => {
+    async function aBranch(): Promise<{
+      branch: string;
+      inBranch: string;
+      inLeaf: string;
+      inBeside: string;
+    }> {
+      const folder = (name: string, parentId: string) =>
+        as(() => libraries.createFolder({ libraryId, parentId, name, inheritAcl: true }));
+      const branch = await folder(unique('Branch '), rootFolderId);
+      const leaf = await folder(unique('Leaf '), branch.id);
+      const beside = await folder(unique('Beside '), rootFolderId);
+      const inBranch = await createDocument({ folderId: branch.id });
+      const inLeaf = await createDocument({ folderId: leaf.id });
+      const inBeside = await createDocument({ folderId: beside.id });
+      return { branch: branch.id, inBranch: inBranch.id, inLeaf: inLeaf.id, inBeside: inBeside.id };
+    }
+
+    it('lists the subtree and nothing else in the library', async () => {
+      const tree = await aBranch();
+
+      const result = await as(() =>
+        documents.list({ ...page, libraryId, underFolderId: tree.branch }),
+      );
+
+      expect(new Set(result.data.map((row) => row.id))).toEqual(
+        new Set([tree.inBranch, tree.inLeaf]),
+      );
+      expect(result.meta.total).toBe(2);
+    });
+
+    it('still lists the whole library, and only it, when no subtree is named', async () => {
+      const tree = await aBranch();
+      const elsewhere = await as(() =>
+        libraries.createLibrary({
+          code: unique('LIB'),
+          name: unique('Elsewhere '),
+          ownerScopeType: 'TENANT',
+        }),
+      );
+      const outside = await createDocument({ folderId: elsewhere.rootFolderId });
+
+      const result = await as(() => documents.list({ ...page, pageSize: 100, libraryId }));
+
+      const ids = result.data.map((row) => row.id);
+      expect(ids).toEqual(expect.arrayContaining([tree.inBranch, tree.inLeaf, tree.inBeside]));
+      expect(ids).not.toContain(outside.id);
+    });
+
+    it('still lists only the subtree when no library is named', async () => {
+      const tree = await aBranch();
+
+      const result = await as(() => documents.list({ ...page, underFolderId: tree.branch }));
+
+      expect(new Set(result.data.map((row) => row.id))).toEqual(
+        new Set([tree.inBranch, tree.inLeaf]),
+      );
+      expect(result.meta.total).toBe(2);
+    });
+
+    it('lists nothing when the subtree is in a different library', async () => {
+      const tree = await aBranch();
+      const elsewhere = await as(() =>
+        libraries.createLibrary({
+          code: unique('LIB'),
+          name: unique('Elsewhere '),
+          ownerScopeType: 'TENANT',
+        }),
+      );
+      await createDocument({ folderId: elsewhere.rootFolderId });
+
+      const result = await as(() =>
+        documents.list({ ...page, libraryId: elsewhere.id, underFolderId: tree.branch }),
+      );
+
+      expect(result.data).toHaveLength(0);
+      expect(result.meta.total).toBe(0);
+    });
+  });
+
   it('keeps favourites private to the person who made them', async () => {
     const document = await createDocument({});
     await as(() => documents.setFavorite(document.id, true), ALICE);
