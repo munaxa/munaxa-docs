@@ -1544,9 +1544,16 @@ describe('a role assignment separates itself, because the key names the roles', 
  * materialised path keeps naming a department after that department is deleted, so an `acl_entry`
  * naming the retired department went on reaching every member of a live department beneath it.
  *
- * The state is reached through ordinary administrative routes and without a race: a department can
- * only be deleted once its children are, and restoring one of those children brings it back under
- * a parent that is still in the bin.
+ * When this was written the state was reached through ordinary administrative routes: a department
+ * can only be deleted once its children are, and restoring one of those children brought it back
+ * under a parent still in the bin. Slice 124 closed that route — `ScopeAdminService.restore` now
+ * refuses a retired parent, as every `create*` always has.
+ *
+ * The fix here stands anyway, and is the reason this section keeps its assertions. The restore was
+ * open for many phases, so the rows it produced are in tenants' data today; and a migration or a
+ * repair script is a writer this module does not own. So the orphan is now *seeded* — the child
+ * un-deleted directly, as data written before Slice 124 would have left it — and the resolver is
+ * held to be closed against it whatever wrote it.
  */
 describe('a department in the recycle bin stops conferring access', () => {
   let scopes: ReturnType<typeof realScopeAdmin>;
@@ -1628,7 +1635,12 @@ describe('a department in the recycle bin stops conferring access', () => {
 
   /**
    * Retires the parent, which can only happen once the child is in the bin too, then brings the
-   * child back — the sequence that leaves a live department whose path names a deleted one.
+   * child back — the state that leaves a live department whose path names a deleted one.
+   *
+   * Both deletes go through the product. The child comes back **directly**, because since Slice 124
+   * the product refuses to: `restore` requires the parent to be live first. What this stands in
+   * for is a row the product can no longer write and tenants' data still holds — one restored
+   * before that refusal existed.
    *
    * Once, and shared: the tests below all read the same retired tree, and retiring it twice would
    * mean deleting a department that is already deleted.
@@ -1644,10 +1656,10 @@ describe('a department in the recycle bin stops conferring access', () => {
     await asAdmin(() =>
       scopes.delete(OrganizationNodeKind.DEPARTMENT, retired.id, liveParent.version),
     );
-    const deletedChild = await asAdmin(() => scopes.getDepartment(kept.id));
-    await asAdmin(() =>
-      scopes.restore(OrganizationNodeKind.DEPARTMENT, kept.id, deletedChild.version),
-    );
+    await owner.department.update({
+      where: { id: kept.id },
+      data: { deletedAt: null, deletedBy: null },
+    });
     alreadyRetired = true;
   }
 
@@ -2080,6 +2092,131 @@ describe('a new document names a folder no decorator can reach', () => {
         },
       }),
     ).toBe(0);
+  });
+});
+
+/**
+ * Slice 124 — what a department restored under a retired parent was worth.
+ *
+ * `ScopeAdminService.restore` asked nothing of the parent, so deleting a child, then its parent,
+ * then restoring the child left a live department beneath a retired one. The write side took it at
+ * its word: `OrganizationService.exists` reads only the node's own row, so it could own a new
+ * library. The read side did not: `PrismaScopeChainReader` refuses a chain that crosses a retired
+ * node and answers `null`, so that library resolved to nothing for every permission — the tenant
+ * administrator's inheritance-proof `library:manage` included. A library the product had just
+ * accepted, that nobody could rename, delete or grant on.
+ *
+ * The restore now refuses, and this asserts both ends of it: the orphan cannot be produced, and the
+ * way back the refusal points to gives a library the administrator does manage.
+ */
+describe('a department restored under a retired parent', () => {
+  let scopes: ReturnType<typeof realScopeAdmin>;
+  let entityId: string;
+
+  beforeAll(async () => {
+    scopes = realScopeAdmin({ clock, unitOfWork, config: appConfig, cache: sharedAclCache });
+    const stamp = uuidv7().slice(-6);
+    const companyId = uuidv7();
+    entityId = uuidv7();
+    await owner.company.create({
+      data: {
+        id: companyId,
+        tenantId: TENANT,
+        code: `OC${stamp}`,
+        name: 'Orphans',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.entity.create({
+      data: {
+        id: entityId,
+        tenantId: TENANT,
+        companyId,
+        code: `OE${stamp}`,
+        name: 'Orphans One',
+        updatedAt: FIXED_NOW,
+      },
+    });
+  }, 60_000);
+
+  async function aRetiredPair(): Promise<{ parent: string; child: string }> {
+    const stamp = uuidv7().slice(-6);
+    const parent = await asAdmin(() =>
+      scopes.createDepartment({ entityId, code: `OP${stamp}`, name: 'Retired' }),
+    );
+    const child = await asAdmin(() =>
+      scopes.createDepartment({ entityId, parentId: parent.id, code: `OK${stamp}`, name: 'Child' }),
+    );
+    for (const id of [child.id, parent.id]) {
+      await asAdmin(async () =>
+        scopes.delete(
+          OrganizationNodeKind.DEPARTMENT,
+          id,
+          (await scopes.getDepartment(id)).version,
+        ),
+      );
+    }
+    return { parent: parent.id, child: child.id };
+  }
+
+  const mayManage = async (libraryId: string): Promise<boolean> =>
+    (
+      await asAdmin(() =>
+        permissions.resolver.resolve(
+          subject(ADMIN, ADMIN_ROLE),
+          { type: ScopeType.LIBRARY, id: asId<AnyId>(libraryId) },
+          Permission.LIBRARY_MANAGE,
+        ),
+      )
+    ).allowed;
+
+  it('cannot be produced, so nothing can be owned by a node no chain reaches', async () => {
+    const { child } = await aRetiredPair();
+
+    await expect(
+      asAdmin(async () =>
+        scopes.restore(
+          OrganizationNodeKind.DEPARTMENT,
+          child,
+          (await scopes.getDepartment(child)).version,
+        ),
+      ),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'parentId', message: 'deleted' }] });
+
+    // Still in the bin, so the write side now agrees with the read side: it is not an owner.
+    await expect(
+      asAdmin(() =>
+        library.libraries.createLibrary({
+          code: `ON${uuidv7().slice(-6)}`,
+          name: 'Owned by nobody',
+          ownerScopeType: ScopeType.DEPARTMENT,
+          ownerScopeId: child,
+        }),
+      ),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'ownerScopeId', message: 'unknown' }] });
+  });
+
+  it('gives a library the administrator manages once the parent comes back first', async () => {
+    const { parent, child } = await aRetiredPair();
+    for (const id of [parent, child]) {
+      await asAdmin(async () =>
+        scopes.restore(
+          OrganizationNodeKind.DEPARTMENT,
+          id,
+          (await scopes.getDepartment(id)).version,
+        ),
+      );
+    }
+
+    const owned = await asAdmin(() =>
+      library.libraries.createLibrary({
+        code: `OR${uuidv7().slice(-6)}`,
+        name: 'Owned by a restored department',
+        ownerScopeType: ScopeType.DEPARTMENT,
+        ownerScopeId: child,
+      }),
+    );
+    expect(await mayManage(owned.id)).toBe(true);
   });
 });
 
