@@ -358,6 +358,17 @@ function silentLogger(): Logger {
  * node of the wrong kind, or one belonging to another tenant.
  */
 /**
+ * The discriminator `realScopeAdmin`'s own methods take — Slice 121.
+ *
+ * Re-exported for the same reason the service is composed here: a suite outside `organization/`
+ * may not import that module's `domain/`, and `delete`, `restore` and `getNode` all take this
+ * key. Handing back the service without the vocabulary it speaks would leave a caller spelling
+ * `'DEPARTMENT'` as a bare string and losing the compiler's check that it is one of the four.
+ */
+export { OrganizationNodeKind } from '../modules/organization/domain/node-kind';
+export type { OrganizationNodeKindKey } from '../modules/organization/domain/node-kind';
+
+/**
  * The organisation tree's write side — Slice 36.
  *
  * Composed here rather than in a suite because `no-restricted-imports` stops anything under
