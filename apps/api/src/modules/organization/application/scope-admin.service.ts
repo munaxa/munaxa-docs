@@ -624,6 +624,7 @@ export class ScopeAdminService {
         };
       }
 
+      await this.refuseRetiredParent(kind, current);
       await this.refuseTakenCodeOnRestore(kind, current);
       await this.scopes.setDeleted(kind, id, current.version, false);
 
@@ -690,6 +691,63 @@ export class ScopeAdminService {
 
     if (taken) {
       throw new DuplicateError('code', 'code');
+    }
+  }
+
+  /**
+   * The parent has to be back first — what every `create*` above already requires, asked of a
+   * restore too.
+   *
+   * `createEntity` refuses a company that is not live, `createBranch` an entity, and
+   * `createDepartment` both its entity and its parent department; `moveDepartment` refuses a parent
+   * in the bin. `restore` asked none of it, and a delete can only reach a parent once its children
+   * are gone — so deleting a child, then its parent, then restoring the child produced the one
+   * state no write could otherwise produce: a live node beneath a retired one.
+   *
+   * That is not a tree that merely looks odd. `PrismaScopeChainReader` refuses to assemble a chain
+   * that crosses a retired node — "a department that was removed must stop conferring access
+   * immediately" — and answers `null`, which every guard turns into `404`. So the restored node is
+   * live to every write and absent to every authorisation: `OrganizationService.exists` accepts it
+   * as a library's owner, and the library is then unmanageable by everyone, a tenant administrator
+   * holding `library:manage` included, as is any ACL entry on the node itself. Nothing in the
+   * refusal points at the deleted parent that is the cause.
+   *
+   * The library, folder and document restores already hold this line with the same words; this is
+   * the organisation tree's copy of it. Refused rather than cascaded: bringing the parent back is
+   * a decision about the parent, and it has its own route.
+   */
+  private async refuseRetiredParent(
+    kind: OrganizationNodeKindKey,
+    current: CompanyRow | EntityRow | BranchRow | DepartmentRow,
+  ): Promise<void> {
+    switch (kind) {
+      case OrganizationNodeKind.ENTITY: {
+        const { companyId } = current as EntityRow;
+        if ((await this.scopes.findCompany(companyId, false)) === null) {
+          throw retiredParent('company', 'companyId');
+        }
+        return;
+      }
+      case OrganizationNodeKind.BRANCH: {
+        const { entityId } = current as BranchRow;
+        if ((await this.scopes.findEntity(entityId, false)) === null) {
+          throw retiredParent('entity', 'entityId');
+        }
+        return;
+      }
+      case OrganizationNodeKind.DEPARTMENT: {
+        const { entityId, parentId } = current as DepartmentRow;
+        if ((await this.scopes.findEntity(entityId, false)) === null) {
+          throw retiredParent('entity', 'entityId');
+        }
+        if (parentId !== null && (await this.scopes.findDepartment(parentId, false)) === null) {
+          throw retiredParent('department', 'parentId');
+        }
+        return;
+      }
+      default:
+        // A company is the top of the tree; nothing above it can be retired.
+        return;
     }
   }
 
@@ -805,4 +863,11 @@ function changedOnly<TRow extends object>(
       .filter(([, value]) => value !== undefined)
       .map(([key]) => [key, values[key]]),
   );
+}
+
+/** The refusal a restore gives when what it hangs from is still in the recycle bin. */
+function retiredParent(what: string, field: string): ValidationError {
+  return new ValidationError(`Restore the ${what} above this one first.`, [
+    { field, message: 'deleted' },
+  ]);
 }

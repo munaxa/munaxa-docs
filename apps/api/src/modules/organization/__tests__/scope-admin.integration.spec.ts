@@ -378,6 +378,147 @@ describe('deleting and restoring', () => {
   });
 });
 
+/**
+ * Slice 124 — a restore under a parent that is still in the recycle bin.
+ *
+ * Every `create*` refuses a parent that is not live, and `moveDepartment` refuses one too. A delete
+ * can only reach a parent once its children are gone, so deleting a child, then its parent, then
+ * restoring the child was the one way to produce a live node beneath a retired one — and
+ * `PrismaScopeChainReader` refuses to assemble a chain across a retired node, so everything that
+ * then hangs from the restored node is a `404` to every caller. The ACL suite asserts that
+ * consequence; this one asserts the refusal, once for each edge a node can hang from.
+ */
+describe('restoring beneath a parent that is still deleted', () => {
+  let n = 0;
+  // Its own namespace, so no code here is one another block in this file also mints. Nothing is
+  // shared between the blocks but the tenant, and a code is part of what a node claims.
+  const code = (prefix: string): string => {
+    n += 1;
+    return `RST${prefix}${String(n).padStart(3, '0')}`;
+  };
+
+  const retire = async (
+    kind: (typeof OrganizationNodeKind)[keyof typeof OrganizationNodeKind],
+    id: string,
+    read: () => Promise<{ version: number }>,
+  ) => asTenant(ACME, async () => service.delete(kind, id, (await read()).version));
+
+  const bringBack = async (
+    kind: (typeof OrganizationNodeKind)[keyof typeof OrganizationNodeKind],
+    id: string,
+    read: () => Promise<{ version: number }>,
+  ) => asTenant(ACME, async () => service.restore(kind, id, (await read()).version));
+
+  it('refuses a department whose parent department is deleted, and leaves it in the bin', async () => {
+    const { entityId } = fixture(ACME);
+    const parent = await asTenant(ACME, () =>
+      service.createDepartment({ entityId, code: code('RP'), name: 'Retired parent' }),
+    );
+    const child = await asTenant(ACME, () =>
+      service.createDepartment({ entityId, parentId: parent.id, code: code('RC'), name: 'Child' }),
+    );
+    await retire(OrganizationNodeKind.DEPARTMENT, child.id, () => service.getDepartment(child.id));
+    await retire(OrganizationNodeKind.DEPARTMENT, parent.id, () =>
+      service.getDepartment(parent.id),
+    );
+
+    await expect(
+      bringBack(OrganizationNodeKind.DEPARTMENT, child.id, () =>
+        asTenant(ACME, () => service.getDepartment(child.id)),
+      ),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'parentId', message: 'deleted' }] });
+
+    const row = await ownerRead((client) =>
+      client.department.findFirstOrThrow({ where: { id: child.id }, select: { deletedAt: true } }),
+    );
+    expect(row.deletedAt).not.toBeNull();
+  });
+
+  it('refuses a department whose entity is deleted', async () => {
+    const { companyId } = fixture(ACME);
+    const entity = await asTenant(ACME, () =>
+      service.createEntity({ companyId, code: code('RE'), name: 'Retired entity' }),
+    );
+    const department = await asTenant(ACME, () =>
+      service.createDepartment({ entityId: entity.id, code: code('RD'), name: 'Under it' }),
+    );
+    await retire(OrganizationNodeKind.DEPARTMENT, department.id, () =>
+      service.getDepartment(department.id),
+    );
+    await retire(OrganizationNodeKind.ENTITY, entity.id, () => service.getEntity(entity.id));
+
+    await expect(
+      bringBack(OrganizationNodeKind.DEPARTMENT, department.id, () =>
+        asTenant(ACME, () => service.getDepartment(department.id)),
+      ),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'entityId', message: 'deleted' }] });
+  });
+
+  it('refuses an entity whose company is deleted', async () => {
+    const company = await asTenant(ACME, () =>
+      service.createCompany({ code: code('RK'), name: 'Retired company' }),
+    );
+    const entity = await asTenant(ACME, () =>
+      service.createEntity({ companyId: company.id, code: code('RN'), name: 'Under it' }),
+    );
+    await retire(OrganizationNodeKind.ENTITY, entity.id, () => service.getEntity(entity.id));
+    await retire(OrganizationNodeKind.COMPANY, company.id, () => service.getCompany(company.id));
+
+    await expect(
+      bringBack(OrganizationNodeKind.ENTITY, entity.id, () =>
+        asTenant(ACME, () => service.getEntity(entity.id)),
+      ),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'companyId', message: 'deleted' }] });
+  });
+
+  it('refuses a branch whose entity is deleted', async () => {
+    const { companyId } = fixture(ACME);
+    const entity = await asTenant(ACME, () =>
+      service.createEntity({ companyId, code: code('RB'), name: 'Retired entity' }),
+    );
+    const branch = await asTenant(ACME, () =>
+      service.createBranch({ entityId: entity.id, code: code('RS'), name: 'Site' }),
+    );
+    await retire(OrganizationNodeKind.BRANCH, branch.id, () => service.getBranch(branch.id));
+    await retire(OrganizationNodeKind.ENTITY, entity.id, () => service.getEntity(entity.id));
+
+    await expect(
+      bringBack(OrganizationNodeKind.BRANCH, branch.id, () =>
+        asTenant(ACME, () => service.getBranch(branch.id)),
+      ),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'entityId', message: 'deleted' }] });
+  });
+
+  it('restores the child once its parent is back — the way out the refusal points to', async () => {
+    const { entityId } = fixture(ACME);
+    const parent = await asTenant(ACME, () =>
+      service.createDepartment({ entityId, code: code('WP'), name: 'Returning parent' }),
+    );
+    const child = await asTenant(ACME, () =>
+      service.createDepartment({ entityId, parentId: parent.id, code: code('WC'), name: 'Child' }),
+    );
+    await retire(OrganizationNodeKind.DEPARTMENT, child.id, () => service.getDepartment(child.id));
+    await retire(OrganizationNodeKind.DEPARTMENT, parent.id, () =>
+      service.getDepartment(parent.id),
+    );
+
+    await bringBack(OrganizationNodeKind.DEPARTMENT, parent.id, () =>
+      asTenant(ACME, () => service.getDepartment(parent.id)),
+    );
+    await bringBack(OrganizationNodeKind.DEPARTMENT, child.id, () =>
+      asTenant(ACME, () => service.getDepartment(child.id)),
+    );
+
+    const rows = await ownerRead((client) =>
+      client.department.findMany({
+        where: { id: { in: [parent.id, child.id] } },
+        select: { deletedAt: true },
+      }),
+    );
+    expect(rows.filter((row) => row.deletedAt === null)).toHaveLength(2);
+  });
+});
+
 describe('moving a department', () => {
   /**
    * A counter, not a slice of a uuid.
