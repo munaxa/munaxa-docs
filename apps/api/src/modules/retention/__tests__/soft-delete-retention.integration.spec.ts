@@ -52,6 +52,7 @@ import {
   realRetention,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
+import { seedRoleGrant } from '../../../testing/acl-seed';
 
 /**
  * Phase 10 against a real PostgreSQL and a real filesystem store — the assertions only a database
@@ -354,6 +355,19 @@ beforeAll(async () => {
       status: 'ACTIVE',
       updatedAt: now,
     },
+  });
+
+  // Slice 123: the role the context claims, seeded so the resolver can find it. Document creation
+  // now resolves `document:create` on the destination folder — the decision `AclGuard` cannot make
+  // for a folder that arrives in the body — and until it did, the role key in the context named no
+  // row and was never resolved. `acl-seed.ts` states the rule this follows: "the honest response is
+  // to seed the grant rather than to keep the resolver from asking".
+  await seedRoleGrant(owner, {
+    tenantId: TENANT,
+    roleId: uuidv7(),
+    key: 'TENANT_ADMIN',
+    userIds: [ALICE],
+    now: now,
   });
 
   const created = await as(() =>

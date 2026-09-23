@@ -13,6 +13,7 @@ import {
   type DocumentStatusKey,
   MetadataDataType,
   Permission,
+  type PermissionKey,
   RetentionTrigger,
   RevisionStatus,
   ScanStatus,
@@ -257,7 +258,7 @@ export class DefaultDocumentService {
 
     return this.writer.write<DocumentRow>(async () => {
       const folder = await this.placement.folder(input.folderId);
-      if (folder === null) {
+      if (folder === null || !(await this.mayPlaceIn(folder.id, Permission.DOCUMENT_CREATE))) {
         throw new ValidationError('That folder does not exist.', [
           { field: 'folderId', message: 'unknown' },
         ]);
@@ -441,7 +442,7 @@ export class DefaultDocumentService {
       this.refuseWhenFrozen(current);
 
       const folder = await this.placement.folder(folderId);
-      if (folder === null || !(await this.mayPlaceIn(folder.id))) {
+      if (folder === null || !(await this.mayPlaceIn(folder.id, Permission.DOCUMENT_MOVE))) {
         throw new ValidationError('That folder does not exist.', [
           { field: 'folderId', message: 'unknown' },
         ]);
@@ -1449,27 +1450,32 @@ export class DefaultDocumentService {
   }
 
   /**
-   * Whether the caller reaches the folder a move is putting a document into — the decision
-   * `AclGuard` would have made, made here because it cannot.
+   * Whether the caller reaches the folder a document is being put into — the decision `AclGuard`
+   * would have made, made here because it cannot.
    *
-   * `@ScopedTo` binds **one** route parameter to **one** object, and `POST /documents/{id}/move`
-   * has two: the document, which the decorator names, and the destination, which arrives in the
-   * body. `BulkDocumentsController` states the same problem and the same answer for
-   * `POST /documents/bulk/upload` — "a decorator naming a body field would silently resolve
-   * `undefined` and refuse every request … so the folder's reach is resolved by the executor too".
-   * Nothing resolved it here, so `document:move` on the document was the whole of the check and a
-   * caller could push a controlled record into any folder in the tenant, including one they cannot
-   * see.
+   * `@ScopedTo` binds **one** route parameter to **one** object, and both writers that place a
+   * document name their folder in the *body*: `POST /documents` has no route parameter at all, and
+   * `POST /documents/{id}/move` spends its one on the document. `BulkDocumentsController` states
+   * the problem and the answer for the same question — "`POST /documents/bulk/upload` looks like
+   * the exception — its objects do not exist yet, so its decision is `document:create` on **one**
+   * object, the destination folder — and it is not, because `AclGuard` reads the scope binding
+   * from `request.params` and the folder arrives in the body … So the folder's reach is resolved
+   * by the executor too". `DefaultBulkExecutor` resolves exactly that, once per file.
    *
-   * That is not a small gap, because of what a move *is*: this method's own header says "the folder
-   * is the chain the ACL resolver walks, so every grant along the old chain stops applying and
-   * every grant along the new one starts". `document:move` is `S` in `08 §6`'s matrix for
-   * `LIBRARY_MANAGER` — granted on the nodes they manage — and without this they could move a
-   * document out of the library they manage and into one they hold nothing on.
+   * Neither single-object route did, and the matrix is what that cost. `08 §6` marks both keys
+   * **`S`** — "scoped: only where explicitly granted on a node" — `document:create` for `AUTHOR`
+   * and `LIBRARY_MANAGER`, `document:move` for `LIBRARY_MANAGER`. A scoped permission that is
+   * never resolved on a node is not scoped at all, and `08 §5` says in words what the matrix says
+   * in symbols: an `AUTHOR` "creates and revises documents **in permitted folders**". Without this
+   * an author could file a document into any folder in the tenant — where it inherits that
+   * folder's ACL and is read by its audience — and a library manager could move a controlled
+   * record out of the library they manage into one they hold nothing on.
    *
    * **The route's own permission, not a new one.** `AclGuard` resolves exactly the keys
    * `@RequirePermission` declares, against the object it is pointed at; asking the same question
-   * about the second object invents no policy and requires no grant a mover does not already need.
+   * about the second object invents no policy and requires no grant the caller does not already
+   * need. The permission is therefore passed in rather than fixed here: `document:create` places a
+   * new document, `document:move` relocates an existing one, and each route asks with its own.
    *
    * **Refused as "that folder does not exist".** `LibraryPlacementAdapter` answers `null` for a
    * folder that is missing, deleted or another tenant's, and says why: "that they are
@@ -1477,7 +1483,7 @@ export class DefaultDocumentService {
    * reason `08 §7` gives for `404` over `403` — otherwise the refusal is a way to enumerate the
    * tree.
    */
-  private async mayPlaceIn(folderId: string): Promise<boolean> {
+  private async mayPlaceIn(folderId: string, permission: PermissionKey): Promise<boolean> {
     const context = requireContext();
     const decision = await this.acl.resolve(
       {
@@ -1489,7 +1495,7 @@ export class DefaultDocumentService {
         delegationIds: [],
       },
       { type: ScopeType.FOLDER, id: asId<AnyId>(folderId) },
-      Permission.DOCUMENT_MOVE,
+      permission,
     );
     return decision.allowed;
   }
