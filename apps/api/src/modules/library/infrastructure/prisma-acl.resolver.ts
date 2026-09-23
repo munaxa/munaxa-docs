@@ -497,21 +497,52 @@ export class PrismaAclResolver implements AclResolver {
     // One query, through the membership relation, rather than a read of `user_department` followed
     // by a read of `department`: this runs on every list in the product, and the second round trip
     // bought nothing the join does not.
-    const rows = await requireTransaction().department.findMany({
+    const tenantId = requireContext().tenantId;
+    const tx = requireTransaction();
+    const rows = await tx.department.findMany({
       where: {
-        tenantId: requireContext().tenantId,
+        tenantId,
         deletedAt: null,
         members: { some: { userId: subject.userId } },
       },
       select: { path: true },
     });
-    const ids = new Set<string>();
+    const named = new Set<string>();
     for (const row of rows) {
       for (const id of idsInPath(row.path)) {
-        ids.add(id);
+        named.add(id);
       }
     }
-    return [...ids].map((id) => asId<AnyId>(id));
+    if (named.size === 0) {
+      return [];
+    }
+    /*
+     * The ancestors have to be live too, and the read above only says the *member's own*
+     * department is.
+     *
+     * `path` is the materialised ancestry and it keeps naming a department after that department
+     * is deleted — there is nothing to rewrite it, and nothing should, because the row is in the
+     * recycle bin rather than gone. `PrismaScopeChainReader` already knows this and expands the
+     * same `idsInPath(path)` through `findDepartmentsByIds`, which filters `deleted_at`, and
+     * refuses to assemble a chain that would cross a retired node: "soft-deleted nodes are
+     * excluded at every level … a chain that still crossed it would keep an ACL granted on it
+     * alive after the thing it was granted on is gone".
+     *
+     * This is the *subject* side of that same expansion and it did not ask. So an `acl_entry`
+     * naming a deleted department still reached every member of a live department beneath it —
+     * which is exactly what `ScopeAdminService.delete` promises cannot happen: "a retired node
+     * stops conferring access at once". A department restored under a parent that is still
+     * deleted is the state that reaches it, through the ordinary administrative routes.
+     *
+     * Dropping the dead ancestors rather than refusing the whole subject: the member's own live
+     * department is a grant they still hold, and the chain reader answers `null` for anything
+     * owned by an orphaned node anyway, so both halves stay closed on the same rows.
+     */
+    const live = await tx.department.findMany({
+      where: { tenantId, deletedAt: null, id: { in: [...named] } },
+      select: { id: true },
+    });
+    return live.map((row) => asId<AnyId>(row.id));
   }
 
   // --- The cache ---------------------------------------------------------------------------

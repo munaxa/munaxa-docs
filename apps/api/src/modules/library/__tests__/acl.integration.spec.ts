@@ -21,6 +21,7 @@ import {
   type TenantId,
   type UserId,
   asId,
+  idsInPath,
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
@@ -38,6 +39,7 @@ import {
   realAuditWriter,
   realDocumentLibrary,
   realPermissions,
+  OrganizationNodeKind,
   realScopeAdmin,
   realUserAdmin,
 } from '../../../testing/real-collaborators';
@@ -1516,6 +1518,273 @@ describe('a role assignment separates itself, because the key names the roles', 
     // The revocation direction, and the one that would matter: the cached `true` above lives under
     // a key naming the role he no longer holds, so the token that no longer names it cannot read it.
     expect(await asksWith([BYSTANDER_ROLE])).toBe(false);
+  });
+});
+
+/**
+ * Slice 121 — a department in the recycle bin, and a child restored under it.
+ *
+ * `ScopeAdminService.delete` states the rule this section exists to hold: "a retired node stops
+ * conferring access at once — the read side already excludes deleted rows from every chain".
+ * `PrismaScopeChainReader` implements it on the *object* side, expanding `idsInPath(path)` through
+ * a liveness-filtered read and refusing to assemble a chain that would cross a retired node.
+ *
+ * `departmentsOf` is the *subject* side of the very same expansion — a caller's ACL subjects are
+ * their `user_department` rows widened along `department.path` — and it read the path verbatim. A
+ * materialised path keeps naming a department after that department is deleted, so an `acl_entry`
+ * naming the retired department went on reaching every member of a live department beneath it.
+ *
+ * The state is reached through ordinary administrative routes and without a race: a department can
+ * only be deleted once its children are, and restoring one of those children brings it back under
+ * a parent that is still in the bin.
+ */
+describe('a department in the recycle bin stops conferring access', () => {
+  let scopes: ReturnType<typeof realScopeAdmin>;
+  let retired: { id: string; version: number };
+  let kept: { id: string; version: number };
+  let documentId: string;
+
+  beforeAll(async () => {
+    scopes = realScopeAdmin({ clock, unitOfWork, config: appConfig, cache: sharedAclCache });
+    const stamp = uuidv7().slice(-6);
+    const companyId = uuidv7();
+    const entityId = uuidv7();
+    await owner.company.create({
+      data: {
+        id: companyId,
+        tenantId: TENANT,
+        code: `RC${stamp}`,
+        name: 'Retiring',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.entity.create({
+      data: {
+        id: entityId,
+        tenantId: TENANT,
+        companyId,
+        code: `RE${stamp}`,
+        name: 'Retiring One',
+        updatedAt: FIXED_NOW,
+      },
+    });
+
+    const parent = await asAdmin(() =>
+      scopes.createDepartment({ entityId, code: `RP${stamp}`, name: 'Retired' }),
+    );
+    const child = await asAdmin(() =>
+      scopes.createDepartment({ entityId, parentId: parent.id, code: `RK${stamp}`, name: 'Kept' }),
+    );
+    retired = { id: parent.id, version: parent.version };
+    kept = { id: child.id, version: child.version };
+
+    const folder = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: `Retired department ${stamp}`,
+        inheritAcl: true,
+      }),
+    );
+    documentId = await seedDocument(folder.id, 'Retired department procedure');
+    // The only thing that grants: an entry naming the department that is about to be retired.
+    // `FOLDER_ONLY_ROLE` carries no `document:view`, so nothing else can be answering.
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(folder.id), [
+        entry(AclSubjectType.DEPARTMENT, parent.id, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+  }, 60_000);
+
+  const mayView = (): Promise<boolean> =>
+    runWithContext(
+      contextFor(BOB, [FOLDER_ONLY_ROLE]),
+      async () =>
+        (
+          await permissions.resolver.resolve(
+            subject(BOB, FOLDER_ONLY_ROLE),
+            documentScope(documentId),
+            Permission.DOCUMENT_VIEW,
+          )
+        ).allowed,
+    );
+
+  const join = (departmentId: string): Promise<unknown> =>
+    owner.userDepartment.create({
+      data: { tenantId: TENANT, userId: BOB, departmentId, isPrimary: false },
+    });
+  const leave = (departmentId: string): Promise<unknown> =>
+    owner.userDepartment.deleteMany({ where: { tenantId: TENANT, userId: BOB, departmentId } });
+
+  /**
+   * Retires the parent, which can only happen once the child is in the bin too, then brings the
+   * child back — the sequence that leaves a live department whose path names a deleted one.
+   *
+   * Once, and shared: the tests below all read the same retired tree, and retiring it twice would
+   * mean deleting a department that is already deleted.
+   */
+  let alreadyRetired = false;
+  async function retireTheParent(): Promise<void> {
+    if (alreadyRetired) {
+      return;
+    }
+    const liveChild = await asAdmin(() => scopes.getDepartment(kept.id));
+    await asAdmin(() => scopes.delete(OrganizationNodeKind.DEPARTMENT, kept.id, liveChild.version));
+    const liveParent = await asAdmin(() => scopes.getDepartment(retired.id));
+    await asAdmin(() =>
+      scopes.delete(OrganizationNodeKind.DEPARTMENT, retired.id, liveParent.version),
+    );
+    const deletedChild = await asAdmin(() => scopes.getDepartment(kept.id));
+    await asAdmin(() =>
+      scopes.restore(OrganizationNodeKind.DEPARTMENT, kept.id, deletedChild.version),
+    );
+    alreadyRetired = true;
+  }
+
+  it('reaches a member through the live parent, and refuses once it is retired', async () => {
+    // The positive control and its negative half in one test, because a refusal below would
+    // otherwise be indistinguishable from nobody ever having been reached.
+    await join(kept.id);
+    expect(await mayView()).toBe(true);
+
+    // Membership blocks the delete — "somebody still in the department is a reason to stop" — so
+    // it comes off while the tree is retired and goes back on afterwards. The entry on the retired
+    // parent is untouched throughout: deleting a department does not delete what was granted on it.
+    await leave(kept.id);
+    await retireTheParent();
+    await join(kept.id);
+
+    const rows = await owner.department.findMany({
+      where: { tenantId: TENANT, id: { in: [retired.id, kept.id] } },
+      select: { id: true, path: true, deletedAt: true },
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    // The state the refusal has to hold over: the child is live, the parent is not, and the
+    // child's materialised path still names it.
+    expect(byId.get(retired.id)?.deletedAt).not.toBeNull();
+    expect(byId.get(kept.id)?.deletedAt).toBeNull();
+    expect(idsInPath(byId.get(kept.id)?.path ?? '')).toContain(retired.id);
+
+    expect(await mayView()).toBe(false);
+  });
+
+  it('confers nothing on somebody whose own department is the retired one', async () => {
+    // The other direction of the same rule, and the half the membership read holds on its own: a
+    // `user_department` row pointing at a department in the bin must contribute no subject at all
+    // — not the retired department, and not the live parent above it either.
+    //
+    // Seeded rather than performed, because the product refuses to create it twice over:
+    // `requireLiveDepartments` will not enrol anybody in a deleted department, and a department
+    // with members cannot be deleted. What a row like this survives is a restore, a migration or a
+    // path this module does not own — and the resolver must be closed against it whatever wrote it.
+    await retireTheParent();
+    const stamp = uuidv7().slice(-6);
+    const entityId = (await owner.department.findUniqueOrThrow({ where: { id: kept.id } }))
+      .entityId;
+    const live = await asAdmin(() =>
+      scopes.createDepartment({ entityId, code: `LP${stamp}`, name: 'Standing' }),
+    );
+    const gone = await asAdmin(() =>
+      scopes.createDepartment({ entityId, parentId: live.id, code: `GX${stamp}`, name: 'Gone' }),
+    );
+    const liveGone = await asAdmin(() => scopes.getDepartment(gone.id));
+    await asAdmin(() => scopes.delete(OrganizationNodeKind.DEPARTMENT, gone.id, liveGone.version));
+    await owner.userDepartment.create({
+      data: { tenantId: TENANT, userId: ALICE, departmentId: gone.id, isPrimary: false },
+    });
+
+    const folder = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: `Standing department ${stamp}`,
+        inheritAcl: false,
+      }),
+    );
+    const standingDocumentId = await seedDocument(folder.id, 'Standing department procedure');
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(folder.id), [
+        entry(AclSubjectType.DEPARTMENT, live.id, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+
+    // The folder breaks inheritance, so the entry naming `live` is the only thing that can grant —
+    // ALICE's tenant-wide role grant does not survive the break.
+    const allowed = await runWithContext(
+      contextFor(ALICE, [READER_ROLE]),
+      async () =>
+        (
+          await permissions.resolver.resolve(
+            subject(ALICE, READER_ROLE),
+            documentScope(standingDocumentId),
+            Permission.DOCUMENT_VIEW,
+          )
+        ).allowed,
+    );
+    expect(allowed).toBe(false);
+  });
+
+  it('leaves everything the orphaned department owns unreachable', async () => {
+    // The object side of the same invariant, which `PrismaScopeChainReader` already holds and this
+    // suite did not pin: a chain that would cross a retired node is not assembled at all, so a
+    // library owned by the restored child answers nobody — not even a tenant-wide role grant.
+    await retireTheParent();
+    const stamp = uuidv7().slice(-6);
+    const owned = await asAdmin(() =>
+      library.libraries.createLibrary({
+        code: `OD${stamp}`,
+        name: `Owned by an orphan ${stamp}`,
+        ownerScopeType: ScopeType.DEPARTMENT,
+        ownerScopeId: kept.id,
+        rootFolderName: 'Top',
+      }),
+    );
+    const ownedDocumentId = await seedDocument(owned.rootFolderId, 'Orphaned library procedure');
+
+    const allowed = await runWithContext(
+      contextFor(ALICE, [READER_ROLE]),
+      async () =>
+        (
+          await permissions.resolver.resolve(
+            subject(ALICE, READER_ROLE),
+            documentScope(ownedDocumentId),
+            Permission.DOCUMENT_VIEW,
+          )
+        ).allowed,
+    );
+    expect(allowed).toBe(false);
+  });
+
+  it('still reaches a member through the live department they are actually in', async () => {
+    // The other half, so the fix cannot be "drop every ancestor". An entry on the child itself is
+    // a grant the member still holds, and the retired parent above it changes nothing about that.
+    const folder = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: `Kept department ${uuidv7().slice(-8)}`,
+        inheritAcl: true,
+      }),
+    );
+    const ownDocumentId = await seedDocument(folder.id, 'Kept department procedure');
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(folder.id), [
+        entry(AclSubjectType.DEPARTMENT, kept.id, Permission.DOCUMENT_VIEW, AclEffect.ALLOW),
+      ]),
+    );
+
+    const allowed = await runWithContext(
+      contextFor(BOB, [FOLDER_ONLY_ROLE]),
+      async () =>
+        (
+          await permissions.resolver.resolve(
+            subject(BOB, FOLDER_ONLY_ROLE),
+            documentScope(ownDocumentId),
+            Permission.DOCUMENT_VIEW,
+          )
+        ).allowed,
+    );
+    expect(allowed).toBe(true);
   });
 });
 
