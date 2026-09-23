@@ -781,6 +781,16 @@ describe('a move changes the answer, so it must clear the answer', () => {
       where: { id: moving },
       select: { version: true },
     });
+    // The mover has to reach the destination — Slice 122. `vault` breaks inheritance and
+    // `document:move` is not in `INHERITANCE_PROOF_PERMISSIONS`, so the tenant-wide grant stops at
+    // the break and an entry on the folder is the only thing that reaches it. That is the same
+    // rule `POST /documents/bulk/upload` has always applied to its destination; this case predates
+    // the move path applying it, and the assertions below are unchanged.
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(vault), [
+        entry(AclSubjectType.USER, ADMIN, Permission.DOCUMENT_MOVE, AclEffect.ALLOW),
+      ]),
+    );
     await asAdmin(() => library.documents.move(moving, vault, before.version));
 
     // It now sits under a folder that stops the walk, so the role grant no longer reaches it.
@@ -1785,6 +1795,131 @@ describe('a department in the recycle bin stops conferring access', () => {
         ).allowed,
     );
     expect(allowed).toBe(true);
+  });
+});
+
+/**
+ * Slice 122 — the second object a move names, which no decorator can reach.
+ *
+ * `@ScopedTo` binds one route parameter to one object, and `POST /documents/{id}/move` has two:
+ * the document it names, and the destination folder in the body. `BulkDocumentsController` states
+ * the same problem for `POST /documents/bulk/upload` and answers it in the use case — "a decorator
+ * naming a body field would silently resolve `undefined` and refuse every request … so the
+ * folder's reach is resolved by the executor too". Nothing resolved it for the single-document
+ * move, so `document:move` on the *document* was the whole of the check.
+ *
+ * What that costs is what a move is. `DocumentService.move` says it: "the folder is the chain the
+ * ACL resolver walks, so every grant along the old chain stops applying and every grant along the
+ * new one starts". `08 §6` marks `document:move` `S` for `LIBRARY_MANAGER` — granted on the nodes
+ * they manage — and without the check they could move a controlled record out of the library they
+ * manage and into one they hold nothing on.
+ */
+describe('a move names a folder no decorator can reach', () => {
+  let from: string;
+  let to: string;
+  let alsoMine: string;
+
+  beforeAll(async () => {
+    const stamp = uuidv7().slice(-8);
+    // All three break inheritance, so the tenant-wide role grant reaches none of them and an
+    // explicit entry is the only thing that can answer.
+    const made = await Promise.all(
+      ['Mover source', 'Mover target', 'Mover second'].map((name) =>
+        asAdmin(() =>
+          library.libraries.createFolder({
+            libraryId,
+            parentId: rootFolderId,
+            name: `${name} ${stamp}`,
+            inheritAcl: false,
+          }),
+        ),
+      ),
+    );
+    from = made[0]?.id ?? '';
+    to = made[1]?.id ?? '';
+    alsoMine = made[2]?.id ?? '';
+
+    // BOB may move documents in two of the three folders, and holds nothing at all on `to`.
+    for (const folderId of [from, alsoMine]) {
+      await asAdmin(() =>
+        permissions.permissions.replaceFor(folderScope(folderId), [
+          entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_MOVE, AclEffect.ALLOW),
+        ]),
+      );
+    }
+  }, 60_000);
+
+  const asMover = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext(contextFor(BOB, [FOLDER_ONLY_ROLE]), work);
+
+  const folderOf = async (documentId: string): Promise<string> =>
+    (await owner.document.findUniqueOrThrow({ where: { id: documentId } })).folderId;
+
+  it('refuses a destination the mover does not reach, and leaves the document where it was', async () => {
+    const documentId = await seedDocument(from, `Moved out of reach ${uuidv7().slice(-8)}`);
+    const before = await asAdmin(() => library.documents.get(documentId));
+
+    // The reach the refusal turns on, asserted rather than assumed: the mover holds the source and
+    // not the destination.
+    const reach = await asMover(async () => ({
+      from: (
+        await permissions.resolver.resolve(
+          subject(BOB, FOLDER_ONLY_ROLE),
+          folderScope(from),
+          Permission.DOCUMENT_MOVE,
+        )
+      ).allowed,
+      to: (
+        await permissions.resolver.resolve(
+          subject(BOB, FOLDER_ONLY_ROLE),
+          folderScope(to),
+          Permission.DOCUMENT_MOVE,
+        )
+      ).allowed,
+    }));
+    expect(reach).toEqual({ from: true, to: false });
+
+    await expect(
+      asMover(() => library.documents.move(documentId, to, before.version)),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'folderId', message: 'unknown' }] });
+
+    // Indistinguishable from a folder that does not exist — `LibraryPlacementAdapter`'s rule, and
+    // `08 §7`'s reason for `404` over `403`: otherwise the refusal enumerates the tree.
+    await expect(
+      asMover(() => library.documents.move(documentId, uuidv7(), before.version)),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'folderId', message: 'unknown' }] });
+
+    expect(await folderOf(documentId)).toBe(from);
+  });
+
+  it('still moves a document into a folder the mover does reach', async () => {
+    // The positive control, and the half that stops the fix being "refuse every move".
+    const documentId = await seedDocument(from, `Moved within reach ${uuidv7().slice(-8)}`);
+    const before = await asAdmin(() => library.documents.get(documentId));
+
+    const moved = await asMover(() => library.documents.move(documentId, alsoMine, before.version));
+
+    expect(moved.folderId).toBe(alsoMine);
+    expect(await folderOf(documentId)).toBe(alsoMine);
+  });
+
+  it('refuses before it writes, so a refused move publishes nothing', async () => {
+    // A move that got as far as the row would have cleared the ACL cache and published
+    // `document.moved`; the search projection would then reindex a document that never moved.
+    const documentId = await seedDocument(from, `Refused publishes nothing ${uuidv7().slice(-8)}`);
+    const before = await asAdmin(() => library.documents.get(documentId));
+
+    await expect(
+      asMover(() => library.documents.move(documentId, to, before.version)),
+    ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const events = await owner.outboxMessage.count({
+      where: { tenantId: TENANT, eventType: 'document.moved', aggregateId: documentId },
+    });
+    expect(events).toBe(0);
+    // And the version is untouched, so no audit row claimed a move either.
+    const after = await asAdmin(() => library.documents.get(documentId));
+    expect(after.version).toBe(before.version);
   });
 });
 
