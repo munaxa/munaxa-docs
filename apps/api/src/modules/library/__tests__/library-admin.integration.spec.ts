@@ -727,6 +727,91 @@ describe('deleting a library', () => {
     expect(root?.deletedAt).not.toBeNull();
   });
 
+  it('refuses to restore its root folder while the library is still deleted', async () => {
+    const library = await aLibrary();
+    await asAdmin(() => libraries.deleteLibrary(library.id, library.version));
+
+    // The root is the one folder with no parent, so the parent check guards nothing here. A root
+    // restored on its own is exactly the orphan the library delete takes it away to prevent.
+    const root = await asAdmin(() => libraries.getFolder(library.rootFolderId));
+    await expect(
+      asAdmin(() => libraries.restoreFolder(library.rootFolderId, root.version)),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'libraryId', message: 'deleted' }] });
+
+    const after = await owner.folder.findUnique({
+      where: { id: library.rootFolderId },
+      select: { deletedAt: true },
+    });
+    expect(after?.deletedAt).not.toBeNull();
+  });
+
+  it('cannot be repopulated from the top down while it is in the recycle bin', async () => {
+    const library = await aLibrary();
+    const child = await asAdmin(() =>
+      libraries.createFolder({
+        libraryId: library.id,
+        parentId: library.rootFolderId,
+        name: 'Kept',
+        inheritAcl: true,
+      }),
+    );
+    await asAdmin(() => libraries.deleteFolder(child.id, child.version));
+    const live = await asAdmin(() => libraries.getLibrary(library.id));
+    await asAdmin(() => libraries.deleteLibrary(library.id, live.version));
+
+    // Root first, then the folder under it: the order that brought a whole subtree back into a
+    // library nobody can reach. Both are refused, and for the library rather than for the parent
+    // — the child's parent is the root, and the root's refusal is what keeps it deleted.
+    const root = await asAdmin(() => libraries.getFolder(library.rootFolderId));
+    await expect(
+      asAdmin(() => libraries.restoreFolder(library.rootFolderId, root.version)),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'libraryId', message: 'deleted' }] });
+    const deletedChild = await asAdmin(() => libraries.getFolder(child.id));
+    await expect(
+      asAdmin(() => libraries.restoreFolder(child.id, deletedChild.version)),
+    ).rejects.toMatchObject({ fieldErrors: [{ field: 'libraryId', message: 'deleted' }] });
+
+    const rows = await owner.folder.findMany({
+      where: { libraryId: library.id },
+      select: { deletedAt: true },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.deletedAt === null)).toHaveLength(0);
+  });
+
+  it('lets the subtree come back once the library itself is restored', async () => {
+    const library = await aLibrary();
+    const child = await asAdmin(() =>
+      libraries.createFolder({
+        libraryId: library.id,
+        parentId: library.rootFolderId,
+        name: 'Returned',
+        inheritAcl: true,
+      }),
+    );
+    await asAdmin(() => libraries.deleteFolder(child.id, child.version));
+    const live = await asAdmin(() => libraries.getLibrary(library.id));
+    await asAdmin(() => libraries.deleteLibrary(library.id, live.version));
+
+    // The way back, and the reason the refusals above are a redirection rather than a dead end:
+    // the library's own restore brings its root with it, exactly as the delete took it.
+    const deleted = await asAdmin(() => libraries.getLibrary(library.id));
+    await asAdmin(() => libraries.restoreLibrary(library.id, deleted.version));
+    const root = await owner.folder.findUnique({
+      where: { id: library.rootFolderId },
+      select: { deletedAt: true },
+    });
+    expect(root?.deletedAt).toBeNull();
+
+    const deletedChild = await asAdmin(() => libraries.getFolder(child.id));
+    expect(await asAdmin(() => libraries.restoreFolder(child.id, deletedChild.version))).toBe(1);
+    const row = await owner.folder.findUnique({
+      where: { id: child.id },
+      select: { deletedAt: true },
+    });
+    expect(row?.deletedAt).toBeNull();
+  });
+
   it('does not count the root as a folder that blocks the delete', async () => {
     const library = await aLibrary();
     const current = await asAdmin(() => libraries.getLibrary(library.id));

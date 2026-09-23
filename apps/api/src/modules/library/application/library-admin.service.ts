@@ -631,6 +631,27 @@ export class LibraryAdminService {
         };
       }
 
+      /*
+       * The library has to be back first, for the reason the parent below has to be.
+       *
+       * The parent check is the whole guard for every folder that has one, and a root folder has
+       * none — `parentId` is null, so the block below is skipped entirely. `setLibraryDeleted`
+       * puts the root in the recycle bin with the library on purpose ("leaving it live would put
+       * an orphan at the top of a list of folders whose library is in the recycle bin"), and
+       * without this that is undone by restoring the root on its own. Then the subtree follows:
+       * once the root is live again, every folder deleted under it passes the parent check, and a
+       * library in the bin holds live folders and live documents.
+       *
+       * So the chain is rooted where it actually starts. The way back is the library's own
+       * restore, which brings its root with it exactly as the delete took it.
+       */
+      const library = await this.libraries.findLibrary(current.libraryId, true);
+      if (library === null || library.deletedAt !== null) {
+        throw new ValidationError('Restore the library this folder belongs to first.', [
+          { field: 'libraryId', message: 'deleted' },
+        ]);
+      }
+
       // The parent has to be back first, or the restored folder would be unreachable from the library
       // while counting as live.
       if (current.parentId !== null) {
