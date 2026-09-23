@@ -198,8 +198,12 @@ export class PrismaLibraryAdminRepository implements LibraryAdminRepository {
       ...(request.parentId !== undefined && {
         parentId: request.parentId === 'null' ? null : request.parentId,
       }),
-      ...(await this.folderUnder(request.underId)),
-      OR: searchConditions(request.search, ['name', 'description']),
+      // Both are an `OR`. Side by side in one literal the later key replaces the earlier, and the
+      // subtree was dropped whether or not anything had been typed.
+      AND: [
+        await this.folderUnder(request.underId),
+        { OR: searchConditions(request.search, ['name', 'description']) },
+      ],
     };
 
     const [rows, total] = await Promise.all([
