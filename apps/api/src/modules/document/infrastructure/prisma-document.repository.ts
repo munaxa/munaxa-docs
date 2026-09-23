@@ -449,8 +449,15 @@ export class PrismaDocumentRepository implements DocumentRepository {
       ...(await this.visibilityCondition()),
       deletedAt: deletedCondition(request.deleted),
       ...(request.folderId !== undefined && { folderId: request.folderId }),
-      ...(subtree !== null && {
-        folder: { OR: [{ path: subtree.path }, { path: { startsWith: `${subtree.path}.` } }] },
+      // One key for both conditions on the folder: as two spreads each setting `folder`, the later
+      // replaced the earlier, and a library named beside a subtree listed the whole library.
+      ...((subtree !== null || request.libraryId !== undefined) && {
+        folder: {
+          ...(request.libraryId !== undefined && { libraryId: request.libraryId }),
+          ...(subtree !== null && {
+            OR: [{ path: subtree.path }, { path: { startsWith: `${subtree.path}.` } }],
+          }),
+        },
       }),
       ...(request.underFolderId !== undefined &&
         subtree === null && {
@@ -458,7 +465,6 @@ export class PrismaDocumentRepository implements DocumentRepository {
           // filter would silently widen the list to the whole tenant.
           id: NO_SUCH_ID,
         }),
-      ...(request.libraryId !== undefined && { folder: { libraryId: request.libraryId } }),
       ...(request.documentTypeId !== undefined && { documentTypeId: request.documentTypeId }),
       ...(request.categoryId !== undefined && { categoryId: request.categoryId }),
       ...(request.confidentialityId !== undefined && {
