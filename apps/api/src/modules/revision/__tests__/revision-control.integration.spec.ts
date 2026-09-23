@@ -39,6 +39,7 @@ import {
   realWorkflowEngine,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
+import { seedRoleGrant } from '../../../testing/acl-seed';
 import type { WorkflowDirectory } from '../../workflow/application/ports';
 
 /**
@@ -370,6 +371,19 @@ beforeAll(async () => {
       },
     });
   }
+
+  // Slice 123: the role the context claims, seeded so the resolver can find it. Document creation
+  // now resolves `document:create` on the destination folder — the decision `AclGuard` cannot make
+  // for a folder that arrives in the body — and until it did, the role key in the context named no
+  // row and was never resolved. `acl-seed.ts` states the rule this follows: "the honest response is
+  // to seed the grant rather than to keep the resolver from asking".
+  await seedRoleGrant(owner, {
+    tenantId: TENANT,
+    roleId: uuidv7(),
+    key: 'TENANT_ADMIN',
+    userIds: [AUTHOR, REVIEWER, CONTROLLER],
+    now: FIXED_NOW,
+  });
 
   const libraryRow = await as(() =>
     library.libraries.createLibrary({

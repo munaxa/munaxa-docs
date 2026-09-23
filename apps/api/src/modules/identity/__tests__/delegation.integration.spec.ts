@@ -42,6 +42,7 @@ import {
   realWorkflowEngine,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
+import { seedRoleGrant } from '../../../testing/acl-seed';
 import { DelegationAudit } from '../domain/audit-actions';
 import type { WorkflowDirectory } from '../../workflow/application/ports';
 
@@ -322,6 +323,24 @@ beforeAll(async () => {
   });
   approverRoleId = role.id;
 
+  // Slice 123: the role key the context claims, so the resolver can find it. Filing a document now
+  // resolves `document:create` on the destination folder — the decision `AclGuard` cannot make for
+  // a folder that arrives in the body — and `roles: ['APPROVER']` named no row, so every fixture
+  // document was refused. `acl-seed.ts` states the rule: "the honest response is to seed the grant
+  // rather than to keep the resolver from asking".
+  //
+  // Only the one key the new check asks for, and **no members**. The resolver grants on the key the
+  // context carries; delegation's own authority is read from `user_role` through the credential,
+  // so an empty member list leaves every holding this suite takes away later exactly as it was.
+  await seedRoleGrant(owner, {
+    tenantId: TENANT,
+    roleId: uuidv7(),
+    key: 'APPROVER',
+    userIds: [],
+    permissions: [Permission.DOCUMENT_CREATE],
+    now: clock.now(),
+  });
+
   for (const id of [AUTHOR, ALICE, BOB, CAROL, MANAGER]) {
     await owner.user.create({
       data: {
@@ -401,14 +420,18 @@ beforeAll(async () => {
       updatedAt: clock.now(),
     },
   });
+  // A root department's path is its own identifier — what `pathFor(null, id)` writes, and the only
+  // shape the ACL read side can expand. This seeded a word until Slice 123, when document creation
+  // began asking the resolver about the people in it and `departmentsOf` read the path back.
+  const departmentId = uuidv7();
   const department = await owner.department.create({
     data: {
-      id: uuidv7(),
+      id: departmentId,
       tenantId: TENANT,
       entityId: entity.id,
       code: unique('D'),
       name: 'Quality',
-      path: unique('quality'),
+      path: departmentId,
       updatedAt: clock.now(),
     },
   });

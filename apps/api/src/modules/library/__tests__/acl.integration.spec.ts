@@ -1923,6 +1923,166 @@ describe('a move names a folder no decorator can reach', () => {
   });
 });
 
+/**
+ * Slice 123 — the folder a new document is filed into, which no decorator can reach.
+ *
+ * `POST /documents` has no route parameter at all: the document does not exist yet, and the folder
+ * it is filed into arrives in the body. So the route carries `@RequirePermission(document:create)`
+ * — the tenant-wide floor — and nothing else, and until this slice nothing asked whether the caller
+ * reached the folder.
+ *
+ * `08 §5` says what they must: an `AUTHOR` "creates and revises documents **in permitted
+ * folders**", and `08 §6` marks `document:create` `S` for `AUTHOR` and `LIBRARY_MANAGER` — "only
+ * where explicitly granted on a node". `BulkDocumentsController` names the decision outright for
+ * the bulk route that files many at once: "its decision is `document:create` on **one** object, the
+ * destination folder". `DefaultBulkExecutor` has always made it; the single-document route did not,
+ * so a scoped permission was never scoped, and a document filed into a restricted folder inherited
+ * that folder's ACL and was read by its audience.
+ *
+ * READER_ROLE holds `document:create` tenant-wide, so everything turns on inheritance: a folder that
+ * inherits is reached by the role grant, and one that breaks it is reached only by an entry on it.
+ */
+describe('a new document names a folder no decorator can reach', () => {
+  let unreachable: string;
+  let granted: string;
+  let inheriting: string;
+
+  beforeAll(async () => {
+    const stamp = uuidv7().slice(-8);
+    const make = (name: string, inheritAcl: boolean) =>
+      asAdmin(() =>
+        library.libraries.createFolder({
+          libraryId,
+          parentId: rootFolderId,
+          name: `${name} ${stamp}`,
+          inheritAcl,
+        }),
+      );
+    unreachable = (await make('Author cannot reach', false)).id;
+    granted = (await make('Author is granted', false)).id;
+    inheriting = (await make('Author inherits', true)).id;
+
+    // An explicit entry on a folder that breaks inheritance: the one way into it for a
+    // non-administrative key, since `document:create` is not inheritance-proof.
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(granted), [
+        entry(AclSubjectType.USER, BOB, Permission.DOCUMENT_CREATE, AclEffect.ALLOW),
+      ]),
+    );
+  }, 60_000);
+
+  const asAuthor = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext(contextFor(BOB, [READER_ROLE]), work);
+
+  /** A clean upload, as the content gate requires — seeded, because this suite composes no scanner. */
+  async function aCleanUpload(): Promise<string> {
+    const id = uuidv7();
+    await owner.fileObject.create({
+      data: {
+        id,
+        tenantId: TENANT,
+        checksumSha256: id.replaceAll('-', '').padEnd(64, '0'),
+        sizeBytes: 12,
+        mimeType: 'application/pdf',
+        storageKey: `acl-suite/${id}`,
+        storageDriver: 'LOCAL',
+        scanStatus: 'CLEAN',
+        scanner: 'integration-suite',
+        scannedAt: FIXED_NOW,
+        updatedAt: FIXED_NOW,
+      },
+    });
+    return id;
+  }
+
+  const fileInto = async (folderId: string, fileObjectId: string) =>
+    asAuthor(() =>
+      library.documents.create({
+        folderId,
+        documentTypeId,
+        title: `Filed ${uuidv7().slice(-8)}`,
+        fileObjectId,
+        filename: 'filed.pdf',
+        origin: 'UPLOAD',
+        acknowledgeDuplicate: false,
+      }),
+    );
+
+  it('refuses a folder the author does not reach, exactly as it refuses one that does not exist', async () => {
+    // The reach the refusal turns on, asserted rather than assumed.
+    const reach = await asAuthor(async () => ({
+      unreachable: (
+        await permissions.resolver.resolve(
+          subject(BOB, READER_ROLE),
+          folderScope(unreachable),
+          Permission.DOCUMENT_CREATE,
+        )
+      ).allowed,
+      granted: (
+        await permissions.resolver.resolve(
+          subject(BOB, READER_ROLE),
+          folderScope(granted),
+          Permission.DOCUMENT_CREATE,
+        )
+      ).allowed,
+    }));
+    expect(reach).toEqual({ unreachable: false, granted: true });
+
+    const fileObjectId = await aCleanUpload();
+    await expect(fileInto(unreachable, fileObjectId)).rejects.toMatchObject({
+      fieldErrors: [{ field: 'folderId', message: 'unknown' }],
+    });
+    // Indistinguishable from a folder that does not exist — `LibraryPlacementAdapter`'s rule, and
+    // `08 §7`'s reason for `404` over `403`: otherwise the refusal enumerates the tree.
+    await expect(fileInto(uuidv7(), fileObjectId)).rejects.toMatchObject({
+      fieldErrors: [{ field: 'folderId', message: 'unknown' }],
+    });
+
+    expect(await owner.document.count({ where: { tenantId: TENANT, folderId: unreachable } })).toBe(
+      0,
+    );
+  });
+
+  it('files into a folder the author is granted on, and into one that inherits', async () => {
+    // The positive controls, so the fix cannot be "refuse every create". The granted folder breaks
+    // inheritance and is reached by its entry alone; the inheriting one is reached by the role grant,
+    // which is ordinary authoring and must be untouched.
+    const intoGranted = await fileInto(granted, await aCleanUpload());
+    const intoInheriting = await fileInto(inheriting, await aCleanUpload());
+
+    expect(intoGranted.folderId).toBe(granted);
+    expect(intoInheriting.folderId).toBe(inheriting);
+  });
+
+  it('refuses before it writes, so a refused create leaves nothing behind', async () => {
+    // Creation takes a reference on the blob and publishes `document.created`. A refusal that came
+    // after either would leave a counted reference to a document that does not exist, or tell the
+    // search projection to index one.
+    const fileObjectId = await aCleanUpload();
+
+    await expect(fileInto(unreachable, fileObjectId)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
+
+    const blob = await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } });
+    expect(blob.refCount).toBe(0);
+    expect(
+      await owner.document.count({
+        where: { tenantId: TENANT, revisions: { some: { fileObjectId } } },
+      }),
+    ).toBe(0);
+    expect(
+      await owner.outboxMessage.count({
+        where: {
+          tenantId: TENANT,
+          eventType: 'document.created',
+          payload: { path: ['folderId'], equals: unreachable },
+        },
+      }),
+    ).toBe(0);
+  });
+});
+
 // --- Fixtures -----------------------------------------------------------------------------
 
 function subject(userId: UserId, roleId: string) {

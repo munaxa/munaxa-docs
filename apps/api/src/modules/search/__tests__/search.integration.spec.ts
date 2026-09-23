@@ -382,6 +382,10 @@ beforeAll(async () => {
   }
   // The grants the resolver resolves: viewers hold document:view (and enough to build
   // fixtures); the clerk role holds a real permission that is deliberately not view.
+  //
+  // "Enough to build fixtures" grew one key in Slice 123: creating a document now resolves
+  // `document:create` on the destination folder, and every fixture here is filed by ALICE. It is
+  // orthogonal to what this suite asserts, which is what `document:view` reaches.
   await owner.role.create({
     data: {
       id: VIEWER_ROLE,
@@ -403,6 +407,7 @@ beforeAll(async () => {
   await owner.rolePermission.createMany({
     data: [
       { tenantId: TENANT, roleId: VIEWER_ROLE, permission: Permission.DOCUMENT_VIEW },
+      { tenantId: TENANT, roleId: VIEWER_ROLE, permission: Permission.DOCUMENT_CREATE },
       { tenantId: TENANT, roleId: CLERK_ROLE, permission: Permission.WORKFLOW_MANAGE },
     ],
   });
