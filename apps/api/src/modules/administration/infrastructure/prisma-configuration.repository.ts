@@ -343,6 +343,19 @@ export class PrismaConfigurationRepository implements ConfigurationRepository {
     this.requireOneRow(count, version);
   }
 
+  async placeCategory(id: string, path: string): Promise<void> {
+    // No version in the guard: the caller has just claimed this row by its version in the same
+    // transaction (`setDeleted`), so there is nothing else it can be. `deleted_at: null` is, so this
+    // only ever places a row the restore has already brought back.
+    const { count } = await requireTransaction().category.updateMany({
+      where: { id, tenantId: this.tenantId(), deletedAt: null },
+      data: { path },
+    });
+    if (count !== 1) {
+      throw new Error('The restored category was not there to place.');
+    }
+  }
+
   async categorySubtree(path: string): Promise<readonly SubtreeNode[]> {
     return requireTransaction().category.findMany({
       where: {

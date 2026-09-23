@@ -801,8 +801,13 @@ export class ConfigurationService {
         };
       }
 
+      const placedAt =
+        kind === ConfigurationKind.CATEGORY ? await this.placeRestoredCategory(id) : null;
       await this.refuseTakenIdentityOnRestore(kind, id);
       await this.config.setDeleted(kind, id, current.version, false);
+      if (placedAt !== null) {
+        await this.config.placeCategory(id, placedAt);
+      }
 
       return {
         result: undefined,
@@ -1042,6 +1047,58 @@ export class ConfigurationService {
         { field: 'fields', message: 'duplicate' },
       ]);
     }
+  }
+
+  /**
+   * Where a restored category belongs now — the question `createCategory` answers for a new one,
+   * asked again because the tree may have moved while this row was in the bin.
+   *
+   * `moveCategory` rewrites the paths of the subtree it moves, and the subtree is `categorySubtree`
+   * — **live rows only**. A category that was already deleted when its parent moved keeps the path
+   * it was deleted with, and a restore that only flipped `deleted_at` brought it back with that path
+   * while its `parent_id` still named the parent. The two then disagreed, and `category` carries no
+   * constraint tying them together (Slice 69).
+   *
+   * Slice 69 also says what a diverged row costs: "`categorySubtree` selects by path prefix, the
+   * depth ceiling is measured from the path, and `checkTreePlacement` refuses a cycle with
+   * `isAtOrBelow(parentPath, nodePath)` and nothing else". So the restored row was left out of its
+   * real parent's subtree — and moving that parent beneath it was not seen as a cycle, and went
+   * through: each became the other's parent, and the parent's own id appeared twice in its path.
+   *
+   * So the path is derived, never trusted: `pathFor(parent.path, id)`, exactly as a create writes it.
+   * That needs a parent whose own path is current, which is a live one — a deleted parent's path is
+   * the one this whole problem is about — so a retired parent is refused, as the library, folder,
+   * document and organisation restores refuse one. And it needs the depth ceiling a create applies,
+   * because the parent may have moved deeper. The row's own subtree needs nothing: a category with
+   * live children cannot be deleted, so every descendant is still in the bin and is placed the same
+   * way when it comes back.
+   */
+  private async placeRestoredCategory(id: string): Promise<string> {
+    const row = await this.requireCategory(id, true);
+    if (row.parentId === null) {
+      return pathFor(null, id);
+    }
+    const parent = await this.config.findCategory(row.parentId, false);
+    if (parent === null) {
+      throw new ValidationError('Restore the category above this one first.', [
+        { field: 'parentId', message: 'deleted' },
+      ]);
+    }
+    this.refusePlacement(
+      checkCategoryPlacement({
+        nodeId: id,
+        // The stored path, as `moveCategory` passes the moved node's own: it is the best evidence of
+        // what hangs beneath this row. The rules above leave nothing live beneath a deleted
+        // category, so on a tree they have always governed this refuses nothing. It is there for
+        // the rows the old restore wrote — a child brought back under this one while it was still
+        // deleted — beneath which the parent may since have been moved. Placing this row under that
+        // parent would close a cycle, and only the stored path can see it.
+        nodePath: row.path,
+        parentId: parent.id,
+        parentPath: parent.path,
+      }),
+    );
+    return pathFor(parent.path, id);
   }
 
   private refusePlacement(rejections: readonly string[]): void {

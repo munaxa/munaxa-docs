@@ -274,6 +274,11 @@ export interface ConfigurationRepository {
     patch: Partial<{ code: string; name: string; description: string | null }>,
   ): Promise<void>;
   categorySubtree(path: string): Promise<readonly SubtreeNode[]>;
+  /**
+   * Re-derives a live category's materialised path — Slice 125. Called by a restore, which is the
+   * one write that brings a row back without having moved it.
+   */
+  placeCategory(id: string, path: string): Promise<void>;
   moveCategory(input: {
     readonly id: string;
     readonly version: number;

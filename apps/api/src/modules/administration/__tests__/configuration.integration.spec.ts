@@ -14,6 +14,7 @@ import {
   type TenantId,
   type UserId,
   asId,
+  pathFor,
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
@@ -26,6 +27,7 @@ import { FakeCache } from '../../../testing/fake-ports';
 import { realWriteStack } from '../../../testing/real-collaborators';
 import { ConfigurationService } from '../application/configuration.service';
 import { ConfigurationKind, type ConfigurationKindKey } from '../application/administration.ports';
+import { MAXIMUM_CATEGORY_DEPTH } from '../domain/category-tree';
 import { NumberingAdminService } from '../application/numbering-admin.service';
 import { SettingsAdminService } from '../application/settings-admin.service';
 import { CachedSettingsReader } from '../infrastructure/cached-settings.reader';
@@ -486,6 +488,168 @@ describe('categories', () => {
     );
     return { root: root.id, child: child.id, grandchild: grandchild.id, other: other.id };
   }
+
+  /**
+   * Slice 125 — a category restored after the tree moved around it.
+   *
+   * `moveCategory` rewrites the subtree it moves, and that subtree is `categorySubtree`: live rows
+   * only. A category already in the bin when its parent moved kept the path it was deleted with, and
+   * the restore brought it back with that path while `parent_id` still named the parent. Nothing in
+   * the schema ties the two together, and the cycle check reads the path alone.
+   */
+  describe('restoring a category places it where the tree now is', () => {
+    const rowOf = (id: string) =>
+      owner.category.findUniqueOrThrow({
+        where: { id },
+        select: { parentId: true, path: true, deletedAt: true },
+      });
+    const retire = (id: string) =>
+      asAdmin(async () =>
+        config_.delete(ConfigurationKind.CATEGORY, id, (await config_.getCategory(id)).version),
+      );
+    const bringBack = (id: string) =>
+      asAdmin(async () =>
+        config_.restore(ConfigurationKind.CATEGORY, id, (await config_.getCategory(id)).version),
+      );
+
+    it('takes the path its parent now gives it, not the one it was deleted with', async () => {
+      const tree = await aTree();
+      await retire(tree.grandchild);
+      const child = await asAdmin(() => config_.getCategory(tree.child));
+      await asAdmin(() => config_.moveCategory(tree.child, tree.other, child.version));
+
+      // The parent moved while the grandchild was in the bin, and the move did not reach it.
+      const parent = await rowOf(tree.child);
+      expect((await rowOf(tree.grandchild)).path).not.toBe(pathFor(parent.path, tree.grandchild));
+
+      await bringBack(tree.grandchild);
+
+      const restored = await rowOf(tree.grandchild);
+      expect(restored.deletedAt).toBeNull();
+      expect(restored.parentId).toBe(tree.child);
+      expect(restored.path).toBe(pathFor(parent.path, tree.grandchild));
+    });
+
+    it('so a move can no longer make a category its own ancestor', async () => {
+      const tree = await aTree();
+      await retire(tree.grandchild);
+      const child = await asAdmin(() => config_.getCategory(tree.child));
+      await asAdmin(() => config_.moveCategory(tree.child, tree.other, child.version));
+      await bringBack(tree.grandchild);
+
+      // Moving the parent under its own child. With the stale path this was not seen as a cycle
+      // and went through: each became the other's parent.
+      const moved = await asAdmin(() => config_.getCategory(tree.child));
+      await expect(
+        asAdmin(() => config_.moveCategory(tree.child, tree.grandchild, moved.version)),
+      ).rejects.toMatchObject({
+        fieldErrors: [{ field: 'parentId', message: 'PARENT_IS_DESCENDANT' }],
+      });
+      expect((await rowOf(tree.child)).parentId).toBe(tree.other);
+      expect((await rowOf(tree.grandchild)).parentId).toBe(tree.child);
+    });
+
+    it('refuses while its parent is still in the bin, and leaves it there', async () => {
+      const tree = await aTree();
+      await retire(tree.grandchild);
+      await retire(tree.child);
+
+      // There is no current path to derive one from: a deleted parent's own path is the kind that
+      // goes stale. So the parent comes back first, as it does for folders and departments.
+      await expect(bringBack(tree.grandchild)).rejects.toMatchObject({
+        fieldErrors: [{ field: 'parentId', message: 'deleted' }],
+      });
+      expect((await rowOf(tree.grandchild)).deletedAt).not.toBeNull();
+
+      await bringBack(tree.child);
+      await bringBack(tree.grandchild);
+      expect((await rowOf(tree.grandchild)).path).toBe(
+        pathFor((await rowOf(tree.child)).path, tree.grandchild),
+      );
+    });
+
+    it('refuses a place deeper than a create would be allowed', async () => {
+      // A chain as deep as a category may nest, and a small tree beside it.
+      let parentId: string | null = null;
+      for (let level = 1; level < MAXIMUM_CATEGORY_DEPTH; level += 1) {
+        const made: { id: string } = await asAdmin(() =>
+          config_.createCategory({
+            parentId,
+            code: uniqueCode('DP'),
+            name: `Deep ${String(level)}`,
+          }),
+        );
+        parentId = made.id;
+      }
+      const top = await asAdmin(() =>
+        config_.createCategory({ code: uniqueCode('DT'), name: 'Moves deep' }),
+      );
+      const leaf = await asAdmin(() =>
+        config_.createCategory({ parentId: top.id, code: uniqueCode('DL'), name: 'Leaf' }),
+      );
+      await retire(leaf.id);
+      // `top` now sits at the deepest level there is, so its leaf would be one past it.
+      const current = await asAdmin(() => config_.getCategory(top.id));
+      await asAdmin(() => config_.moveCategory(top.id, parentId, current.version));
+
+      await expect(bringBack(leaf.id)).rejects.toMatchObject({
+        fieldErrors: [{ field: 'parentId', message: 'TOO_DEEP' }],
+      });
+    });
+
+    it('refuses to close a cycle through a row the old restore brought back', async () => {
+      // Tenants' data already holds what the old restore wrote: a child brought back while its
+      // parent was still deleted, with the path it was deleted with. Seeded here, because the
+      // product no longer writes it.
+      const tree = await aTree();
+      await retire(tree.grandchild);
+      await retire(tree.child);
+      const root = await asAdmin(() => config_.getCategory(tree.root));
+      await asAdmin(() => config_.moveCategory(tree.root, tree.other, root.version));
+      await owner.category.update({
+        where: { id: tree.grandchild },
+        data: { deletedAt: null, deletedBy: null },
+      });
+
+      try {
+        // Its stale path no longer starts with the root's, so the product lets the root move
+        // beneath it. The deleted child's parent now sits under the child's own former descendant.
+        const moving = await asAdmin(() => config_.getCategory(tree.root));
+        await asAdmin(() => config_.moveCategory(tree.root, tree.grandchild, moving.version));
+
+        // Restoring the child under that parent would make it its own ancestor. Only its stored
+        // path shows that; the parent's path runs through it.
+        await expect(bringBack(tree.child)).rejects.toMatchObject({
+          fieldErrors: [{ field: 'parentId', message: 'PARENT_IS_DESCENDANT' }],
+        });
+        expect((await rowOf(tree.child)).deletedAt).not.toBeNull();
+      } finally {
+        // The seeded rows go back where the seed found them, so nothing live that the product could
+        // not have written outlives this test — the whole-tree check below reads every live row.
+        await owner.category.updateMany({
+          where: { id: { in: [tree.root, tree.grandchild] } },
+          data: { deletedAt: new Date(), deletedBy: null },
+        });
+      }
+    });
+
+    it('restores a category whose place never changed exactly where it was', async () => {
+      const tree = await aTree();
+      const before = await rowOf(tree.grandchild);
+      await retire(tree.grandchild);
+      await bringBack(tree.grandchild);
+      expect(await rowOf(tree.grandchild)).toMatchObject({
+        parentId: before.parentId,
+        path: before.path,
+        deletedAt: null,
+      });
+
+      // And a root, which has no parent to consult.
+      await retire(tree.other);
+      await bringBack(tree.other);
+      expect((await rowOf(tree.other)).path).toBe(tree.other);
+    });
+  });
 
   it('derives the path from the parent and rewrites the subtree on a move', async () => {
     const tree = await aTree();
