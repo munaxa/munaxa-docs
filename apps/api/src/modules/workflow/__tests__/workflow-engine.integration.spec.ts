@@ -1132,6 +1132,128 @@ describe('timers', () => {
   });
 });
 
+describe('a deadline that escalates', () => {
+  /**
+   * The timer lane's own context — `WorkflowTimerConsumer`'s, field for field. The system acts
+   * alone when a deadline passes, so nothing here borrows the author's or anybody else's identity.
+   */
+  function asTheClock<T>(work: () => Promise<T>): Promise<T> {
+    return runWithContext(
+      {
+        tenantId: TENANT,
+        userId: null,
+        roles: [],
+        permissions: [],
+        sessionId: null,
+        correlationId: 'workflow-timer',
+        permissionVersion: 0,
+        locale: 'en',
+      },
+      work,
+    );
+  }
+
+  /** One reviewer, a one-day deadline, and an escalation to the approver when it passes. */
+  async function anOverdueApproval(keepOriginal: boolean): Promise<{
+    instanceId: string;
+    documentId: string;
+  }> {
+    const typeId = await typeWithWorkflow(
+      oneStage({
+        completionRule: StageCompletionRule.ANY,
+        deadline: { duration: 'P1D', calendar: 'CALENDAR_DAYS' },
+        onOverdue: {
+          action: 'ESCALATE',
+          to: { kind: ParticipantKind.ROLE, roleKey: 'approver', scope: 'TENANT' },
+          keepOriginal,
+        },
+      }),
+    );
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+    const deadline = await owner.workflowTimer.findFirstOrThrow({
+      where: { instanceId, kind: 'DEADLINE' },
+    });
+    await asTheClock(() => workflow.engine.onTimerFired(deadline.jobId));
+    return { instanceId, documentId };
+  }
+
+  async function taskOf(instanceId: string, assigneeId: UserId) {
+    return owner.approvalTask.findFirstOrThrow({ where: { instanceId, assigneeId } });
+  }
+
+  it('hands the stage to the escalation target when the original is not kept', async () => {
+    const { instanceId, documentId } = await anOverdueApproval(false);
+
+    // The person who missed the deadline no longer holds it — that is what `keepOriginal: false`
+    // asks for — and the person it was escalated to does.
+    const missed = await taskOf(instanceId, REVIEWER);
+    const escalated = await taskOf(instanceId, APPROVER);
+    expect(missed.state).toBe(ApprovalTaskState.WITHDRAWN);
+    expect(escalated.state).toBe(ApprovalTaskState.PENDING);
+    expect(escalated.resolvedBy).toMatch(/^ESCALATION:/);
+
+    // And the escalation can actually be decided, which is the only point of creating it: the
+    // approval completes rather than sitting on a stage nobody holds.
+    await as(
+      () =>
+        workflow.engine.decide({
+          taskId: asId<ApprovalTaskId>(escalated.id),
+          decision: TaskDecision.APPROVED,
+          comment: null,
+        }),
+      APPROVER,
+    );
+    const instance = await owner.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } });
+    expect(instance.state).toBe(WorkflowInstanceStatus.COMPLETED);
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.status).toBe(DocumentStatus.APPROVED);
+  });
+
+  it('refuses the person who missed the deadline once the stage has been taken from them', async () => {
+    const { instanceId } = await anOverdueApproval(false);
+    const missed = await taskOf(instanceId, REVIEWER);
+
+    await expect(
+      as(
+        () =>
+          workflow.engine.decide({
+            taskId: asId<ApprovalTaskId>(missed.id),
+            decision: TaskDecision.APPROVED,
+            comment: null,
+          }),
+        REVIEWER,
+      ),
+    ).rejects.toThrow();
+    const instance = await owner.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } });
+    expect(instance.state).toBe(WorkflowInstanceStatus.RUNNING);
+  });
+
+  it('leaves both people able to decide when the original is kept', async () => {
+    const { instanceId } = await anOverdueApproval(true);
+
+    const missed = await taskOf(instanceId, REVIEWER);
+    const escalated = await taskOf(instanceId, APPROVER);
+    expect(missed.state).toBe(ApprovalTaskState.PENDING);
+    expect(escalated.state).toBe(ApprovalTaskState.PENDING);
+
+    // "The first person to decide still can" — the contract's own words for the flag.
+    await as(
+      () =>
+        workflow.engine.decide({
+          taskId: asId<ApprovalTaskId>(missed.id),
+          decision: TaskDecision.APPROVED,
+          comment: null,
+        }),
+      REVIEWER,
+    );
+    const instance = await owner.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } });
+    expect(instance.state).toBe(WorkflowInstanceStatus.COMPLETED);
+  });
+});
+
 describe('ending an approval', () => {
   it('lets an author withdraw before anybody has decided, and refuses afterwards', async () => {
     const typeId = await typeWithWorkflow(oneStage());

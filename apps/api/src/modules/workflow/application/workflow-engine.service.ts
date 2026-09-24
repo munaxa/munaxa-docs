@@ -877,6 +877,13 @@ export class WorkflowEngine {
     const fresh = targets.filter((target) => !existing.has(target.userId));
     const count = await this.repository.recordEscalation(aggregate.instance.id);
 
+    if (behaviour.keepOriginal !== true) {
+      // Before the escalation's tasks exist, not after. `closePendingTasks` withdraws everything
+      // pending on the stage, so run after `createTasks` it withdrew the tasks just created too,
+      // and left the stage with nobody able to decide it. Slice 134.
+      await this.repository.closePendingTasks(stage.id, ApprovalTaskState.WITHDRAWN);
+    }
+
     if (fresh.length > 0) {
       await this.repository.createTasks(
         fresh.map((target) => ({
@@ -892,13 +899,6 @@ export class WorkflowEngine {
           escalatedFromId: pending[0]?.id ?? null,
         })),
       );
-    }
-
-    if (behaviour.keepOriginal !== true) {
-      await this.repository.closePendingTasks(stage.id, ApprovalTaskState.WITHDRAWN);
-      // Reopened for the escalation targets only: `closePendingTasks` withdrew everything pending,
-      // including the tasks just created, so they are created after it rather than before. Doing it
-      // in this order would be the subtle bug; doing it in the other is why the order is stated.
     }
 
     for (const target of fresh) {
