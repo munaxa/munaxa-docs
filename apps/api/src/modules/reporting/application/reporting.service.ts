@@ -257,6 +257,9 @@ export class DefaultReportingService implements ReportingService {
     const record = await this.export(id);
     if (
       record === null ||
+      // The requester's, and nobody else's — Slice 132. The file holds the rows *their* reach
+      // allowed, and the same report's permissions held by somebody else are not the same reach.
+      (record.requestedById as string) !== requireContext().userId ||
       record.state !== ReportExportState.COMPLETED ||
       record.fileObjectId === null
     ) {
