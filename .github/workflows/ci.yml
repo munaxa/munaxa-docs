@@ -386,7 +386,7 @@ jobs:
     # cost** rather than by file count:
     #
     #   signing     — signing 5, faded-text 1, search 1     =  7
-    #   recovery    — recovery 7, datagrid-keyboard 1       =  8
+    #   recovery    — recovery 7, datagrid-keyboard 1, library-subfolders 1 = 9
     #   screens     — consistency 1, shell 1, dashboard 1, recent-empty 1, permissions 4 = 8
     #   delegations — delegations 4, notifications 3       =  7
     #
@@ -420,7 +420,7 @@ jobs:
           - name: 'signing, faded text and search'
             files: 'src/test/e2e/signing.e2e.spec.ts src/test/e2e/faded-text.e2e.spec.ts src/test/e2e/search.e2e.spec.ts'
           - name: 'recovery and the data grid'
-            files: 'src/test/e2e/recovery.e2e.spec.ts src/test/e2e/datagrid-keyboard.e2e.spec.ts'
+            files: 'src/test/e2e/recovery.e2e.spec.ts src/test/e2e/datagrid-keyboard.e2e.spec.ts src/test/e2e/library-subfolders.e2e.spec.ts'
           - name: 'the screens'
             files: 'src/test/e2e/consistency.e2e.spec.ts src/test/e2e/shell.e2e.spec.ts src/test/e2e/dashboard.e2e.spec.ts src/test/e2e/recent-empty.e2e.spec.ts src/test/e2e/permissions.e2e.spec.ts'
           # Named for the file it was created for. It carries the notification suite too, because

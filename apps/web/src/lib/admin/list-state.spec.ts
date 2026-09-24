@@ -6,6 +6,7 @@ import {
   readListState,
   withChange,
   withFilter,
+  withFilters,
 } from './list-state';
 
 /**
@@ -138,6 +139,29 @@ describe('changing a list state', () => {
 
   it('clears a filter set to nothing rather than filtering on an empty string', () => {
     const filtered = withFilter(stateOf(), 'entityId', 'e1');
+    expect(filtered.filters).toEqual({ entityId: 'e1' });
     expect(withFilter(filtered, 'entityId', '').filters).toEqual({});
+  });
+
+  /**
+   * Slice 128 — the library's "Include subfolders" switch trades `folderId` for `underFolderId`.
+   * Two `withFilter` calls on one state are two answers, and only the last would land.
+   */
+  it('trades one filter for another in one change, keeping the filters it does not name', () => {
+    const inFolder = stateOf({ page: 3, filters: { libraryId: 'l1', folderId: 'f1' } });
+
+    const widened = withFilters(inFolder, { underFolderId: 'f1', folderId: '' });
+    expect(widened.filters).toEqual({ libraryId: 'l1', underFolderId: 'f1' });
+    expect(widened.page).toBe(1);
+
+    const narrowed = withFilters(widened, { underFolderId: '', folderId: 'f1' });
+    expect(narrowed.filters).toEqual({ libraryId: 'l1', folderId: 'f1' });
+    expect(listQueryString(narrowed)).toBe('?libraryId=l1&folderId=f1');
+  });
+
+  it('leaves the state it was given untouched', () => {
+    const inFolder = stateOf({ filters: { folderId: 'f1' } });
+    withFilters(inFolder, { underFolderId: 'f1', folderId: '' });
+    expect(inFolder.filters).toEqual({ folderId: 'f1' });
   });
 });
