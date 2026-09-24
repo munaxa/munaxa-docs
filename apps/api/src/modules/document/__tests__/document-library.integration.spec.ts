@@ -25,6 +25,7 @@ import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { PrismaDocumentSignatureRepository } from '../infrastructure/prisma-signature.repository';
+import { DocumentSignaturesController } from '../presentation/signatures.controller';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { seedRoleGrant } from '../../../testing/acl-seed';
 import { decodeTransferToken } from '../../../testing/transfer-token';
@@ -1551,13 +1552,15 @@ describe('two withdrawals of one signature', () => {
     const stalling = realDocumentSignatures({ clock, unitOfWork: uow, signatures: held });
     const plain = realDocumentSignatures({ clock, unitOfWork: uow });
 
-    const loser = as(() => stalling.service.withdraw(signatureId, 'Withdrawn by the loser'))
+    const loser = as(() =>
+      stalling.service.withdraw(document.id, signatureId, 'Withdrawn by the loser'),
+    )
       .then(() => ({ refused: false }))
       .catch(() => ({ refused: true }));
     await atClaim;
 
     // The winner runs the production path end to end underneath it.
-    await as(() => plain.service.withdraw(signatureId, 'Withdrawn by the winner'));
+    await as(() => plain.service.withdraw(document.id, signatureId, 'Withdrawn by the winner'));
 
     admit();
     const loserResult = await loser;
@@ -1583,4 +1586,90 @@ describe('two withdrawals of one signature', () => {
     // And the loser is told what the sequential caller is already told.
     expect(loserResult.refused).toBe(true);
   }, 60_000);
+});
+
+/**
+ * Slice 131 — a signature is answered for under its own document, and only there.
+ *
+ * Every signature route is `@ScopedTo` the document in its URL, because that is where reach is
+ * decided. Verification and withdrawal then looked the signature up by its own identifier alone, so
+ * a caller who reached one document could name a signature on another and be answered: the full
+ * signed statement — the other document's number, the signer's name and email, their words — from a
+ * verification, and a withdrawal carried out there. Revisions, previews and signing already refuse
+ * cross-document addressing as though the child did not exist; these two now do too.
+ */
+describe('a signature addressed under another document', () => {
+  async function signedDocument(): Promise<{ documentId: string; signatureId: string }> {
+    const document = await createDocument();
+    const { latestRevisionId } = await owner.document.findUniqueOrThrow({
+      where: { id: document.id },
+      select: { latestRevisionId: true },
+    });
+    const signatureId = uuidv7();
+    await owner.documentSignature.create({
+      data: {
+        id: signatureId,
+        tenantId: TENANT,
+        documentId: document.id,
+        revisionId: latestRevisionId ?? '',
+        signerUserId: ALICE,
+        purpose: 'APPROVAL',
+        contentSha256: 'digest',
+        statementBody: `munaxa-docs-signature/v1\ndocument:${document.id}\n`,
+        signature: 'witness',
+        algorithm: 'HMAC-SHA256',
+        keyId: 'key',
+        signedAt: FIXED_NOW,
+        reauthenticated: true,
+      },
+    });
+    return { documentId: document.id, signatureId };
+  }
+
+  function controller(): DocumentSignaturesController {
+    return new DocumentSignaturesController(
+      realDocumentSignatures({
+        clock,
+        unitOfWork: uow,
+        verifying: { storage, config: { ...appConfig, signature: { witnessSecret: null } } },
+      }).service,
+    );
+  }
+
+  it('is not verified there, and its statement is not disclosed', async () => {
+    const reached = await createDocument();
+    const other = await signedDocument();
+
+    await expect(
+      as(() => controller().verify(reached.id, other.signatureId)),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('is not withdrawn there', async () => {
+    const reached = await createDocument();
+    const other = await signedDocument();
+
+    await expect(
+      as(() =>
+        controller().withdraw(reached.id, other.signatureId, { reason: 'Through another door' }),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const row = await owner.documentSignature.findUniqueOrThrow({
+      where: { id: other.signatureId },
+    });
+    expect(row.withdrawnAt).toBeNull();
+  });
+
+  it('is still verified and withdrawn under its own document', async () => {
+    const own = await signedDocument();
+
+    const verification = await as(() => controller().verify(own.documentId, own.signatureId));
+    expect(verification.signatureId).toBe(own.signatureId);
+    expect(verification.statementBody).toContain(`document:${own.documentId}`);
+
+    const withdrawn = await as(() =>
+      controller().withdraw(own.documentId, own.signatureId, { reason: 'Signed in error' }),
+    );
+    expect(withdrawn.withdrawnReason).toBe('Signed in error');
+  });
 });

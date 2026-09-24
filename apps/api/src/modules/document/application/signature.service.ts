@@ -327,12 +327,13 @@ export class DocumentSignatureService {
    * a signature gone has the audit trail and the document's own history, both of which say it
    * happened.
    */
-  async withdraw(signatureId: string, reason: string): Promise<SignatureRecord> {
+  async withdraw(
+    documentId: string,
+    signatureId: string,
+    reason: string,
+  ): Promise<SignatureRecord> {
     return this.writer.write<SignatureRecord>(async () => {
-      const current = await this.signatures.findById(signatureId);
-      if (current === null) {
-        throw new NotFoundError('The requested signature');
-      }
+      const current = await this.requireSignatureOf(documentId, signatureId);
       const actor = this.requireActor();
       if ((current.signerUserId as string) !== actor) {
         throw new ForbiddenError("withdraw somebody else's signature");
@@ -389,7 +390,10 @@ export class DocumentSignatureService {
    *
    * `withdrawn` — neither of the above. The signature is valid and its signer took it back.
    */
-  async verify(signatureId: string): Promise<{
+  async verify(
+    documentId: string,
+    signatureId: string,
+  ): Promise<{
     readonly signature: SignatureRecord;
     readonly signatureValid: boolean;
     readonly contentMatches: boolean;
@@ -397,10 +401,7 @@ export class DocumentSignatureService {
     readonly witnessedBy: string;
   }> {
     return this.writer.read(async () => {
-      const record = await this.signatures.findById(signatureId);
-      if (record === null) {
-        throw new NotFoundError('The requested signature');
-      }
+      const record = await this.requireSignatureOf(documentId, signatureId);
       const secret = this.config.signature.witnessSecret;
       const currentKeyId = secret === null ? null : keyIdFor(secret);
       const signatureValid =
@@ -543,6 +544,25 @@ export class DocumentSignatureService {
    * The digest is the blob's own, which under ADR-0007 *is* its identity: a `file_object` is named
    * by the hash of its content, so this is not a re-hash that could drift from the row.
    */
+  /**
+   * The signature, if it is this document's — Slice 131.
+   *
+   * The route decided reach on the document in its URL, so a signature on any other document is
+   * one the caller was never cleared for. Refused as though it did not exist, the same answer
+   * `signableRevision` gives a revision that is not this document's — saying it exists elsewhere
+   * would be saying something about a document the caller was not reaching for.
+   */
+  private async requireSignatureOf(
+    documentId: string,
+    signatureId: string,
+  ): Promise<SignatureRecord> {
+    const record = await this.signatures.findById(signatureId);
+    if (record === null || (record.documentId as string) !== documentId) {
+      throw new NotFoundError('The requested signature');
+    }
+    return record;
+  }
+
   private async fileDigestOf(fileObjectId: string): Promise<string> {
     const file = await this.content.describe(fileObjectId);
     if (file === null) {
