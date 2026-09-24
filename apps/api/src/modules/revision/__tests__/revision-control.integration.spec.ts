@@ -737,6 +737,89 @@ describe('the check-out lock', () => {
   });
 });
 
+/**
+ * Slice 129 — a check-out taken over after it lapsed keeps the lapsed holder's working draft.
+ *
+ * The takeover leaves the document `CHECKED_OUT` throughout: it swaps the lock, not the state. A
+ * working draft recorded on the lapsed lock (`keepCheckedOut`) is still the document's latest
+ * revision and still `DRAFT`, and the lock is the only thing that names it — so a new lock that did
+ * not carry it left a draft no check-in replaced, no cancel discarded and no force preserved, with
+ * its blob referenced for as long as the document lives.
+ */
+describe('a check-out taken over after it lapsed', () => {
+  async function lapsedWithDraft(): Promise<{ documentId: string; draftId: string; blob: string }> {
+    const documentId = await published();
+    await as(() => revision.control.checkOut(documentId), AUTHOR);
+    await checkIn(documentId, { keepCheckedOut: true });
+    const draft = await owner.documentRevision.findFirstOrThrow({
+      where: { documentId, ordinal: 1 },
+    });
+
+    // Lapsed, as the lock test above ages one: both stamps, because `ck_document_lock_expiry`
+    // refuses a claim that lapsed before it was taken.
+    await owner.documentLock.updateMany({
+      where: { documentId, releasedAt: null },
+      data: {
+        acquiredAt: new Date(FIXED_NOW.getTime() - 7_200_000),
+        expiresAt: new Date(FIXED_NOW.getTime() - 60_000),
+      },
+    });
+    await as(() => revision.control.checkOut(documentId), REVIEWER);
+
+    return { documentId, draftId: draft.id, blob: draft.fileObjectId };
+  }
+
+  it('lets the new holder’s cancel discard it and give its blob back', async () => {
+    const { documentId, draftId, blob } = await lapsedWithDraft();
+    const referenced = await refCountOf(blob);
+
+    await as(() => revision.control.cancelCheckOut(documentId), REVIEWER);
+
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.status).toBe(DocumentStatus.PUBLISHED);
+    // Back exactly as it stood: the latest revision is the published one again.
+    expect(document.latestRevisionId).toBe(document.currentRevisionId);
+    const draft = await owner.documentRevision.findUniqueOrThrow({ where: { id: draftId } });
+    expect(draft.status).toBe(RevisionStatus.DISCARDED);
+    expect(await refCountOf(blob)).toBe(referenced - 1);
+  });
+
+  it('lets the new holder’s check-in replace it, as any further check-in does', async () => {
+    const { documentId, draftId, blob } = await lapsedWithDraft();
+    const referenced = await refCountOf(blob);
+
+    await checkIn(documentId, { by: REVIEWER });
+
+    const drafts = await owner.documentRevision.findMany({
+      where: { documentId, status: RevisionStatus.DRAFT },
+    });
+    // One working draft, the new holder's — not two.
+    expect(drafts.map((row) => row.ordinal)).toEqual([2]);
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.latestRevisionId).toBe(drafts[0]?.id);
+    const replaced = await owner.documentRevision.findUniqueOrThrow({ where: { id: draftId } });
+    expect(replaced.status).toBe(RevisionStatus.DISCARDED);
+    expect(await refCountOf(blob)).toBe(referenced - 1);
+  });
+
+  it('lets a force check-in preserve it', async () => {
+    const { documentId, draftId } = await lapsedWithDraft();
+
+    await as(
+      () =>
+        revision.control.forceCheckIn(documentId, {
+          note: 'Released for the quarterly review.',
+          discardDraft: false,
+        }),
+      CONTROLLER,
+    );
+
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.status).toBe(DocumentStatus.DRAFT);
+    expect(document.latestRevisionId).toBe(draftId);
+  });
+});
+
 describe('restore', () => {
   it('creates a new revision referencing the old blob — a row, not a copy', async () => {
     const documentId = await published();

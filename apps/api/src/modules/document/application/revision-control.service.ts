@@ -112,6 +112,7 @@ export class RevisionControlService {
       const now = this.writer.clock.now();
 
       let sweptFrom: string | null = null;
+      let inheritedDraft: string | null = null;
       if (document.status === DocumentStatus.CHECKED_OUT) {
         const swept = await this.locks.releaseExpired(asId<DocumentId>(id), now);
         if (swept === null) {
@@ -128,6 +129,7 @@ export class RevisionControlService {
           // and here. The insert below settles it either way.
         } else {
           sweptFrom = swept.lockedBy;
+          inheritedDraft = swept.draftRevisionId;
         }
       } else {
         // The document row first — this is the fixed lock order. An illegal starting state
@@ -149,6 +151,13 @@ export class RevisionControlService {
         acquiredAt: now,
         expiresAt: new Date(now.getTime() + expiryHours * HOUR_MS),
       });
+      if (inheritedDraft !== null) {
+        // The takeover swaps the lock, not the state: the document never left CHECKED_OUT, and the
+        // lapsed holder's working draft is still its latest revision. The lock is the only thing
+        // that names it, so the new lock carries it — or no check-in replaces it, no cancel
+        // discards it and no force preserves it, and its blob stays referenced for good.
+        await this.locks.attachDraft(lock.id, inheritedDraft);
+      }
 
       await this.outbox.publish([
         documentCheckedOutEvent(asId<AnyId>(id), {
