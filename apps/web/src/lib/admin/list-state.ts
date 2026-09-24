@@ -139,11 +139,27 @@ export function withChange(state: ListState, change: Partial<ListState>): ListSt
 
 /** Replaces one resource filter. An empty value clears it rather than filtering on `''`. */
 export function withFilter(state: ListState, key: string, value: string): ListState {
+  return withFilters(state, { [key]: value });
+}
+
+/**
+ * Replaces several resource filters as one change — one next state, so one navigation.
+ *
+ * Two `withFilter` calls on the same state are two answers, not one: each starts from the filters
+ * the page had, so the second drops whatever the first set. Pushed as two navigations, only the
+ * last one lands.
+ */
+export function withFilters(
+  state: ListState,
+  changes: Readonly<Record<string, string>>,
+): ListState {
   const filters = { ...state.filters };
-  if (value === '') {
-    delete filters[key];
-  } else {
-    filters[key] = value;
+  for (const [key, value] of Object.entries(changes)) {
+    if (value === '') {
+      delete filters[key];
+    } else {
+      filters[key] = value;
+    }
   }
   return withChange(state, { filters });
 }

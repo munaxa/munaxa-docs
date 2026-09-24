@@ -124,7 +124,7 @@ export function LibraryScreen({
   const router = useRouter();
   const toast = useToast();
   const column = useAdminColumns<DocumentSummary>();
-  const { refresh, setFilter } = useListNavigation(state);
+  const { refresh, setFilters } = useListNavigation(state);
   const run = useAction(state);
   const [adding, setAdding] = useState<'UPLOAD' | 'SCAN' | null>(null);
   const [bulkResult, setBulkResult] = useState<BulkOperationResult | null>(null);
@@ -440,14 +440,17 @@ export function LibraryScreen({
                     <Switch
                       checked={includeSubfolders}
                       onCheckedChange={(checked) => {
-                        // Two different filters rather than a flag on one: the API distinguishes
-                        // "in this folder" from "anywhere beneath it", and the second is a path
-                        // prefix scan the first does not need.
                         // One filter carries the answer and the other is cleared, because the API
                         // distinguishes "in this folder" from "anywhere beneath it" — the second is
                         // a path-prefix scan the first does not need.
-                        setFilter('underFolderId', checked ? selectedFolderId : '');
-                        setFilter('folderId', checked ? '' : selectedFolderId);
+                        //
+                        // One navigation, not two: two `setFilter` calls each started from the URL
+                        // the page had, and only the second landed — switching on dropped the
+                        // folder and returned to the library root; switching off left both.
+                        setFilters({
+                          underFolderId: checked ? selectedFolderId : '',
+                          folderId: checked ? '' : selectedFolderId,
+                        });
                       }}
                     />
                     {translate('documents.list.includeSubfolders')}

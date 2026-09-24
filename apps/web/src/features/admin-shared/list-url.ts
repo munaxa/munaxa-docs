@@ -9,6 +9,7 @@ import {
   listQueryString,
   withChange,
   withFilter,
+  withFilters,
 } from '../../lib/admin/list-state';
 
 /**
@@ -26,6 +27,8 @@ export interface ListNavigation {
   readonly pending: boolean;
   readonly apply: (change: Partial<ListState>) => void;
   readonly setFilter: (key: string, value: string) => void;
+  /** Several filters in one navigation. Two `setFilter` calls are two navigations from one state. */
+  readonly setFilters: (changes: Readonly<Record<string, string>>) => void;
   /** Re-runs the current request — what a write needs once the server action has returned. */
   readonly refresh: () => void;
 }
@@ -62,11 +65,18 @@ export function useListNavigation(state: ListState): ListNavigation {
     [push, state],
   );
 
+  const setFilters = useCallback(
+    (changes: Readonly<Record<string, string>>) => {
+      push(withFilters(state, changes));
+    },
+    [push, state],
+  );
+
   const refresh = useCallback(() => {
     startTransition(() => {
       router.refresh();
     });
   }, [router]);
 
-  return { pending, apply, setFilter, refresh };
+  return { pending, apply, setFilter, setFilters, refresh };
 }
