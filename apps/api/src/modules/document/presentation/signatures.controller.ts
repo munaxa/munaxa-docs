@@ -119,10 +119,10 @@ export class DocumentSignaturesController {
   @RequirePermission(Permission.DOCUMENT_VIEW)
   @ScopedTo('id', ScopeType.DOCUMENT)
   async verify(
-    @Param('id') _id: string,
+    @Param('id') id: string,
     @Param('signatureId') signatureId: string,
   ): Promise<SignatureVerification> {
-    const outcome = await this.signatures.verify(signatureId);
+    const outcome = await this.signatures.verify(id, signatureId);
     return {
       signatureId: outcome.signature.id,
       signatureValid: outcome.signatureValid,
@@ -138,11 +138,11 @@ export class DocumentSignaturesController {
   @RequirePermission(Permission.DOCUMENT_SIGN)
   @ScopedTo('id', ScopeType.DOCUMENT)
   async withdraw(
-    @Param('id') _id: string,
+    @Param('id') id: string,
     @Param('signatureId') signatureId: string,
     @Body(new ZodValidationPipe(withdrawSignatureSchema)) body: WithdrawSignatureBody,
   ): Promise<DocumentSignature> {
-    return toSignature(await this.signatures.withdraw(signatureId, body.reason));
+    return toSignature(await this.signatures.withdraw(id, signatureId, body.reason));
   }
 }
 

@@ -259,23 +259,29 @@ export function realDocumentSignatures(options: {
   readonly unitOfWork: UnitOfWork;
   /** The repository, exposed so a suite can wrap it to order two callers. */
   readonly signatures?: PrismaDocumentSignatureRepository;
+  /**
+   * What `verify` reads besides the row — the revision, its file's digest and the witness key —
+   * for a suite that verifies. Slice 131. Still absent otherwise, and still loud.
+   */
+  readonly verifying?: { readonly storage: DefaultStorageService; readonly config: AppConfig };
 }): {
   readonly service: DocumentSignatureService;
   readonly signatures: PrismaDocumentSignatureRepository;
 } {
-  const { writer } = realWriteStack(options.clock, options.unitOfWork);
+  const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const signatures = options.signatures ?? new PrismaDocumentSignatureRepository();
   const absent = null as never;
+  const verifying = options.verifying;
   return {
     service: new DocumentSignatureService(
       signatures,
       absent,
+      verifying === undefined ? absent : new PrismaRevisionWriter(stamps, outbox),
+      verifying === undefined ? absent : new StorageContentGateAdapter(verifying.storage),
       absent,
       absent,
       absent,
-      absent,
-      absent,
-      absent,
+      verifying === undefined ? absent : verifying.config,
       writer,
     ),
     signatures,
