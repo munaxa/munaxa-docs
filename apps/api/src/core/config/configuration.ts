@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type ProxyTrust, ProxyTrustError, parseProxyTrust } from '@edms/utils/proxy-trust';
 
 /**
  * Typed configuration, validated once at boot.
@@ -37,6 +38,30 @@ export const configSchema = z
     PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
     /** Allowed browser origins. Never `*`: the API is credentialed. */
     CORS_ORIGINS: z.string().default('http://localhost:3000'),
+    /**
+     * Which hops in front of this process may say who the client is — `docs/operations/deployment.md` §3.1.
+     *
+     * Empty (the default) trusts none, so the address is the socket's and `X-Forwarded-For` is
+     * ignored: a client cannot choose its own. A whole number trusts that many hops on every path;
+     * otherwise a comma-separated list of addresses, CIDR ranges, `loopback`, `linklocal` or
+     * `uniquelocal` trusts hops whose own address is listed. `true` and `*` are refused.
+     *
+     * The web tier is one of these hops: sign-in is a server action, so without the web servers'
+     * addresses here every browser signs in from the web server's address and shares its limit.
+     */
+    TRUST_PROXY: z
+      .string()
+      .optional()
+      .superRefine((value, ctx) => {
+        try {
+          parseProxyTrust(value);
+        } catch (error) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: error instanceof ProxyTrustError ? error.message : 'Not a proxy setting.',
+          });
+        }
+      }),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
     DEPLOYMENT_PROFILE: deploymentProfileSchema.default('ON_PREMISE'),
@@ -849,6 +874,8 @@ export interface AppConfig {
   readonly app: { readonly name: string; readonly version: string; readonly port: number };
   readonly http: {
     readonly corsOrigins: readonly string[];
+    /** The hops that may report the client's address. Nothing, unless the deployment says so. */
+    readonly trustProxy: ProxyTrust;
     /** The interactive explorer. Refused in production. */
     readonly openApiEnabled: boolean;
     /** The machine-readable schema. Permitted in production — Phase 17 split the two. */
@@ -1064,6 +1091,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       corsOrigins: raw.CORS_ORIGINS.split(',')
         .map((origin) => origin.trim())
         .filter((origin) => origin.length > 0),
+      trustProxy: parseProxyTrust(raw.TRUST_PROXY),
       openApiEnabled: raw.OPENAPI_ENABLED,
       openApiDocumentEnabled: raw.OPENAPI_DOCUMENT_ENABLED,
     },

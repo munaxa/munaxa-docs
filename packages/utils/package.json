@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Pure helpers with no domain meaning, shared by every Munaxa Docs app and package.",
-  "//exports": "Narrow entry points exist because the barrel is not browser-safe: `uuid.ts` imports `node:crypto`, so a client bundle that reached the root export would fail to build. `./pagination` is pure arithmetic and constants, and the web app's URL-held list state needs the page-size bound without needing an identifier generator.",
+  "//exports": "Narrow entry points exist because the barrel is not browser-safe: `uuid.ts` imports `node:crypto`, so a client bundle that reached the root export would fail to build. `./pagination` is pure arithmetic and constants, and the web app's URL-held list state needs the page-size bound without needing an identifier generator. `./proxy-trust` is Node-only (`node:net`) and is kept out of the barrel for the same reason.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -12,6 +12,18 @@
     "./pagination": {
       "types": "./dist/pagination.d.ts",
       "default": "./dist/pagination.js"
+    },
+    "./proxy-trust": {
+      "types": "./dist/proxy-trust.d.ts",
+      "default": "./dist/proxy-trust.js"
+    }
+  },
+  "//typesVersions": "For consumers compiling with classic `node` module resolution (the API and worker), which reads types from here rather than from `exports`. Node itself resolves `exports` at runtime.",
+  "typesVersions": {
+    "*": {
+      "proxy-trust": [
+        "./dist/proxy-trust.d.ts"
+      ]
     }
   },
   "license": "UNLICENSED",

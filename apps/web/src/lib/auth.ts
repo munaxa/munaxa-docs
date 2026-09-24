@@ -5,6 +5,7 @@ import { cookies } from 'next/headers';
 import { DomainError, ErrorCode } from '@edms/domain';
 
 import { apiFetch } from './api-client';
+import { clientAddress } from './client-address';
 import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from './session';
 
 /**
@@ -60,10 +61,13 @@ export type SignInOutcome =
 
 export async function signIn(input: SignInInput): Promise<SignInOutcome> {
   try {
+    const forwardedFor = await clientAddress();
     const result = await apiFetch<AuthenticationResponse>({
       path: '/auth/login',
       method: 'POST',
       body: input,
+      // The sign-in limit is per address, and without this every browser is this server.
+      ...(forwardedFor !== undefined && { forwardedFor }),
     });
     await storeSession(result);
     return { ok: true };

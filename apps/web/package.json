@@ -12,7 +12,7 @@
     "verify:styles": "node scripts/verify-platform-styles.mjs",
     "typegen": "next typegen",
     "dev": "next dev --port 3000",
-    "start": "next start",
+    "start": "node server.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project=logic --project=a11y",

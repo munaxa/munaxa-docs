@@ -438,7 +438,7 @@ jobs:
           # Named for the file it was created for. It carries the notification suite too, because
           # this is the shard with the measured budget for it — see the note above about titles.
           - name: 'delegations'
-            files: 'src/test/e2e/delegations.e2e.spec.ts src/test/e2e/notifications.e2e.spec.ts'
+            files: 'src/test/e2e/delegations.e2e.spec.ts src/test/e2e/notifications.e2e.spec.ts src/test/e2e/sign-in-addresses.e2e.spec.ts'
 
     services:
       postgres:

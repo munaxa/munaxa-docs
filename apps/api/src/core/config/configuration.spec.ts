@@ -162,6 +162,24 @@ describe('loadConfig', () => {
     ).toThrowError(ConfigurationError);
   });
 
+  it('trusts no proxy unless the deployment names one', () => {
+    expect(loadConfig(baseEnv).http.trustProxy).toEqual({ kind: 'NONE' });
+    expect(loadConfig({ ...baseEnv, TRUST_PROXY: '1' }).http.trustProxy).toEqual({
+      kind: 'HOPS',
+      hops: 1,
+    });
+    expect(loadConfig({ ...baseEnv, TRUST_PROXY: '10.0.0.0/8, loopback' }).http.trustProxy).toEqual(
+      { kind: 'ADDRESSES', entries: ['10.0.0.0/8', 'loopback'] },
+    );
+  });
+
+  it('refuses a proxy setting that would trust every address, or that is not an address', () => {
+    // Trusting everyone lets any client write its own address and so choose its own rate limit.
+    for (const value of ['true', '*', 'web-1.internal', '10.0.0.0/40']) {
+      expect(() => loadConfig({ ...baseEnv, TRUST_PROXY: value })).toThrowError(/TRUST_PROXY/);
+    }
+  });
+
   it('refuses a metrics exporter with no scrape token', () => {
     // The body is queue depths, error rates and refusal counts by permission: operator-only.
     expect(() => loadConfig({ ...baseEnv, METRICS_DRIVER: 'PROMETHEUS' })).toThrowError(

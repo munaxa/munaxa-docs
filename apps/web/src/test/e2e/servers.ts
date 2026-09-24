@@ -22,7 +22,8 @@ import { fileURLToPath } from 'node:url';
  * ## What is real
  *
  * Everything. The API is `apps/api/dist/main.js` — the artefact the container image ships — against
- * a real PostgreSQL and a real Redis. The web application is `next start` over the production
+ * a real PostgreSQL and a real Redis. The web application is `server.mjs` — the image's entry
+ * point, `next start` with the browser's address resolved in front — over the production
  * build. The browser is Chromium driving the shipped HTML and JavaScript. Nothing is mocked, nothing
  * is stubbed, and the signature endpoint least of all.
  *
@@ -213,7 +214,7 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
   }
   if (!existsSync(join(WEB, '.next'))) {
     throw new Error(
-      'No web build. This suite runs `next start` over the production build, for the same reason ' +
+      'No web build. This suite runs the web server over the production build, for the same reason ' +
         'the visual suite reads the built stylesheet: it checks what ships.',
     );
   }
@@ -285,6 +286,9 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
       ...tenancy,
       SIGNATURE_WITNESS_SECRET: WITNESS_SECRET,
       CORS_ORIGINS: WEB_URL,
+      // The web server signs people in on their behalf and runs on loopback here, so it is the one
+      // hop the API may believe about a browser's address — `docs/operations/deployment.md` §3.
+      TRUST_PROXY: 'loopback',
       // Before `extraEnv`, so a suite that wants a particular Redis still gets the last word.
       REDIS_URL: redisUrl,
       ...extraEnv,
@@ -296,17 +300,15 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const web = spawn(
-    'node',
-    [join(WEB, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '--port', String(WEB_PORT)],
-    {
-      cwd: WEB,
-      // `next start` sets its own `NODE_ENV`; forcing one here only risks disagreeing with it.
-      env: { ...process.env, PORT: String(WEB_PORT) },
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  // `server.mjs`, not `next start`: it is what the image runs, and it is what resolves the
+  // browser's address for sign-in. Browsers connect to it directly here, so it trusts no proxy.
+  const web = spawn('node', [join(WEB, 'server.mjs'), '--port', String(WEB_PORT)], {
+    cwd: WEB,
+    // `next start` sets its own `NODE_ENV`; forcing one here only risks disagreeing with it.
+    env: { ...process.env, PORT: String(WEB_PORT) },
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
   /*
    * PHASE 7.1A — both servers' output to files, so a failure that only reproduces inside a full run

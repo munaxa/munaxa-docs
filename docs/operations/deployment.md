@@ -87,12 +87,52 @@ placeholder. The ones a production deployment cannot omit:
 | `MFA_TOTP_SEALING_KEY` | Phase 18. Its own key, so rotating the token secret does not make every enrolled authenticator unreadable — [ADR-0020](../architecture/adr/0020-key-management-and-rotation.md) |
 | `STORAGE_DRIVER`, `MAIL_DRIVER`, `AV_DRIVER` | None may be `NONE`. An unconfigured driver in production is a silent outage waiting for its first upload |
 | `OUTBOUND_HTTP_ALLOWLIST` | Not required, and **empty means nothing is reachable** — webhooks, federation and audit push are all inert until an operator names a host |
+| `TRUST_PROXY` | Not required, and **empty means no hop is believed** — including the web server, so every browser signs in from its address and shares one allowance. Name the web servers and any load balancer (§3.1) |
 
 Two variables are refused outright: `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT`. Neither has an
 exporter in this build, and a variable that is accepted and ignored is worse than one that is
 refused — an operator who sets it believes errors are being exported and finds out otherwise during
 the incident it was set for. Metrics are served at `/api/metrics` under `METRICS_DRIVER=PROMETHEUS`;
 errors are on the structured log stream.
+
+### 3.1 Who may say who the client is — `TRUST_PROXY` and `WEB_TRUST_PROXY`
+
+The sign-in rate limit is ten attempts per five minutes **per client address** (and, separately, per
+identity). A process only sees the address of whatever connected to it, so every hop in front of it —
+a load balancer, a reverse proxy, and **the web server itself**, because sign-in is a server action —
+must be *named* before the address it reports is believed. Until it is, all of its clients share one
+address and one allowance: the eleventh person to sign in within five minutes, in any tenant, is
+refused. That was the release candidate's D-2.
+
+Both variables take the same values and default to trusting nothing:
+
+| Value | Meaning |
+| --- | --- |
+| *(empty)*, `false`, `0` | Trust no hop. The client is the connection; `X-Forwarded-For` is ignored |
+| `10.0.4.0/24,10.0.9.7` | Trust hops whose own address is in these ranges. `loopback`, `linklocal` and `uniquelocal` name the usual private ranges |
+| `1`, `2`, … | Trust exactly that many hops. **Only** if every request reaches the process through exactly that many — a client that can connect directly would have its own header believed |
+| `true`, `*` | Refused at boot. Trusting everyone lets any client write its own address, which is a rate-limit bypass |
+
+`TRUST_PROXY` is the API's; an invalid value fails startup. `WEB_TRUST_PROXY` is read by
+`apps/web/server.mjs`, the web image's entry point, which resolves the browser's address from its own
+socket and forwards it on the sign-in call; an invalid value stops the web server from starting. The
+address is read from `X-Forwarded-For` from its right-hand end, and the walk stops at the first hop
+that is not trusted — so an address a browser wrote for itself is never reached.
+
+Configure it for the topology you run:
+
+- **One server, no proxy (on-premise).** `TRUST_PROXY=loopback` (the web server calls the API over
+  loopback). `WEB_TRUST_PROXY` empty.
+- **Load balancer → web and API.** `TRUST_PROXY` = the web servers' range and the load balancer's
+  range; `WEB_TRUST_PROXY` = the load balancer's range. Prefer ranges to hop counts here: browsers
+  reach the API directly through the balancer and the web server reaches it with one more hop, so no
+  single count is right for both paths.
+- **API-only integrations, no web tier.** `TRUST_PROXY` = the balancer's range, or empty if clients
+  connect directly.
+
+Run the web image's own entry point (`node server.mjs`), not `next start`: under `next start` nothing
+resolves the browser's address, so the sign-in action forwards none and every browser is the web
+server again — safe, but back to one allowance for everybody.
 
 ## 4. Secrets
 

@@ -19,6 +19,12 @@ export interface ApiRequest {
   readonly idempotencyKey?: string;
   /** The aggregate version being changed; a mismatch is a 409, never a silent overwrite. */
   readonly ifMatch?: number;
+  /**
+   * The browser's address, for a call this server makes on its behalf — sign-in, whose rate limit is
+   * per address. Server-side only, and only as resolved by `client-address.ts`; the API believes it
+   * only if this server is one of its `TRUST_PROXY` hops.
+   */
+  readonly forwardedFor?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -43,6 +49,9 @@ export async function apiFetch<TResult>(request: ApiRequest): Promise<TResult> {
   }
   if (request.ifMatch !== undefined) {
     headers[Header.IF_MATCH] = String(request.ifMatch);
+  }
+  if (request.forwardedFor !== undefined) {
+    headers['X-Forwarded-For'] = request.forwardedFor;
   }
 
   const init: RequestInit = {

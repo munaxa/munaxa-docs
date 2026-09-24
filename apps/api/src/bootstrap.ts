@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { API_VERSION } from '@edms/contracts';
 
 import { APP_CONFIG, type AppConfig } from './core/config';
+import { clientAddressMiddleware } from './core/http/client-address';
 import { PERMISSIONS_POLICY, helmetOptions } from './core/security';
 
 /**
@@ -22,6 +23,8 @@ import { PERMISSIONS_POLICY, helmetOptions } from './core/security';
 export function configureApp(app: INestApplication): AppConfig {
   const config = app.get<AppConfig>(APP_CONFIG);
 
+  // First, so every guard and controller reads the same client address — `core/http/client-address.ts`.
+  app.use(clientAddressMiddleware(config.http.trustProxy));
   app.use(helmet(helmetOptions));
   app.use(
     (

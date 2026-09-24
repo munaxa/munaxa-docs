@@ -145,10 +145,12 @@ COPY --from=build --chown=node:node /app/apps/web/.next          ./apps/web/.nex
 COPY --from=build --chown=node:node /app/apps/web/node_modules   ./apps/web/node_modules
 COPY --from=build --chown=node:node /app/apps/web/package.json   ./apps/web/
 COPY --from=build --chown=node:node /app/apps/web/next.config.ts ./apps/web/
+COPY --from=build --chown=node:node /app/apps/web/server.mjs     ./apps/web/
 
 WORKDIR /app/apps/web
 EXPOSE 3000
-CMD ["node", "node_modules/next/dist/bin/next", "start"]
+# `next start` with the browser's address resolved in front of it — see the header of `server.mjs`.
+CMD ["node", "server.mjs"]
 
 # --- Worker ------------------------------------------------------------------------------------
 #
