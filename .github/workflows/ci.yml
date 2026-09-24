@@ -242,83 +242,98 @@ jobs:
         env:
           ADMIN_URL: postgresql://edms_owner@127.0.0.1:5432/postgres
 
-      # An ordinary container rather than a `services:` entry, because the image needs an argument a
-      # service entry cannot give it.
+      # The object store and its client, built from MinIO's own source at pinned release tags.
       #
-      #   minio/minio:RELEASE.…  Cmd = ["minio"]        → prints its usage text and exits
-      #   the server needs        minio server /data
+      # ## Why from source
       #
-      # The runner composes service containers as `docker create <options> <image>` with no argument
-      # slot, so a bare `minio` was all it could ever run: the container died on startup, the health
-      # check never went healthy, and the job failed at "Initialize containers" before checkout.
-      # Every run since Phase 6.12 added the service failed exactly that way, which went unnoticed
-      # because the account could not assign runners over the same period — the red X already had an
-      # unrelated explanation.
+      # Every prebuilt MinIO this job has used has been withdrawn in turn. `docker.io/minio/minio`
+      # and `minio/mc` went first (Docker Hub answers `404` for both repositories), together with the
+      # direct binaries (`dl.min.io/.../minio` and `.../mc` answer `410 Gone`, including the pinned
+      # `archive/` releases). The job then pulled `quay.io/minio/minio` and `quay.io/minio/mc`,
+      # MinIO's own mirror, until that stopped being public too: an anonymous pull token now gets
+      # `401 UNAUTHORIZED` for every tag of both repositories, and the repository API answers `401`
+      # as well. The failure looked exactly like the Docker Hub one had — the job died at "Start the
+      # object store", before the migrations and before `pnpm test:integration`, so the suite
+      # reported nothing at all on `main` or on any pull request.
       #
-      # `minio/minio:edge-cicd` does default to `server /data` and was tried first, but it is a
-      # four-year-old build whose bundled `mc` predates the `mc ready` subcommand, so the health
-      # check could never pass and the storage guard would have been asserting against a MinIO far
-      # older than anything this product would run against.
+      # What remains published is the source: both release tags are still in `minio/minio` and
+      # `minio/mc` on GitHub. Building from them removes the dependency on any registry or download
+      # host MinIO controls, which is the thing that has now failed twice.
       #
-      # Pinned to a release rather than `latest`: an unpinned object store is a dependency that can
-      # change the meaning of a passing build without a commit.
+      # ## What is pinned, and how hard
       #
-      # ## Why quay.io rather than Docker Hub
+      # The same releases as before, so the storage guard asserts against the MinIO it always has.
+      # A tag can be moved, so each checkout is compared with the commit the tag pointed to when this
+      # was written (the peeled `^{}` ref, not the annotated tag object) and the job stops if they
+      # differ: an object store that changes without a commit can change what a passing build means.
       #
-      # `docker.io/minio/minio` stopped existing. The pull fails with Docker Hub's generic
+      # The two binaries are cached under a key naming both commits, so the build — about two
+      # minutes, nearly all of it the server — runs once per pin rather than once per job.
       #
-      #   pull access denied for minio/minio, repository does not exist or may require 'docker login'
+      # ## Why a process rather than a container
       #
-      # which reads like a credential problem and is not one. Docker Hub's own API answers
-      # `404 {"message": "object not found"}` for `/v2/repositories/minio/minio/`, and for
-      # `minio/mc` beside it, so there is no repository left to authenticate against: MinIO
-      # withdrew the images rather than gating them, and withdrew the direct binaries in the same
-      # move — `dl.min.io/server/minio/release/linux-amd64/minio` and the `mc` beside it both
-      # answer `410 Gone`.
-      #
-      # This took the Integration job down on `main` as well as on every pull request, and it took
-      # it down *here* — before the bucket, before the migrations, before `pnpm test:integration` —
-      # so the suite reported nothing at all rather than reporting a failure. A required check that
-      # cannot reach its own subject is worse than a red one, which is the same reasoning the
-      # `paths-ignore` note at the top of this file is built on.
-      #
-      # `quay.io/minio/minio` is MinIO's own long-standing mirror, it is public — an anonymous
-      # token returns the manifest — and it carries this exact release tag. Verified to be the same
-      # image rather than assumed: `Cmd` is still `["minio"]` and the entrypoint is still
-      # `docker-entrypoint.sh`, so the `server /data` argument above is needed for the same reason
-      # and does the same thing. The registry is the only thing that changes.
+      # There is no image left to run. The earlier reason not to use a `services:` entry still holds
+      # for any image that needs `server /data` as an argument, and it no longer matters here: the
+      # server is started as a background process listening on the same `127.0.0.1:9000`, with the
+      # same credentials, so nothing downstream of these steps changes.
+      - name: Restore the object store binaries
+        id: object-store-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/object-store/bin
+          key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
+
+      - uses: actions/setup-go@v6
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        with:
+          # MinIO's `go.mod` at this tag asks for 1.24; `mc`'s asks for 1.23.
+          go-version: '1.24'
+          cache: false
+
+      - name: Build the object store from its pinned source
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          build() {
+            local repo="$1" tag="$2" commit="$3" out="$4"
+            local src="$RUNNER_TEMP/object-store/src/$repo"
+            git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" "https://github.com/minio/$repo" "$src"
+            local actual
+            actual="$(git -C "$src" rev-parse HEAD)"
+            if [ "$actual" != "$commit" ]; then
+              echo "::error::minio/$repo tag $tag now points at $actual, not the pinned $commit"
+              exit 1
+            fi
+            (cd "$src" && CGO_ENABLED=0 go build -trimpath -o "$out" .)
+          }
+          mkdir -p "$RUNNER_TEMP/object-store/bin"
+          build minio RELEASE.2025-09-07T16-13-09Z 07c3a429bfed433e49018cb0f78a52145d4bedeb \
+            "$RUNNER_TEMP/object-store/bin/minio"
+          build mc RELEASE.2025-08-13T08-35-41Z 7394ce0dd2a80935aded936b09fa12cbb3cb8096 \
+            "$RUNNER_TEMP/object-store/bin/mc"
+
       - name: Start the object store
         run: |
           set -euo pipefail
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=edms-local \
-            -e MINIO_ROOT_PASSWORD=ci-only-not-a-secret \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          mkdir -p "$RUNNER_TEMP/object-store/data"
+          nohup "$RUNNER_TEMP/object-store/bin/minio" server "$RUNNER_TEMP/object-store/data" \
+            --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 \
+            > "$RUNNER_TEMP/object-store/minio.log" 2>&1 &
+        env:
+          MINIO_ROOT_USER: edms-local
+          MINIO_ROOT_PASSWORD: ci-only-not-a-secret
 
       # The bucket, for the same reason the databases are created here: an object store has no
       # bucket until somebody makes one, and the storage guard has nothing to write into without it.
       #
-      # This step is also where readiness is established, now that no health check does it.
-      #
-      # `mc` comes from its own pinned image rather than a download, because the download is gone:
-      # `dl.min.io/client/mc/release/linux-amd64/mc` answers `410 Gone`, the same withdrawal that
-      # took the server off Docker Hub. Correcting only the image above would have moved this job's
-      # failure one step later rather than fixing it, which is why both are in one change.
-      #
-      # The pull is its own command ahead of the loop deliberately. Inside the loop an image that
-      # can never be fetched looks exactly like a store that is slow to accept connections, and the
-      # job would spend eighty seconds and a misleading error proving the wrong thing.
-      #
-      # `MC_HOST_ci` replaces `mc alias set`, because an alias is config file state and a `--rm`
-      # container keeps none between invocations. Same host, same credentials, same alias name,
-      # supplied as environment instead. `mc ls` then stands in for what `alias set` proved: the
-      # store is reachable *and* these credentials work — a bucket cannot be made on either alone.
+      # This step is also where readiness is established, since no health check does it. `mc ls`
+      # proves what `alias set` would have — the store is reachable *and* these credentials work —
+      # and `MC_HOST_ci` supplies the alias as environment rather than config file state.
       - name: Create the object storage bucket
         run: |
           set -euo pipefail
-          docker pull "$MC_IMAGE"
           mc() {
-            docker run --rm --network host -e "MC_HOST_ci=$MC_HOST_CI" "$MC_IMAGE" "$@"
+            "$RUNNER_TEMP/object-store/bin/mc" "$@"
           }
           for attempt in $(seq 1 40); do
             if mc ls ci; then
@@ -326,17 +341,14 @@ jobs:
             fi
             if [ "$attempt" -eq 40 ]; then
               echo "::error::the object store never accepted a connection"
-              docker logs minio
+              cat "$RUNNER_TEMP/object-store/minio.log"
               exit 1
             fi
             sleep 2
           done
           mc mb --ignore-existing ci/munaxa-docs
         env:
-          # Pinned for the reason the server is: a client that changes without a commit can change
-          # what a passing build means.
-          MC_IMAGE: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
-          MC_HOST_CI: http://edms-local:ci-only-not-a-secret@127.0.0.1:9000
+          MC_HOST_ci: http://edms-local:ci-only-not-a-secret@127.0.0.1:9000
 
       # The same runner an operator uses, reading the same catalogue the API reads. It applies the
       # per-database SQL, the schema and the post-migration SQL to each tenant in turn — so a
