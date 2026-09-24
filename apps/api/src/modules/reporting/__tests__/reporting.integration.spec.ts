@@ -881,3 +881,63 @@ describe('a finished export and the blob reaper', () => {
     expect(object, 'the bytes the export names are still in the store').not.toBeNull();
   }, 60_000);
 });
+
+/**
+ * Slice 132 — an export's file is its requester's, and only its requester's.
+ *
+ * An export runs under the requester's reach, so the file holds the rows *they* could see. The list
+ * of exports is tenant-wide by design — it carries a key and parameters, not rows — and
+ * `downloadExport` re-checked only the report's permission set. Two people who hold the same
+ * report's permissions do not hold the same reach: Ben, denied a folder Ada reaches, could sign a
+ * link to Ada's file and read the row his own export leaves out.
+ */
+describe('an export belongs to the person it was produced for', () => {
+  /**
+   * An export, with its file as a scanning deployment leaves it. This suite runs `AV_DRIVER=NONE`,
+   * so the file is recorded `SKIPPED` and `createDownloadUrl` refuses it — a separate, accepted
+   * decision. Marking it `CLEAN` is the state a production scanner reaches, and the one in which the
+   * question here, whose file this is, is the only thing left to answer.
+   */
+  async function scannedExport(userId: UserId): Promise<string> {
+    const record = await runExport(userId, 'documents');
+    await owner.fileObject.update({
+      where: { id: record?.fileObjectId ?? '' },
+      data: { scanStatus: 'CLEAN' },
+    });
+    return record?.id ?? '';
+  }
+
+  it('does not hand Ben a link to Ada’s export, which holds a row Ben is denied', async () => {
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(closedFolderId), [
+        {
+          subjectType: AclSubjectType.USER,
+          subjectId: asId<AnyId>(BEN),
+          permission: Permission.DOCUMENT_VIEW,
+          effect: AclEffect.DENY,
+        },
+      ]),
+    );
+    const adas = await scannedExport(ADA);
+    const bens = await scannedExport(BEN);
+    // The premise: the two files differ by exactly the row Ben may not see.
+    const rows = async (id: string) =>
+      (await owner.reportExport.findUniqueOrThrow({ where: { id } })).rowCount;
+    expect(await rows(adas)).toBe(2);
+    expect(await rows(bens)).toBe(1);
+
+    await expect(
+      asBen(() => reporting.reports.downloadExport(asId<AnyId>(adas))),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  }, 60_000);
+
+  it('still hands each person a link to their own', async () => {
+    const adas = await runExport(ADA, 'documents');
+    const bens = await runExport(BEN, 'documents');
+
+    const forAda = await asAda(() => reporting.reports.downloadExport(asId<AnyId>(adas?.id ?? '')));
+    const forBen = await asBen(() => reporting.reports.downloadExport(asId<AnyId>(bens?.id ?? '')));
+    expect(forAda.url).toBeTruthy();
+    expect(forBen.url).toBeTruthy();
+  }, 60_000);
+});
