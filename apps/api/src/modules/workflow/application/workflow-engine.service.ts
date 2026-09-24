@@ -10,6 +10,7 @@ import {
   type DocumentStatusKey,
   OverdueAction,
   RejectBehaviour,
+  ScopeType,
   StageSkipReason,
   TaskDecision,
   type PermissionKey,
@@ -34,6 +35,7 @@ import {
   ValidationError,
   VersionConflictError,
 } from '../../../core/errors/application-errors';
+import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import {
@@ -136,6 +138,7 @@ export class WorkflowEngine {
     private readonly participants: ParticipantResolver,
     private readonly timers: WorkflowTimers,
     private readonly writer: AdministeredWriter,
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
     /**
      * Bound by this module since Phase 5, and still `@Optional`: a composition without the
      * binding — Phase 4's state, and the engine's test doubles — completes approvals honestly
@@ -625,6 +628,7 @@ export class WorkflowEngine {
   async comment(instanceId: WorkflowInstanceId, body: string): Promise<void> {
     await this.writer.change(async () => {
       const aggregate = await this.requireAggregate(instanceId);
+      await this.requireReach(aggregate.instance.documentId);
       await this.repository.addComment({
         id: this.writer.clock.nextId(),
         instanceId,
@@ -1343,6 +1347,30 @@ export class WorkflowEngine {
       throw new NotFoundError('The requested approval');
     }
     return aggregate;
+  }
+
+  /**
+   * `document:view` on the document an approval belongs to — Slice 130.
+   *
+   * The question `AclGuard` asks on `GET /documents/:id/workflow`, where the conversation is read. A
+   * route that names an instance gives the guard nothing to resolve, so the use case asks it, and
+   * refuses the way the guard does: an approval the caller cannot reach is one that does not exist.
+   */
+  private async requireReach(documentId: string): Promise<void> {
+    const context = requireContext();
+    const decision = await this.acl.resolve(
+      {
+        userId: asId<UserId>(context.userId ?? ''),
+        roleIds: context.roles.map((role) => asId<AnyId>(role)),
+        departmentIds: [],
+        delegationIds: [],
+      },
+      { type: ScopeType.DOCUMENT, id: asId<AnyId>(documentId) },
+      Permission.DOCUMENT_VIEW,
+    );
+    if (!decision.allowed) {
+      throw new NotFoundError('The requested approval');
+    }
   }
 
   private async requireContextFor(documentId: DocumentId): Promise<DocumentApprovalContext> {

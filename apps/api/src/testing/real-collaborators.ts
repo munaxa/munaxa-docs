@@ -1391,6 +1391,7 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     new ParticipantResolver(options.directory),
     timers,
     writer,
+    realAclResolver({ clock: options.clock, unitOfWork: options.unitOfWork }),
     numbers === null ? null : new DocumentNumberAllocatorAdapter(numbers),
     options.delegations ?? null,
   );

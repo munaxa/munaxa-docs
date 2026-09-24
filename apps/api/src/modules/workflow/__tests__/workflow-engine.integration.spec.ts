@@ -8,15 +8,21 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  AclEffect,
+  AclSubjectType,
+  type AnyId,
   ApprovalTaskState,
   DocumentStatus,
   NumberSegmentKind,
   ParticipantKind,
+  Permission,
   ScanStatus,
+  ScopeType,
   StageCompletionRule,
   TaskDecision,
   type ApprovalTaskId,
   type DocumentId,
+  type FolderId,
   type NumberingRuleId,
   type TenantId,
   type UploadSessionId,
@@ -40,7 +46,9 @@ import { decodeTransferToken } from '../../../testing/transfer-token';
 import {
   type DocumentLibraryStack,
   type WorkflowEngineStack,
+  realAclResolver,
   realDocumentLibrary,
+  realPermissions,
   realWorkflowEngine,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
@@ -1351,6 +1359,147 @@ describe('a read-only organisation', () => {
     } finally {
       await owner.tenant.update({ where: { id: TENANT }, data: { status: 'ACTIVE' } });
     }
+  });
+});
+
+/**
+ * Slice 130 — a remark on an approval asks the question its route cannot.
+ *
+ * `POST /workflow-instances/:id/comments` requires `document:view`, and the conversation it writes
+ * to is read only through `GET /documents/:id/workflow`, which resolves that permission on the
+ * document. The route names an instance, not a document, so `AclGuard` has nothing to resolve and
+ * only the tenant-wide half of `document:view` was ever checked: a caller cut off from a document by
+ * an inheritance break could still write into its approval, and learn that it existed.
+ */
+describe('a remark on an approval of a document the caller cannot reach', () => {
+  /** Holds `document:view` and nothing else, so a check on any other permission refuses them. */
+  const VIEWER = asId<UserId>(uuidv7());
+
+  beforeAll(async () => {
+    await owner.user.create({
+      data: {
+        id: VIEWER,
+        tenantId: TENANT,
+        email: `${VIEWER}@example.test`,
+        emailNormalized: `${VIEWER}@example.test`,
+        displayName: 'Viewer',
+        status: 'ACTIVE',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: uuidv7(),
+      key: 'VIEW_ONLY',
+      userIds: [VIEWER],
+      permissions: [Permission.DOCUMENT_VIEW],
+      now: FIXED_NOW,
+    });
+  });
+
+  function asViewer<T>(work: () => Promise<T>): Promise<T> {
+    return runWithContext({ ...contextFor(VIEWER), roles: ['VIEW_ONLY'] }, work);
+  }
+
+  async function submittedIn(folderId: string): Promise<WorkflowInstanceId> {
+    const typeId = await typeWithWorkflow(oneStage());
+    const fileObjectId = await uploadClean(unique('content'));
+    const document = await as(() =>
+      library.documents.create({
+        folderId,
+        documentTypeId: typeId,
+        title: unique('Procedure '),
+        fileObjectId,
+        filename: 'procedure.pdf',
+        origin: 'UPLOAD',
+        acknowledgeDuplicate: false,
+      }),
+    );
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(document.id), null),
+    );
+    return instanceId;
+  }
+
+  /** An approval in a folder whose inheritance was broken after it started. */
+  async function behindABreak(): Promise<{ instanceId: WorkflowInstanceId; folderId: string }> {
+    const { libraryId } = await owner.folder.findUniqueOrThrow({ where: { id: rootFolderId } });
+    const restricted = await as(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: rootFolderId,
+        name: unique('Restricted '),
+        inheritAcl: true,
+      }),
+    );
+    const instanceId = await submittedIn(restricted.id);
+    // The break an administrator makes: the tenant-wide grant of `document:view` stops at it.
+    await as(() =>
+      realPermissions({ clock, unitOfWork }).permissions.setInheritance(
+        asId<FolderId>(restricted.id),
+        false,
+      ),
+    );
+    return { instanceId, folderId: restricted.id };
+  }
+
+  it('is refused as though the approval did not exist, and writes nothing', async () => {
+    const { instanceId } = await behindABreak();
+
+    // The premise, asked of the resolver the guard uses: the reviewer does not reach it.
+    const { documentId } = await owner.workflowInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+    });
+    const reach = await as(
+      () =>
+        realAclResolver({ clock, unitOfWork }).resolve(
+          {
+            userId: REVIEWER,
+            roleIds: [asId('TENANT_ADMIN')],
+            departmentIds: [],
+            delegationIds: [],
+          },
+          { type: ScopeType.DOCUMENT, id: asId(documentId) },
+          Permission.DOCUMENT_VIEW,
+        ),
+      REVIEWER,
+    );
+    expect(reach.allowed).toBe(false);
+
+    await expect(
+      as(() => workflow.engine.comment(instanceId, 'Seen from outside.'), REVIEWER),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(await owner.workflowComment.count({ where: { instanceId } })).toBe(0);
+  });
+
+  it('is taken from somebody granted the document below the break', async () => {
+    const { instanceId, folderId } = await behindABreak();
+    await as(() =>
+      realPermissions({ clock, unitOfWork }).permissions.replaceFor(
+        { type: ScopeType.FOLDER, id: asId<AnyId>(folderId) },
+        [
+          {
+            subjectType: AclSubjectType.USER,
+            subjectId: asId<AnyId>(REVIEWER),
+            permission: Permission.DOCUMENT_VIEW,
+            effect: AclEffect.ALLOW,
+          },
+        ],
+      ),
+    );
+
+    await as(() => workflow.engine.comment(instanceId, 'Granted, so heard.'), REVIEWER);
+
+    expect(await owner.workflowComment.count({ where: { instanceId } })).toBe(1);
+  });
+
+  it('is taken from somebody who holds only `document:view` on an approval they reach', async () => {
+    const instanceId = await submittedIn(rootFolderId);
+
+    await asViewer(() => workflow.engine.comment(instanceId, 'A remark.'));
+
+    const comments = await owner.workflowComment.findMany({ where: { instanceId } });
+    expect(comments.map((row) => [row.authorId, row.body])).toEqual([[VIEWER, 'A remark.']]);
   });
 });
 
