@@ -111,7 +111,21 @@ export function evaluateStage(rule: CompletionRule, tasks: readonly TaskState[])
   }
 
   const approved = decided.filter((task) => task.decision === TaskDecision.APPROVED).length;
-  const required = approvalsRequired(rule, tasks.length);
+  // A withdrawn task is neither an approval nor a refusal, so it is not one of the tasks `ALL` and
+  // `PERCENT` are counted over: an escalation that withdraws the original and hands the stage to a
+  // replacement leaves one task to approve, not two. `QUORUM(n)` is "n approvals" (07 §2) — a number
+  // of people, not a share of the tasks — so withdrawing somebody does not lower it, and its cap
+  // stays over every task the resolvers yielded.
+  const population =
+    rule.rule === StageCompletionRule.QUORUM
+      ? tasks.length
+      : tasks.filter((task) => task.state !== ApprovalTaskState.WITHDRAWN).length;
+  if (population === 0) {
+    // Every task withdrawn: nobody is left who could approve. The answer it always had — a
+    // requirement of zero must not read as a stage that passed.
+    return StageOutcome.UNREACHABLE;
+  }
+  const required = approvalsRequired(rule, population);
   if (approved >= required) {
     return StageOutcome.APPROVED;
   }

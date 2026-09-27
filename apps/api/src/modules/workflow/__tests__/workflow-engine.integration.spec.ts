@@ -19,6 +19,7 @@ import {
   ScanStatus,
   ScopeType,
   StageCompletionRule,
+  type StageCompletionRuleKey,
   TaskDecision,
   type ApprovalTaskId,
   type DocumentId,
@@ -1154,13 +1155,16 @@ describe('a deadline that escalates', () => {
   }
 
   /** One reviewer, a one-day deadline, and an escalation to the approver when it passes. */
-  async function anOverdueApproval(keepOriginal: boolean): Promise<{
+  async function anOverdueApproval(
+    keepOriginal: boolean,
+    completionRule: StageCompletionRuleKey = StageCompletionRule.ANY,
+  ): Promise<{
     instanceId: string;
     documentId: string;
   }> {
     const typeId = await typeWithWorkflow(
       oneStage({
-        completionRule: StageCompletionRule.ANY,
+        completionRule,
         deadline: { duration: 'P1D', calendar: 'CALENDAR_DAYS' },
         onOverdue: {
           action: 'ESCALATE',
@@ -1210,6 +1214,78 @@ describe('a deadline that escalates', () => {
     expect(instance.state).toBe(WorkflowInstanceStatus.COMPLETED);
     const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
     expect(document.status).toBe(DocumentStatus.APPROVED);
+  });
+
+  /**
+   * The release candidate's D-5, against a real database: the same escalation under `ALL`.
+   *
+   * `ANY` above needs one approval whatever the task count, so it never noticed that the withdrawn
+   * original was still being counted. Under `ALL` it was: the escalation target's approval was one
+   * of two required, nobody was left to give the second, and the stage ended UNREACHABLE — the
+   * document REJECTED and its reserved number voided.
+   */
+  it('completes an ALL stage when the escalation target approves in place of the withdrawn original', async () => {
+    const { instanceId, documentId } = await anOverdueApproval(false, StageCompletionRule.ALL);
+    const missed = await taskOf(instanceId, REVIEWER);
+    const escalated = await taskOf(instanceId, APPROVER);
+    expect(missed.state).toBe(ApprovalTaskState.WITHDRAWN);
+    expect(escalated.state).toBe(ApprovalTaskState.PENDING);
+
+    await as(
+      () =>
+        workflow.engine.decide({
+          taskId: asId<ApprovalTaskId>(escalated.id),
+          decision: TaskDecision.APPROVED,
+          comment: null,
+        }),
+      APPROVER,
+    );
+
+    const instance = await owner.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } });
+    expect(instance.state).toBe(WorkflowInstanceStatus.COMPLETED);
+    expect(instance.endReason).toBeNull();
+    const document = await owner.document.findUniqueOrThrow({ where: { id: documentId } });
+    expect(document.status).toBe(DocumentStatus.APPROVED);
+    expect(
+      await owner.numberReservation.count({
+        where: { workflowInstanceId: instanceId, state: 'VOIDED' },
+      }),
+    ).toBe(0);
+  });
+
+  /**
+   * The release candidate's D-6: the escalation target is told the way every assignee is.
+   *
+   * `workflow.task-escalated` carries the task, not the document, so the notification consumer
+   * cannot address anybody from it — and no `workflow.task-assigned` followed, so the person who
+   * now held the approval heard nothing. The assignment event is what notifies; this pins that the
+   * escalation publishes it, for the target, once — a redelivered deadline adds nothing.
+   */
+  it('announces the escalation target’s new task as an ordinary assignment, once', async () => {
+    const { instanceId, documentId } = await anOverdueApproval(false, StageCompletionRule.ALL);
+    const assigned = async () =>
+      (
+        await owner.outboxMessage.findMany({
+          where: { tenantId: TENANT, eventType: 'workflow.task-assigned', aggregateId: instanceId },
+        })
+      ).map((row) => row.payload as { documentId: string; assigneeIds: string[] });
+
+    const afterEscalation = await assigned();
+    const toTarget = afterEscalation.filter((payload) => payload.assigneeIds.includes(APPROVER));
+    expect(toTarget).toHaveLength(1);
+    expect(toTarget[0]?.documentId).toBe(documentId);
+    expect(toTarget[0]?.assigneeIds).toStrictEqual([APPROVER]);
+
+    // The same deadline delivered again: the timer has already fired, so nothing more happens.
+    // Whether the redelivery itself completes cleanly is a separate question — its no-op audit
+    // record currently names the job id as a UUID subject and throws (recorded as the release
+    // candidate's D-7) — so only its effect on assignments and tasks is asserted here.
+    const deadline = await owner.workflowTimer.findFirstOrThrow({
+      where: { instanceId, kind: 'DEADLINE' },
+    });
+    await asTheClock(() => workflow.engine.onTimerFired(deadline.jobId)).catch(() => undefined);
+    expect(await assigned()).toHaveLength(afterEscalation.length);
+    expect(await owner.approvalTask.count({ where: { instanceId } })).toBe(2);
   });
 
   it('refuses the person who missed the deadline once the stage has been taken from them', async () => {

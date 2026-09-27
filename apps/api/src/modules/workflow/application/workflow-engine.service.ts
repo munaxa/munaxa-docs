@@ -901,6 +901,23 @@ export class WorkflowEngine {
       );
     }
 
+    if (fresh.length > 0) {
+      // The escalation target has an approval to decide, and is told the way every assignee is:
+      // the ordinary assignment event, which the notification consumer already turns into an
+      // in-app and email message for whoever may see the document. `task-escalated` below stays the
+      // workflow fact; it carries the task rather than the document, so it could not do this.
+      await this.outbox.publish([
+        approvalTaskAssignedEvent(asId<AnyId>(aggregate.instance.id), {
+          workflowInstanceId: aggregate.instance.id,
+          documentId: aggregate.instance.documentId,
+          stageIndex: stage.index,
+          stageName: stage.name,
+          assigneeIds: fresh.map((target) => target.userId),
+          dueAt: stage.dueAt?.toISOString() ?? null,
+        }),
+      ]);
+    }
+
     for (const target of fresh) {
       await this.outbox.publish([
         approvalTaskEscalatedEvent(asId<AnyId>(aggregate.instance.id), {

@@ -132,6 +132,79 @@ describe('evaluateStage', () => {
     ).toBe(StageOutcome.UNREACHABLE);
   });
 
+  describe('a withdrawn task — an escalation that took the original back (D-5)', () => {
+    const withdrawn: TaskState = {
+      state: ApprovalTaskState.WITHDRAWN,
+      decision: null,
+      sequence: 0,
+    };
+
+    it('ALL: the replacement approving completes the stage; the withdrawn original is not owed', () => {
+      // The release candidate ended this exact stage REJECTED/UNREACHABLE and voided its number:
+      // one approval against a requirement of two, the second being the withdrawn original.
+      expect(evaluateStage(rule(StageCompletionRule.ALL), [withdrawn, approved()])).toBe(
+        StageOutcome.APPROVED,
+      );
+    });
+
+    it('ALL: a live pending task is still owed', () => {
+      expect(evaluateStage(rule(StageCompletionRule.ALL), [approved(), pending()])).toBe(
+        StageOutcome.PENDING,
+      );
+      expect(evaluateStage(rule(StageCompletionRule.ALL), [withdrawn, approved(), pending()])).toBe(
+        StageOutcome.PENDING,
+      );
+    });
+
+    it('QUORUM: a withdrawn task never raises the requirement above n', () => {
+      // n = 2 of three tasks, one withdrawn: two approvals are enough, as they are with none withdrawn.
+      expect(
+        evaluateStage(rule(StageCompletionRule.QUORUM, 2), [withdrawn, approved(), approved()]),
+      ).toBe(StageOutcome.APPROVED);
+      expect(
+        evaluateStage(rule(StageCompletionRule.QUORUM, 2), [withdrawn, approved(), pending()]),
+      ).toBe(StageOutcome.PENDING);
+    });
+
+    it('QUORUM: nor lowers it — n is a number of people (07 §2), so withdrawals do not shrink it', () => {
+      expect(
+        evaluateStage(rule(StageCompletionRule.QUORUM, 3), [approved(), withdrawn, withdrawn]),
+      ).toBe(StageOutcome.UNREACHABLE);
+    });
+
+    it('PERCENT: the share is taken over the tasks still standing', () => {
+      // 50% of one live task is one approval, not one of two.
+      expect(evaluateStage(rule(StageCompletionRule.PERCENT, 50), [withdrawn, approved()])).toBe(
+        StageOutcome.APPROVED,
+      );
+      // 100% of two live tasks still needs both.
+      expect(
+        evaluateStage(rule(StageCompletionRule.PERCENT, 100), [withdrawn, approved(), pending()]),
+      ).toBe(StageOutcome.PENDING);
+    });
+
+    it('a rejection still ends the stage, withdrawn tasks or not', () => {
+      expect(evaluateStage(rule(StageCompletionRule.ALL), [withdrawn, rejected()])).toBe(
+        StageOutcome.REJECTED,
+      );
+    });
+
+    it('every task withdrawn is unreachable, never approved', () => {
+      for (const name of [
+        StageCompletionRule.ALL,
+        StageCompletionRule.ANY,
+        StageCompletionRule.PERCENT,
+      ] as const) {
+        expect(
+          evaluateStage(rule(name, name === StageCompletionRule.PERCENT ? 50 : null), [
+            withdrawn,
+            withdrawn,
+          ]),
+        ).toBe(StageOutcome.UNREACHABLE);
+      }
+    });
+  });
+
   it('never reports an empty stage as approved', () => {
     // A resolver yielding nobody fails submission loudly (§8). This function is not the place that
     // quietly makes an empty control pass, even though it should never be handed one.
