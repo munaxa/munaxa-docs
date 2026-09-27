@@ -893,17 +893,18 @@ describe('a finished export and the blob reaper', () => {
  */
 describe('an export belongs to the person it was produced for', () => {
   /**
-   * An export, with its file as a scanning deployment leaves it. This suite runs `AV_DRIVER=NONE`,
-   * so the file is recorded `SKIPPED` and `createDownloadUrl` refuses it — a separate, accepted
-   * decision. Marking it `CLEAN` is the state a production scanner reaches, and the one in which the
-   * question here, whose file this is, is the only thing left to answer.
+   * An export, with its file exactly as the product stores it — `derived`, `SKIPPED` — and nothing
+   * done to it afterwards. It used to be marked `CLEAN` here, as though a scanner would reach it; no
+   * scanner ever does (`storeStreamed` writes it `SKIPPED` by construction), and the marking hid
+   * that no export could be downloaded at all (the release candidate's D-8).
    */
-  async function scannedExport(userId: UserId): Promise<string> {
+  async function producedExport(userId: UserId): Promise<string> {
     const record = await runExport(userId, 'documents');
-    await owner.fileObject.update({
+    const file = await owner.fileObject.findUniqueOrThrow({
       where: { id: record?.fileObjectId ?? '' },
-      data: { scanStatus: 'CLEAN' },
     });
+    expect(file.derived).toBe(true);
+    expect(file.scanStatus).toBe('SKIPPED');
     return record?.id ?? '';
   }
 
@@ -918,8 +919,8 @@ describe('an export belongs to the person it was produced for', () => {
         },
       ]),
     );
-    const adas = await scannedExport(ADA);
-    const bens = await scannedExport(BEN);
+    const adas = await producedExport(ADA);
+    const bens = await producedExport(BEN);
     // The premise: the two files differ by exactly the row Ben may not see.
     const rows = async (id: string) =>
       (await owner.reportExport.findUniqueOrThrow({ where: { id } })).rowCount;
@@ -931,9 +932,9 @@ describe('an export belongs to the person it was produced for', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   }, 60_000);
 
-  it('still hands each person a link to their own', async () => {
-    const adas = await runExport(ADA, 'documents');
-    const bens = await runExport(BEN, 'documents');
+  it('still hands each person a link to their own, from the file as the product stored it', async () => {
+    const adas = { id: await producedExport(ADA) };
+    const bens = { id: await producedExport(BEN) };
 
     const forAda = await asAda(() => reporting.reports.downloadExport(asId<AnyId>(adas?.id ?? '')));
     const forBen = await asBen(() => reporting.reports.downloadExport(asId<AnyId>(bens?.id ?? '')));

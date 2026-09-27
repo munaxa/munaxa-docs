@@ -834,9 +834,18 @@ export class DefaultStorageService implements StorageService {
   }
 
   private refuseUnreachable(file: FileObjectRecord): void {
-    if (file.scanStatus !== ScanStatus.CLEAN) {
-      throw new ContentNotScannedError(file.scanStatus);
+    if (file.scanStatus === ScanStatus.CLEAN) {
+      return;
     }
+    // A file the product generated — an export, an evidence bundle, a rendition — is stored
+    // `SKIPPED` by construction and never goes near the scanner (`storeDerived`, `storeStreamed`),
+    // so requiring `CLEAN` of it meant no export could ever be downloaded. Only that pairing is
+    // let through: anything a person uploaded still needs the scanner's `CLEAN`, and a derived file
+    // in any other state is refused as before.
+    if (file.derived && file.scanStatus === ScanStatus.SKIPPED) {
+      return;
+    }
+    throw new ContentNotScannedError(file.scanStatus);
   }
 
   private policy() {

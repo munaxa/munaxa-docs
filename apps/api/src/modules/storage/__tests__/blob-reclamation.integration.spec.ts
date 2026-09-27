@@ -60,6 +60,11 @@ class ParkingStorage implements Partial<StoragePort> {
   admit: Promise<void> | null = null;
   readonly driver = 'LOCAL';
 
+  /** Signs whatever it is asked to: the gate under test runs before the port is reached. */
+  createDownloadUrl(key: string): Promise<{ url: string; expiresAt: Date }> {
+    return Promise.resolve({ url: `https://store.test/${key}`, expiresAt: new Date(now) });
+  }
+
   async delete(key: string): Promise<void> {
     const gate = this.admit;
     if (gate !== null && key === this.target) {
@@ -346,5 +351,66 @@ describe('a reference taken while the blob it names is being reclaimed', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
 
     expect((await rowOf(blob.id)).refCount).toBe(0);
+  });
+});
+
+/**
+ * Who may be handed a download link — the release candidate's D-8.
+ *
+ * What the product generates (exports, evidence bundles, renditions, manifests) is stored
+ * `derived`/`SKIPPED` by construction: `storeDerived` and `storeStreamed` never call the scanner.
+ * The link gate required `CLEAN` of everything, so no export could ever be downloaded. Only that
+ * pairing is now let through; an upload still needs the scanner's `CLEAN`.
+ */
+describe('who may be handed a download link', () => {
+  async function aFile(derived: boolean, scanStatus: 'CLEAN' | 'SKIPPED' | 'PENDING' | 'INFECTED') {
+    const id = uuidv7();
+    await owner.fileObject.create({
+      data: {
+        id,
+        tenantId: ACME,
+        checksumSha256: id.replaceAll('-', '').padEnd(64, '0'),
+        sizeBytes: BigInt(11),
+        mimeType: 'text/csv',
+        storageKey: `blobs/${id}`,
+        storageDriver: 'LOCAL',
+        scanStatus,
+        refCount: 1,
+        derived,
+      },
+    });
+    return asId<FileObjectId>(id);
+  }
+  const link = (id: FileObjectId) => asTenant(() => storage.createDownloadUrl(id, 'export.csv'));
+
+  it('signs a product-generated file stored derived and SKIPPED', async () => {
+    await expect(link(await aFile(true, 'SKIPPED'))).resolves.toMatchObject({
+      url: expect.stringContaining('https://store.test/blobs/') as unknown as string,
+    });
+  });
+
+  it('still refuses an uploaded file the scanner has not cleared', async () => {
+    await expect(link(await aFile(false, 'SKIPPED'))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
+    await expect(link(await aFile(false, 'PENDING'))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
+    await expect(link(await aFile(false, 'INFECTED'))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
+  });
+
+  it('signs an uploaded file the scanner cleared, as before', async () => {
+    await expect(link(await aFile(false, 'CLEAN'))).resolves.toBeDefined();
+  });
+
+  it('lets through derived files only in the state the product writes them in', async () => {
+    await expect(link(await aFile(true, 'INFECTED'))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
+    await expect(link(await aFile(true, 'PENDING'))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
   });
 });

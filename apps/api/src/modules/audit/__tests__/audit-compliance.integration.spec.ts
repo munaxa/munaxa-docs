@@ -587,6 +587,51 @@ describe('the evidence bundle', () => {
     expect(jsonl.trimEnd().split('\n')).toHaveLength(produced?.eventCount ?? 0);
   });
 
+  /**
+   * The release candidate's D-8: a completed bundle can actually be taken.
+   *
+   * Every artefact is stored `derived`/`SKIPPED` — `storeStreamed` never calls the scanner — and the
+   * link gate used to require `CLEAN`, so `download` refused every bundle it was ever asked for.
+   */
+  it('hands a completed bundle to its requester as signed links, from artefacts as the product stored them', async () => {
+    const requester = asId<UserId>(uuidv7());
+    const asRequester = <T>(work: () => Promise<T>): Promise<T> =>
+      runWithContext(
+        contextFor({ userId: requester, permissions: [Permission.AUDIT_EXPORT] }),
+        work,
+      );
+    const requested = await asRequester(() =>
+      stack.exports.request(new Date('2020-01-01T00:00:00Z'), new Date('2030-01-01T00:00:00Z'), {}),
+    );
+    await runWithContext(contextFor(), () => stack.exports.run(requested.id));
+    const produced = await runWithContext(contextFor(), () => stack.exports.get(requested.id));
+    expect(produced?.state).toBe(AuditExportState.COMPLETED);
+
+    const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
+    try {
+      for (const artefact of produced?.artefacts ?? []) {
+        const file = await owner.fileObject.findUniqueOrThrow({
+          where: { id: artefact.fileObjectId },
+        });
+        expect(file.derived).toBe(true);
+        expect(file.scanStatus).toBe('SKIPPED');
+      }
+    } finally {
+      await owner.$disconnect();
+    }
+
+    const links = await asRequester(() => stack.exports.download(requested.id));
+    expect(links.map((link) => link.name).sort()).toEqual([
+      'events.csv',
+      'events.jsonl',
+      'manifest.json',
+      'manifest.sig',
+    ]);
+    for (const link of links) {
+      expect(link.url).toBeTruthy();
+    }
+  });
+
   it('is idempotent under redelivery: a second run produces no second bundle', async () => {
     const requester = asId<UserId>(uuidv7());
     const requested = await runWithContext(
