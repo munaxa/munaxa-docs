@@ -10,7 +10,6 @@ import {
   AuditOutcome,
   IntegrityStatus,
   type IntegrityStatusKey,
-  isServableIntegrity,
   ScanStatus,
   type ScanStatusKey,
   UploadSessionState,
@@ -22,6 +21,7 @@ import { sanitizeFilename } from '@edms/utils';
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import {
   ContentNotScannedError,
+  ContentQuarantinedError,
   ForbiddenError,
   NotFoundError,
   StorageUnavailableError,
@@ -35,6 +35,7 @@ import { ANTIVIRUS_PORT, type AntivirusPort } from '../../../ports/antivirus.por
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { STORAGE_PORT, type StoragePort } from '../../../ports/storage.port';
 import { StorageAudit } from '../domain/audit-actions';
+import { unreachableBecause } from '../domain/reachability';
 import {
   blobKeyFor,
   derivedKeyFor,
@@ -443,16 +444,9 @@ export class DefaultStorageService implements StorageService {
 
   async isReachable(fileObjectId: FileObjectId): Promise<boolean> {
     const file = await this.files.findById(fileObjectId);
-    return (
-      file !== null &&
-      file.scanStatus === ScanStatus.CLEAN &&
-      // Phase 18. A blob whose bytes no longer hash to what was recorded is quarantined for the
-      // same reason an infected one is: the product must not serve content it cannot vouch for.
-      // `UNVERIFIED` passes, because that is the state of every blob written before the sweep
-      // existed and refusing it would have made the whole library unreadable on the day the
-      // column arrived.
-      isServableIntegrity(file.integrityStatus)
-    );
+    // The download gate's own predicate, so "may this be served" has one answer wherever it is
+    // asked. `UNVERIFIED` passes: it is the state of every blob the verifier has not reached yet.
+    return file !== null && unreachableBecause(file) === null;
   }
 
   /**
@@ -637,8 +631,8 @@ export class DefaultStorageService implements StorageService {
 
     // **Deduplicated, like every other blob in this product** — Phase 15's correction.
     //
-    // ADR-0007 makes blobs content-addressed and `uq_file_object_checksum` enforces one row per
-    // digest per tenant, and the *upload* path has honoured that since Phase 3 (`alreadyStored`).
+    // ADR-0007 makes blobs content-addressed and `uq_file_object_checksum` enforces one live row
+    // per digest per tenant, and the *upload* path has honoured that since Phase 3 (`alreadyStored`).
     // This path did not, and nothing noticed for six phases because Phase 9's artefacts can never
     // collide: an evidence manifest names its own export identifier, so two bundles differ in their
     // bytes by construction. A report export has no such field — the same report, run twice by the
@@ -834,18 +828,18 @@ export class DefaultStorageService implements StorageService {
   }
 
   private refuseUnreachable(file: FileObjectRecord): void {
-    if (file.scanStatus === ScanStatus.CLEAN) {
+    // Refused before anything is signed. The scan comes first — a file the product generated is
+    // `SKIPPED` by construction and passes that half, anything a person uploaded needs `CLEAN` —
+    // and then the integrity finding: a blob the verifier found changed or missing is quarantined
+    // until a successful re-read clears it (`domain/reachability.ts`).
+    const refusal = unreachableBecause(file);
+    if (refusal === null) {
       return;
     }
-    // A file the product generated — an export, an evidence bundle, a rendition — is stored
-    // `SKIPPED` by construction and never goes near the scanner (`storeDerived`, `storeStreamed`),
-    // so requiring `CLEAN` of it meant no export could ever be downloaded. Only that pairing is
-    // let through: anything a person uploaded still needs the scanner's `CLEAN`, and a derived file
-    // in any other state is refused as before.
-    if (file.derived && file.scanStatus === ScanStatus.SKIPPED) {
-      return;
+    if (refusal.reason === 'SCAN') {
+      throw new ContentNotScannedError(refusal.scanStatus);
     }
-    throw new ContentNotScannedError(file.scanStatus);
+    throw new ContentQuarantinedError(refusal.integrityStatus);
   }
 
   private policy() {

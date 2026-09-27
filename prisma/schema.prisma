@@ -1856,11 +1856,13 @@ model FileObject {
   templates   DocumentTemplate[]
   bulkExports BulkOperation[]
 
-  /// Content addressing, as a constraint. Not partial on `deleted_at`: a blob that came back from
-  /// a soft delete must be *the same blob*, and a second row for the same digest would be a second
-  /// reference count for one object.
-  @@unique([tenantId, checksumSha256], map: "uq_file_object_checksum")
-  @@unique([tenantId, storageKey], map: "uq_file_object_key")
+  /// Content addressing, as a constraint: `uq_file_object_checksum` (tenant, digest) and
+  /// `uq_file_object_key` (tenant, key) — partial on `deleted_at IS NULL`, in the migration, because
+  /// Prisma cannot express it. One *live* row per digest, so one object has one reference count and
+  /// deduplication converges on it. A row the reaper retired is history: its object is gone, its
+  /// count is frozen at zero (`adjustRefCount` refuses a deleted row) and its `deleted_at` is the
+  /// record of the reclamation — so it keeps no claim on the digest, and the same bytes uploaded
+  /// again later become a new live row rather than a permanent refusal (RC validation, D-12).
   /// The retention sweeper's only query: unreferenced blobs, oldest first.
   @@index([tenantId, refCount], map: "ix_file_object_refcount")
   @@index([tenantId, scanStatus], map: "ix_file_object_scan")

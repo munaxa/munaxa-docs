@@ -50,8 +50,8 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
    * Inserts the blob, and answers whether it was the one to insert it — Slice 46.
    *
    * `createMany` with `skipDuplicates` rather than `create`, which is `ON CONFLICT DO NOTHING` and
-   * is the whole reason this is not a `create` in a `try`. `uq_file_object_checksum` is one row per
-   * digest per tenant, and two people uploading the same standard form at the same time both read
+   * is the whole reason this is not a `create` in a `try`. `uq_file_object_checksum` is one live row
+   * per digest per tenant, and two people uploading the same standard form at the same time both read
    * no existing digest before either commits — so the loser used to raise `P2002`. A unique
    * violation leaves the transaction in `25P02`, "current transaction is aborted, commands ignored
    * until end of transaction block", so the obvious recovery — catch it and re-read the winner —

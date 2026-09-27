@@ -113,10 +113,13 @@ export class PreviewStreamController {
 
   /** The artefact's bytes, through the same presigned path every other read takes. */
   private async fetchArtifact(grant: PreviewStreamGrant): Promise<Buffer | null> {
-    const file = await this.uow.run(() => this.storage.get(asId<FileObjectId>(grant.fileObjectId)));
-    // Only derived artefacts and clean sources are streamable: a grant is minted against an
-    // artefact row, but the check is repeated here because this door is public.
-    if (file === null || (!file.derived && file.scanStatus !== 'CLEAN')) {
+    const id = asId<FileObjectId>(grant.fileObjectId);
+    // The download gate's predicate, asked again because this door is public: a grant is minted
+    // against an artefact row, but what may be served — a clean source or a product-made
+    // artefact, and only while its bytes still verify — is Storage's answer, not this file's.
+    const reachable = await this.uow.run(() => this.storage.isReachable(id));
+    const file = reachable ? await this.uow.run(() => this.storage.get(id)) : null;
+    if (file === null) {
       return null;
     }
     const signed = await this.storagePort.createDownloadUrl(file.storageKey, {

@@ -59,6 +59,7 @@ import type { AntivirusPort } from '../ports/antivirus.port';
 import type { TenantRegistry } from '../core/tenancy/tenant-registry.port';
 import type { Logger } from '../core/observability/logger';
 import { LocalStorageAdapter } from '../infrastructure/storage/local.adapter';
+import { S3StorageAdapter } from '../infrastructure/storage/s3.adapter';
 import { TenantScopedStorage } from '../infrastructure/tenancy/tenant-scoped-storage';
 import { ConfigurationService } from '../modules/administration/application/configuration.service';
 import { NumberingAdminService } from '../modules/administration/application/numbering-admin.service';
@@ -558,6 +559,32 @@ export interface DocumentLibraryOptions {
   readonly thumbnailer?: {
     generate(revisionId: string, fileObjectId: string, mimeType: string): Promise<void>;
   };
+}
+
+/**
+ * The object store the S3 driver talks to, under the real tenant scoping — for a suite whose
+ * property belongs to the store rather than to our code (a tamper, a reclamation, an orphan).
+ *
+ * The production adapter and the production wrapper, composed as the container composes them for
+ * `STORAGE_DRIVER=S3`. Needs the MinIO from `infra/docker-compose.yml`, which CI's integration job
+ * runs; the credentials are the job's own.
+ */
+export function realS3TenantStorage(registry: TenantRegistry): {
+  readonly scoped: TenantScopedStorage;
+} {
+  const s3 = new S3StorageAdapter({
+    driver: 'S3',
+    bucket: process.env['STORAGE_BUCKET'] ?? 'munaxa-docs',
+    region: 'us-east-1',
+    endpoint: process.env['STORAGE_ENDPOINT'] ?? 'http://127.0.0.1:9000',
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: process.env['STORAGE_ACCESS_KEY_ID'] ?? 'edms-local',
+      secretAccessKey: process.env['STORAGE_SECRET_ACCESS_KEY'] ?? 'local-development-only',
+    },
+    now: () => new Date(),
+  } as never);
+  return { scoped: new TenantScopedStorage(s3, registry, new RecordingMetrics()) };
 }
 
 /**

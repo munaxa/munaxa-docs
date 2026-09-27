@@ -180,6 +180,24 @@ export class ContentNotScannedError extends DomainError {
   }
 }
 
+/**
+ * The bytes are no longer the bytes that were stored — Phase 18's quarantine, enforced at the gate.
+ *
+ * The same code as an unscanned or infected file, deliberately: `17-security-architecture.md` §8
+ * makes a mismatched blob "unreachable through the same gate an infected one fails", and a client
+ * handles both the same way — it cannot open the file. The integrity finding travels as a detail
+ * so the two remedies (a rescan, a restore) stay distinguishable in the log.
+ */
+export class ContentQuarantinedError extends DomainError {
+  constructor(integrityStatus: string) {
+    super(
+      ErrorCode.CONTENT_NOT_SCANNED,
+      'This file failed its integrity check and cannot be opened.',
+      { integrityStatus },
+    );
+  }
+}
+
 /** The declared type, the sniffed type, the size or the archive limits refused the upload. */
 export class UnsupportedContentError extends DomainError {
   constructor(message: string, details: ErrorDetails = {}) {

@@ -55,7 +55,7 @@ export interface FileObjectRepository {
    * Inserts the blob, and answers whether it was the one to insert it.
    *
    * `false` means another transaction stored this digest first — `uq_file_object_checksum` is one
-   * row per digest per tenant. The conflict is *tolerated* rather than raised, because a unique
+   * live row per digest per tenant. The conflict is *tolerated* rather than raised, because a unique
    * violation aborts the PostgreSQL transaction and the recovery a caller needs is a read.
    */
   insert(file: NewFileObject): Promise<boolean>;
@@ -176,8 +176,10 @@ export interface StorageService {
   ): Promise<{ url: string; expiresAt: Date }>;
 
   /**
-   * The gate: content is unreachable until its scan verdict is CLEAN — and, since Phase 18, only
-   * while the rolling verifier has not found its bytes changed.
+   * The gate: content is unreachable until its scan verdict is CLEAN (or, for a file the product
+   * generated, `SKIPPED` by construction) — and, since Phase 18, only while the rolling verifier
+   * has not found its bytes changed or missing. The same predicate `createDownloadUrl` refuses on;
+   * a door that signs bytes on the raw port asks this first.
    */
   isReachable(fileObjectId: FileObjectId): Promise<boolean>;
 

@@ -1036,6 +1036,41 @@ describe('downloading', () => {
     expect(after).toBe(before + 1);
   });
 
+  it('refuses content the integrity verifier quarantined, after — never instead of — access control', async () => {
+    const fileObjectId = await uploadClean(aPdf(unique('quarantined')));
+    const document = await createDocument({ fileObjectId });
+    const issued = () =>
+      owner.auditEvent.count({
+        where: { tenantId: TENANT, action: 'FILE_DOWNLOAD_ISSUED', subjectId: fileObjectId },
+      });
+
+    // The verifier's findings, as it records them (the verifier itself, against a real store, is
+    // `storage-integrity-and-reclamation.integration.spec.ts`). RC validation, D-11.
+    for (const finding of ['MISMATCH', 'UNREADABLE'] as const) {
+      await owner.fileObject.update({
+        where: { id: fileObjectId },
+        data: { integrityStatus: finding },
+      });
+      const before = await issued();
+      await expect(as(() => documents.downloadUrl(document.id, false))).rejects.toMatchObject({
+        code: 'CONTENT_NOT_SCANNED',
+        details: { integrityStatus: finding },
+      });
+      expect(await issued()).toBe(before);
+      // Somebody who may not see the document is told it is not there — not that it is damaged.
+      await expect(
+        as(() => documents.downloadUrl(document.id, false), ALICE, OTHER_TENANT),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    }
+
+    await owner.fileObject.update({
+      where: { id: fileObjectId },
+      data: { integrityStatus: 'VERIFIED' },
+    });
+    const signed = await as(() => documents.downloadUrl(document.id, false));
+    expect(signed.url).toContain('token=');
+  });
+
   it('refuses a download the confidentiality level forbids, whatever the permission says', async () => {
     const document = await createDocument({ confidentialityId: secretConfidentialityId });
     // A level subtracts and never grants: holding `document:download` is not enough if the

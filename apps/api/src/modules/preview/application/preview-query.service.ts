@@ -191,8 +191,12 @@ export class PreviewQueryService {
   }
 
   private async readArtifact(fileObjectId: FileObjectId): Promise<string> {
-    const file = await this.uow.run(() => this.storage.get(fileObjectId));
+    const file = await this.uow.run(async () =>
+      (await this.storage.isReachable(fileObjectId)) ? this.storage.get(fileObjectId) : null,
+    );
     if (file === null) {
+      // Missing, or quarantined by the integrity verifier: text read back from bytes that no
+      // longer verify is not the document's text.
       return '';
     }
     // The raw port rather than the audited service: reading derived text back to serve search
