@@ -27,6 +27,7 @@ import {
   type WorkflowVersionId,
   asId,
 } from '@edms/domain';
+import { isUuid } from '@edms/utils';
 import type { WorkflowDefinitionBody, WorkflowStage } from '@edms/contracts';
 
 import {
@@ -69,7 +70,7 @@ import {
   WORKFLOW_VERSION_READER,
   type WorkflowVersionReader,
 } from './version-reader.port';
-import { WorkflowTimers } from './workflow-timers.service';
+import { TIMER_JOB_PREFIX, WorkflowTimers } from './workflow-timers.service';
 import {
   DOCUMENT_NUMBER_ALLOCATOR,
   type DocumentApprovalContext,
@@ -661,22 +662,22 @@ export class WorkflowEngine {
       const timer = await this.repository.findTimerByJobId(jobId);
       if (timer === null) {
         this.logger.debug('A workflow timer fired for a row that no longer exists', { jobId });
-        return { result: undefined, change: this.noop(jobId) };
+        return { result: undefined, change: this.noopForMissingTimer(jobId) };
       }
       // A deadline can escalate or auto-approve, both of which change the same rows a person's
       // decision does — so the timer path takes the same lock, in the same order.
       await this.repository.lockInstance(timer.instanceId);
       if (!(await this.repository.markTimerFired(timer.id, this.writer.clock.now()))) {
-        return { result: undefined, change: this.noop(jobId) };
+        return { result: undefined, change: this.noop(timer.instanceId, jobId) };
       }
 
       const aggregate = await this.repository.load(timer.instanceId);
       if (aggregate === null || aggregate.instance.status !== WorkflowInstanceStatus.RUNNING) {
-        return { result: undefined, change: this.noop(jobId) };
+        return { result: undefined, change: this.noop(timer.instanceId, jobId) };
       }
       const stage = aggregate.stages.find((candidate) => candidate.id === timer.stageId);
       if (stage === undefined || stage.status !== WorkflowStageStatus.ACTIVE) {
-        return { result: undefined, change: this.noop(jobId) };
+        return { result: undefined, change: this.noop(timer.instanceId, jobId) };
       }
 
       if (timer.kind === WorkflowTimerKind.REMINDER) {
@@ -698,7 +699,7 @@ export class WorkflowEngine {
             dueAt: stage.dueAt?.toISOString() ?? null,
           }),
         ]);
-        return { result: undefined, change: this.noop(jobId) };
+        return { result: undefined, change: this.noop(timer.instanceId, jobId) };
       }
 
       return this.onOverdue(aggregate, stage, scheduled);
@@ -1423,14 +1424,34 @@ export class WorkflowEngine {
    * must not be able to say "nothing happened" when a deadline passed. `AdministeredWriter` writes
    * exactly one event per transaction, so this is what a no-op firing records.
    */
-  private noop(subject: string): AdministrativeChange {
+  private noop(instanceId: string, jobId?: string): AdministrativeChange {
+    // The subject is the workflow instance, as for every other WORKFLOW event this engine records.
+    // It used to be the job id — `wf-timer:<uuid>`, which is not a UUID — so the audit insert threw,
+    // the transaction rolled back and the delivery was reported as a failed job: every duplicate or
+    // late timer, and every reminder, whose outbox event rolled back with it. The job id is kept in
+    // the record, where it says which delivery this was.
     return {
       action: WorkflowAudit.TIMER_FIRED,
       subjectType: AuditSubjectType.WORKFLOW,
-      subjectId: asId<AnyId>(subject),
+      subjectId: asId<AnyId>(instanceId),
       operation: AdministrativeOperation.UPDATED,
-      after: { effect: 'none' },
+      after: jobId === undefined ? { effect: 'none' } : { effect: 'none', jobId },
     };
+  }
+
+  /**
+   * A timer whose row no longer exists — its instance was deleted, and its timers with it.
+   *
+   * There is no instance left to name, so the subject is the timer's own identifier, which the job
+   * id carries (`wf-timer:<timer id>`, minted by `WorkflowTimers`). A job id not of that form did not
+   * come from this engine, and is refused rather than recorded under an invented subject.
+   */
+  private noopForMissingTimer(jobId: string): AdministrativeChange {
+    const timerId = jobId.startsWith(TIMER_JOB_PREFIX) ? jobId.slice(TIMER_JOB_PREFIX.length) : '';
+    if (!isUuid(timerId)) {
+      throw new ValidationError(`Not a workflow timer job: ${jobId}`);
+    }
+    return this.noop(timerId, jobId);
   }
 }
 

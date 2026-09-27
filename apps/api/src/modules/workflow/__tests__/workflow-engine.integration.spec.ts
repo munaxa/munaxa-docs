@@ -1276,16 +1276,103 @@ describe('a deadline that escalates', () => {
     expect(toTarget[0]?.documentId).toBe(documentId);
     expect(toTarget[0]?.assigneeIds).toStrictEqual([APPROVER]);
 
-    // The same deadline delivered again: the timer has already fired, so nothing more happens.
-    // Whether the redelivery itself completes cleanly is a separate question — its no-op audit
-    // record currently names the job id as a UUID subject and throws (recorded as the release
-    // candidate's D-7) — so only its effect on assignments and tasks is asserted here.
+    // The same deadline delivered again: the timer has already fired, so nothing more happens —
+    // and the delivery itself completes (D-7), rather than failing on its own audit record.
     const deadline = await owner.workflowTimer.findFirstOrThrow({
       where: { instanceId, kind: 'DEADLINE' },
     });
-    await asTheClock(() => workflow.engine.onTimerFired(deadline.jobId)).catch(() => undefined);
+    await expect(
+      asTheClock(() => workflow.engine.onTimerFired(deadline.jobId)),
+    ).resolves.toBeUndefined();
     expect(await assigned()).toHaveLength(afterEscalation.length);
     expect(await owner.approvalTask.count({ where: { instanceId } })).toBe(2);
+  });
+
+  /**
+   * The release candidate's D-7: a duplicate or late delivery is a recorded no-op, not a failure.
+   *
+   * The no-op audit record named the job id (`wf-timer:<uuid>`) as its UUID subject, so the insert
+   * threw, the transaction rolled back and the queue reported a failed job — for every redelivery,
+   * and for every reminder, whose outbox event rolled back with it.
+   */
+  it('records a duplicate deadline delivery as a no-op against the instance, and completes', async () => {
+    const { instanceId } = await anOverdueApproval(false, StageCompletionRule.ALL);
+    const deadline = await owner.workflowTimer.findFirstOrThrow({
+      where: { instanceId, kind: 'DEADLINE' },
+    });
+    const tasksBefore = await owner.approvalTask.count({ where: { instanceId } });
+    const outboxBefore = await owner.outboxMessage.count({ where: { aggregateId: instanceId } });
+    const firedBefore = await owner.auditEvent.count({
+      where: { tenantId: TENANT, subjectId: instanceId, action: 'TIMER_FIRED' },
+    });
+
+    for (let delivery = 0; delivery < 2; delivery++) {
+      await expect(
+        asTheClock(() => workflow.engine.onTimerFired(deadline.jobId)),
+      ).resolves.toBeUndefined();
+    }
+
+    // Nothing moved: no task, no event, the timer still fired exactly once.
+    expect(await owner.approvalTask.count({ where: { instanceId } })).toBe(tasksBefore);
+    expect(await owner.outboxMessage.count({ where: { aggregateId: instanceId } })).toBe(
+      outboxBefore,
+    );
+    const timer = await owner.workflowTimer.findUniqueOrThrow({ where: { id: deadline.id } });
+    expect(timer.state).toBe('FIRED');
+    // And each delivery is on the trail, under the instance, naming the job it was.
+    const noOps = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: instanceId, action: 'TIMER_FIRED' },
+      orderBy: { sequence: 'asc' },
+    });
+    expect(noOps).toHaveLength(firedBefore + 2);
+    expect(noOps.at(-1)?.subjectType).toBe('WORKFLOW');
+    expect(JSON.stringify(noOps.at(-1)?.payload)).toContain(deadline.jobId);
+  });
+
+  it('fires a reminder: announces it, and records the firing against the instance', async () => {
+    const typeId = await typeWithWorkflow(
+      oneStage({
+        deadline: { duration: 'P3D', calendar: 'CALENDAR_DAYS' },
+        reminders: [{ before: 'P1D' }],
+      }),
+    );
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      workflow.engine.submit(asId<DocumentId>(documentId), null),
+    );
+    const reminder = await owner.workflowTimer.findFirstOrThrow({
+      where: { instanceId, kind: 'REMINDER' },
+    });
+
+    await expect(
+      asTheClock(() => workflow.engine.onTimerFired(reminder.jobId)),
+    ).resolves.toBeUndefined();
+
+    const due = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, eventType: 'workflow.reminder-due', aggregateId: instanceId },
+    });
+    expect(due).toHaveLength(1);
+    expect(
+      (await owner.workflowTimer.findUniqueOrThrow({ where: { id: reminder.id } })).state,
+    ).toBe('FIRED');
+    expect(
+      await owner.auditEvent.count({
+        where: { tenantId: TENANT, subjectId: instanceId, action: 'TIMER_FIRED' },
+      }),
+    ).toBe(1);
+  });
+
+  it('records a timer whose row is gone against the timer, and refuses a job id it did not mint', async () => {
+    const gone = uuidv7();
+    await expect(
+      asTheClock(() => workflow.engine.onTimerFired(`wf-timer:${gone}`)),
+    ).resolves.toBeUndefined();
+    const recorded = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: TENANT, subjectId: gone, action: 'TIMER_FIRED' },
+    });
+    expect(recorded.subjectType).toBe('WORKFLOW');
+
+    await expect(asTheClock(() => workflow.engine.onTimerFired('not-a-timer'))).rejects.toThrow();
   });
 
   it('refuses the person who missed the deadline once the stage has been taken from them', async () => {

@@ -24,6 +24,9 @@ import {
   type WorkflowTimerRecord,
 } from './ports';
 
+/** How a timer's job id is formed: this prefix and the timer row's own identifier. */
+export const TIMER_JOB_PREFIX = 'wf-timer:';
+
 /**
  * Deadlines, reminders and the pause that stops them.
  *
@@ -244,7 +247,16 @@ export class WorkflowTimers {
     const id = this.stamps.nextId();
     // Derived from the row's identifier, so a job identifier can never address two timers and a
     // duplicate delivery is one unit of work rather than two.
-    return { id, instanceId, stageId, taskId, kind, fireAt, offset, jobId: `wf-timer:${id}` };
+    return {
+      id,
+      instanceId,
+      stageId,
+      taskId,
+      kind,
+      fireAt,
+      offset,
+      jobId: `${TIMER_JOB_PREFIX}${id}`,
+    };
   }
 
   /**
