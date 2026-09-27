@@ -276,6 +276,15 @@ export interface WorkflowEngineRepository {
     states: readonly WorkflowTimerStateKey[],
   ): Promise<readonly WorkflowTimerRecord[]>;
   findTimerByJobId(jobId: string): Promise<WorkflowTimerRecord | null>;
+  /**
+   * The timers still owed a firing, a page at a time — RC validation, D-13.
+   *
+   * `SCHEDULED`, on a `RUNNING` instance, in an `ACTIVE` stage: exactly the rows the firing path
+   * would act on. A fired, cancelled or paused timer, one on a finished instance and one on a stage
+   * that has moved on are all left alone — re-arming them would only produce a firing that finds
+   * nothing to do. Keyset-paged by identifier, so a page is stable while rows change around it.
+   */
+  listArmableTimers(afterId: string | null, limit: number): Promise<readonly WorkflowTimerRecord[]>;
   markTimerFired(id: string, at: Date): Promise<boolean>;
   cancelTimersForStage(stageId: WorkflowStageId): Promise<readonly WorkflowTimerRecord[]>;
   cancelTimersForInstance(instanceId: WorkflowInstanceId): Promise<readonly WorkflowTimerRecord[]>;

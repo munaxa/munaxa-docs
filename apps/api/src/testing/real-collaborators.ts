@@ -130,6 +130,7 @@ import { PrismaWorkflowEngineRepository } from '../modules/workflow/infrastructu
 import { PrismaWorkflowVersionReader } from '../modules/workflow/infrastructure/prisma-workflow-version.reader';
 import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/workflow-calendar.adapter';
 import type { QueuePort } from '../ports/queue.port';
+import { BullMqQueueAdapter } from '../infrastructure/queue/bullmq.adapter';
 import { RecordingMetrics, RecordingQueue } from './fake-ports';
 import { DefaultReportingService } from '../modules/reporting/application/reporting.service';
 import { ReportDefinitionService } from '../modules/reporting/application/report-definition.service';
@@ -852,6 +853,9 @@ export interface WorkflowEngineStack {
   readonly definitions: WorkflowAdminService;
   /** Every job the engine handed to the queue, in order. The scheduling assertions read this. */
   readonly enqueued: EnqueuedTimerJob[];
+  /** The timers and the repository under the engine, for composing D-13's recovery beside it. */
+  readonly timers: WorkflowTimers;
+  readonly repository: PrismaWorkflowEngineRepository;
   /** Job identifiers the engine asked to cancel — what "cancelling a stage cancels its timers" is. */
   readonly cancelled: string[];
 }
@@ -895,6 +899,12 @@ export interface WorkflowEngineOptions {
    * engine's own suite continues to exercise.
    */
   readonly delegations?: WorkflowDelegationGate | undefined;
+  /**
+   * A real queue underneath the recording one — RC validation, D-13. Absent, jobs are recorded and
+   * go nowhere, which is what every assertion about *when* a job is handed over wants. Present,
+   * they are recorded *and* handed to it, for a suite whose property is what the broker holds.
+   */
+  readonly queue?: QueuePort;
 }
 
 // --- Phase 6: revision control ---------------------------------------------------------------
@@ -1328,6 +1338,25 @@ function realPreviewQuery(options: {
   );
 }
 
+/**
+ * The production BullMQ adapter over a real Redis — RC validation, D-13.
+ *
+ * For a suite whose property is what the broker holds after it loses everything: a timer's delayed
+ * job, a lane's schedule. `redisUrl` should name a database of the suite's own, because the suite
+ * flushes it.
+ */
+export function realQueue(redisUrl: string): BullMqQueueAdapter {
+  const logger = silentLogger();
+  return new BullMqQueueAdapter(
+    { redis: { url: redisUrl }, queue: { consumersEnabled: true } } as unknown as AppConfig,
+    logger,
+    { increment: () => undefined, observe: () => undefined, gauge: () => undefined },
+    // `elapsedMs` too: the worker's `finally` records the job's duration before it releases the
+    // tenant's slot, and a clock without it strands the slot (`scheduler-execution` says why).
+    { now: () => new Date(), timestamp: () => Date.now(), elapsedMs: () => 0 },
+  );
+}
+
 export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngineStack {
   const { stamps, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const repository = new PrismaWorkflowEngineRepository(stamps);
@@ -1337,22 +1366,26 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
   // The queue, recorded rather than run. Redis is not what these assertions are about, and what
   // *is* — that a job is handed over only after the transaction commits, and that cancelling a
   // stage cancels exactly its timers — is visible in what was asked of it.
+  const underneath = options.queue;
   const queue: QueuePort = {
-    enqueue: (queueName, _payload, jobOptions) => {
+    enqueue: (queueName, payload, jobOptions) => {
       enqueued.push({
         queue: queueName,
         jobId: jobOptions.jobId,
         delayMs: jobOptions.delayMs ?? 0,
       });
+      if (underneath !== undefined) {
+        return underneath.enqueue(queueName, payload, jobOptions);
+      }
       return Promise.resolve({
         queue: queueName,
         jobId: jobOptions.jobId,
         availableAt: options.clock.now(),
       });
     },
-    cancel: (_queueName, jobId) => {
+    cancel: (queueName, jobId) => {
       cancelled.push(jobId);
-      return Promise.resolve(true);
+      return underneath === undefined ? Promise.resolve(true) : underneath.cancel(queueName, jobId);
     },
     depth: (queueName) =>
       Promise.resolve({ queue: queueName, waiting: 0, active: 0, delayed: 0, failed: 0 }),
@@ -1438,6 +1471,8 @@ export function realWorkflowEngine(options: WorkflowEngineOptions): WorkflowEngi
     issuance,
     enqueued,
     cancelled,
+    timers,
+    repository,
   };
 }
 

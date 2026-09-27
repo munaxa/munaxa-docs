@@ -119,6 +119,20 @@ export const configSchema = z
     OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
     OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(200).max(60_000).default(2_000),
 
+    /**
+     * How often a consuming process checks that Redis still holds what the database says it should,
+     * and how often it re-asserts everything regardless (RC validation, D-13). The check is one key;
+     * the sweep re-arms every live workflow timer and re-declares every schedule, and is what
+     * catches a loss the check cannot see — a single evicted job rather than a flushed database.
+     */
+    QUEUE_RECOVERY_INTERVAL_MS: z.coerce.number().int().min(1_000).max(600_000).default(30_000),
+    QUEUE_RECOVERY_SWEEP_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(60_000)
+      .max(86_400_000)
+      .default(3_600_000),
+
     /** Signing material for access tokens. Rotated by adding a key, never by editing one. */
     JWT_ISSUER: z.string().default('https://docs.munaxa.com'),
     JWT_AUDIENCE: z.string().default('munaxa-docs'),
@@ -900,6 +914,9 @@ export interface AppConfig {
     readonly consumersEnabled: boolean;
     readonly outboxBatchSize: number;
     readonly outboxPollIntervalMs: number;
+    /** D-13: the broker check, and the unconditional re-assertion behind it. */
+    readonly recoveryIntervalMs: number;
+    readonly recoverySweepIntervalMs: number;
   };
   readonly auth: {
     readonly issuer: string;
@@ -1108,6 +1125,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       consumersEnabled: raw.QUEUE_CONSUMERS_ENABLED,
       outboxBatchSize: raw.OUTBOX_BATCH_SIZE,
       outboxPollIntervalMs: raw.OUTBOX_POLL_INTERVAL_MS,
+      recoveryIntervalMs: raw.QUEUE_RECOVERY_INTERVAL_MS,
+      recoverySweepIntervalMs: raw.QUEUE_RECOVERY_SWEEP_INTERVAL_MS,
     },
     auth: {
       issuer: raw.JWT_ISSUER,

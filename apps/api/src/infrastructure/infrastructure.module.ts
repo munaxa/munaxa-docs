@@ -11,7 +11,7 @@ import { CACHE_PORT } from '../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
 import { NOTIFICATION_PORT, type NotificationPort } from '../ports/notification.port';
 import { OUTBOUND_HTTP_PORT } from '../ports/outbound-http.port';
-import { QUEUE_CONSUMER, QUEUE_PORT } from '../ports/queue.port';
+import { QUEUE_CONSUMER, QUEUE_PORT, QUEUE_RECOVERY } from '../ports/queue.port';
 import { OCR_PORT, type OcrPort } from '../ports/ocr.port';
 import { INDEX_PORT, SEARCH_PORT, type IndexPort } from '../ports/search.port';
 import { STORAGE_PORT, type StoragePort } from '../ports/storage.port';
@@ -321,6 +321,8 @@ function requireBucket(config: AppConfig): string {
     // share a connection pool and a shutdown, and two instances would mean two of each.
     { provide: QUEUE_PORT, useExisting: BullMqQueueAdapter },
     { provide: QUEUE_CONSUMER, useExisting: BullMqQueueAdapter },
+    // And the third: rebuilding what Redis lost from what the database and the catalogue hold (D-13).
+    { provide: QUEUE_RECOVERY, useExisting: BullMqQueueAdapter },
     {
       // The vendor adapter, chosen by configuration, then wrapped so every key it is given carries the
       // tenant's prefix and every key it answers with is checked against it.
@@ -378,6 +380,7 @@ function requireBucket(config: AppConfig): string {
     CACHE_PORT,
     QUEUE_PORT,
     QUEUE_CONSUMER,
+    QUEUE_RECOVERY,
     STORAGE_PORT,
     LOCAL_STORAGE_ADAPTER,
     SEARCH_PORT,

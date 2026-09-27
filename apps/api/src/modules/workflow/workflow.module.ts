@@ -35,6 +35,7 @@ import { PrismaWorkflowVersionReader } from './infrastructure/prisma-workflow-ve
 import { WorkflowCalendarAdapter } from './infrastructure/workflow-calendar.adapter';
 import { WorkflowDirectoryAdapter } from './infrastructure/workflow-directory.adapter';
 import { WorkflowTimerConsumer } from './infrastructure/workflow-timer.consumer';
+import { WorkflowTimerRecovery } from './infrastructure/workflow-timer.recovery';
 import { BulkApprovalController } from './presentation/bulk-approval.controller';
 import { ApprovalController } from './presentation/approval.controller';
 import { WorkflowAdminController } from './presentation/workflow-admin.controller';
@@ -127,6 +128,8 @@ import { WorkflowReportSource } from './infrastructure/report-source.adapter';
     // Registered here rather than in the worker application because a consumer is a thin wrapper
     // around a use case, and this is the module that owns the use case.
     WorkflowTimerConsumer,
+    // RC validation, D-13: re-arms the timers a lost Redis took with it, from their rows.
+    WorkflowTimerRecovery,
   ],
   exports: [
     REPORT_WORKFLOW_SOURCE,

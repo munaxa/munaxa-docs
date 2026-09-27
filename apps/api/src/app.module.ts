@@ -25,6 +25,7 @@ import {
   RequestObservabilityInterceptor,
 } from './core/observability';
 import { OutboxModule } from './core/outbox';
+import { QueueRecoveryModule } from './core/queue-recovery';
 import { BulkModule } from './core/bulk';
 import { BulkDispatchModule } from './modules/bulk/bulk-dispatch.module';
 import { PersistenceModule } from './core/persistence';
@@ -87,6 +88,7 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     // route, made N times because a bulk route has N objects and `@ScopedTo` binds one.
     BulkModule,
     OutboxModule,
+    QueueRecoveryModule,
     MessagingModule,
     InfrastructureModule,
     ObservabilityModule,

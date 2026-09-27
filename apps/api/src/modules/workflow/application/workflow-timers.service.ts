@@ -147,20 +147,7 @@ export class WorkflowTimers {
   async enqueue(timers: readonly NewTimer[]): Promise<void> {
     for (const timer of timers) {
       try {
-        const { tenantId, correlationId } = requireContext();
-        await this.queue.enqueue(
-          QueueName.WORKFLOW_TIMERS,
-          // The tenant travels with the job because a job has no request behind it, and
-          // `UnitOfWork` needs one to decide which database to open ([ADR-0015]). The correlation
-          // identifier travels for the opposite reason: a deadline that fires three days later
-          // still has to tie back to the submission that set it.
-          { timerId: timer.id, jobId: timer.jobId, tenantId, correlationId },
-          {
-            jobId: timer.jobId,
-            delayMs: Math.max(0, timer.fireAt.getTime() - this.stamps.now().getTime()),
-            attempts: queueDefinition(QueueName.WORKFLOW_TIMERS).retry.attempts,
-          },
-        );
+        await this.enqueueOne(timer);
       } catch (error) {
         this.logger.error('A workflow timer could not be enqueued; its row is still scheduled', {
           timerId: timer.id,
@@ -170,7 +157,47 @@ export class WorkflowTimers {
     }
   }
 
-  /** Cancels a stage's timers, in the database and in the queue. */
+  /**
+   * Puts timers back on the queue from their rows — RC validation, D-13.
+   *
+   * The same job, under the same identifier, with the same payload and options as `enqueue` gives
+   * it: a re-armed timer is the original delivery arriving late, not a second timer. The broker
+   * de-duplicates on the identifier while the job exists, and the firing is a conditional claim on
+   * the row, so re-arming a timer whose job is still there changes nothing. A timer already past
+   * its `fire_at` is due now and fires on the next free worker, exactly as a delivery delayed by an
+   * outage would have.
+   *
+   * Unlike `enqueue`, a failure propagates: the caller is the recovery pass, and a pass that
+   * swallowed one would mark the broker rebuilt over a timer it had not put back.
+   */
+  async rearm(timers: readonly WorkflowTimerRecord[]): Promise<number> {
+    for (const timer of timers) {
+      await this.enqueueOne(timer);
+    }
+    return timers.length;
+  }
+
+  private async enqueueOne(timer: {
+    readonly id: string;
+    readonly jobId: string;
+    readonly fireAt: Date;
+  }): Promise<void> {
+    const { tenantId, correlationId } = requireContext();
+    await this.queue.enqueue(
+      QueueName.WORKFLOW_TIMERS,
+      // The tenant travels with the job because a job has no request behind it, and
+      // `UnitOfWork` needs one to decide which database to open ([ADR-0015]). The correlation
+      // identifier travels for the opposite reason: a deadline that fires three days later
+      // still has to tie back to the submission that set it.
+      { timerId: timer.id, jobId: timer.jobId, tenantId, correlationId },
+      {
+        jobId: timer.jobId,
+        delayMs: Math.max(0, timer.fireAt.getTime() - this.stamps.now().getTime()),
+        attempts: queueDefinition(QueueName.WORKFLOW_TIMERS).retry.attempts,
+      },
+    );
+  }
+
   async cancelStage(stageId: WorkflowStageId): Promise<void> {
     await this.dropJobs(await this.repository.cancelTimersForStage(stageId));
   }

@@ -19,12 +19,27 @@ making either statement true.
 Two of those are absences with reasons.
 
 **Redis is not backed up because nothing in it is a record.** Queues are fed from the transactional
-outbox, which is in PostgreSQL and commits with the change that caused it — so a lost Redis loses
-in-flight jobs and the dispatcher re-enqueues them from rows that survived. The ACL decision cache
+outbox, which is in PostgreSQL and commits with the change that caused it, so an event not yet
+dispatched when Redis is lost is dispatched from its surviving row. The two things that used to
+live *only* in Redis are now rebuilt from durable state by the consuming process
+(`QueueRecoveryScheduler`): every lane's **cron schedule**, from the declarations each lane derives
+from the schedule catalogue at boot, and every **workflow timer** still owed a firing — a
+`SCHEDULED` row on a running instance and an active stage — re-armed under its own `job_id`, firing
+at once if its moment passed while Redis was gone. That happens at boot, within
+`QUEUE_RECOVERY_INTERVAL_MS` of a flush or a failover to an empty replica (the broker carries a
+marker key whose absence is the signal), and unconditionally every
+`QUEUE_RECOVERY_SWEEP_INTERVAL_MS`. No restart and no manual step is needed. The ACL decision cache
 is a cache, and 19 §4's rule is that a cold cache produces identical answers. The per-tenant
-concurrency counters expire. **What a lost Redis does cost** is the deduplication window that makes
-at-least-once delivery harmless, so a restart may redeliver a job that had already run — which is
-why every consumer in this product is idempotent on its own row rather than on a queue identifier.
+concurrency counters expire.
+
+**What a lost Redis does cost.** The deduplication window that makes at-least-once delivery
+harmless, so a job that had already run may run again — which is why every consumer in this product
+is idempotent on its own row rather than on a queue identifier. And one window that is *not* yet
+rebuilt: an outbox row is marked processed when its job is **enqueued**, so a job enqueued but not
+yet consumed at the moment of loss — an index projection, a notification, a webhook fan-out, a
+preview render — is gone with it. The search index is rebuildable (the next paragraph); the others are not
+replayed. Size that window by keeping consumers caught up, and prefer a Redis with persistence
+(`--appendonly yes`, as `infra/docker-compose.yml` runs it) so a restart is not a loss.
 
 **The search index is not backed up because it is derived.** Phase 8 built a resumable rebuild that
 projects from the document tables into a shadow table and swaps, so it never empties a live index.

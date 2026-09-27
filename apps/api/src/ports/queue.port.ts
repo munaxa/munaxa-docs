@@ -99,3 +99,45 @@ export interface QueueConsumer {
     handle: (job: JobEnvelope<TPayload>) => Promise<void>,
   ): Promise<void>;
 }
+
+/**
+ * Rebuilding what the broker holds from what the database holds — RC validation, D-13.
+ *
+ * Redis is not a record (`docs/operations/backup-and-restore.md` §1), and that sentence is only
+ * true if everything in it can be put back. Two things lived *only* there: the cron schedules each
+ * lane declares at boot, and the delayed job behind every workflow timer. Lose Redis and the
+ * schedules stayed gone until the next restart, and a timer's row sat `SCHEDULED` past its
+ * `fire_at` with nothing left to fire it — an escalation that never happened, silently.
+ *
+ * This is the broker's half of putting them back. The durable half — which timers are still owed a
+ * firing — belongs to the modules that own those rows, through `QueueRecoveryParticipant`.
+ */
+export const QUEUE_RECOVERY = Symbol('QueueRecovery');
+
+export interface QueueRecovery {
+  /**
+   * Whether the broker still holds what this deployment put there. False after a flush, a failover
+   * to an empty replica, or on a broker that has never been rebuilt — every case in which the
+   * durable state has to be re-asserted.
+   */
+  brokerIntact(): Promise<boolean>;
+  /** Records that the broker's state has been rebuilt, so the next check answers true. */
+  markBrokerIntact(): Promise<void>;
+  /**
+   * Re-declares every schedule this process declared and has not withdrawn, where the broker no
+   * longer holds it. Answers how many it put back. Upserted by name, so two processes doing it at
+   * once still leave one schedule.
+   */
+  redeclareSchedules(): Promise<number>;
+}
+
+/** A module whose durable rows are owed queue entries — one participant per kind of row. */
+export interface QueueRecoveryParticipant {
+  readonly name: string;
+  /**
+   * Re-arms whatever the broker should hold for the rows this module owns, across every tenant.
+   * Idempotent by construction: it must be safe to run twice, and from two processes at once.
+   * Throws if anything could not be re-armed, so the broker is not marked intact over a gap.
+   */
+  recover(): Promise<number>;
+}

@@ -456,6 +456,24 @@ export class PrismaWorkflowEngineRepository implements WorkflowEngineRepository 
     return row === null ? null : toTimer(row);
   }
 
+  async listArmableTimers(
+    afterId: string | null,
+    limit: number,
+  ): Promise<readonly WorkflowTimerRecord[]> {
+    const rows = await requireTransaction().workflowTimer.findMany({
+      where: {
+        tenantId: this.tenantId(),
+        state: WorkflowTimerState.SCHEDULED,
+        instance: { state: WorkflowInstanceStatus.RUNNING },
+        stage: { state: WorkflowStageStatus.ACTIVE },
+        ...(afterId !== null && { id: { gt: afterId } }),
+      },
+      orderBy: { id: Prisma.SortOrder.asc },
+      take: limit,
+    });
+    return rows.map(toTimer);
+  }
+
   /**
    * Claims a timer.
    *

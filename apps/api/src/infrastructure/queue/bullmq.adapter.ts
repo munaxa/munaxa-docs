@@ -15,6 +15,7 @@ import type {
   QueueConsumer,
   QueueDepth,
   QueuePort,
+  QueueRecovery,
 } from '../../ports/queue.port';
 
 /**
@@ -52,8 +53,19 @@ import type {
  * database by the handler — this is a convenience, not the guarantee.
  */
 @Injectable()
-export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDestroy {
+export class BullMqQueueAdapter
+  implements QueuePort, QueueConsumer, QueueRecovery, OnModuleDestroy
+{
   private readonly producers = new Map<string, Queue>();
+  /**
+   * Every schedule this process declared and has not withdrawn — D-13.
+   *
+   * The declarations are the durable half: each lane derives them from the `SCHEDULE` catalogue at
+   * boot, and this is the record of what it derived. The broker's copy is the half Redis can lose,
+   * and `redeclareSchedules` puts it back from here. A schedule withdrawn with `unschedule`, or one
+   * a disabled lane never declared, is not in the map and so is never resurrected.
+   */
+  private readonly declared = new Map<string, ScheduleDeclaration>();
   private readonly workers: Worker[] = [];
   private readonly connection: Redis;
   private readonly blocking: Redis;
@@ -205,13 +217,51 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
     cron: string,
     payload: TPayload,
   ): Promise<void> {
-    const definition = queueDefinition(queue as QueueNameKey);
-    await this.producer(queue).upsertJobScheduler(
-      name,
-      { pattern: cron, tz: 'UTC' },
+    const declaration: ScheduleDeclaration = { queue, name, cron, payload };
+    await this.upsertSchedule(declaration);
+    this.declared.set(declarationKey(queue, name), declaration);
+  }
+
+  async unschedule(queue: string, name: string): Promise<void> {
+    this.declared.delete(declarationKey(queue, name));
+    await this.producer(queue).removeJobScheduler(name);
+  }
+
+  async brokerIntact(): Promise<boolean> {
+    return (await this.connection.exists(BROKER_INTACT_KEY)) === 1;
+  }
+
+  async markBrokerIntact(): Promise<void> {
+    await this.connection.set(BROKER_INTACT_KEY, new Date().toISOString());
+  }
+
+  /**
+   * Puts back the schedules the broker lost — D-13.
+   *
+   * Only the missing ones: a schedule that is still there keeps its next firing rather than having
+   * it recomputed on every pass. Upserted by name, so two processes finding the same gap at once
+   * leave one schedule, which is the property `schedule` already relies on at boot.
+   */
+  async redeclareSchedules(): Promise<number> {
+    let redeclared = 0;
+    for (const declaration of this.declared.values()) {
+      const present = await this.producer(declaration.queue).getJobScheduler(declaration.name);
+      if (present === undefined || present === null) {
+        await this.upsertSchedule(declaration);
+        redeclared += 1;
+      }
+    }
+    return redeclared;
+  }
+
+  private async upsertSchedule(declaration: ScheduleDeclaration): Promise<void> {
+    const definition = queueDefinition(declaration.queue as QueueNameKey);
+    await this.producer(declaration.queue).upsertJobScheduler(
+      declaration.name,
+      { pattern: declaration.cron, tz: 'UTC' },
       {
-        name: queue,
-        data: payload,
+        name: declaration.queue,
+        data: declaration.payload,
         opts: {
           attempts: definition.retry.attempts,
           backoff: { type: definition.retry.backoff, delay: definition.retry.backoffMs },
@@ -220,10 +270,6 @@ export class BullMqQueueAdapter implements QueuePort, QueueConsumer, OnModuleDes
         },
       },
     );
-  }
-
-  async unschedule(queue: string, name: string): Promise<void> {
-    await this.producer(queue).removeJobScheduler(name);
   }
 
   async depth(queue: string): Promise<QueueDepth> {
@@ -407,6 +453,24 @@ const TENANT_SLOT_RETRY_MS = 2_000;
  * unchanged in meaning. `~` because it appears in none of the inputs (uuids, lane names, cursors),
  * so the mapping is injective and two different derivations cannot collide into one id.
  */
+/**
+ * Present while the broker holds what this deployment put there. Written after a successful
+ * rebuild; a flush, an eviction or a failover to an empty replica takes it with everything else,
+ * which is exactly how its absence says the rebuild is owed again.
+ */
+const BROKER_INTACT_KEY = 'munaxa:queue:broker-intact';
+
+interface ScheduleDeclaration {
+  readonly queue: string;
+  readonly name: string;
+  readonly cron: string;
+  readonly payload: object;
+}
+
+function declarationKey(queue: string, name: string): string {
+  return `${queue}|${name}`;
+}
+
 function brokerSafeJobId(jobId: string | undefined): string | undefined {
   return jobId?.replaceAll(':', '~');
 }

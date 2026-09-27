@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
+import { Queue } from 'bullmq';
+import Redis from 'ioredis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -15,6 +17,7 @@ import {
   DocumentStatus,
   NumberSegmentKind,
   ParticipantKind,
+  QueueName,
   Permission,
   ScanStatus,
   ScopeType,
@@ -50,11 +53,16 @@ import {
   realAclResolver,
   realDocumentLibrary,
   realPermissions,
+  realNotifications,
+  realQueue,
   realWorkflowEngine,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { seedRoleGrant } from '../../../testing/acl-seed';
 import type { WorkflowDirectory } from '../application/ports';
+import { QueueRecoveryRegistry, QueueRecoveryScheduler } from '../../../core/queue-recovery';
+import { WorkflowTimerConsumer } from '../infrastructure/workflow-timer.consumer';
+import { WorkflowTimerRecovery } from '../infrastructure/workflow-timer.recovery';
 import { PrismaWorkflowEngineRepository } from '../infrastructure/prisma-workflow-engine.repository';
 
 /**
@@ -2216,5 +2224,479 @@ describe('approving and rejecting announce themselves', () => {
     // the record rather than the absence this phase just finished correcting elsewhere.
     expect(await eventsFor(documentId, 'document.submitted')).toHaveLength(0);
     expect(await eventsFor(documentId, 'document.approved')).toHaveLength(0);
+  });
+});
+
+/**
+ * The release candidate's D-13: a timer outlives the Redis that carried it.
+ *
+ * Reproduced live first. A pending deadline's row sat `SCHEDULED` in PostgreSQL while its delayed
+ * job lived only in Redis; flush Redis and restart the API, and nothing re-armed it — the deadline
+ * passed, the row stayed `SCHEDULED` and the escalation it stood for never happened. The cron
+ * schedules went the same way until the next restart.
+ *
+ * Everything here runs against real PostgreSQL and a real Redis through the production BullMQ
+ * adapter, on a Redis database of this block's own because the block flushes it. A timer fires
+ * the way production fires it: the job is delivered to the real `WorkflowTimerConsumer`. The
+ * suite's clock is frozen, so a delayed job is made due by promoting it — the broker's own
+ * operation — rather than by waiting.
+ */
+describe('timers survive a lost Redis (D-13)', () => {
+  const redisUrl = (() => {
+    const url = new URL(process.env['REDIS_URL'] ?? 'redis://127.0.0.1:6379');
+    url.pathname = '/13';
+    return url.toString();
+  })();
+  const recoveryConfig = {
+    queue: {
+      consumersEnabled: true,
+      recoveryIntervalMs: 1_000,
+      recoverySweepIntervalMs: 3_600_000,
+    },
+  } as unknown as AppConfig;
+  const tenants = {
+    all: () => Promise.resolve([{ id: TENANT }]),
+    byId: () => Promise.resolve(null),
+    bySlug: () => Promise.resolve(null),
+  } as never;
+
+  /** Two processes: each its own adapter (its own connections), engine stack and recovery. */
+  let one: ReturnType<typeof realQueue>;
+  let two: ReturnType<typeof realQueue>;
+  let engineOne: WorkflowEngineStack;
+  let engineTwo: WorkflowEngineStack;
+  let recoveryOne: WorkflowTimerRecovery;
+  let recoveryTwo: WorkflowTimerRecovery;
+  let registryOne: QueueRecoveryRegistry;
+  let broker: Redis;
+  let lane: Queue;
+
+  function asTheClock<T>(work: () => Promise<T>): Promise<T> {
+    return runWithContext(
+      {
+        tenantId: TENANT,
+        userId: null,
+        roles: [],
+        permissions: [],
+        sessionId: null,
+        correlationId: 'workflow-timer',
+        permissionVersion: 0,
+        locale: 'en',
+      },
+      work,
+    );
+  }
+
+  /** What Redis holds for one timer — by the broker's own identifier for the row's `job_id`. */
+  async function jobsFor(timerId: string) {
+    const jobs = await lane.getJobs(['delayed', 'waiting', 'active', 'prioritized']);
+    return jobs.filter((job) => (job.data as { timerId?: string }).timerId === timerId);
+  }
+
+  async function lose(): Promise<void> {
+    await broker.flushdb();
+  }
+
+  async function rowOf(timerId: string) {
+    return owner.workflowTimer.findUniqueOrThrow({ where: { id: timerId } });
+  }
+
+  /** Waits for the consumer to have claimed the row — a condition the database answers. */
+  async function claimed(timerId: string): Promise<void> {
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      if ((await rowOf(timerId)).state !== WorkflowTimerState.SCHEDULED) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timer ${timerId} was never delivered.`);
+  }
+
+  /** Makes a delayed timer due now, the broker's own way, and waits for its delivery. */
+  async function fire(timerId: string): Promise<void> {
+    const [job] = await jobsFor(timerId);
+    if (job === undefined) {
+      throw new Error(`No job for timer ${timerId}.`);
+    }
+    if ((await job.getState()) === 'delayed') {
+      await job.promote();
+    }
+    await claimed(timerId);
+  }
+
+  /** Waits until the consumer has finished with every job — nothing waiting, nothing active. */
+  async function drained(): Promise<void> {
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      const counts = await lane.getJobCounts('waiting', 'active', 'prioritized');
+      if ((counts.waiting ?? 0) + (counts.active ?? 0) + (counts.prioritized ?? 0) === 0) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error('The timer lane never drained.');
+  }
+
+  /** One reviewer, a one-day deadline and an escalation to the approver, submitted for real. */
+  async function aPendingDeadline(
+    stage: Record<string, unknown> = {},
+  ): Promise<{ instanceId: string; deadlineId: string; reminderId: string | null }> {
+    const typeId = await typeWithWorkflow(
+      oneStage({
+        completionRule: StageCompletionRule.ANY,
+        deadline: { duration: 'P1D', calendar: 'CALENDAR_DAYS' },
+        onOverdue: {
+          action: 'ESCALATE',
+          to: { kind: ParticipantKind.ROLE, roleKey: 'approver', scope: 'TENANT' },
+          keepOriginal: false,
+        },
+        ...stage,
+      }),
+    );
+    const documentId = await aDocument(typeId);
+    const { instanceId } = await as(() =>
+      engineOne.engine.submit(asId<DocumentId>(documentId), null),
+    );
+    const deadline = await owner.workflowTimer.findFirstOrThrow({
+      where: { instanceId, kind: 'DEADLINE' },
+    });
+    const reminder = await owner.workflowTimer.findFirst({
+      where: { instanceId, kind: 'REMINDER' },
+    });
+    return { instanceId, deadlineId: deadline.id, reminderId: reminder?.id ?? null };
+  }
+
+  function recoveryFor(stack: WorkflowEngineStack, registry: QueueRecoveryRegistry) {
+    const participant = new WorkflowTimerRecovery(
+      registry,
+      tenants,
+      unitOfWork,
+      stack.repository,
+      stack.timers,
+    );
+    participant.onModuleInit();
+    return participant;
+  }
+
+  beforeAll(async () => {
+    one = realQueue(redisUrl);
+    two = realQueue(redisUrl);
+    broker = new Redis(redisUrl, { maxRetriesPerRequest: 3 });
+    lane = new Queue(QueueName.WORKFLOW_TIMERS, {
+      connection: new Redis(redisUrl, { maxRetriesPerRequest: null }),
+    });
+    await lose();
+
+    const compose = (queue: ReturnType<typeof realQueue>) =>
+      realWorkflowEngine({
+        clock,
+        unitOfWork,
+        documents: library.documents,
+        configuration: library.configuration,
+        directory,
+        queue,
+      });
+    engineOne = compose(one);
+    engineTwo = compose(two);
+    registryOne = new QueueRecoveryRegistry();
+    recoveryOne = recoveryFor(engineOne, registryOne);
+    recoveryTwo = recoveryFor(engineTwo, new QueueRecoveryRegistry());
+
+    // Process one consumes the lane, exactly as the API's consumer does in production.
+    await new WorkflowTimerConsumer(
+      one,
+      recoveryConfig,
+      logger,
+      engineOne.engine,
+    ).onApplicationBootstrap();
+  });
+
+  afterAll(async () => {
+    await one?.onModuleDestroy();
+    await two?.onModuleDestroy();
+    await lane?.close();
+    broker?.disconnect();
+  });
+
+  it('re-arms a lost deadline from its row, and the deadline then escalates as it would have', async () => {
+    const { instanceId, deadlineId } = await aPendingDeadline();
+    const row = await rowOf(deadlineId);
+    expect(row.state).toBe(WorkflowTimerState.SCHEDULED);
+    expect(await jobsFor(deadlineId)).toHaveLength(1);
+
+    await lose();
+    expect(await jobsFor(deadlineId)).toHaveLength(0);
+    expect(await one.brokerIntact()).toBe(false);
+
+    // A process starting against the empty broker: its first pass rebuilds, without a restart of
+    // anything else and without anybody asking.
+    const scheduler = new QueueRecoveryScheduler(one, registryOne, recoveryConfig, logger);
+    const outcome = await scheduler.pass();
+    expect(outcome).toMatchObject({ ran: true, brokerWasIntact: false });
+    expect(outcome.rearmed['workflow.timers']).toBeGreaterThanOrEqual(1);
+    expect(await one.brokerIntact()).toBe(true);
+
+    // The same job, under the row's own identifier, owed the time it had left.
+    const [rearmed] = await jobsFor(deadlineId);
+    expect(rearmed?.id).toBe(row.jobId.replaceAll(':', '~'));
+    expect(await rearmed?.getState()).toBe('delayed');
+    expect(rearmed?.opts.delay).toBe(row.fireAt.getTime() - FIXED_NOW.getTime());
+
+    await fire(deadlineId);
+    expect((await rowOf(deadlineId)).state).toBe(WorkflowTimerState.FIRED);
+    const tasks = await owner.approvalTask.findMany({ where: { instanceId } });
+    expect(tasks.find((task) => task.assigneeId === REVIEWER)?.state).toBe(
+      ApprovalTaskState.WITHDRAWN,
+    );
+    expect(tasks.find((task) => task.assigneeId === APPROVER)?.state).toBe(
+      ApprovalTaskState.PENDING,
+    );
+  });
+
+  it('re-arms a lost reminder: it announces itself once, and the assignee is told once', async () => {
+    const { instanceId, reminderId } = await aPendingDeadline({
+      deadline: { duration: 'P3D', calendar: 'CALENDAR_DAYS' },
+      reminders: [{ before: 'P1D' }],
+      onOverdue: { action: 'NOTIFY_ONLY' },
+    });
+    expect(reminderId).not.toBeNull();
+    const timerId = reminderId ?? '';
+
+    await lose();
+    expect(await recoveryOne.recoverTenant(TENANT)).toBeGreaterThanOrEqual(1);
+    await fire(timerId);
+
+    const due = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, eventType: 'workflow.reminder-due', aggregateId: instanceId },
+    });
+    expect(due).toHaveLength(1);
+
+    // The assignee is told, through the real notification consumer — and told once, however many
+    // times the event is delivered.
+    const notifications = realNotifications({
+      clock,
+      unitOfWork,
+      config: { mail: { webBaseUrl: 'http://docs.test' } } as unknown as AppConfig,
+      documents: library.documents,
+    });
+    const event = due[0];
+    const deliver = () =>
+      asTheClock(() =>
+        notifications.events.handle({
+          eventId: event?.id ?? '',
+          eventType: 'workflow.reminder-due',
+          payload: event?.payload as Record<string, unknown>,
+        }),
+      );
+    expect(await deliver()).toBeGreaterThan(0);
+    expect(await deliver()).toBe(0);
+    expect(
+      await owner.notificationMessage.count({
+        where: {
+          tenantId: TENANT,
+          recipientId: REVIEWER,
+          idempotencyKey: { startsWith: event?.id ?? '-' },
+        },
+      }),
+    ).toBeGreaterThan(0);
+
+    // A duplicate delivery of the re-armed timer changes nothing: no second announcement.
+    const row = await rowOf(timerId);
+    await one.enqueue(
+      QueueName.WORKFLOW_TIMERS,
+      { timerId, jobId: row.jobId, tenantId: TENANT, correlationId: 'duplicate' },
+      { jobId: `${row.jobId}:duplicate`, attempts: 1 },
+    );
+    await drained();
+    expect(
+      await owner.outboxMessage.count({
+        where: { tenantId: TENANT, eventType: 'workflow.reminder-due', aggregateId: instanceId },
+      }),
+    ).toBe(1);
+    // One record per delivery, as D-7 left it: the reminder's own, and the duplicate's no-op.
+    const fired = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, subjectId: instanceId, action: 'TIMER_FIRED' },
+    });
+    expect(fired).toHaveLength(2);
+    expect(
+      fired.every((record) => JSON.stringify(record.payload).includes('"effect":"none"')),
+    ).toBe(true);
+  });
+
+  it('processes a timer whose moment passed while it was lost, rather than abandoning it', async () => {
+    const { instanceId, deadlineId } = await aPendingDeadline();
+    await lose();
+    // The outage outlasted the deadline.
+    await owner.workflowTimer.update({
+      where: { id: deadlineId },
+      data: { fireAt: new Date(FIXED_NOW.getTime() - 3_600_000) },
+    });
+
+    await recoveryOne.recoverTenant(TENANT);
+    // Due now: no promotion, the consumer takes it straight away.
+    await claimed(deadlineId);
+    expect((await rowOf(deadlineId)).state).toBe(WorkflowTimerState.FIRED);
+    expect(
+      (await owner.approvalTask.findMany({ where: { instanceId, assigneeId: APPROVER } })).length,
+    ).toBe(1);
+  });
+
+  it('recovering from two processes at once leaves one job, one firing and one escalation', async () => {
+    const { instanceId, deadlineId } = await aPendingDeadline();
+    await lose();
+
+    await Promise.all([recoveryOne.recoverTenant(TENANT), recoveryTwo.recoverTenant(TENANT)]);
+    expect(await jobsFor(deadlineId)).toHaveLength(1);
+
+    await fire(deadlineId);
+    // And again, from both, after it fired: nothing is resurrected.
+    await Promise.all([recoveryOne.recoverTenant(TENANT), recoveryTwo.recoverTenant(TENANT)]);
+    await drained();
+    expect(await jobsFor(deadlineId)).toHaveLength(0);
+
+    expect(await owner.approvalTask.count({ where: { instanceId, assigneeId: APPROVER } })).toBe(1);
+    const assigned = await owner.outboxMessage.findMany({
+      where: { tenantId: TENANT, eventType: 'workflow.task-assigned', aggregateId: instanceId },
+    });
+    expect(
+      assigned.filter((message) => JSON.stringify(message.payload).includes(APPROVER)),
+    ).toHaveLength(1);
+    // One escalation on the record, and no second delivery at all: the broker de-duplicated the
+    // two re-arms, so there was never a duplicate for the claim to turn into a no-op.
+    expect(
+      await owner.auditEvent.count({
+        where: { tenantId: TENANT, subjectId: instanceId, action: 'ESCALATED' },
+      }),
+    ).toBe(1);
+    expect(
+      await owner.auditEvent.count({
+        where: { tenantId: TENANT, subjectId: instanceId, action: 'TIMER_FIRED' },
+      }),
+    ).toBe(0);
+  });
+
+  it('resurrects nothing that is not owed a firing', async () => {
+    // Fired.
+    const fired = await aPendingDeadline();
+    await fire(fired.deadlineId);
+    // Cancelled with its stage: the reviewer approves before the deadline.
+    const decided = await aPendingDeadline();
+    const task = await owner.approvalTask.findFirstOrThrow({
+      where: { instanceId: decided.instanceId, assigneeId: REVIEWER },
+    });
+    await as(
+      () =>
+        engineOne.engine.decide({
+          taskId: asId<ApprovalTaskId>(task.id),
+          decision: TaskDecision.APPROVED,
+          comment: null,
+        }),
+      REVIEWER,
+    );
+    // Cancelled with its instance: the author withdraws.
+    const withdrawn = await aPendingDeadline();
+    const withdrawnInstance = await owner.workflowInstance.findUniqueOrThrow({
+      where: { id: withdrawn.instanceId },
+    });
+    await as(() =>
+      engineOne.engine.withdraw(asId<DocumentId>(withdrawnInstance.documentId), 'Wrong file.'),
+    );
+    // Paused: its remainder is held, and resume — not recovery — is what re-arms it.
+    const paused = await aPendingDeadline();
+    await as(() =>
+      engineOne.engine.pause(
+        asId<WorkflowInstanceId>(paused.instanceId),
+        WorkflowPauseReason.ADMINISTRATIVE,
+        null,
+      ),
+    );
+    // A row left SCHEDULED on an instance that has ended: inconsistent, and still not owed.
+    const orphan = await aPendingDeadline();
+    const orphanInstance = await owner.workflowInstance.findUniqueOrThrow({
+      where: { id: orphan.instanceId },
+    });
+    await as(() =>
+      engineOne.engine.withdraw(asId<DocumentId>(orphanInstance.documentId), 'Ended.'),
+    );
+    await owner.workflowTimer.update({
+      where: { id: orphan.deadlineId },
+      data: { state: WorkflowTimerState.SCHEDULED },
+    });
+
+    expect((await rowOf(fired.deadlineId)).state).toBe(WorkflowTimerState.FIRED);
+    expect((await rowOf(decided.deadlineId)).state).toBe(WorkflowTimerState.CANCELLED);
+    expect((await rowOf(withdrawn.deadlineId)).state).toBe(WorkflowTimerState.CANCELLED);
+    expect((await rowOf(paused.deadlineId)).state).toBe(WorkflowTimerState.PAUSED);
+
+    await lose();
+    await Promise.all([recoveryOne.recoverTenant(TENANT), recoveryTwo.recoverTenant(TENANT)]);
+    for (const timerId of [
+      fired.deadlineId,
+      decided.deadlineId,
+      withdrawn.deadlineId,
+      paused.deadlineId,
+      orphan.deadlineId,
+    ]) {
+      expect(await jobsFor(timerId)).toHaveLength(0);
+    }
+    expect((await rowOf(paused.deadlineId)).state).toBe(WorkflowTimerState.PAUSED);
+  });
+
+  it('re-declares a lost schedule once, from either process, and never one that was withdrawn', async () => {
+    const kept = `rc-d13-kept-${uuidv7()}`;
+    const withdrawnSchedule = `rc-d13-withdrawn-${uuidv7()}`;
+    const laneName = QueueName.AUDIT_STREAM;
+    // Both processes declared the kept schedule at boot, as every instance does.
+    await one.schedule(laneName, kept, '0 3 * * *', { kind: 'rc-d13' });
+    await two.schedule(laneName, kept, '0 3 * * *', { kind: 'rc-d13' });
+    // One schedule declared and then withdrawn — a lane that lost its handler.
+    await one.schedule(laneName, withdrawnSchedule, '0 4 * * *', { kind: 'rc-d13' });
+    await one.unschedule(laneName, withdrawnSchedule);
+
+    const schedules = new Queue(laneName, {
+      connection: new Redis(redisUrl, { maxRetriesPerRequest: null }),
+    });
+    const named = async (name: string) =>
+      (await schedules.getJobSchedulers()).filter((entry) => entry.key === name);
+    try {
+      expect(await named(kept)).toHaveLength(1);
+
+      await lose();
+      expect(await named(kept)).toHaveLength(0);
+
+      const [a, b] = await Promise.all([
+        new QueueRecoveryScheduler(one, new QueueRecoveryRegistry(), recoveryConfig, logger).pass(),
+        new QueueRecoveryScheduler(two, new QueueRecoveryRegistry(), recoveryConfig, logger).pass(),
+      ]);
+      expect(a.ran && b.ran).toBe(true);
+      expect(await named(kept)).toHaveLength(1);
+      expect(await named(withdrawnSchedule)).toHaveLength(0);
+
+      // Again, with the broker intact: nothing added, nothing duplicated.
+      const again = await new QueueRecoveryScheduler(
+        one,
+        new QueueRecoveryRegistry(),
+        recoveryConfig,
+        logger,
+      ).pass({ force: true });
+      expect(again.schedulesRedeclared).toBe(0);
+      expect(await named(kept)).toHaveLength(1);
+      expect(await named(withdrawnSchedule)).toHaveLength(0);
+    } finally {
+      await one.unschedule(laneName, kept);
+      await two.unschedule(laneName, kept);
+      await schedules.close();
+    }
+  });
+
+  it('notices a loss by itself: an intact broker is left alone, a flushed one is rebuilt', async () => {
+    const { deadlineId } = await aPendingDeadline();
+    const scheduler = new QueueRecoveryScheduler(one, registryOne, recoveryConfig, logger);
+    await scheduler.pass(); // boot
+    expect(await scheduler.pass()).toMatchObject({ ran: false, brokerWasIntact: true });
+
+    await lose();
+    const noticed = await scheduler.pass();
+    expect(noticed).toMatchObject({ ran: true, brokerWasIntact: false });
+    expect(await jobsFor(deadlineId)).toHaveLength(1);
   });
 });
