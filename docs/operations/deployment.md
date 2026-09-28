@@ -47,6 +47,32 @@ long-running container will read the clean exit as a crash loop. Until that seam
 the worker image only if you have set `QUEUE_CONSUMERS_ENABLED=false` on the API — and know that in
 that configuration nothing consumes the queues at all. The ordinary deployment is API and web.
 
+**The full order for a production release**, with what the RC's final production-readiness gate
+added (`docs/reports/release-candidate-final-validation.md`):
+
+1. **Back up** every tenant database and the object store, immediately before the migration
+   ([backup-and-restore.md](./backup-and-restore.md)). A rollback is new images, not a reversed
+   migration (§6), so this backup is what a failed release falls back to.
+2. **Drain client traffic**, when the release requires it. **The release that introduces the
+   PostgreSQL idempotency claim (D-20) does.** Before it, `Idempotency-Key` replay records lived in
+   Redis. After it they live in each tenant's `idempotency_key` table, and the Redis records are not
+   imported. A request that completed before the upgrade and is retried under the same key after it
+   is **performed again**. Stop new client writes and let in-flight retries settle before the
+   migration. Exposure ends 24 hours after the last pre-upgrade request, the old replay window.
+   Releases after that one need no drain for this reason.
+3. **Migrate** every tenant database (step 2 above).
+4. **Deploy the malware scanner first, then probe it.** `node infra/antivirus/probe.mjs <AV_ICAP_URL>`
+   must exit 0 before an API instance that uses it takes traffic (§3.2).
+5. **Deploy the API**, then the web (step 3 above). The worker image only as described below.
+6. **Verify health.** `/api/health/ready` answers 200 on every instance, and `/api/health` shows
+   `antivirus: UP`.
+7. **Smoke test** before reopening traffic: sign in, upload and file a document, download it,
+   search for it, and confirm the audit chain verifies.
+8. **Rollback** is §6: the previous images against the migrated schema. This release's migrations
+   are additive or relaxing, and the previous build does not read the new idempotency columns. A
+   rollback to a build before D-3 loses scanning: uploads are recorded `SKIPPED` and cannot be
+   filed. That is safe, but it is an outage of uploading.
+
 **Worker images are built per deployment shape.** `--build-arg WITH_LIBREOFFICE=true` and
 `--build-arg WITH_TESSERACT=true` decide whether the binaries are *present*; `OFFICE_DRIVER` and
 `OCR_DRIVER` decide whether they are *called*. Both, because an image without LibreOffice cannot be
@@ -243,6 +269,10 @@ Everything below is a gate. A failing gate is never skipped to go green.
 - [ ] CI green on the commit: `format:check`, `lint`, `typecheck`, `test`, `test:integration` against **two** real tenant databases, `build`, and the product-isolation job
 - [ ] The three images built from that commit, tagged with it
 - [ ] `scripts/migrate-tenants.mjs` run against staging's catalogue; the post-migration gate passed
+- [ ] A backup of every tenant database and the object store, taken immediately before the
+      production migration
+- [ ] Client traffic drained across the migration when the release requires it — the release that
+      introduces the PostgreSQL idempotency claim (D-20) does (§1)
 - [ ] `node infra/antivirus/probe.mjs <AV_ICAP_URL>` exits 0 against the production scanner — clean
       passed *and* EICAR blocked (§3.2) — and `/api/health` lists `antivirus` as `UP`
 - [ ] Staging smoke: sign in, open a document, run a search, and confirm the audit chain verifies

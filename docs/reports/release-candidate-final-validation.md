@@ -18,6 +18,9 @@ This report does not declare the product production-ready. Passing tests are not
 §15 lists what a production deployment still has to provide, including a scanner configured to fail
 closed.
 
+**Final production-readiness gate (Part II):** "Final production-readiness validation found no
+remaining release blocker." Production deployment still requires the prerequisites in Part II §12.
+
 *Original gate statement, superseded by the D-3 update:* "RC validation is complete, but production
 release remains blocked until D-3 is resolved and real antivirus CLEAN/INFECTED behavior is
 validated."
@@ -514,6 +517,288 @@ remains blocked until D-3 is resolved and real antivirus CLEAN/INFECTED behavior
 
 ---
 
+# Part II — Final production-readiness gate
+
+**Date:** 2026-09-28. **Question:** can the validated RC actually be deployed and operated in
+production? This part adds evidence; it does not edit Part I, which remains the historical RC record.
+Evidence labels are Part I's, including **REAL-SCANNER**. No application code changed in this gate —
+the only repository changes are documentation (`deployment.md` §1 and §7, this report, `docs/README.md`).
+
+## 1. RC identity
+
+| Item | Value |
+| --- | --- |
+| Code under validation | **`a560bb0afd91504b09f7e64d235e78951c4bf877`** |
+| Report commit at the start of this gate | `c3735026287047f56510ead8d5805cb0a8258b1f` (documentation only on top of the code) |
+| Branch | `claude/gifted-wozniak-g94u76` |
+| Working tree | clean at the start, and clean at every run below |
+| CI | run 544 on `a560bb0`, **9/9 jobs green**, the integration job running ClamAV and c-icap |
+| Test totals at `a560bb0` | unit **1,713**; integration **1,176 in 54 files** (real scanner); end to end **233** (74 + 25 + 99 + 14 + 21); lint, format, typecheck and build pass |
+| Build validated here | the API rebuilt from `a560bb0` (`pnpm build`, clean) and run as `node dist/main.js` |
+
+## 2. Validation summary
+
+| Area | Result | Label |
+| --- | --- | --- |
+| Production configuration, real boots of the built API under `NODE_ENV=production` | 1 valid configuration **READY**; **17/17** invalid configurations refused at startup, naming the variable | PROD-PATH |
+| Scanner go-live, documented deployment model | the `infra/antivirus` image fetched ClamAV's official signatures itself into an empty volume; `probe.mjs` clean passed and EICAR blocked; unreachable and wrong-service probes fail | REAL-SCANNER |
+| Application go-live, production mode on S3/MinIO | **8/8**: clean → CLEAN → filed → downloaded; EICAR → INFECTED → quarantined → refused; bulk refuses the infected item; health `antivirus: UP` | REAL-SCANNER, PROD-PATH |
+| Scanner outage and recovery, production mode | **7/7**: outage → `DEGRADED`, uploads FAILED, never CLEAN, filing refused; scanner back → re-uploads get the true verdicts | REAL-SCANNER, PROD-PATH |
+| Search and preview over real-scanned content | **5/5** | REAL-SCANNER |
+| Backup / restore / DR, fresh rehearsal of the current data | database: zero differences, RLS forced 77/77, audit chains equal; objects 182/182; restored deployment **11/11** with the real scanner and no substitution | PROD-PATH, REAL-SCANNER |
+| Operability under dependency loss | Redis down → readiness 503 naming `cache`; scanner down → `DEGRADED`; object store stalled → see §10 | PROD-PATH |
+| TEST-ONLY substitution ledger | unchanged at **246** through every run of this gate; no new substitution | — |
+
+## 3. Production configuration
+
+Every case below is a real start of the built API (`dist/main.js`) with `NODE_ENV=production`, S3
+storage, SMTP over TLS, all production secrets and `AV_DRIVER=ICAP` — varied by one setting
+(`prod-config-matrix.out`). **PROD-PATH.**
+
+| Configuration | Outcome |
+| --- | --- |
+| `AV_DRIVER=ICAP`, `AV_ICAP_URL=icap://127.0.0.1:1344/avscan`, scanner up | **READY**; `/api/health` UP, `antivirus: UP` |
+| `AV_DRIVER=HOSTED` | refused: "AV_DRIVER=HOSTED has no adapter in this build; use ICAP with AV_ICAP_URL" |
+| `AV_DRIVER=NONE` | refused: "AV_DRIVER must name a real provider in production" |
+| `ICAP` without `AV_ICAP_URL` | refused: "AV_DRIVER=ICAP requires AV_ICAP_URL" |
+| `icaps://`, `http://`, no service, credentials in the URL, not a URL | refused, each naming `AV_ICAP_URL` and why |
+| a scanner URL with `AV_DRIVER=NONE` | refused: "AV_ICAP_URL is set but AV_DRIVER is not ICAP, so nothing would scan" |
+| `AV_ICAP_MAX_BYTES=10`, `AV_SCAN_TIMEOUT_MS=0` | refused (bounds) |
+| no `SIGNATURE_WITNESS_SECRET` / `AUDIT_CHECKPOINT_SECRET` / `MFA_TOTP_SEALING_KEY` | refused, each |
+| `STORAGE_DRIVER=NONE`, `MAIL_DRIVER=NONE`, `OPENAPI_ENABLED=true` | refused, each |
+| a valid scanner URL with nothing answering | **boots**, readiness 200, `antivirus: DEGRADED` (`AntivirusScanError`) — uploads cannot become CLEAN (§4); the release checklist requires `antivirus: UP` before traffic |
+
+The unconfigured adapter is reachable only through `AV_DRIVER=NONE`, which production refuses. No test
+scanner is reachable from configuration, and the regression spec (§8.2 of Part I) finds the test-only
+marker in no production source.
+
+## 4. Antivirus production validation
+
+**Scanner, deployed as documented** — the `infra/antivirus` image as its own service, started with an
+**empty** signature volume, fetching signatures itself through `freshclam` (`scanner-golive.out`):
+
+| Item | Value |
+| --- | --- |
+| ClamAV | 1.5.4 (`clamav-daemon` 1.5.4+dfsg-0ubuntu0.24.04.1) |
+| Signatures | official: daily 28137 (355,678), main 63 (3,287,027), bytecode 339 (80) |
+| ICAP | c-icap 0.5.10 (1:0.5.10-6.1build2), `virus_scan` 0.5.5 (1:0.5.5-2build4.2) |
+| Configuration | `infra/antivirus/c-icap.conf` and `clamd.conf` at `a560bb0`: `mode=simple`, every type group, `MaxObjectSize 2048M`, `PassOnError off`, `AlertExceedsMax yes` |
+
+| Probe | Result |
+| --- | --- |
+| `probe.mjs icap://127.0.0.1:1344/avscan` | exit 0 — clean `204`, EICAR blocked (`Eicar-Test-Signature`) |
+| `probe.mjs` against a closed port | exit 1 — `ECONNREFUSED` |
+| `probe.mjs` against a wrong service | exit 1 — `404 Service not found` |
+| API health against the live scanner | `antivirus: UP` (a real scan) |
+
+**Through the application, production mode** (`golive-app.out`, `outage-prod.out`) — **REAL-SCANNER**:
+clean → CLEAN (`ICAP C-ICAP/0.5.10 ISTag=…`) → filed → downloaded with its own bytes; EICAR → INFECTED,
+threat recorded, quarantine event, filing refused `409`, no reference; bulk upload applies the clean
+file and blocks the infected one. With the scanner **container stopped mid-operation**: readiness 200,
+`antivirus: DEGRADED`; a clean upload and an EICAR archive both **FAILED** (audit `UNREACHABLE`),
+neither filed. Scanner restarted: probe passes, `antivirus: UP`; re-uploading the same bytes re-scans
+them — the clean file to CLEAN (filed), the EICAR archive to INFECTED (quarantined, refused).
+
+The scanner is fail-closed at both ends: the configuration in `infra/antivirus` (Part I §8.3) and the
+adapter, which accepts only a `204` after the whole, digest-verified content (Part I §8.2, §8.5).
+
+## 5. Security validation
+
+| Previous phase | Does antivirus state materially affect its security conclusion? | Evidence now |
+| --- | --- | --- |
+| 4 Document lifecycle | yes — upload to filing | **REAL-SCANNER**: rerun 81/83 without substitution (the two misses are the RC's own D-3 defect probes, now observing the fix); go-live 8/8 |
+| 5 Document / revision | yes — check-in uploads new content | **REAL-SCANNER**: the P5 checks run inside the Phase 4 rerun |
+| 8 Signatures | no — a signature binds the revision's content digest; a document can only carry CLEAN content (use case and database trigger, both exercised with EICAR) | **NOT APPLICABLE** to scanning. The signed content in the E2E signing fixture is still written CLEAN directly: **TEST-ONLY**, and it is labelled so |
+| 9 Search / preview | yes — both serve content | **REAL-SCANNER**: search, preview render and download of real-scanned content 5/5; the refusal of unscanned content is PROD-PATH (D-11) and REAL-SCANNER (EICAR) |
+| 11 Retention / legal hold | no — retention and holds act on documents whatever their content's verdict | **NOT APPLICABLE**; its content remains **TEST-ONLY** (substitution) and its due dates **TEST-ONLY** (ledgered clock moves), as Part I records |
+| 14 Bulk | yes — bulk upload files content | **REAL-SCANNER**: rerun 34/36 (both misses the D-3 probe inverted); bulk with a real-INFECTED item refused |
+| 15 Web acceptance | the upload dialog shows the verdict | **NOT RERUN** in a browser; the API path it calls is REAL-SCANNER. The dialog's dedup display is a known limitation (§11) |
+| 16 Concurrency / integrity | yes for upload and scan races; no for If-Match, check-out, numbering, workflow | upload races **REAL-SCANNER** (six clean, six infected, five re-scans, across two instances; CI 544); the others **NOT APPLICABLE** (PROD-PATH, Part I §13) |
+| 17 Tenant isolation | yes for scanning; no for identifier isolation | see §6 |
+| 19 Backup / restore | yes — new work on the restored deployment uploads content | **REAL-SCANNER**: fresh rehearsal, restored deployment 11/11 with no substitution (§9) |
+
+No TEST-ONLY result that is security-critical remains without a real-scanner rerun of its path. What
+stays TEST-ONLY is recorded as such: the signing fixture's content, Phase 11's content and clock moves,
+and the gate-era substitutions themselves (246, unchanged).
+
+## 6. Tenant isolation
+
+- **Scanning (REAL-SCANNER):** each tenant's copy of the same bytes is read from its own storage
+  prefix through the tenant-scoped store, scanned separately and recorded in its own database; another
+  tenant's clean or infected blob cannot be filed, and the refusal is identical to the answer for an
+  identifier that exists nowhere (`antivirus.e2e`, in CI 544).
+- **Everything else (PROD-PATH, unchanged):** Part I §11 — 19 identifier kinds refused both ways and
+  indistinguishable from nonexistence, lists and search, tampered tokens, storage prefixes, database
+  RLS. Scanning does not touch those paths, so they were not rerun.
+- **Restored deployment:** RLS enabled and forced on 77/77 tables in each restored tenant database,
+  77 policies, neither role superuser nor `BYPASSRLS` (§9).
+
+## 7. Concurrency / integrity
+
+- **The race found during D-3 is closed:** an infected upload could be recorded CLEAN when two uploads
+  of the same bytes overlapped (Part I §8.5). Fixed in `a560bb0` — atomic local copy, and every scan
+  bound to the content digest. Its regression test fails on the old code; the real-scanner suites
+  passed five consecutive runs and CI 544.
+- **Real-scanner races (REAL-SCANNER):** six simultaneous clean uploads → one blob, one verdict; six
+  infected → INFECTED for all, five simultaneous filings all `409`; five simultaneous re-uploads of a
+  FAILED blob → one re-scan, one kept verdict; five filings under one key → one document.
+- **Other races:** Part I §13, PROD-PATH, unaffected by scanning.
+
+## 8. Migration / deployment
+
+**The documented sequence** is now written out in `deployment.md` §1 (added in this gate; it was
+implicit before and the drain was missing):
+
+1. back up every tenant database and the object store, immediately before migrating;
+2. **drain client traffic** for this release — the PostgreSQL idempotency claim (D-20) does not import
+   the Redis replay records, so a request completed before the upgrade and retried under the same key
+   after it is performed again (observed in Part I's upgrade rehearsal); exposure ends 24 hours after
+   the last pre-upgrade request;
+3. migrate every tenant with `scripts/migrate-tenants.mjs` from a checkout at the release commit;
+4. deploy the scanner and pass `probe.mjs`;
+5. deploy the API, then the web (the worker image exits 0 by design and is not part of an ordinary
+   deployment — `deployment.md` §1);
+6. health: readiness 200 everywhere, `antivirus: UP`;
+7. smoke: sign in, upload, file, download, search, audit chain;
+8. rollback = the previous images against the migrated schema (`deployment.md` §6).
+
+**Evidence.** The migration and upgrade path is Part I §9's rehearsal (PROD-PATH): baseline → RC
+migrated in place, every row read back, tokens surviving. This gate added no migration (D-3 has none).
+Rollback: this release's two migrations are relaxing (partial unique indexes; an idempotency table the
+previous build never reads), so the previous images run against the new schema; rolling back to a
+build before D-3 loses scanning — uploads are recorded SKIPPED and cannot be filed, which is safe but
+is an upload outage. **Not executed here (ENV):** a rolling replacement on an orchestrator, and the
+images themselves (built by CI, not run locally).
+
+## 9. Backup / restore / DR
+
+A **fresh** rehearsal of the current source data (the Phase 19 tenants plus everything this gate
+wrote), with the repository's own tooling (`dr.json`, `storage-dr.out`, `p19-restored.out`):
+
+| Check | Result | Label |
+| --- | --- | --- |
+| Tenant databases restore | both, into an empty PostgreSQL 16 cluster, restore 24.1 s, whole rehearsal 28.6 s; **zero differences** across 79 tables | PROD-PATH |
+| RLS | enabled and forced on 77/77 tables, 77 policies; `edms_app`/`edms_owner` neither superuser nor `BYPASSRLS`; audit table not updatable | PROD-PATH |
+| Storage objects | 182 backed up, verified against the SHA-256 manifest, restored 182/182 into an empty bucket (45 of them the rehearsal tenants') | PROD-PATH |
+| Audit chains | restored chains hold every source event and end on the source's last hash (alpha 205, beta 139) | PROD-PATH |
+| Document bytes | downloads from the restored bucket are SHA-256 equal to the source's | PROD-PATH |
+| Redis rebuild | the restored deployment boots on an emptied Redis and rebuilds queue state from PostgreSQL | PROD-PATH |
+| Cron schedules | present after boot on all six lanes (`audit.export`, `audit.stream`, `identity.delegation`, `notifications.deliver`, `retention.run`, `webhooks.deliver`) | PROD-PATH |
+| Pending workflow timers | armable in the restored data = 0, re-armed = 0. The non-empty case (1 = 1) is Part I's controlled restart; the D-13 queue-recovery integration tests are green at `a560bb0` | PROD-PATH |
+| Numbering | new work on the restored deployment: real upload **CLEAN** from the real scanner (no substitution), filed, reviewed, numbered `SOP-0005` after `SOP-0001…0004` — no reuse | REAL-SCANNER |
+
+Not rehearsed (**ENV**, unchanged): point-in-time recovery through WAL archiving, bucket versioning and
+replication — production infrastructure properties.
+
+## 10. Operational readiness
+
+| Signal | Behaviour observed | Label |
+| --- | --- | --- |
+| `/api/health/live` | answers without touching dependencies | PROD-PATH (Part I) |
+| `/api/health/ready` | 200 while nothing is DOWN, **503** when a dependency is DOWN | PROD-PATH |
+| Database | one entry per tenant; DOWN → 503 (Part I, Phase 9.2) | PROD-PATH |
+| Redis (`cache`) — also the queue broker | Redis paused → **503**, `cache: DOWN`; database and antivirus still UP; recovers on resume | PROD-PATH |
+| Antivirus | real scan each probe; scanner down → `DEGRADED` (readiness stays 200 so reads continue), uploads FAILED, never CLEAN; back → UP | REAL-SCANNER |
+| Queues / workers | consumers run inside the API process; broker health is the `cache` entry; after Redis loss, schedules and timers rebuild from PostgreSQL (D-13) | PROD-PATH |
+| Object storage | **Not a readiness entry.** With MinIO stalled (process frozen, connections accepted, no answers), readiness stayed 200 UP. Issuing an upload target still succeeded, because presigning needs no call to the store. The client's direct transfer to the store then hung until its own HTTP client gave up: 300 s, `UND_ERR_HEADERS_TIMEOUT`. The API's own S3 calls (completion, copy, download signing reads) set no explicit timeout, so under a stall they are bounded only by Node's HTTP client defaults; that path was not measured end to end here. Nothing is stored, scanned or marked without the store's answer, so a stall cannot produce a false CLEAN | PROD-PATH (stall), ARCH (timeouts) |
+| Failure messages | refusals name the variable at boot; `CONTENT_NOT_SCANNED` carries the status only; the audit records `scanFailure` (`UNREACHABLE`, `TIMEOUT`, …) for operators; health `detail` names the error type, never a connection string | PROD-PATH |
+
+**A scanner outage cannot produce a false CLEAN**: demonstrated in production mode (§4) and in the
+suites. It produces a safe degraded state: reads and existing documents keep working, new uploads are
+recorded FAILED and are refused until re-uploaded after recovery.
+
+## 11. Known limitations
+
+| Item | Classification |
+| --- | --- |
+| 128 MiB default scan and upload limit (`AV_ICAP_MAX_BYTES`; the scan reads the whole object into memory) | **operational requirement** — size it to the largest accepted file and provision memory; otherwise an accepted limitation |
+| No ICAP over TLS (`icaps://` refused) | **accepted limitation**, with a **production prerequisite**: the scanner on the private network |
+| Private-network scanner | **production prerequisite** |
+| Only ClamAV behind c-icap validated | **accepted limitation**; another ICAP scanner is a **production prerequisite** to check with `probe.mjs` and `deployment.md` §3.2 |
+| Stale deduplicated-upload display in the web dialog | **non-blocking hardening** (the server still refuses filing) |
+| Remaining TEST-ONLY evidence (signing fixture content, Phase 11 content and clock moves, the 246 gate-era substitutions) | **accepted limitation**, recorded; no security conclusion rests on it alone (§5) |
+| D-1 catalogue-mode provisioning | **release note** (provision one tenant at a time) |
+| D-4 publish-on-approval ignored | **release note** |
+| D-9 `ON_ARCHIVE` / `ON_SUPERSEDE` retention never schedules | **release note** and **operational requirement** (do not configure them) |
+| D-10 malformed identifiers answer 500 | **non-blocking hardening** |
+| D-14 Redis outage answers 500 (sign-in fails closed) | **release note** |
+| D-15 queued-but-unprocessed work lost with Redis data | **accepted limitation** and **release note** (Redis persistence recommended) |
+| D-21 duplicate-content warning can be raced | **release note** |
+| Idempotency replay window across the D-20 upgrade | **production prerequisite** for this release: drain (`deployment.md` §1) |
+| `X-Powered-By: Express` | **non-blocking hardening** |
+| No `HEALTHCHECK` in the web image | **non-blocking hardening**, with an **operational requirement**: the orchestrator probes the web container |
+| Workflow `422` vs document `409` on a wrong state | **non-blocking hardening** |
+| Object storage absent from readiness; no explicit S3 request timeout (§10) | **operational requirement** (monitor the object store independently) and **non-blocking hardening** |
+| Scan runs synchronously inside upload completion | **accepted limitation** (Part I §8.6) |
+| Worker image exits 0; consumers run in the API | **operational requirement** (deploy API and web; `deployment.md` §1) |
+
+None of these is a release blocker on the evidence.
+
+## 12. Release prerequisites
+
+Required of the production environment before the first deployment — the product validates or refuses
+most of them at boot, but it cannot provide them:
+
+1. **Malware scanner.** An ICAP antivirus service on the private network, configured fail-closed
+   (`deployment.md` §3.2: every type, whole objects up to `AV_ICAP_MAX_BYTES`, verdict after the whole
+   object, engine errors as errors), with scheduled signature updates. `probe.mjs` exits 0 against it;
+   `/api/health` shows `antivirus: UP`; alerting on `DEGRADED`.
+2. **Antivirus settings.** `AV_DRIVER=ICAP`, `AV_ICAP_URL`, and `AV_ICAP_MAX_BYTES` sized to the
+   largest accepted file, with memory for it.
+3. **Production configuration** (enforced at boot, §3): real storage with credentials, mail over
+   TLS/STARTTLS, `SIGNATURE_WITNESS_SECRET`, `AUDIT_CHECKPOINT_SECRET`, `MFA_TOTP_SEALING_KEY` from the
+   secret store, OpenAPI off, a metrics token if metrics are on.
+4. **Proxy trust** (D-2): `TRUST_PROXY` naming every hop including the web tier; `WEB_TRUST_PROXY`.
+5. **The release procedure** (`deployment.md` §1, §7): backup immediately before; **traffic drained
+   across this release's migration** (D-20); `migrate-tenants.mjs` from a checkout at the release commit;
+   scanner probed before the API takes traffic; readiness and smoke checks before reopening.
+6. **DR mechanisms:** WAL archiving for point-in-time recovery; bucket versioning and replication.
+7. **Monitoring:** alerts on readiness 503, `antivirus: DEGRADED`, and the object store's own health
+   (it is not a readiness entry); Redis persistence recommended (D-15).
+8. **Web container liveness** probed by the orchestrator (the image declares no `HEALTHCHECK`).
+9. **Release notes** for D-1, D-4, D-9, D-10, D-14, D-15, D-21 and the idempotency upgrade window.
+10. **Staging** per the checklist: migration, smoke, load-test baseline, a restore test within its quarter.
+
+## 13. Final release gate
+
+**A. Validated by evidence**
+
+- The RC at `a560bb0`, CI run 544 9/9 green; unit 1,713, integration 1,176 (real scanner), E2E 233.
+- Production configuration: selects the real ICAP adapter; refuses `HOSTED`, `NONE`, a missing,
+  malformed or unwired scanner URL, and missing secrets — at startup, on the built API.
+- Real antivirus: clean → CLEAN → filed → downloaded; EICAR → INFECTED → quarantined, never filed or
+  served; scanner unreachable, hung or erroring → FAILED, never CLEAN; recovery by re-upload; the
+  documented scanner image deploys and fetches its own official signatures.
+- The concurrency race that could make an infected upload CLEAN: fixed and regression-tested.
+- Security paths whose conclusion depended on scanning: rerun with the real scanner (§5).
+- Tenant isolation, including scanning. Concurrency and integrity, including scanning.
+- Backup, restore and DR on current data, with the restored deployment scanning for real.
+- Operability: readiness reflects database, Redis and scanner; a scanner outage degrades safely.
+
+**B. Required before production deployment**
+
+- The ten prerequisites in §12 — above all a fail-closed production scanner passing `probe.mjs`, and
+  the traffic drain across this release's idempotency migration.
+
+**C. Known non-blocking limitations**
+
+- As classified in §11: the scan-size bound, no ICAP TLS, one scanner validated, the stale dedup
+  display, remaining TEST-ONLY evidence, D-1, D-4, D-9, D-10, D-14, D-15, D-21, `X-Powered-By`, the web
+  image's missing `HEALTHCHECK`, `422` vs `409`, object storage absent from readiness and without an
+  explicit request timeout, the synchronous scan.
+
+**D. Outstanding blocker**
+
+- None.
+
+**Final production-readiness validation found no remaining release blocker.**
+
+This is not a statement that the product is production-ready: that depends on the production
+environment satisfying §12, which only its operators can do. The next step is deployment preparation
+against §12 — not further code auditing.
+
+---
+
 ### Evidence index
 
 Evidence was produced in the validation container under `/tmp/claude-0/rc/`. That container is ephemeral; the figures above are transcribed from these files.
@@ -523,6 +808,7 @@ Evidence was produced in the validation container under `/tmp/claude-0/rc/`. Tha
 | Final-gate suites | `evidence/final-suites.log`, `final-unit.log`, `final-e2e.log`, `final-integration.log` |
 | D-2 | `evidence/d2-final-live.out`, `d2-final-api.log`, `d2-final-web-e2e.log` |
 | D-3 ledger | `acc/d3-substitutions.log`, `evidence/d3-ledger-audit.out` |
+| Final production-readiness gate | `evidence/prg/`: `prod-config-matrix.out` and `boot-*.log`, `scanner-golive.out`, `golive-app.out`, `outage-prod.out`, `preview-search-real.out`, `dr.json`, `storage-dr.out`, `p19-restored.out`, `operability.out`, `storage-stall.out`; drivers `acc/probe-outage-prod.mjs`, `probe-preview-real.mjs`, `probe-d3-live.mjs`, `p19-verify.mjs` (substitution replaced by a real-scanner check) |
 | D-3 fix | `evidence/d3/suites.log`, `integration3.log`, `e2e-a560bb0.log`, `d3-live.out`, `p4-real-scanner.out`, `p14-real-scanner.out`; `acc/d3-real-scanner.log` (real-scanner checks, no substitution); `acc/probe-d3-live.mjs` |
 | Time travel | `acc/time-travel.log` |
 | Phases 4–17 | `evidence/p4-after-d11-d12.out`, `p6-after-d11-d12.out`, `p7-after-d13.out`, `p11-after-d11-d12.out`, `p12-after-d11-d12.out`, `p13-after-d13.out`, `p14-after-d16-d17.out`, `p15-after-d18-d19.out` (with `p15/` screenshots), `p16-after-d20.out`, `p17.out` |
