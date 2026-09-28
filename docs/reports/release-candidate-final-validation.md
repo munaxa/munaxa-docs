@@ -116,7 +116,19 @@ The RC branch holds ten fix commits on the baseline:
 | Prisma | schema valid; 30/30 migrations applied on rc ×2, ci ×2, e2e ×2, upgrade-rehearsal ×2 and the restored DR cluster ×2 |
 | D-2 dedicated regression | resolver 27/27, config refusal 2/2, web guard 4/4, API real sockets 10/10, browser `/login` 3/3, live gate driver 14/14 |
 
-**D-3 gate (at `a560bb0`, clean tree).** Totals are in §8. The integration and live numbers above were taken at `584e555`, before the D-3 fix.
+**D-3 gate (at `a560bb0`, clean tree).** The table above was taken at `584e555`, before the D-3 fix. These were taken after it:
+
+| Suite | Result |
+| --- | --- |
+| Unit (all packages) | **1,713 passed**: api 863, web 503, domain 164, i18n 80, contracts 63, utils 38, worker 2 |
+| Integration, with the real scanner | **1,176 passed in 54 files**, including `icap-antivirus.integration.spec` (10) and `antivirus.e2e.integration.spec` (14), both **REAL-SCANNER** |
+| End to end (5 CI shards) | **233 passed** (74 + 25 + 99 + 14 + 21) |
+| CI run 544 on `a560bb0` | **9/9 jobs green**, the integration job running ClamAV and c-icap with official signatures |
+| Lint, format, typecheck, build | pass |
+
+CI runs 542 and 543 failed on the way to 544:
+- **542:** integration fixtures lacked the new settings. Fixed in `84ed9ad`.
+- **543:** the real-scanner concurrency test caught the local-copy race (§8.5). Fixed in `a560bb0`. The same run also hit a Chromium `Unable to capture screenshot` error in one visual-regression screenshot. That error was also seen on the docs-only `475d12b` in run 540. The web app is untouched by D-3, and the step passed in run 544. **ENV**
 
 Live acceptance drivers, final runs:
 
