@@ -45,6 +45,18 @@ export const en = {
     signInRejected: 'Those credentials were not accepted.',
     signInUnavailable: 'Sign-in is unavailable right now. Try again in a moment.',
     /**
+     * The service could not confirm a session — RC validation, D-18.
+     *
+     * Deliberately not `sessionExpired`: nobody knows the session is over, and telling somebody to
+     * sign in again when the thing that is down is the thing they would sign in to sends them round
+     * a loop by hand. It says they are still signed in because that is what the browser still holds.
+     */
+    serviceUnavailable: 'The service is unavailable right now',
+    serviceUnavailableHint:
+      'Your session could not be checked because the server did not answer. You are still signed in — try again in a moment.',
+    sessionUnverified:
+      'Your existing session could not be checked just now because the server did not answer. Try again in a moment, or sign in below.',
+    /**
      * The second factor — Phase 14.
      *
      * `mfaRequired` is the one sign-in message that is *not* the uniform rejection above, and it is

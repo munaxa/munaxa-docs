@@ -439,6 +439,10 @@ jobs:
           # this is the shard with the measured budget for it — see the note above about titles.
           - name: 'delegations'
             files: 'src/test/e2e/delegations.e2e.spec.ts src/test/e2e/notifications.e2e.spec.ts src/test/e2e/sign-in-addresses.e2e.spec.ts'
+          # Its own shard because it stops and restarts the API mid-suite (D-18), which nothing
+          # sharing a job with it should have to survive. Four sign-ins.
+          - name: 'session states'
+            files: 'src/test/e2e/session-states.e2e.spec.ts'
 
     services:
       postgres:

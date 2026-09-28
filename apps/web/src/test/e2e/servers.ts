@@ -1,5 +1,6 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createWriteStream, existsSync } from 'node:fs';
+import { connect } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -147,6 +148,8 @@ export interface Servers {
    * which the caller sees as the verifier reporting nothing at all.
    */
   readonly redisUrl: string;
+  /** What the API was started with, so `restartApi` brings back the same deployment. */
+  readonly apiEnv: NodeJS.ProcessEnv;
 }
 
 /**
@@ -277,28 +280,21 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
   // Resolved before the spawn so that what is returned is exactly what the child was given.
   const redisUrl = extraEnv.REDIS_URL ?? redisUrlForThisSuite();
 
-  const api = spawn('node', [main], {
-    cwd: API,
-    env: {
-      ...apiEnv,
-      PORT: String(API_PORT),
-      LOG_LEVEL: 'fatal',
-      ...tenancy,
-      SIGNATURE_WITNESS_SECRET: WITNESS_SECRET,
-      CORS_ORIGINS: WEB_URL,
-      // The web server signs people in on their behalf and runs on loopback here, so it is the one
-      // hop the API may believe about a browser's address — `docs/operations/deployment.md` §3.
-      TRUST_PROXY: 'loopback',
-      // Before `extraEnv`, so a suite that wants a particular Redis still gets the last word.
-      REDIS_URL: redisUrl,
-      ...extraEnv,
-    },
-    // Its own process group, so `stopServers` can take the whole tree down. `next start` is a
-    // launcher that forks `next-server`; killing only the launcher leaves the server holding the
-    // port, and the next run then fails to bind with no useful message. Learned the hard way.
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const apiProcessEnv: NodeJS.ProcessEnv = {
+    ...apiEnv,
+    PORT: String(API_PORT),
+    LOG_LEVEL: 'fatal',
+    ...tenancy,
+    SIGNATURE_WITNESS_SECRET: WITNESS_SECRET,
+    CORS_ORIGINS: WEB_URL,
+    // The web server signs people in on their behalf and runs on loopback here, so it is the one
+    // hop the API may believe about a browser's address — `docs/operations/deployment.md` §3.
+    TRUST_PROXY: 'loopback',
+    // Before `extraEnv`, so a suite that wants a particular Redis still gets the last word.
+    REDIS_URL: redisUrl,
+    ...extraEnv,
+  };
+  const api = spawnApi(apiProcessEnv, 'w');
 
   // `server.mjs`, not `next start`: it is what the image runs, and it is what resolves the
   // browser's address for sign-in. Browsers connect to it directly here, so it trusts no proxy.
@@ -316,10 +312,7 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
    * boundary with a correlation id and nothing else; the exception behind that id is in the API's
    * log and nowhere else.
    */
-  const apiLog = createWriteStream('/tmp/e2e-api.log', { flags: 'w' });
   const webLog = createWriteStream('/tmp/e2e-web.log', { flags: 'w' });
-  api.stdout?.pipe(apiLog);
-  api.stderr?.pipe(apiLog);
   web.stdout?.pipe(webLog);
   web.stderr?.pipe(webLog);
 
@@ -327,7 +320,44 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
     waitForPort(`http://127.0.0.1:${String(API_PORT)}/api/v1/health`, api, 'API'),
     waitForPort(`${WEB_URL}/login`, web, 'web'),
   ]);
-  return { api, web, redisUrl };
+  return { api, web, redisUrl, apiEnv: apiProcessEnv };
+}
+
+/** `flags` is `'a'` for a restart, so the log keeps what the first process said. */
+function spawnApi(env: NodeJS.ProcessEnv, flags: 'w' | 'a'): ChildProcess {
+  const api = spawn('node', [join(API, 'dist', 'main.js')], {
+    cwd: API,
+    env,
+    // Its own process group, so `stopServers` can take the whole tree down. `next start` is a
+    // launcher that forks `next-server`; killing only the launcher leaves the server holding the
+    // port, and the next run then fails to bind with no useful message. Learned the hard way.
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const apiLog = createWriteStream('/tmp/e2e-api.log', { flags });
+  api.stdout?.pipe(apiLog);
+  api.stderr?.pipe(apiLog);
+  return api;
+}
+
+/**
+ * The API alone, gone, while the web server stays up — RC validation, D-18.
+ *
+ * What a person sees when the service behind the web server is down is a question about the web
+ * server, so it is the only thing left running. The port is freed as `stopServers` frees it, so what
+ * the web server meets is a refused connection, not a stranger.
+ */
+export function stopApi(servers: Servers): void {
+  killGroup(servers.api.pid);
+  freePort(API_PORT);
+}
+
+/** The same API, back — same environment, same database, same Redis — so a kept session is valid. */
+export async function restartApi(servers: Servers): Promise<Servers> {
+  await waitUntilFree(`http://127.0.0.1:${String(API_PORT)}`, 'API');
+  const api = spawnApi(servers.apiEnv, 'a');
+  await waitForPort(`http://127.0.0.1:${String(API_PORT)}/api/v1/health`, api, 'API');
+  return { ...servers, api };
 }
 
 /**
@@ -374,6 +404,43 @@ function freePort(port: number): void {
   } catch {
     // `fuser` answers non-zero when nothing holds the port, which is the desired state.
   }
+}
+
+/**
+ * Empties this suite's own Redis database, so the allowances under test start full.
+ *
+ * `startServers` gives each suite a logical database by position, so a rerun inside the five-minute
+ * window would otherwise inherit the last run's counters and find its "fresh" address already spent.
+ * The suite owns that precondition, as `auth.e2e.integration.spec.ts` does. Two commands of RESP,
+ * spoken directly, rather than a client library this app does not otherwise depend on.
+ */
+export async function emptyRedis(redisUrl: string): Promise<void> {
+  const url = new URL(redisUrl);
+  const database = url.pathname.replace('/', '') || '0';
+  const command = (...parts: string[]): string =>
+    `*${String(parts.length)}\r\n${parts.map((part) => `$${String(Buffer.byteLength(part))}\r\n${part}\r\n`).join('')}`;
+  await new Promise<void>((resolve, reject) => {
+    const socket = connect({ host: url.hostname, port: Number(url.port || 6379) });
+    let replies = '';
+    socket.on('data', (chunk) => {
+      replies += chunk.toString('utf8');
+      if ((replies.match(/\r\n/g) ?? []).length >= 2) {
+        socket.end();
+        if (
+          replies
+            .split('\r\n')
+            .slice(0, 2)
+            .every((line) => line === '+OK')
+        ) {
+          resolve();
+        } else {
+          reject(new Error(`Redis refused: ${replies}`));
+        }
+      }
+    });
+    socket.on('error', reject);
+    socket.write(command('SELECT', database) + command('FLUSHDB'));
+  });
 }
 
 /**

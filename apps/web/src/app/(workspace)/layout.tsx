@@ -1,29 +1,14 @@
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
 
-import type { PermissionKey } from '@edms/domain';
-
+import { SessionUnavailable } from '../../components/session-unavailable';
 import { WorkspaceShell } from '../../components/workspace-shell';
 import { apiFetch } from '../../lib/api-client';
 import { signOut } from '../../lib/auth';
 import { destinationsFor } from '../../lib/navigation';
 import { currentSession } from '../../lib/session';
-
-interface MeResponse {
-  readonly userId: string | null;
-  /**
-   * The caller's own name and address — Phase 7.9.
-   *
-   * Nullable because a token need not stand for a person: an API-key caller has a tenant and
-   * permissions and nobody behind it. The chip falls back to the identifier rather than deriving
-   * anything from it.
-   */
-  readonly displayName: string | null;
-  readonly email: string | null;
-  readonly tenantId: string;
-  readonly roles: readonly string[];
-  readonly permissions: readonly PermissionKey[];
-}
+import { SESSION_CHECK_TIMEOUT_MS, checkSession, sessionEndedPath } from '../../lib/session-check';
 
 /**
  * The authenticated shell.
@@ -37,6 +22,9 @@ interface MeResponse {
  * that survived a revoked session, a rotated signing key or a disabled account lands on the
  * login screen rather than inside the workspace. That call is also where the navigation comes
  * from: permissions are the server's answer, never the client's.
+ *
+ * An API that did not answer is not such a verdict (D-18, and `lib/session-check.ts`): the shell is
+ * withheld, the session kept, and the page says the service is unavailable.
  */
 export default async function WorkspaceLayout({
   children,
@@ -48,10 +36,17 @@ export default async function WorkspaceLayout({
     redirect('/login');
   }
 
-  const me = await identify(session.accessToken);
-  if (!me) {
-    redirect('/login');
+  const check = await checkSession(session.accessToken);
+  if (check.state === 'REJECTED') {
+    // Through the route that can clear the cookie. Straight to `/login` with the cookie in place was
+    // one half of D-18's loop.
+    redirect(sessionEndedPath() as Route);
   }
+  if (check.state === 'UNAVAILABLE') {
+    // The other half: an API that did not answer is not a signed-out user. The page ends here.
+    return <SessionUnavailable />;
+  }
+  const me = check.identity;
 
   return (
     <WorkspaceShell
@@ -73,16 +68,6 @@ export default async function WorkspaceLayout({
       {children}
     </WorkspaceShell>
   );
-}
-
-async function identify(accessToken: string): Promise<MeResponse | null> {
-  try {
-    return await apiFetch<MeResponse>({ path: '/auth/me', accessToken });
-  } catch {
-    // Rejected, expired, or the API unreachable. All three mean this request cannot be served
-    // as an authenticated one, and none of them should render a shell.
-    return null;
-  }
 }
 
 /**
@@ -108,6 +93,7 @@ async function unreadNotifications(accessToken: string): Promise<number | null> 
     const { count } = await apiFetch<{ count: number }>({
       path: '/notifications/unread-count',
       accessToken,
+      signal: AbortSignal.timeout(SESSION_CHECK_TIMEOUT_MS),
     });
     return count;
   } catch {

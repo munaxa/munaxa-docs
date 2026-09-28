@@ -15,6 +15,7 @@ import {
   type Servers,
   WEB_PORT,
   cleanUpFixtures,
+  emptyRedis,
   seedFixture,
   startServers,
   stopServers,
@@ -95,43 +96,6 @@ async function signInThrough(
   } finally {
     await context.close();
   }
-}
-
-/**
- * Empties this suite's own Redis database, so the allowances under test start full.
- *
- * `startServers` gives each suite a logical database by position, so a rerun inside the five-minute
- * window would otherwise inherit the last run's counters and find its "fresh" address already spent.
- * The suite owns that precondition, as `auth.e2e.integration.spec.ts` does. Two commands of RESP,
- * spoken directly, rather than a client library this app does not otherwise depend on.
- */
-async function emptyRedis(redisUrl: string): Promise<void> {
-  const url = new URL(redisUrl);
-  const database = url.pathname.replace('/', '') || '0';
-  const command = (...parts: string[]): string =>
-    `*${String(parts.length)}\r\n${parts.map((part) => `$${String(Buffer.byteLength(part))}\r\n${part}\r\n`).join('')}`;
-  await new Promise<void>((resolve, reject) => {
-    const socket = connect({ host: url.hostname, port: Number(url.port || 6379) });
-    let replies = '';
-    socket.on('data', (chunk) => {
-      replies += chunk.toString('utf8');
-      if ((replies.match(/\r\n/g) ?? []).length >= 2) {
-        socket.end();
-        if (
-          replies
-            .split('\r\n')
-            .slice(0, 2)
-            .every((line) => line === '+OK')
-        ) {
-          resolve();
-        } else {
-          reject(new Error(`Redis refused: ${replies}`));
-        }
-      }
-    });
-    socket.on('error', reject);
-    socket.write(command('SELECT', database) + command('FLUSHDB'));
-  });
 }
 
 /** Runs statements in one transaction as the owner, with the tenant set for row-level security. */

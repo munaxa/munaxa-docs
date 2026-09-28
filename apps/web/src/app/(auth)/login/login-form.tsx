@@ -30,6 +30,19 @@ const REASON_MESSAGE: Record<string, MessageKey> = {
 };
 
 /**
+ * Why the page shows the form, when the reader did not come here to sign in — RC validation, D-18.
+ *
+ * `SESSION_ENDED`: the API refused the session and `/login/session-ended` cleared it.
+ * `SESSION_UNVERIFIED`: a session cookie exists and the API did not answer to confirm it.
+ */
+export type LoginNotice = 'SESSION_ENDED' | 'SESSION_UNVERIFIED';
+
+const NOTICE_MESSAGE: Record<LoginNotice, MessageKey> = {
+  SESSION_ENDED: 'auth.sessionExpired',
+  SESSION_UNVERIFIED: 'auth.sessionUnverified',
+};
+
+/**
  * The sign-in form.
  *
  * A plain `<form>` bound to a server action, so it submits and works before — and without —
@@ -41,7 +54,13 @@ const REASON_MESSAGE: Record<string, MessageKey> = {
  * existing password predates the current rules, and would tell an attacker which candidate
  * strings are worth trying.
  */
-export function LoginForm({ next }: { next: string }): React.ReactNode {
+export function LoginForm({
+  next,
+  notice = null,
+}: {
+  next: string;
+  notice?: LoginNotice | null;
+}): React.ReactNode {
   const translate = useTranslate();
   const [state, action] = useActionState<SignInFormState, FormData>(signInAction, EMPTY_FORM_STATE);
 
@@ -57,6 +76,12 @@ export function LoginForm({ next }: { next: string }): React.ReactNode {
         // now, and it is the only reason this region ever renders.
         <Alert tone="danger" live="alert">
           {translate(REASON_MESSAGE[state.reason] ?? 'auth.signInRejected')}
+        </Alert>
+      ) : notice ? (
+        // Why somebody is looking at this form when they did not ask to — replaced by the attempt's
+        // own outcome once there is one.
+        <Alert tone={notice === 'SESSION_UNVERIFIED' ? 'warning' : 'info'}>
+          {translate(NOTICE_MESSAGE[notice])}
         </Alert>
       ) : null}
 

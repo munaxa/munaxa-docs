@@ -1,13 +1,15 @@
 import 'server-only';
 
+import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import { cache } from 'react';
 
 import type { Collection } from '@edms/contracts';
-import { DomainError, ErrorCode, type PermissionKey } from '@edms/domain';
+import type { PermissionKey } from '@edms/domain';
 
 import { apiFetch } from '../api-client';
 import { currentSession } from '../session';
+import { SESSION_CHECK_TIMEOUT_MS, isRejection, sessionEndedPath } from '../session-check';
 import { type ActionResult, succeeded, toActionResult } from './action-result';
 import { type ListState, listQueryString } from './list-state';
 
@@ -22,8 +24,25 @@ import { type ListState, listQueryString } from './list-state';
  *
  * The token is also why an expired session redirects rather than renders: a list that answered
  * `UNAUTHENTICATED` has nothing to show, and showing the error would leave somebody re-reading a
- * page instead of signing in.
+ * page instead of signing in. The redirect goes through `/login/session-ended`, which clears the
+ * refused cookie (D-18); straight to `/login` left it in place.
  */
+
+/**
+ * How long a server render waits for one read — RC validation, D-18.
+ *
+ * Next renders a layout and its page in parallel, so the workspace layout's own bounded check
+ * (`SESSION_CHECK_TIMEOUT_MS`) is not enough on its own: against an API that accepts connections and
+ * never answers, the page's reads kept the response open until the platform's five-minute header
+ * timeout, and the unavailable state the layout had already chosen never reached the browser. Every
+ * read here is a page's worth — a list page, a report page, a picker — and answers in milliseconds
+ * when the API is healthy; anything slow in this product (exports, bulk operations, rebuilds) is
+ * queued and polled, not awaited in a render.
+ *
+ * Reads only. A write is not bounded here: abandoning one mid-flight leaves its outcome unknown to
+ * the person who asked for it, and every write is a deliberate act with its own response.
+ */
+export const SERVER_READ_TIMEOUT_MS = 30_000;
 
 async function token(): Promise<string> {
   const session = await currentSession();
@@ -45,11 +64,13 @@ export const currentPermissions = cache(async (): Promise<readonly PermissionKey
     const me = await apiFetch<{ readonly permissions: readonly PermissionKey[] }>({
       path: '/auth/me',
       accessToken: await token(),
+      // The same question the workspace layout asks, so the same bound.
+      signal: AbortSignal.timeout(SESSION_CHECK_TIMEOUT_MS),
     });
     return me.permissions;
   } catch (error) {
-    if (error instanceof DomainError && error.code === ErrorCode.UNAUTHENTICATED) {
-      redirect('/login');
+    if (isRejection(error)) {
+      redirect(sessionEndedPath() as Route);
     }
     // Anything else — the API down, a gateway in the way — is not a permission decision. Reporting
     // no permissions would render every screen as an empty shell, which reads as "you lost access".
@@ -81,12 +102,17 @@ export async function adminList<TItem>(path: string, state: ListState): Promise<
   return apiFetch<Collection<TItem>>({
     path: `${path}${listQueryString(state)}`,
     accessToken: await token(),
+    signal: AbortSignal.timeout(SERVER_READ_TIMEOUT_MS),
   });
 }
 
 /** One resource, or whatever a screen needs that is not a page — the permission catalogue, settings. */
 export async function adminGet<TResult>(path: string): Promise<TResult> {
-  return apiFetch<TResult>({ path, accessToken: await token() });
+  return apiFetch<TResult>({
+    path,
+    accessToken: await token(),
+    signal: AbortSignal.timeout(SERVER_READ_TIMEOUT_MS),
+  });
 }
 
 /**
@@ -102,10 +128,16 @@ export async function adminGet<TResult>(path: string): Promise<TResult> {
  */
 export async function adminRead<TResult>(path: string): Promise<ActionResult<TResult>> {
   try {
-    return succeeded(await apiFetch<TResult>({ path, accessToken: await token() }));
+    return succeeded(
+      await apiFetch<TResult>({
+        path,
+        accessToken: await token(),
+        signal: AbortSignal.timeout(SERVER_READ_TIMEOUT_MS),
+      }),
+    );
   } catch (error) {
-    if (error instanceof DomainError && error.code === ErrorCode.UNAUTHENTICATED) {
-      redirect('/login');
+    if (isRejection(error)) {
+      redirect(sessionEndedPath() as Route);
     }
     return toActionResult<TResult>(error);
   }
@@ -176,8 +208,8 @@ export async function adminWrite<TResult = void>(
     });
     return succeeded(result);
   } catch (error) {
-    if (error instanceof DomainError && error.code === ErrorCode.UNAUTHENTICATED) {
-      redirect('/login');
+    if (isRejection(error)) {
+      redirect(sessionEndedPath() as Route);
     }
     return toActionResult<TResult>(error);
   }
