@@ -392,13 +392,14 @@ export class DefaultBulkExecutor implements BulkExecutor {
       const result = await this.unitOfWork.run(async () => {
         const scope = await plan.resolveScope(targetId);
         if (scope === null) {
-          // Unreachable and non-existent give the same answer. Distinguishing them here would make
-          // a bulk request a probe for which identifiers exist in a tenant.
-          return refused(targetId, 'The caller does not reach this object.');
+          // Unreachable and non-existent give the same answer — `unreachable` below.
+          return unreachable(targetId);
         }
         const decision = await this.acl.resolve(this.subject(), scope, plan.permission);
         if (!decision.allowed) {
-          return refused(targetId, `Refused at ${decision.reason}.`);
+          // The same answer again, and deliberately without `decision.reason`: "Refused at DENY."
+          // told the caller the object exists *and* that a rule hides it — RC validation, D-16.
+          return unreachable(targetId);
         }
         await plan.apply(targetId);
         // **The item row commits with the mutation** — Phase 6.2, and the whole of why a
@@ -495,10 +496,14 @@ export class DefaultBulkExecutor implements BulkExecutor {
    */
   private outcomeFor(targetId: string, error: unknown): BulkItemResult {
     if (error instanceof DomainError) {
-      const isReach = error.code === ErrorCode.FORBIDDEN || error.code === ErrorCode.NOT_FOUND;
+      if (error.code === ErrorCode.FORBIDDEN || error.code === ErrorCode.NOT_FOUND) {
+        // A module's own reach refusal reads exactly like the executor's: its message names what
+        // it looked for, which is a way of saying whether it was there.
+        return unreachable(targetId);
+      }
       return {
         targetId,
-        outcome: isReach ? BulkItemOutcome.REFUSED : BulkItemOutcome.BLOCKED,
+        outcome: BulkItemOutcome.BLOCKED,
         errorCode: error.code,
         detail: error.message,
       };
@@ -573,11 +578,24 @@ export class DefaultBulkExecutor implements BulkExecutor {
   }
 }
 
-function refused(targetId: string, detail: string): BulkItemResult {
+/**
+ * The one answer for an object the caller does not reach — RC validation, D-16.
+ *
+ * Nonexistent, in another tenant, hidden by a `DENY`, or refused by the module's own reach check:
+ * every one of them is this, byte for byte, and it is the answer the single-object routes give —
+ * `NOT_FOUND`, "does not exist, or you do not have access to it". Anything that varied between
+ * those cases (a code, a reason, a message) would make a bulk request a probe for which identifiers
+ * exist in a tenant and which rules protect them. Why it was refused is the ACL's business and the
+ * access-denial log's, not the response's.
+ */
+function unreachable(targetId: string): BulkItemResult {
   return {
     targetId,
     outcome: BulkItemOutcome.REFUSED,
-    errorCode: ErrorCode.FORBIDDEN,
-    detail,
+    errorCode: ErrorCode.NOT_FOUND,
+    detail: UNREACHABLE_DETAIL,
   };
 }
+
+/** The single-object routes' `NOT_FOUND` sentence (`error.NOT_FOUND` in the catalogue). */
+const UNREACHABLE_DETAIL = 'That item does not exist, or you do not have access to it.';

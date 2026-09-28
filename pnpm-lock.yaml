@@ -68,6 +68,9 @@ importers:
       class-validator:
         specifier: ^0.14.1
         version: 0.14.4
+      express:
+        specifier: 5.2.1
+        version: 5.2.1
       helmet:
         specifier: ^8.0.0
         version: 8.3.0

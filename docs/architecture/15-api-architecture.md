@@ -178,7 +178,7 @@ that it left.
 | Concurrency | `If-Match` with the aggregate's `version`; a mismatch is `409` with both versions named |
 | Localization | `Accept-Language: en\|ar` selects server-rendered messages |
 | Correlation | `X-Correlation-Id` is accepted or generated, echoed, logged and stored on audit events |
-| Limits | Body ≤ 1 MB (bytes go to storage, not through the API); page size ≤ 100 |
+| Limits | Body ≤ 100 KiB, the platform default (bytes go to storage, not through the API); the bulk routes (`/documents/bulk`, `/approval-tasks/bulk`) ≤ 8 MiB, sized so `bulk.maxObjects` is reachable (`core/http/body-limits.ts`); a body over either is `413`. Page size ≤ 100 |
 
 ## 3. Responses
 

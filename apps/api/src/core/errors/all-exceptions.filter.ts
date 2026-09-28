@@ -100,6 +100,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (isDomainError(exception)) {
       return this.fromDomainError(exception, correlationId, locale);
     }
+    const clientStatus = bodyReaderRefusal(exception);
+    if (clientStatus !== null) {
+      // The request body could not be read — too large (413), malformed JSON (400), an encoding
+      // the parser does not speak (415). The client's fault, answered as the framework's own
+      // `HttpException`s are, rather than falling through to a 500 — RC validation, D-17.
+      return {
+        type: problemTypeFor(ErrorCode.VALIDATION_FAILED),
+        title: (exception as Error).name,
+        status: clientStatus,
+        code: ErrorCode.VALIDATION_FAILED,
+        detail: translate(locale, `error.${ErrorCode.VALIDATION_FAILED}`),
+        correlationId,
+      };
+    }
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const code = status === NOT_FOUND_STATUS ? ErrorCode.NOT_FOUND : ErrorCode.VALIDATION_FAILED;
@@ -145,4 +159,30 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
     return problem;
   }
+}
+
+/**
+ * The status of a refusal by the request-body reader, or null for anything else.
+ *
+ * Express's body parser throws `http-errors`, not `HttpException`s: an `Error` carrying a 4xx
+ * `status`, `expose: true` (the message is safe to show) and a `type` naming what went wrong —
+ * `entity.too.large`, `entity.parse.failed`, `encoding.unsupported`. Recognised by that shape
+ * rather than by class, because the class is the parser's private business.
+ */
+function bodyReaderRefusal(exception: unknown): number | null {
+  if (!(exception instanceof Error)) {
+    return null;
+  }
+  const candidate = exception as Error & { status?: unknown; expose?: unknown; type?: unknown };
+  const { status, expose, type } = candidate;
+  if (
+    typeof status === 'number' &&
+    status >= 400 &&
+    status < 500 &&
+    expose === true &&
+    typeof type === 'string'
+  ) {
+    return status;
+  }
+  return null;
 }

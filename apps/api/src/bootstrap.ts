@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import { API_VERSION } from '@edms/contracts';
 
 import { APP_CONFIG, type AppConfig } from './core/config';
+import { BULK_ROUTES, bulkBodyParser } from './core/http/body-limits';
 import { clientAddressMiddleware } from './core/http/client-address';
 import { PERMISSIONS_POLICY, helmetOptions } from './core/security';
 
@@ -51,6 +52,11 @@ export function configureApp(app: INestApplication): AppConfig {
     ],
     exposedHeaders: ['X-Correlation-Id', 'Retry-After'],
   });
+
+  // Body limits: the bulk routes' own parser, ahead of the platform's default one that every other
+  // route keeps — `core/http/body-limits.ts` says why the bulk bound is what it is (RC validation,
+  // D-17). An oversized body anywhere is a 413 through `AllExceptionsFilter`, never a 500.
+  app.use([...BULK_ROUTES], bulkBodyParser());
 
   app.setGlobalPrefix('api');
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: API_VERSION.slice(1) });

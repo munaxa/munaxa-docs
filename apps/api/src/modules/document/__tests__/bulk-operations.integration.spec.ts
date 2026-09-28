@@ -17,6 +17,7 @@ import {
   ErrorCode,
   NumberSegmentKind,
   Permission,
+  type PermissionKey,
   RevisionLabelStyle,
   ScanStatus,
   ScopeType,
@@ -356,7 +357,159 @@ describe('a bulk operation applies the caller’s reach per object', () => {
     const result = await asAda(() => bulk.documents.setMetadata({ ids, categoryId: null }));
 
     expect(result.tally.refused).toBe(1);
-    expect(result.items[0]?.errorCode).toBe(ErrorCode.FORBIDDEN);
+    expect(result.items[0]?.errorCode).toBe(ErrorCode.NOT_FOUND);
+  });
+});
+
+/**
+ * The release candidate's D-16: a hidden object and a nonexistent one answer identically.
+ *
+ * Reproduced live: in one mixed batch a document hidden by a `DENY` came back as
+ * `"Refused at DENY."` while an identifier that names nothing came back as `"The caller does not
+ * reach this object."` — so a caller learned the document existed, and which rule hid it. The
+ * single-object routes give both the same `NOT_FOUND`, and so must every item here: compared as
+ * whole objects, everything but the identifier the caller sent.
+ */
+describe('an out-of-reach object reads exactly like one that does not exist (D-16)', () => {
+  const OTHER_TENANT = asId<TenantId>(uuidv7());
+  const OLIVER = asId<UserId>(uuidv7());
+
+  /** Everything the caller is told about one item, except the identifier they sent. */
+  function answerFor(
+    result: { items: readonly { targetId: string }[] },
+    id: string,
+  ): Record<string, unknown> {
+    const item = result.items.find((candidate) => candidate.targetId === id);
+    expect(item).toBeDefined();
+    const { targetId: _targetId, ...rest } = item as Record<string, unknown> & { targetId: string };
+    return rest;
+  }
+
+  const UNREACHABLE = {
+    outcome: 'REFUSED',
+    errorCode: ErrorCode.NOT_FOUND,
+    detail: 'That item does not exist, or you do not have access to it.',
+  };
+
+  beforeAll(async () => {
+    await owner.tenant.create({
+      data: {
+        id: OTHER_TENANT,
+        slug: `bulk-other-${OTHER_TENANT.slice(-12)}`,
+        name: 'Other',
+        status: 'ACTIVE',
+      },
+    });
+    await owner.user.create({
+      data: {
+        id: OLIVER,
+        tenantId: OTHER_TENANT,
+        email: `${OLIVER}@other.test`,
+        emailNormalized: `${OLIVER}@other.test`,
+        displayName: 'Oliver',
+        status: 'ACTIVE',
+      },
+    });
+  });
+
+  async function denyBen(permission: PermissionKey): Promise<void> {
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(closedFolderId), [
+        {
+          subjectType: AclSubjectType.USER,
+          subjectId: asId<AnyId>(BEN),
+          permission,
+          effect: AclEffect.DENY,
+        },
+      ]),
+    );
+  }
+
+  it('answers a hidden document exactly as it answers an identifier that names nothing', async () => {
+    const [open] = await seedDocuments(openFolderId, 1, 'd16-open');
+    const [hidden] = await seedDocuments(closedFolderId, 1, 'd16-hidden');
+    const ghost = uuidv7();
+    await denyBen(Permission.DOCUMENT_EDIT);
+
+    const result = await asBen(() =>
+      bulk.documents.setMetadata({ ids: [open ?? '', hidden ?? '', ghost], categoryId: null }),
+    );
+
+    expect(answerFor(result, hidden ?? '')).toEqual(answerFor(result, ghost));
+    expect(answerFor(result, ghost)).toEqual(UNREACHABLE);
+    // Nothing that names the rule, the permission or the object survives anywhere in the item.
+    const said = JSON.stringify(result.items);
+    for (const leak of ['DENY', 'document:edit', 'Refused at', 'd16-hidden']) {
+      expect(said).not.toContain(leak);
+    }
+    // And the mixed batch is still exact: the reachable one applied, both others refused.
+    expect(answerFor(result, open ?? '')).toMatchObject({ outcome: 'APPLIED', errorCode: null });
+    expect(result.tally).toMatchObject({ requested: 3, applied: 1, refused: 2, blocked: 0 });
+
+    // The recorded items — what a later poll of the operation reads — say exactly the same.
+    const recorded = await owner.bulkOperationItem.findMany({
+      where: { operationId: result.operationId, targetId: { in: [hidden ?? '', ghost] } },
+    });
+    expect(recorded).toHaveLength(2);
+    expect(
+      new Set(recorded.map((row) => `${row.outcome}|${row.errorCode}|${row.detail}`)).size,
+    ).toBe(1);
+  });
+
+  it('applies the same list for a caller who does reach the document', async () => {
+    const [hidden] = await seedDocuments(closedFolderId, 1, 'd16-ada');
+    const ghost = uuidv7();
+    await denyBen(Permission.DOCUMENT_EDIT);
+
+    const result = await asAda(() =>
+      bulk.documents.setMetadata({ ids: [hidden ?? '', ghost], categoryId: null }),
+    );
+
+    expect(answerFor(result, hidden ?? '')).toMatchObject({ outcome: 'APPLIED', errorCode: null });
+    expect(answerFor(result, ghost)).toEqual(UNREACHABLE);
+  });
+
+  it('answers the same for a restore and an export of a hidden document', async () => {
+    const [deleted] = await seedDocuments(closedFolderId, 1, 'd16-restore');
+    await asAda(() => removeDocument(deleted ?? '', 'Deleted for the suite'));
+    const ghost = uuidv7();
+    await denyBen(Permission.DOCUMENT_RESTORE);
+    const restored = await asBen(() => bulk.documents.restore([deleted ?? '', ghost]));
+    expect(answerFor(restored, deleted ?? '')).toEqual(answerFor(restored, ghost));
+    expect(answerFor(restored, ghost)).toEqual(UNREACHABLE);
+
+    const [exportable] = await seedExportable(1, 'd16-export');
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(openFolderId), [
+        {
+          subjectType: AclSubjectType.USER,
+          subjectId: asId<AnyId>(BEN),
+          permission: Permission.DOCUMENT_DOWNLOAD,
+          effect: AclEffect.DENY,
+        },
+      ]),
+    );
+    try {
+      const exported = await asBen(() => bulk.exports.export([exportable ?? '', ghost]));
+      expect(answerFor(exported, exportable ?? '')).toEqual(answerFor(exported, ghost));
+      expect(answerFor(exported, ghost)).toEqual(UNREACHABLE);
+    } finally {
+      await asAdmin(() => permissions.permissions.replaceFor(folderScope(openFolderId), []));
+    }
+  });
+
+  it('answers another tenant’s documents the same way, and touches none of them', async () => {
+    const mine = await seedDocuments(openFolderId, 2, 'd16-tenant');
+    const ghost = uuidv7();
+    const result = await runWithContext(
+      { ...contextFor(OLIVER, [EDITOR_ROLE]), tenantId: OTHER_TENANT },
+      () => bulk.documents.setMetadata({ ids: [...mine, ghost], categoryId: null }),
+    );
+
+    expect(result.tally).toMatchObject({ requested: 3, applied: 0, refused: 3 });
+    for (const id of [...mine, ghost]) {
+      expect(answerFor(result, id)).toEqual(UNREACHABLE);
+    }
   });
 });
 
