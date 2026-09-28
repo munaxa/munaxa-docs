@@ -111,6 +111,14 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 
 Point-in-time evidence. **Historical, never edited afterwards** — superseded, not revised.
 
+### Release candidate — final validation gate
+
+> Phases 1–19 from `f1d9385` to `584e555`: twenty-one findings, fourteen fixed, one release blocker.
+
+| Document | Purpose |
+| --- | --- |
+| [Release candidate — final validation gate](./reports/release-candidate-final-validation.md) | The final RC gate: D-2 revalidated against its original acceptance criteria (unit, real sockets, real `/login` in Chromium, live against the RC), final-gate suites at `584e555` (unit 1,653, integration 1,150, E2E 233, CI 9/9), Phases 1–19, every finding D-1 to D-21 with its final status and evidence, and every conclusion labelled by what it rests on — the production path, a test-only substitution, the environment, architecture or policy. **Production release remains blocked by D-3**: production accepts `AV_DRIVER=ICAP`/`HOSTED` while the antivirus port is bound to the unconfigured adapter, so no upload can become CLEAN and every one is refused `CONTENT_NOT_SCANNED`; the ledgered test-only CLEAN substitutions are not antivirus validation |
+
 ### Phase 6.3 — authorization and permission enforcement completeness
 
 > The third phase from the Phase 6.0 roadmap, and the one that had to disprove a finding of its own.
