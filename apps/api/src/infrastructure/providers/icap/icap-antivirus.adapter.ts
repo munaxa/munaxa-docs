@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { connect, type Socket } from 'node:net';
 
 import { ScanStatus } from '@edms/domain';
@@ -93,6 +94,15 @@ export class IcapAntivirusAdapter implements AntivirusPort {
     if (bytes.length > this.options.maxBytes) {
       throw new AntivirusScanError(
         'The stored content is larger than AV_ICAP_MAX_BYTES and was not sent to the scanner.',
+        'UNSCANNABLE',
+      );
+    }
+    // The verdict is recorded against this digest, so only these exact bytes may be judged. A short
+    // or empty read — a store caught mid-write — would otherwise be scanned, pass as clean, and make
+    // the real content CLEAN without anybody having looked at it.
+    if (createHash('sha256').update(bytes).digest('hex') !== request.checksumSha256) {
+      throw new AntivirusScanError(
+        'The content read back does not match its digest and was not sent to the scanner.',
         'UNSCANNABLE',
       );
     }

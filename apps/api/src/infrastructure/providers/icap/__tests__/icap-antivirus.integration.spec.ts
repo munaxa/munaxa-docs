@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import { deflateRawSync, crc32 } from 'node:zlib';
 
@@ -80,6 +81,7 @@ function scannerFor(bytes: Buffer, url = SCANNER, timeoutMs = 60_000): IcapAntiv
 const scan = (bytes: Buffer, adapter = scannerFor(bytes)) =>
   adapter.scan({
     storageKey: 'blobs/under-test',
+    checksumSha256: createHash('sha256').update(bytes).digest('hex'),
     sizeBytes: bytes.length,
     declaredMimeType: 'application/pdf',
     timeoutMs: 60_000,

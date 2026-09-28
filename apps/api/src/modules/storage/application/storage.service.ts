@@ -280,7 +280,12 @@ export class DefaultStorageService implements StorageService {
       await this.storage.copy(session.targetKey, contentKey);
       await this.storage.delete(session.targetKey);
 
-      const scan = await this.scan(contentKey, metadata.sizeBytes, session.declaredMimeType);
+      const scan = await this.scan(
+        contentKey,
+        digest,
+        metadata.sizeBytes,
+        session.declaredMimeType,
+      );
       const fileObjectId = this.writer.clock.nextId();
       const created = await this.files.insert({
         id: fileObjectId,
@@ -730,10 +735,16 @@ export class DefaultStorageService implements StorageService {
    * Neither failure is ever `CLEAN`, and a blob in either state recovers by being uploaded again —
    * `settleVerdict` scans it then.
    */
-  private async scan(key: string, sizeBytes: number, mimeType: string): Promise<ScanOutcome> {
+  private async scan(
+    key: string,
+    checksumSha256: string,
+    sizeBytes: number,
+    mimeType: string,
+  ): Promise<ScanOutcome> {
     try {
       const verdict = await this.antivirus.scan({
         storageKey: key,
+        checksumSha256,
         sizeBytes,
         declaredMimeType: mimeType,
         timeoutMs: this.config.antivirus.timeoutMs,
@@ -780,7 +791,13 @@ export class DefaultStorageService implements StorageService {
       return { file: existing, rescan: {} };
     }
     const scan =
-      known ?? (await this.scan(existing.storageKey, existing.sizeBytes, existing.mimeType));
+      known ??
+      (await this.scan(
+        existing.storageKey,
+        existing.checksumSha256,
+        existing.sizeBytes,
+        existing.mimeType,
+      ));
     if (scan.status !== ScanStatus.CLEAN && scan.status !== ScanStatus.INFECTED) {
       return { file: existing, rescan: {} };
     }

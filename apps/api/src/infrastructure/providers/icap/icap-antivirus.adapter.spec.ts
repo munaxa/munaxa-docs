@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -79,12 +80,15 @@ function answerPreview(reply: string) {
   };
 }
 
+const HARMLESS = Buffer.from('%PDF-1.7 harmless');
+const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
 function adapter(
   port: number,
   options: { maxBytes?: number; timeoutMs?: number } = {},
   bytes?: Buffer | null | Error,
 ) {
-  const content = bytes === undefined ? Buffer.from('%PDF-1.7 harmless') : bytes;
+  const content = bytes === undefined ? HARMLESS : bytes;
   return new IcapAntivirusAdapter(
     {
       endpoint: { host: '127.0.0.1', port, service: '/avscan' },
@@ -97,8 +101,10 @@ function adapter(
   );
 }
 
-const request = (sizeBytes = 17) => ({
+/** A request for `bytes`, recorded under their own digest — what the storage service sends. */
+const request = (sizeBytes = HARMLESS.length, bytes: Buffer = HARMLESS) => ({
   storageKey: 'blobs/ab/abcdef',
+  checksumSha256: sha256(bytes),
   sizeBytes,
   declaredMimeType: 'application/pdf',
   timeoutMs: 5_000,
@@ -137,7 +143,7 @@ describe('a scanner that answers', () => {
     const bytes = Buffer.alloc(300_000, 7); // several chunks
     const scanner = await scripted(answerAfterBody(CLEAN));
 
-    const verdict = await adapter(scanner.port, {}, bytes).scan(request(bytes.length));
+    const verdict = await adapter(scanner.port, {}, bytes).scan(request(bytes.length, bytes));
 
     expect(verdict).toMatchObject({ status: 'CLEAN', threat: null, scannerVersion: 'T1' });
     expect(bodyOf(scanner.requests[0] ?? Buffer.alloc(0)).equals(bytes)).toBe(true);
@@ -173,7 +179,7 @@ describe('a scanner that answers', () => {
     });
     const bytes = Buffer.alloc(2_000_000, 1);
     expect(
-      (await failure(adapter(scanner.port, {}, bytes).scan(request(bytes.length)))).reason,
+      (await failure(adapter(scanner.port, {}, bytes).scan(request(bytes.length, bytes)))).reason,
     ).toBe('SCANNER_ERROR');
   });
 });
@@ -258,6 +264,22 @@ describe('content the adapter will not send', () => {
       adapter(scanner.port, { maxBytes: 1_024 }, Buffer.alloc(4_096)).scan(request(10)),
     );
     expect(error.reason).toBe('UNSCANNABLE');
+    expect(scanner.requests).toHaveLength(0);
+  });
+
+  it('bytes that do not hash to the recorded digest: a short read is never judged', async () => {
+    // What the local store handed a scan while another upload of the same bytes was copying onto the
+    // content key: an empty file. An empty body scans clean, so judging it would have made the real
+    // content CLEAN unread.
+    const scanner = await scripted(answerAfterBody(CLEAN));
+    const truncated = await failure(
+      adapter(scanner.port, {}, Buffer.alloc(0)).scan(request(HARMLESS.length, HARMLESS)),
+    );
+    expect(truncated.reason).toBe('UNSCANNABLE');
+    const partial = await failure(
+      adapter(scanner.port, {}, HARMLESS.subarray(0, 5)).scan(request(HARMLESS.length, HARMLESS)),
+    );
+    expect(partial.reason).toBe('UNSCANNABLE');
     expect(scanner.requests).toHaveLength(0);
   });
 

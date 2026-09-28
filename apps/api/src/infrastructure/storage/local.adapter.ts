@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFile,
   mkdir,
@@ -227,12 +227,25 @@ export class LocalStorageAdapter implements StoragePort {
       .sort();
   }
 
+  /**
+   * A copy that lands on a temporary name and is renamed into place — RC D-3.
+   *
+   * `copyFile` straight onto the destination truncates it and then rewrites it, and a reader in
+   * between sees an empty or short file. Two uploads of the same bytes copy onto the same content key
+   * and each then reads it back to scan it: one of those reads was handed zero bytes, which a scanner
+   * rightly passes as clean — so an infected upload could be recorded CLEAN. The partial name is
+   * unique per call, so concurrent copies never write into each other's file, and the rename
+   * replaces the destination atomically: a reader sees the old complete object or the new one.
+   */
   async copy(from: StorageKey, to: StorageKey): Promise<void> {
     const destination = this.pathFor(to);
     await mkdir(dirname(destination), { recursive: true });
+    const partial = `${destination}.${randomUUID()}${PARTIAL_SUFFIX}`;
     try {
-      await copyFile(this.pathFor(from), destination);
+      await copyFile(this.pathFor(from), partial);
+      await rename(partial, destination);
     } catch (cause) {
+      await rm(partial, { force: true });
       throw new StorageUnavailableError('The file could not be copied.', { cause });
     }
   }

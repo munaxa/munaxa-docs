@@ -11,6 +11,12 @@ export const ANTIVIRUS_PORT = Symbol('AntivirusPort');
 
 export interface ScanRequest {
   readonly storageKey: string;
+  /**
+   * The SHA-256 the content is recorded under — RC D-3. A scanner reads the bytes back from storage,
+   * and its verdict is written against this digest, so an adapter must scan only bytes that hash to
+   * it: a verdict on anything else (a short read, a store mid-write) is a verdict on other content.
+   */
+  readonly checksumSha256: string;
   readonly sizeBytes: number;
   readonly declaredMimeType: string;
   readonly timeoutMs: number;

@@ -46,7 +46,13 @@ describe('the adapter AV_DRIVER selects', () => {
     const adapter = antivirusAdapterFor(loadConfig({ ...env }), storage);
     expect(adapter).toBeInstanceOf(UnconfiguredAntivirusAdapter);
     await expect(
-      adapter.scan({ storageKey: 'k', sizeBytes: 1, declaredMimeType: 'x', timeoutMs: 1 }),
+      adapter.scan({
+        storageKey: 'k',
+        checksumSha256: '0'.repeat(64),
+        sizeBytes: 1,
+        declaredMimeType: 'x',
+        timeoutMs: 1,
+      }),
     ).rejects.toBeInstanceOf(ProviderNotConfiguredError);
     expect(adapter.probe).toBeUndefined();
   });
