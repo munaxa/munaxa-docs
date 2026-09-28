@@ -293,6 +293,7 @@ beforeAll(async () => {
       maxUploadBytes: 2 * 1024 * 1024 * 1024,
       publicUrl: null,
     },
+    antivirus: { icap: null, maxBytes: 134_217_728, timeoutMs: 120_000 },
     providers: {
       search: 'POSTGRES',
       ocr: 'NONE',

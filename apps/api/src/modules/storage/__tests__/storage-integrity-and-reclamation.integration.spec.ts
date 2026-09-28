@@ -76,6 +76,8 @@ const config = {
     integrityBatchSize: 200,
     integrityMaxBytes: 1024 * 1024,
   },
+  antivirus: { icap: null, maxBytes: 134_217_728, timeoutMs: 120_000 },
+  providers: { antivirus: 'NONE' },
 } as unknown as AppConfig;
 const logger = {
   info: () => {},

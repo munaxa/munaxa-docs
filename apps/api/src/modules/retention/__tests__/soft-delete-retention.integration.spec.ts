@@ -287,6 +287,8 @@ beforeAll(async () => {
       signedUrlTtlSeconds: 300,
       maxUploadBytes: 2 * 1024 * 1024 * 1024,
     },
+    antivirus: { icap: null, maxBytes: 134_217_728, timeoutMs: 120_000 },
+    providers: { antivirus: 'NONE' },
   } as unknown as AppConfig;
 
   libraryConfig = appConfig;

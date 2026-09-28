@@ -147,6 +147,8 @@ beforeAll(async () => {
       streamPartBytes: 5_242_880,
       publicUrl: 'http://localhost:3001/v1/transfer',
     },
+    antivirus: { icap: null, maxBytes: 134_217_728, timeoutMs: 120_000 },
+    providers: { antivirus: 'NONE' },
     audit: {
       readBufferSize: 1_000,
       readBufferMax: 10_000,
