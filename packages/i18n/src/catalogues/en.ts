@@ -1831,6 +1831,8 @@ export const en = {
     CONTENT_NOT_SCANNED: 'This file is still being checked for malware.',
     TENANT_READ_ONLY: 'Your organisation is currently read-only.',
     MFA_REQUIRED: 'Enter the code from your authenticator app.',
+    REQUEST_IN_PROGRESS:
+      'This request is already being processed. Try again in a moment to receive its result.',
     DEPENDENCY_UNAVAILABLE: 'A service this action needs is unavailable.',
     INTERNAL: 'Something went wrong on our side.',
   },

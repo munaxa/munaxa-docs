@@ -29,6 +29,15 @@ export const ErrorCode = {
    * been verified, so it discloses nothing about which addresses hold accounts.
    */
   MFA_REQUIRED: 'MFA_REQUIRED',
+  /**
+   * The same request, under the same `Idempotency-Key`, is still being performed — RC validation,
+   * D-20.
+   *
+   * Not a refusal of the request and not a conflict with somebody else's change: the first attempt
+   * owns the key and has not answered yet. Retrying after it has answered replays that answer, so
+   * the code is retryable and the client's next move is to ask again, not to change anything.
+   */
+  REQUEST_IN_PROGRESS: 'REQUEST_IN_PROGRESS',
   DEPENDENCY_UNAVAILABLE: 'DEPENDENCY_UNAVAILABLE',
   INTERNAL: 'INTERNAL',
 } as const;

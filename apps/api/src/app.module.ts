@@ -15,7 +15,9 @@ import { ConfigModule } from './core/config';
 import { AllExceptionsFilter } from './core/errors';
 import {
   CorrelationIdMiddleware,
+  IDEMPOTENCY_STORE,
   IdempotencyInterceptor,
+  PrismaIdempotencyStore,
   SerializationInterceptor,
 } from './core/http';
 import { MessagingModule } from './core/messaging';
@@ -146,6 +148,9 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     // an observability layer that measured only what it wrapped last would report the fast half
     // of every request. Phase 18.
     { provide: APP_INTERCEPTOR, useClass: RequestObservabilityInterceptor },
+    // The idempotency record, in the tenant's own database: its claim is what makes one request the
+    // owner of a key across every process (RC validation, D-20).
+    { provide: IDEMPOTENCY_STORE, useClass: PrismaIdempotencyStore },
     { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
     { provide: APP_INTERCEPTOR, useClass: SerializationInterceptor },
   ],

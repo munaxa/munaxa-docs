@@ -174,7 +174,7 @@ that it left.
 | Concern | Rule |
 | --- | --- |
 | Validation | Every body and query is a DTO with `class-validator`, sharing zod schemas from `@edms/contracts`. `whitelist` + `forbidNonWhitelisted` — unknown fields are rejected, never ignored |
-| Idempotency | Every mutating endpoint accepts `Idempotency-Key`; the result is stored per `(tenantId, key)` and replayed on retry |
+| Idempotency | Every mutating endpoint accepts `Idempotency-Key`; the result is stored per `(tenantId, key)` — and per method, path and body, so another request under the same key is performed on its own — and replayed on retry. The key is claimed in the tenant's database before the request runs, so one request owns it across every API process: a duplicate sent while the owner runs gets `409 REQUEST_IN_PROGRESS` (retryable), and a failed request gives the key back (RC D-20) |
 | Concurrency | `If-Match` with the aggregate's `version`; a mismatch is `409` with both versions named |
 | Localization | `Accept-Language: en\|ar` selects server-rendered messages |
 | Correlation | `X-Correlation-Id` is accepted or generated, echoed, logged and stored on audit events |
@@ -218,7 +218,7 @@ that it left.
 | 401 | Missing or invalid credentials |
 | 403 | Authenticated, permitted to know the object exists, but not to do this |
 | 404 | Not found — **or** existing but outside the caller's scope |
-| 409 | Conflict: version mismatch, illegal transition, existing lock, duplicate |
+| 409 | Conflict: version mismatch, illegal transition, existing lock, duplicate, the same idempotent request still in progress |
 | 413 | Payload too large |
 | 422 | Validation failure |
 | 423 | Locked — checked out by another user |

@@ -177,7 +177,7 @@ CREATE INDEX ix_document_updated    ON document (tenant_id, updated_at DESC) WHE
 | --- | --- |
 | `audit_event` | Append-only, hash-chained ([13](./13-audit-architecture.md)); no `UPDATE`/`DELETE` grant to the app role; monthly partitions |
 | `outbox_message` | `aggregate_type`, `aggregate_id`, `event_type`, `payload jsonb`, `available_at`, `processed_at`, `attempts` — `ix (processed_at, available_at)` |
-| `idempotency_key` | `(tenant_id, key)` unique, stored response, TTL |
+| `idempotency_key` | Unique per `(tenant_id, key, method, path, body hash)`; inserted `IN_PROGRESS` before the request runs (the claim), `COMPLETED` with the stored response, deleted on failure; claim lease and replay TTL, expired rows swept on claim |
 | `search_index_entry` | `document_id`, `tsv tsvector`, `metadata jsonb`, `acl_hash`, GIN on `tsv` |
 | `notification_message` | `recipient_id`, `channel`, `type_key`, the *rendered* subject and body, `state`, `attempts`, `read_at` — plus, from Phase 12, `release_at`, `digest_window` and `digest_message_id`. The rendered text is stored rather than a payload re-rendered at delivery: what was sent is a fact, and a template edited afterwards must not change the record of it |
 | `notification_quiet_hours` | Per **person**, not per type: minutes past local midnight and an IANA zone. `ck` bounds both to a day |

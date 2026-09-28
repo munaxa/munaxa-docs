@@ -212,8 +212,25 @@ export class QuotaExceededError extends DomainError {
   }
 }
 
+/**
+ * The first request under this `Idempotency-Key` still owns it — RC validation, D-20.
+ *
+ * Answered at once rather than by holding this request open until the owner finishes: waiting would
+ * tie up a connection per duplicate for as long as the slowest owner takes, and the answer a retry
+ * gets a moment later — the owner's own, replayed — is the one this request would have waited for.
+ */
+export class RequestInProgressError extends DomainError {
+  constructor() {
+    super(
+      ErrorCode.REQUEST_IN_PROGRESS,
+      'The same request is still being processed. Retry it to receive its result.',
+    );
+  }
+}
+
 export const RETRYABLE_ERROR_CODES: readonly ErrorCodeKey[] = Object.freeze([
   ErrorCode.RATE_LIMITED,
   ErrorCode.DEPENDENCY_UNAVAILABLE,
   ErrorCode.VERSION_CONFLICT,
+  ErrorCode.REQUEST_IN_PROGRESS,
 ]);
