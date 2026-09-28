@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
-const { checkSession, sameOriginPath, sessionEndedPath, SESSION_CHECK_TIMEOUT_MS } =
+const { checkSession, sessionEndedPath, SESSION_CHECK_TIMEOUT_MS } =
   await import('./session-check');
 
 /**
@@ -116,26 +116,11 @@ describe('checkSession', () => {
   });
 });
 
-describe('sameOriginPath', () => {
-  it.each([
-    [null, '/'],
-    ['', '/'],
-    ['/documents', '/documents'],
-    ['/documents?view=recent#top', '/documents?view=recent#top'],
-    ['https://evil.example/x', '/'],
-    ['//evil.example/x', '/'],
-    // Passes a "starts with one slash" test; every browser reads it as `//evil.example`.
-    ['/\\evil.example', '/'],
-    ['javascript:alert(1)', '/'],
-  ])('%j → %j', (value, expected) => {
-    expect(sameOriginPath(value)).toBe(expected);
-  });
-});
-
 describe('sessionEndedPath', () => {
   it('carries a same-origin destination and drops anything else', () => {
     expect(sessionEndedPath()).toBe('/login/session-ended');
     expect(sessionEndedPath('/documents')).toBe('/login/session-ended?next=%2Fdocuments');
     expect(sessionEndedPath('//evil.example')).toBe('/login/session-ended');
+    expect(sessionEndedPath('/.//evil.example')).toBe('/login/session-ended');
   });
 });

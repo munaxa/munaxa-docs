@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { en } from '@edms/i18n';
 
 import { currentSession } from '../../../lib/session';
+import { safeDestination } from '../../../lib/destination';
 import { checkSession } from '../../../lib/session-check';
 import { LoginForm, type LoginNotice } from './login-form';
 
@@ -37,7 +38,8 @@ export default async function LoginPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }): Promise<ReactNode> {
   const params = await searchParams;
-  const next: Route = destinationFrom(params.next);
+  // D-19: the one validator the whole login flow shares (`lib/destination.ts`).
+  const next = safeDestination(params.next) as Route;
   let notice: LoginNotice | null = params.ended === '1' ? 'SESSION_ENDED' : null;
 
   const session = await currentSession();
@@ -52,17 +54,4 @@ export default async function LoginPage({
   }
 
   return <LoginForm next={next} notice={notice} />;
-}
-
-/**
- * Only a path within this application is honoured.
- *
- * An absolute URL here would make the login screen an open redirect: a phishing link that
- * genuinely starts with our own domain and lands somewhere else. The same check runs again in
- * the action, because this one only sees what the page was rendered with.
- */
-function destinationFrom(value: string | string[] | undefined): Route {
-  const requested = Array.isArray(value) ? value[0] : value;
-  const safe = requested?.startsWith('/') && !requested.startsWith('//') ? requested : '/';
-  return safe as Route;
 }

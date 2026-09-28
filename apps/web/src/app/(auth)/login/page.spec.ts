@@ -52,6 +52,29 @@ describe('the sign-in page', () => {
     await expect(render({ next: '/documents' })).rejects.toThrow('NEXT_REDIRECT /documents');
   });
 
+  it.each([
+    '//evil.example',
+    '/\\evil.example',
+    '\\\\evil.example',
+    'https://evil.example',
+    'http://evil.example',
+    '/.//evil.example',
+  ])('sends a confirmed session home, not to %j (D-19)', async (next) => {
+    currentSession.mockResolvedValue({ accessToken: 'valid', locale: 'en' });
+    checkSession.mockResolvedValue({ state: 'VALID', identity: {} });
+
+    await expect(render({ next })).rejects.toThrow(/^NEXT_REDIRECT \/$/);
+  });
+
+  it('hands the form the safe destination, never the attacker’s (D-19)', async () => {
+    currentSession.mockResolvedValue(null);
+
+    expect(await render({ next: '/\\evil.example' })).toMatchObject({ next: '/' });
+    expect(await render({ next: '/documents?page=2' })).toMatchObject({
+      next: '/documents?page=2',
+    });
+  });
+
   it('stays, and renders the form, when the API refused the cookie', async () => {
     currentSession.mockResolvedValue({ accessToken: 'stale', locale: 'en' });
     checkSession.mockResolvedValue({ state: 'REJECTED' });

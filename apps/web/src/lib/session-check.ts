@@ -4,6 +4,7 @@ import type { PermissionKey } from '@edms/domain';
 import { DomainError, ErrorCode } from '@edms/domain';
 
 import { apiFetch } from './api-client';
+import { HOME_DESTINATION, safeDestination } from './destination';
 
 /**
  * Whether the session cookie still stands for a session — RC validation, D-18.
@@ -86,29 +87,8 @@ export function isRejection(error: unknown): boolean {
  * again and clears only on the API's own rejection (see that route).
  */
 export function sessionEndedPath(next?: string | null): string {
-  const destination = sameOriginPath(next ?? null);
-  return destination === '/'
+  const destination = safeDestination(next);
+  return destination === HOME_DESTINATION
     ? '/login/session-ended'
     : `/login/session-ended?next=${encodeURIComponent(destination)}`;
-}
-
-/**
- * A path on this origin, or `/`.
- *
- * Resolved against a placeholder origin rather than checked by prefix, because a URL parser is what
- * the browser will apply to the `Location` this becomes: `/\evil.example` passes a "starts with one
- * slash" test and is read by every browser as `//evil.example`. Only what stays on the placeholder
- * origin is kept, re-serialised by the parser.
- */
-export function sameOriginPath(value: string | null): string {
-  if (!value) {
-    return '/';
-  }
-  const placeholder = 'http://same-origin.invalid';
-  try {
-    const url = new URL(value, placeholder);
-    return url.origin === placeholder ? `${url.pathname}${url.search}${url.hash}` : '/';
-  } catch {
-    return '/';
-  }
 }

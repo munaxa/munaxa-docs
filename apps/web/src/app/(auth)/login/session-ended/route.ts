@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 
-import { checkSession, sameOriginPath } from '../../../../lib/session-check';
+import { safeDestination } from '../../../../lib/destination';
+import { checkSession } from '../../../../lib/session-check';
 import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '../../../../lib/session';
 
 /**
@@ -19,7 +20,7 @@ import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '../../../../lib/sessi
  * cookie where it is and the sign-in screen says so.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  const next = sameOriginPath(request.nextUrl.searchParams.get('next'));
+  const next = safeDestination(request.nextUrl.searchParams.get('next'));
   const token = request.cookies.get(ACCESS_TOKEN_COOKIE)?.value;
 
   if (!token) {

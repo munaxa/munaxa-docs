@@ -83,7 +83,7 @@ describe('GET /login/session-ended', () => {
     expect(response.headers.get('location')).toBe('/login');
   });
 
-  it.each(['https://evil.example', '//evil.example', '/\\evil.example'])(
+  it.each(['https://evil.example', '//evil.example', '/\\evil.example', '/.//evil.example'])(
     'never sends anybody off the origin (%s)',
     async (next) => {
       checkSession.mockResolvedValue({ state: 'VALID', identity: {} });

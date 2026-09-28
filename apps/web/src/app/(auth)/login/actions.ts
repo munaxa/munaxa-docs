@@ -4,6 +4,7 @@ import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 
 import { signIn } from '../../../lib/auth';
+import { safeDestination } from '../../../lib/destination';
 
 /** Why the last attempt failed, or null before the first attempt and after a successful one. */
 export type SignInRejection = 'REJECTED' | 'UNAVAILABLE' | 'MFA_REQUIRED';
@@ -65,17 +66,13 @@ export async function signInAction(
 /**
  * Where to go after signing in.
  *
- * Only a path within this application is honoured. An absolute URL, or anything starting
- * `//`, would make the login page an open redirect — somewhere to land a phishing link that
- * genuinely begins with our own domain.
+ * Only a path on this origin is honoured, decided by `safeDestination` — the validator the sign-in
+ * page and `/login/session-ended` use too (D-19). The prefix test this used to be passed
+ * `/\evil.example`, which every browser reads as `//evil.example`.
  */
 function nextDestination(formData: FormData): Route {
-  const requested = textField(formData, 'next');
-  const safe = requested.startsWith('/') && !requested.startsWith('//') ? requested : '/';
-  // Typed routes cannot check a value that only exists at runtime. The assertion is confined
-  // to this one line, immediately after the check that makes it safe, rather than spread
-  // across the callers.
-  return safe as Route;
+  // Typed routes cannot check a value that only exists at runtime; the assertion follows the check.
+  return safeDestination(textField(formData, 'next')) as Route;
 }
 
 /**
