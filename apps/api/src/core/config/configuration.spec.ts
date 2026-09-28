@@ -26,6 +26,7 @@ const productionEnv = {
   MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
   MAIL_FROM_ADDRESS: 'docs@munaxa.com',
   AV_DRIVER: 'ICAP',
+  AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
   AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
   SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
   MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
@@ -71,6 +72,7 @@ describe('loadConfig', () => {
       MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
       MAIL_FROM_ADDRESS: 'docs@munaxa.com',
       AV_DRIVER: 'ICAP',
+      AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
       MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
@@ -204,6 +206,7 @@ describe('loadConfig', () => {
         STORAGE_BUCKET: 'edms-prod',
         MAIL_DRIVER: 'RESEND',
         AV_DRIVER: 'ICAP',
+        AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
         SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
         MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
@@ -253,6 +256,69 @@ describe('loadConfig', () => {
  * rather than errors at the first request. Every one of them describes a configuration that would
  * otherwise look like a working installation.
  */
+describe('the antivirus driver — RC D-3', () => {
+  // Production accepted `ICAP` and `HOSTED` while the port stayed bound to the unconfigured
+  // adapter, so a deployment booted and scanned nothing. A driver name must now have an adapter and
+  // an address, in every environment.
+  it('starts production on ICAP with a scanner address, and parses it', () => {
+    const config = loadConfig({ ...productionEnv });
+    expect(config.providers.antivirus).toBe('ICAP');
+    expect(config.antivirus.icap).toEqual({
+      host: 'scanner.internal',
+      port: 1344,
+      service: '/avscan',
+    });
+    expect(config.antivirus.maxBytes).toBe(134_217_728);
+    expect(config.antivirus.timeoutMs).toBe(120_000);
+  });
+
+  it('refuses ICAP with no scanner address, in production and out of it', () => {
+    for (const env of [productionEnv, { ...baseEnv, AV_DRIVER: 'ICAP' }]) {
+      expect(() => loadConfig({ ...env, AV_ICAP_URL: undefined })).toThrowError(/AV_ICAP_URL/);
+    }
+  });
+
+  it('refuses HOSTED, which has no adapter, in production and out of it', () => {
+    expect(() =>
+      loadConfig({ ...productionEnv, AV_DRIVER: 'HOSTED', AV_ICAP_URL: undefined }),
+    ).toThrowError(/AV_DRIVER=HOSTED has no adapter/);
+    expect(() => loadConfig({ ...baseEnv, AV_DRIVER: 'HOSTED' })).toThrowError(/AV_DRIVER/);
+  });
+
+  it('still refuses NONE in production', () => {
+    expect(() =>
+      loadConfig({ ...productionEnv, AV_DRIVER: 'NONE', AV_ICAP_URL: undefined }),
+    ).toThrowError(/AV_DRIVER must name a real provider/);
+  });
+
+  it.each([
+    'http://scanner:1344/avscan',
+    'icaps://scanner:11344/avscan',
+    'icap://scanner:1344',
+    'nonsense',
+  ])('refuses the scanner address %s', (url) => {
+    expect(() => loadConfig({ ...productionEnv, AV_ICAP_URL: url })).toThrowError(/AV_ICAP_URL/);
+  });
+
+  it('refuses a scanner address with no driver to use it, rather than ignoring it', () => {
+    expect(() =>
+      loadConfig({ ...baseEnv, AV_ICAP_URL: 'icap://scanner:1344/avscan' }),
+    ).toThrowError(/AV_ICAP_URL is set but AV_DRIVER is not ICAP/);
+  });
+
+  it('bounds the scan size and the scan time', () => {
+    expect(() => loadConfig({ ...productionEnv, AV_ICAP_MAX_BYTES: '10' })).toThrowError(
+      /AV_ICAP_MAX_BYTES/,
+    );
+    expect(() => loadConfig({ ...productionEnv, AV_SCAN_TIMEOUT_MS: '0' })).toThrowError(
+      /AV_SCAN_TIMEOUT_MS/,
+    );
+    expect(loadConfig({ ...productionEnv, AV_SCAN_TIMEOUT_MS: '30000' }).antivirus.timeoutMs).toBe(
+      30_000,
+    );
+  });
+});
+
 describe('describing which tenants this deployment serves', () => {
   it('takes a catalogue inline', () => {
     const config = loadConfig({
@@ -329,6 +395,7 @@ describe('describing which tenants this deployment serves', () => {
         MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
         MAIL_FROM_ADDRESS: 'docs@munaxa.com',
         AV_DRIVER: 'ICAP',
+        AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
         SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
         MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
@@ -351,6 +418,7 @@ describe('describing which tenants this deployment serves', () => {
         MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
         MAIL_FROM_ADDRESS: 'docs@munaxa.com',
         AV_DRIVER: 'ICAP',
+        AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
         AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       }),
     ).toThrowError(ConfigurationError);
@@ -368,6 +436,7 @@ describe('describing which tenants this deployment serves', () => {
       MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
       MAIL_FROM_ADDRESS: 'docs@munaxa.com',
       AV_DRIVER: 'ICAP',
+      AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
       AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
       SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
       MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
@@ -389,6 +458,7 @@ describe('describing which tenants this deployment serves', () => {
         MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
         MAIL_FROM_ADDRESS: 'docs@munaxa.com',
         AV_DRIVER: 'ICAP',
+        AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
       }),
     ).toThrowError(ConfigurationError);
   });

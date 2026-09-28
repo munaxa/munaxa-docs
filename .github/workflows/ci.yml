@@ -200,6 +200,10 @@ jobs:
       OCR_DRIVER: NONE
       MAIL_DRIVER: NONE
       AV_DRIVER: NONE
+      # The real scanner the antivirus suites talk to (RC D-3). Deliberately not `AV_ICAP_URL`:
+      # configuration refuses a scanner address with no `AV_DRIVER=ICAP` to use it, and every other
+      # suite runs driver-less. The antivirus suites set both, for their own application instances.
+      AV_ICAP_TEST_URL: icap://127.0.0.1:1344/avscan
 
       # Two tenants in two databases, which is what the isolation suite needs to run at all. It
       # skips rather than passes when the second is absent, so without this the most important
@@ -363,6 +367,58 @@ jobs:
             "search":{"indexTemplate":"docs-{slug}"}},
             "tenants":[{"id":"019489f0-0000-7000-8000-0000000000a1","slug":"acme"},
             {"id":"019489f0-0000-7000-8000-0000000000b2","slug":"rival"}]}
+
+      # RC D-3: the antivirus suites prove verdicts from a real scanner — c-icap's virus_scan in
+      # front of ClamAV's clamd, configured by `infra/antivirus/`, with ClamAV's official signatures.
+      # No double stands in for it: a suite that asserts EICAR is blocked has nothing to assert
+      # against a mock. The packages are Ubuntu's own, the same versions the RC was validated on.
+      - name: Install the antivirus scanner
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            clamav-daemon clamav-freshclam c-icap libc-icap-mod-virus-scan
+          # The packages start their own services; this job runs the repository's configuration.
+          sudo systemctl stop clamav-freshclam clamav-daemon c-icap || true
+
+      - name: Date the signature cache
+        id: signatures
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # One download a day rather than one a run: ClamAV's mirrors throttle clients that fetch the
+      # full databases repeatedly, and a throttled job would have no scanner at all.
+      - name: Restore the ClamAV signatures
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/clamav-db
+          key: clamav-db-${{ steps.signatures.outputs.day }}
+          restore-keys: clamav-db-
+
+      - name: Update the ClamAV signatures
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/clamav-db"
+          sudo cp -a "$RUNNER_TEMP/clamav-db/." /var/lib/clamav/
+          sudo chown -R clamav:clamav /var/lib/clamav
+          if ! sudo freshclam --stdout; then
+            echo "::warning::freshclam failed; scanning with the cached signatures"
+          fi
+          # No signatures at all is a scanner that detects nothing: fail here, not in a test.
+          ls /var/lib/clamav/main.c?d /var/lib/clamav/daily.c?d
+          sudo cp -a /var/lib/clamav/. "$RUNNER_TEMP/clamav-db/"
+          sudo chown -R "$(id -u)" "$RUNNER_TEMP/clamav-db"
+
+      # Ready means scanning: `probe.mjs` requires a harmless payload passed *and* EICAR blocked,
+      # because a scanner that answers "clean" to everything passes any clean-only check.
+      - name: Start the antivirus scanner
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /var/run/clamav /var/run/c-icap /var/log/c-icap
+          sudo chown clamav:clamav /var/run/clamav
+          sudo chown c-icap /var/run/c-icap /var/log/c-icap
+          sudo clamd -c infra/antivirus/clamd.conf
+          sudo c-icap -f infra/antivirus/c-icap.conf
+          node infra/antivirus/probe.mjs "$AV_ICAP_TEST_URL" --wait 120
 
       # Through turbo rather than straight into the package, because the suites import the
       # workspace packages by their published entry points and those are built output. Running the

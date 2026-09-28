@@ -31,7 +31,11 @@ import {
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
-import { ANTIVIRUS_PORT, type AntivirusPort } from '../../../ports/antivirus.port';
+import {
+  ANTIVIRUS_PORT,
+  AntivirusScanError,
+  type AntivirusPort,
+} from '../../../ports/antivirus.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { STORAGE_PORT, type StoragePort } from '../../../ports/storage.port';
 import { StorageAudit } from '../domain/audit-actions';
@@ -136,10 +140,12 @@ export class DefaultStorageService implements StorageService {
     return this.writer.write<IssuedUploadTarget>(async () => {
       const digest = normalizeDigest(input.checksumSha256);
       if (digest !== null) {
-        const existing = await this.files.findByChecksum(digest);
-        if (existing !== null) {
+        const found = await this.files.findByChecksum(digest);
+        if (found !== null) {
           // Nothing to transfer. Still audited, and still a session, because "an upload happened"
-          // is a fact an auditor asks about whether or not bytes moved.
+          // is a fact an auditor asks about whether or not bytes moved. A blob that never received
+          // a verdict is scanned now, so re-uploading it is how it recovers — RC D-3.
+          const { file: existing, rescan } = await this.settleVerdict(found, null);
           const sessionId = this.writer.clock.nextId();
           return {
             result: {
@@ -156,6 +162,7 @@ export class DefaultStorageService implements StorageService {
               sizeBytes: input.sizeBytes,
               mimeType: verdict.format.mimeType,
               deduplicated: true,
+              ...rescan,
             }),
           };
         }
@@ -266,7 +273,7 @@ export class DefaultStorageService implements StorageService {
       const existing = await this.files.findByChecksum(digest);
       if (existing !== null) {
         await this.storage.delete(session.targetKey);
-        return await this.deduplicatedOnto(existing, id);
+        return await this.deduplicatedOnto(existing, id, null);
       }
 
       const contentKey = blobKeyFor(digest);
@@ -310,7 +317,9 @@ export class DefaultStorageService implements StorageService {
           // index refused the row, and answering "stored" would be a lie about durable content.
           throw new StorageUnavailableError('The blob could not be stored.');
         }
-        return await this.deduplicatedOnto(winner, id);
+        // This transaction already scanned these very bytes. If the winner has no verdict yet, this
+        // one is it — the verdict is not lost because the row was somebody else's to insert.
+        return await this.deduplicatedOnto(winner, id, scan);
       }
       this.requireClaimed(
         await this.sessions.settle(id, UploadSessionState.COMPLETED, fileObjectId),
@@ -357,6 +366,7 @@ export class DefaultStorageService implements StorageService {
           sizeBytes: metadata.sizeBytes,
           scanStatus: scan.status,
           ...(scan.threat !== null && { threat: scan.threat }),
+          ...(scan.failure !== null && { scanFailure: scan.failure }),
         }),
       };
     });
@@ -706,29 +716,112 @@ export class DefaultStorageService implements StorageService {
    * the dispatcher exists there is nothing to feed, and a blob left `PENDING` forever would be a
    * blob nothing can ever attach — an upload path that silently produces unusable documents.
    *
-   * With `AV_DRIVER=NONE` the port refuses, and the refusal is caught rather than propagated: the
-   * verdict becomes `SKIPPED`, which is *not* `CLEAN` and therefore not reachable. A development
-   * environment can upload; nothing can pretend the gate ran.
+   * Three outcomes, and only one of them reachable — RC D-3:
+   *
+   * - **A verdict.** `CLEAN` or `INFECTED`, from a configured scanner. Nothing else an adapter
+   *   returns is accepted as one.
+   * - **`FAILED`.** A configured scanner was asked and gave no verdict (`AntivirusScanError`:
+   *   unreachable, timed out, an error, an answer that is not a verdict). The reason is kept for the
+   *   audit record; the client is told only the status.
+   * - **`SKIPPED`.** No scanner is configured (`AV_DRIVER=NONE`, which production refuses at boot),
+   *   or anything else went wrong that is not the scanner's to report. A development environment
+   *   can upload; nothing can pretend the gate ran.
+   *
+   * Neither failure is ever `CLEAN`, and a blob in either state recovers by being uploaded again —
+   * `settleVerdict` scans it then.
    */
-  private async scan(
-    key: string,
-    sizeBytes: number,
-    mimeType: string,
-  ): Promise<{ status: ScanStatusKey; scanner: string | null; threat: string | null }> {
+  private async scan(key: string, sizeBytes: number, mimeType: string): Promise<ScanOutcome> {
     try {
       const verdict = await this.antivirus.scan({
         storageKey: key,
         sizeBytes,
         declaredMimeType: mimeType,
-        timeoutMs: SCAN_TIMEOUT_MS,
+        timeoutMs: this.config.antivirus.timeoutMs,
       });
-      return { status: verdict.status, scanner: verdict.scanner, threat: verdict.threat };
-    } catch {
+      if (verdict.status !== ScanStatus.CLEAN && verdict.status !== ScanStatus.INFECTED) {
+        return { status: ScanStatus.FAILED, scanner: null, threat: null, failure: 'NOT_A_VERDICT' };
+      }
+      return {
+        status: verdict.status,
+        scanner: verdict.scanner,
+        threat: verdict.status === ScanStatus.INFECTED ? (verdict.threat ?? 'unnamed') : null,
+        failure: null,
+      };
+    } catch (error) {
       // Never `CLEAN`. A scanner that could not be reached has not cleared anything, and the one
       // failure mode this product must not have is an environment where "upload works" means "the
       // gate is off" (`17-security-architecture.md` §10).
-      return { status: ScanStatus.SKIPPED, scanner: null, threat: null };
+      if (error instanceof AntivirusScanError) {
+        return { status: ScanStatus.FAILED, scanner: null, threat: null, failure: error.reason };
+      }
+      return { status: ScanStatus.SKIPPED, scanner: null, threat: null, failure: null };
     }
+  }
+
+  /**
+   * Gives a blob with no verdict its verdict, when somebody uploads its bytes again — RC D-3.
+   *
+   * A blob recorded `FAILED` (the scanner was down) or `SKIPPED` (no scanner was configured when it
+   * arrived) could otherwise never become `CLEAN`: every later upload of the same bytes deduplicates
+   * onto it, and nothing else scans. Re-uploading is what a person does when a file is refused, so
+   * that is where it recovers. `known` is a verdict this transaction already has for these bytes.
+   *
+   * The write is `recordScan`'s compare-and-set from those two states only, so a blob that has a
+   * verdict is never re-marked, and two uploads racing here converge on one verdict. A product-made
+   * artefact is `SKIPPED` by construction and is left alone.
+   */
+  private async settleVerdict(
+    existing: FileObjectRecord,
+    known: ScanOutcome | null,
+  ): Promise<{ file: FileObjectRecord; rescan: Readonly<Record<string, unknown>> }> {
+    const unverdicted =
+      existing.scanStatus === ScanStatus.FAILED || existing.scanStatus === ScanStatus.SKIPPED;
+    if (existing.derived || !unverdicted) {
+      return { file: existing, rescan: {} };
+    }
+    const scan =
+      known ?? (await this.scan(existing.storageKey, existing.sizeBytes, existing.mimeType));
+    if (scan.status !== ScanStatus.CLEAN && scan.status !== ScanStatus.INFECTED) {
+      return { file: existing, rescan: {} };
+    }
+    const moved = await this.files.recordScan(
+      existing.id,
+      {
+        status: scan.status,
+        scanner: scan.scanner ?? this.antivirus.scanner,
+        threat: scan.threat,
+        at: this.clock.now(),
+      },
+      [ScanStatus.FAILED, ScanStatus.SKIPPED],
+    );
+    if (!moved) {
+      // Somebody else's verdict landed first. Theirs is the verdict; read it rather than assume.
+      return { file: (await this.files.findById(existing.id)) ?? existing, rescan: {} };
+    }
+    const events: DomainEventDraft[] = [
+      fileScanCompletedEvent(asId<AnyId>(existing.id), {
+        fileObjectId: existing.id,
+        status: scan.status,
+        scanner: scan.scanner ?? 'none',
+      }),
+    ];
+    if (scan.status === ScanStatus.INFECTED) {
+      events.push(
+        fileQuarantinedEvent(asId<AnyId>(existing.id), {
+          fileObjectId: existing.id,
+          threat: scan.threat ?? 'unnamed',
+          uploadedBy: requireContext().userId ?? 'system',
+        }),
+      );
+    }
+    await this.outbox.publish(events);
+    return {
+      file: { ...existing, scanStatus: scan.status, scanThreat: scan.threat },
+      rescan: {
+        rescanned: { from: existing.scanStatus, to: scan.status },
+        ...(scan.threat !== null && { threat: scan.threat }),
+      },
+    };
   }
 
   /**
@@ -846,7 +939,21 @@ export class DefaultStorageService implements StorageService {
     // The deployment's ceiling is the outer bound. A tenant narrowing it further is settings work
     // that belongs with the rest of the tenant's configuration, and `narrowPolicy` is the seam it
     // will attach to — it can only ever restrict what is here.
-    return narrowPolicy(defaultUploadPolicy(this.config.storage.maxUploadBytes), {});
+    return narrowPolicy(defaultUploadPolicy(this.maxUploadBytes()), {});
+  }
+
+  /**
+   * The deployment's ceiling, lowered to what the scanner will be sent — RC D-3.
+   *
+   * Under `AV_DRIVER=ICAP` anything above `AV_ICAP_MAX_BYTES` would be stored, fail its scan and
+   * never be fileable. Refusing it here keeps this class's first promise: nothing is stored to find
+   * out it is refused.
+   */
+  private maxUploadBytes(): number {
+    const ceiling = this.config.storage.maxUploadBytes;
+    return this.config.providers.antivirus === 'ICAP'
+      ? Math.min(ceiling, this.config.antivirus.maxBytes)
+      : ceiling;
   }
 
   /**
@@ -898,8 +1005,13 @@ export class DefaultStorageService implements StorageService {
    * who lost the race is not left holding an `OPEN` row, and the audit records the upload against
    * the blob it actually resolved to.
    */
-  private async deduplicatedOnto(existing: FileObjectRecord, id: UploadSessionId) {
-    this.requireClaimed(await this.sessions.settle(id, UploadSessionState.COMPLETED, existing.id));
+  private async deduplicatedOnto(
+    found: FileObjectRecord,
+    id: UploadSessionId,
+    known: ScanOutcome | null,
+  ) {
+    this.requireClaimed(await this.sessions.settle(id, UploadSessionState.COMPLETED, found.id));
+    const { file: existing, rescan } = await this.settleVerdict(found, known);
     return {
       result: {
         fileObjectId: existing.id,
@@ -912,6 +1024,7 @@ export class DefaultStorageService implements StorageService {
       change: this.uploaded(existing.id, AdministrativeOperation.UPDATED, {
         deduplicated: true,
         uploadSessionId: id,
+        ...rescan,
       }),
     };
   }
@@ -988,8 +1101,13 @@ function integrityFrom(expected: string, actual: string | null): IntegrityStatus
 /** Above this an upload is offered as a resumable transfer. Mirrors the S3 adapter's threshold. */
 const MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024;
 
-/** Long enough for a large file, short enough that a hung scanner is not a hung request. */
-const SCAN_TIMEOUT_MS = 120_000;
+/** What one scan came to. `failure` is why a configured scanner gave no verdict, for the audit. */
+interface ScanOutcome {
+  readonly status: ScanStatusKey;
+  readonly scanner: string | null;
+  readonly threat: string | null;
+  readonly failure: string | null;
+}
 
 function normalizeDigest(raw: string | undefined): string | null {
   if (raw === undefined) {

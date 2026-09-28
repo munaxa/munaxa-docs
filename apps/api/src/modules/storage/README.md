@@ -78,11 +78,20 @@ refused and the bytes removed.
 
 ### The gate has no permissive default
 
-With `AV_DRIVER=NONE` the port refuses, the service catches the refusal, and the verdict is
-`SKIPPED` — which is **not** `CLEAN` and therefore not attachable. A development environment can
-upload; nothing can pretend the gate ran. The rule is enforced again by a database trigger
+With `AV_DRIVER=ICAP` (RC D-3) completion sends the stored bytes to the ICAP scanner
+(`infrastructure/providers/icap/`) through the tenant-scoped store, and records what it says:
+`CLEAN` for its `204`, `INFECTED` when it names a threat — quarantined, with a
+`storage.file-quarantined` event. A scanner that cannot give a verdict — unreachable, timed out, an
+error, an answer that is not a verdict — is `FAILED`. With `AV_DRIVER=NONE` the port refuses, and the
+verdict is `SKIPPED`. Neither is `CLEAN`, so neither is attachable: a development environment can
+upload, and nothing can pretend the gate ran. The rule is enforced again by a database trigger
 (`infra/sql/post-migrate/03-content-gate.sql`), because the use case is not the only thing that ever
 writes these rows.
+
+A blob left `FAILED` or `SKIPPED` gets its verdict the next time the same bytes are uploaded:
+deduplication would otherwise hand every later upload the same unusable blob for ever. The write is a
+compare-and-set from those two states only, so a blob with a verdict is never re-marked and racing
+re-uploads converge on one verdict (`settleVerdict`, `recordScan`).
 
 ### The server-side half — Phase 9
 

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { type ProxyTrust, ProxyTrustError, parseProxyTrust } from '@edms/utils/proxy-trust';
 
+import { type IcapEndpoint, parseIcapUrl } from './icap-url';
+
 /**
  * Typed configuration, validated once at boot.
  *
@@ -357,7 +359,27 @@ export const configSchema = z
      * notification never grants access *by virtue of* a link, and this one grants nothing.
      */
     WEB_BASE_URL: z.string().url().default('http://localhost:3000'),
+    /**
+     * The malware scanner — RC D-3.
+     *
+     * `ICAP` is the implemented driver: RESPMOD to `AV_ICAP_URL`, validated against c-icap with
+     * ClamAV. `HOSTED` stays in the enum as the promise `02-backend-architecture.md` §4 makes, and
+     * is refused below, in every environment, because no hosted adapter exists and a value that
+     * boots but never scans would be `NONE` wearing a different name — the `OCR_DRIVER=HOSTED`
+     * precedent.
+     */
     AV_DRIVER: z.enum(['NONE', 'ICAP', 'HOSTED']).default('NONE'),
+    /** `icap://host[:port]/service`. Required by `AV_DRIVER=ICAP`. */
+    AV_ICAP_URL: z.string().optional(),
+    /**
+     * The largest content sent to the scanner. The adapter reads the whole object before sending it
+     * (`StoragePort.read` has no streaming form), so this is a memory bound as well as a scan one —
+     * and under `ICAP` the upload policy refuses anything larger, before a byte is stored, because
+     * an upload that can never be scanned can never be filed.
+     */
+    AV_ICAP_MAX_BYTES: z.coerce.number().int().min(1_024).default(134_217_728),
+    /** How long one scan may take. A scanner that has not answered by then has cleared nothing. */
+    AV_SCAN_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
     /**
      * The office-to-PDF converter. `NONE` degrades honestly: Office documents keep their
      * extracted text and lose their paginated rendition — the same posture as `OCR_DRIVER=NONE`.
@@ -765,6 +787,45 @@ export const configSchema = z
       }
     }
 
+    // --- Antivirus, in every environment — RC D-3 ------------------------------------------
+    //
+    // A driver name with nothing behind it is refused wherever it appears. Production used to
+    // accept `ICAP` and `HOSTED` while the port stayed bound to the unconfigured adapter, so a
+    // deployment could boot, report ready, and never scan anything.
+    if (config.AV_DRIVER === 'HOSTED') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AV_DRIVER'],
+        message: 'AV_DRIVER=HOSTED has no adapter in this build; use ICAP with AV_ICAP_URL.',
+      });
+    }
+    if (config.AV_DRIVER === 'ICAP') {
+      if (config.AV_ICAP_URL === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AV_ICAP_URL'],
+          message: 'AV_DRIVER=ICAP requires AV_ICAP_URL, e.g. icap://scanner:1344/avscan.',
+        });
+      } else {
+        try {
+          parseIcapUrl(config.AV_ICAP_URL);
+        } catch (error) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AV_ICAP_URL'],
+            message: `AV_ICAP_URL ${(error as Error).message}.`,
+          });
+        }
+      }
+    } else if (config.AV_ICAP_URL !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AV_ICAP_URL'],
+        message:
+          'AV_ICAP_URL is set but AV_DRIVER is not ICAP, so nothing would scan; set both or neither.',
+      });
+    }
+
     if (config.NODE_ENV !== 'production') {
       return;
     }
@@ -955,6 +1016,12 @@ export interface AppConfig {
     readonly mail: RawConfig['MAIL_DRIVER'];
     readonly antivirus: RawConfig['AV_DRIVER'];
     readonly office: RawConfig['OFFICE_DRIVER'];
+  };
+  /** The scanner behind `AV_DRIVER` — RC D-3. `icap` is null unless the driver is `ICAP`. */
+  readonly antivirus: {
+    readonly icap: IcapEndpoint | null;
+    readonly maxBytes: number;
+    readonly timeoutMs: number;
   };
   readonly ocr: {
     readonly tesseractPath: string;
@@ -1184,6 +1251,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       mail: raw.MAIL_DRIVER,
       antivirus: raw.AV_DRIVER,
       office: raw.OFFICE_DRIVER,
+    },
+    antivirus: {
+      icap: raw.AV_ICAP_URL === undefined ? null : parseIcapUrl(raw.AV_ICAP_URL),
+      maxBytes: raw.AV_ICAP_MAX_BYTES,
+      timeoutMs: raw.AV_SCAN_TIMEOUT_MS,
     },
     ocr: {
       tesseractPath: raw.OCR_TESSERACT_PATH,

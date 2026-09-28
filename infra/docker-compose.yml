@@ -70,7 +70,30 @@ services:
       timeout: 5s
       retries: 10
 
+  antivirus:
+    # The ICAP malware scanner the API's `AV_DRIVER=ICAP` adapter speaks to — c-icap in front of
+    # ClamAV, built from ./antivirus with the hardened configuration CI validates against (RC D-3).
+    # Point the API at it with AV_DRIVER=ICAP and AV_ICAP_URL=icap://localhost:1344/avscan. The
+    # first start downloads ClamAV's signatures, which takes a minute.
+    build: ./antivirus
+    ports:
+      - '1344:1344'
+    volumes:
+      - antivirus-signatures:/var/lib/clamav
+    healthcheck:
+      # A real scan through the engine, not an ICAP ping: c-icap answers OPTIONS with clamd dead.
+      test:
+        [
+          'CMD-SHELL',
+          'c-icap-client -i 127.0.0.1 -p 1344 -s avscan -f /etc/hostname -resp http://probe/ -v 2>&1 | grep -q "ICAP/1.0 204"',
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
 volumes:
   postgres-data:
   redis-data:
   storage-data:
+  antivirus-signatures:

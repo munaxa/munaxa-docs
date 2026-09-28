@@ -145,6 +145,12 @@ Rules:
   verdict is written.
 - With `AV_DRIVER=NONE` the verdict is `SKIPPED`, which is **not** `CLEAN`. A development
   environment can upload; nothing can pretend the gate ran.
+- **As built (RC D-3):** `AV_DRIVER=ICAP` scans synchronously at completion rather than on a worker.
+  The API sends the stored bytes to the ICAP service (c-icap with ClamAV is what CI validates).
+  `CLEAN` only for the scanner's own `204`; `INFECTED` when it names a threat — the blob is kept,
+  unreachable, and the quarantine event is raised. A scanner that gives no verdict is `FAILED`,
+  never `CLEAN`. A `FAILED` or `SKIPPED` blob is scanned again when its bytes are uploaded again.
+  The scanner's fail-closed requirements are in `docs/operations/deployment.md` §3.2.
 - Validation is by **content sniffing, not extension**: declared MIME must match the detected type,
   the type must be in the tenant's allow-list, and size must be within the type's limit.
 - Uploads are quota-checked per tenant before presigning.

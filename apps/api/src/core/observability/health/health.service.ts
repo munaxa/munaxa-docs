@@ -3,6 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { DependencyCheck, DependencyStatus, HealthReport } from '@edms/contracts';
 
 import { APP_CONFIG, type AppConfig } from '../../config';
+import { ANTIVIRUS_PORT, type AntivirusPort } from '../../../ports/antivirus.port';
 import { CACHE_PORT, type CachePort } from '../../../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { TenantDatabase } from '../../prisma/tenant-database';
@@ -24,6 +25,7 @@ export class HealthService {
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(TenantDatabase) private readonly databases: TenantDatabase,
     @Inject(CACHE_PORT) private readonly cache: CachePort,
+    @Inject(ANTIVIRUS_PORT) private readonly antivirus: AntivirusPort,
   ) {}
 
   async report(): Promise<HealthReport> {
@@ -32,6 +34,7 @@ export class HealthService {
       this.probe('cache', async () => {
         await this.cache.get('health:probe');
       }),
+      ...this.antivirusProbe(),
     ]);
 
     return {
@@ -81,6 +84,30 @@ export class HealthService {
     return sampled.map((placement) =>
       this.probe(`database:${placement.slug}${suffix}`, () => this.databases.ping(placement.id)),
     );
+  }
+
+  /**
+   * The scanner, when one is configured — RC D-3.
+   *
+   * A real scan of a few harmless bytes, not a ping: an ICAP server answers `OPTIONS` perfectly well
+   * with the engine behind it dead, and a probe that only asked the front door would report the gate
+   * healthy while every upload was being recorded `FAILED`.
+   *
+   * `DEGRADED` rather than `DOWN` when it fails. Every instance shares the scanner, so pulling this
+   * one out of rotation would fix nothing and would stop reads that do not need it; what the
+   * operator needs is to be told, and uploads meanwhile are refused rather than let through. Absent
+   * under `AV_DRIVER=NONE`, so nothing reports a gate that is off as up.
+   */
+  private antivirusProbe(): Promise<DependencyCheck>[] {
+    const probe = this.antivirus.probe?.bind(this.antivirus);
+    if (this.config.providers.antivirus === 'NONE' || probe === undefined) {
+      return [];
+    }
+    return [
+      this.probe('antivirus', () => probe(PROBE_TIMEOUT_MS)).then((check) =>
+        check.status === 'DOWN' ? { ...check, status: 'DEGRADED' as const } : check,
+      ),
+    ];
   }
 
   private async probe(name: string, check: () => Promise<unknown>): Promise<DependencyCheck> {

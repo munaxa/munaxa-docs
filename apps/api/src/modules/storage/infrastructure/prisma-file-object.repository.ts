@@ -87,9 +87,10 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
   async recordScan(
     id: FileObjectId,
     verdict: { status: ScanStatusKey; scanner: string; threat: string | null; at: Date },
-  ): Promise<void> {
-    await requireTransaction().fileObject.updateMany({
-      where: { id, tenantId: this.tenantId() },
+    from: readonly ScanStatusKey[],
+  ): Promise<boolean> {
+    const { count } = await requireTransaction().fileObject.updateMany({
+      where: { id, tenantId: this.tenantId(), deletedAt: null, scanStatus: { in: [...from] } },
       data: {
         scanStatus: verdict.status,
         scanner: verdict.scanner,
@@ -98,6 +99,7 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
         ...this.stamps.update(),
       },
     });
+    return count === 1;
   }
 
   /**

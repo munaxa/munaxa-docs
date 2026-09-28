@@ -152,7 +152,7 @@ export const STORAGE_PORT = Symbol('StoragePort');
 | `OcrPort` | `TesseractAdapter`, later a hosted OCR | `OCR_DRIVER` |
 | `PreviewPort` | `RendererRegistry` dispatching to per-format renderers | always the registry |
 | `NotificationPort` | `SmtpAdapter`, `ResendAdapter`, in-app writer | `MAIL_DRIVER` |
-| `AntivirusPort` | `NoopScanner` (dev, refuses to run outside dev), `IcapScanner`, hosted API | `AV_DRIVER` |
+| `AntivirusPort` | `UnconfiguredAntivirusAdapter` (`NONE`, refused in production), `IcapAntivirusAdapter` (`ICAP`, RC D-3); a hosted API is not built and `HOSTED` is refused | `AV_DRIVER`, `AV_ICAP_URL` |
 | `ClockPort` | System clock, fixed clock in tests | environment |
 
 Rules that keep this honest:

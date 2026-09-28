@@ -242,6 +242,7 @@ describe('production boot refusals', () => {
     MAIL_RESEND_API_KEY: 're_ci_only_not_a_secret',
     MAIL_FROM_ADDRESS: 'docs@munaxa.com',
     AV_DRIVER: 'ICAP',
+    AV_ICAP_URL: 'icap://scanner.internal:1344/avscan',
     AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
     SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
     MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
@@ -255,6 +256,9 @@ describe('production boot refusals', () => {
 
   it.each([
     ['the antivirus gate', { AV_DRIVER: 'NONE' }],
+    // RC D-3: a scanner named but not wired used to boot and scan nothing.
+    ['a scanner with no address', { AV_ICAP_URL: undefined }],
+    ['a hosted scanner, which has no adapter', { AV_DRIVER: 'HOSTED' }],
     ['object storage', { STORAGE_DRIVER: 'NONE' }],
     ['a mail provider', { MAIL_DRIVER: 'NONE' }],
     ['the audit checkpoint key', { AUDIT_CHECKPOINT_SECRET: undefined }],

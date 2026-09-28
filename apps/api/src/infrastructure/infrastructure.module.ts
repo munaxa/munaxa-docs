@@ -6,7 +6,7 @@ import { APP_CONFIG, type AppConfig } from '../core/config';
 import { LOGGER, type Logger } from '../core/observability/logger';
 import { METRICS, type Metrics } from '../core/observability/metrics';
 import { METRICS_REGISTRY, type MetricsRegistry } from '../core/observability/metrics-registry';
-import { ANTIVIRUS_PORT } from '../ports/antivirus.port';
+import { ANTIVIRUS_PORT, type AntivirusPort } from '../ports/antivirus.port';
 import { CACHE_PORT } from '../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../ports/clock.port';
 import { NOTIFICATION_PORT, type NotificationPort } from '../ports/notification.port';
@@ -22,6 +22,7 @@ import { SystemClockAdapter } from './clock/system-clock.adapter';
 import { NoOpMetricsAdapter } from './observability/no-op-metrics.adapter';
 import { PrometheusMetricsAdapter } from './observability/prometheus-metrics.adapter';
 import { AllowListedHttpAdapter } from './providers/allow-listed-http.adapter';
+import { IcapAntivirusAdapter } from './providers/icap/icap-antivirus.adapter';
 import { ResendMailAdapter } from './providers/resend-mail.adapter';
 import { SmtpMailAdapter } from './providers/smtp/smtp-mail.adapter';
 import { TesseractOcrAdapter } from './providers/tesseract-ocr.adapter';
@@ -180,6 +181,39 @@ function ocrAdapterFor(config: AppConfig): OcrPort {
     case 'NONE':
     default:
       return new UnconfiguredOcrAdapter();
+  }
+}
+
+/**
+ * The malware scanner, chosen by configuration — RC D-3.
+ *
+ * This was `useClass: UnconfiguredAntivirusAdapter`, whatever `AV_DRIVER` said, so a production
+ * deployment configured for ICAP booted and recorded every upload `SKIPPED`. Now the driver selects
+ * the adapter, and the only way to the unconfigured refusal is `AV_DRIVER=NONE` — which production
+ * validation refuses at boot.
+ *
+ * The adapter reads what it scans through the bound `STORAGE_PORT`, which is the tenant wrapper, so
+ * it can only ever read the calling tenant's objects. `HOSTED` is refused by configuration
+ * validation before this runs; the throw here is the same refusal, for a caller that built an
+ * `AppConfig` by hand. There is no test-only scanner anywhere in this selection.
+ */
+export function antivirusAdapterFor(config: AppConfig, storage: StoragePort): AntivirusPort {
+  switch (config.providers.antivirus) {
+    case 'ICAP': {
+      const endpoint = config.antivirus.icap;
+      if (endpoint === null) {
+        throw new Error('AV_DRIVER=ICAP requires AV_ICAP_URL.');
+      }
+      return new IcapAntivirusAdapter(
+        { endpoint, maxBytes: config.antivirus.maxBytes, timeoutMs: config.antivirus.timeoutMs },
+        storage,
+      );
+    }
+    case 'HOSTED':
+      throw new Error('AV_DRIVER=HOSTED has no adapter in this build; use ICAP.');
+    case 'NONE':
+    default:
+      return new UnconfiguredAntivirusAdapter();
   }
 }
 
@@ -359,7 +393,11 @@ function requireBucket(config: AppConfig): string {
     // module's plugins, and this file would otherwise have to import them all.
     { provide: OCR_PORT, useFactory: ocrAdapterFor, inject: [APP_CONFIG] },
     { provide: NOTIFICATION_PORT, useFactory: mailAdapterFor, inject: [APP_CONFIG] },
-    { provide: ANTIVIRUS_PORT, useClass: UnconfiguredAntivirusAdapter },
+    {
+      provide: ANTIVIRUS_PORT,
+      useFactory: antivirusAdapterFor,
+      inject: [APP_CONFIG, STORAGE_PORT],
+    },
     // Phase 17: the only thing in the product that may reach a tenant-chosen address, and the
     // whole of 17 §6's SSRF row. One binding, so there is no second way out.
     {

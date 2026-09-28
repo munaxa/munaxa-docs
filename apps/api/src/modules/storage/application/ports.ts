@@ -59,10 +59,19 @@ export interface FileObjectRepository {
    * violation aborts the PostgreSQL transaction and the recovery a caller needs is a read.
    */
   insert(file: NewFileObject): Promise<boolean>;
+  /**
+   * Writes a verdict onto a blob that has none yet — RC D-3.
+   *
+   * A compare-and-set: the row moves only while its status is still one of `from`, and the answer
+   * says whether this call moved it. Two uploads re-scanning the same unscanned blob at once both
+   * scan; one writes, the other reads the row back — so the verdict is never overwritten by a later
+   * one, and a blob that already has a verdict is never touched.
+   */
   recordScan(
     id: FileObjectId,
     verdict: { status: ScanStatusKey; scanner: string; threat: string | null; at: Date },
-  ): Promise<void>;
+    from: readonly ScanStatusKey[],
+  ): Promise<boolean>;
   /**
    * Moves the reference count by `by`, and answers with the new value.
    *
