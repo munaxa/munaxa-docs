@@ -19,14 +19,24 @@
  *
  *   node infra/loadtest/run.mjs \
  *     --base-url https://staging.docs.munaxa.com \
- *     --token "$ACCESS_TOKEN" \
- *     --folder-id … --document-id … --file-object-id … --search-term policy
+ *     --tokens-file tokens.txt \
+ *     --folder-id … --document-id … --search-term policy
+ *
+ * `--tokens-file` holds one access token per line, one per test user (`--token` is one user). Each
+ * virtual user takes its own identity, round-robin, and is paced to its scenario's
+ * `perUserIntervalMs` — the API's per-identity rate limits, which a real person keeps to. With
+ * fewer identities than virtual users, the users sharing one identity share its allowance, so a
+ * run cannot quietly turn into a measurement of the rate limiter: every 429 is counted in its own
+ * column (STG-7). Provide at least as many identities as the largest scenario's concurrency (100)
+ * for the scenarios to run at full rate.
  *
  * It exits non-zero when a scenario misses its threshold, so a release step can gate on it.
  */
 
+import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { argv, exit, stdout } from 'node:process';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import { NOT_IMPLEMENTED, SCENARIOS } from './scenarios.mjs';
 
@@ -51,6 +61,23 @@ function required(parsed, name) {
   return value;
 }
 
+/** One access token per test user: `--tokens-file` (one per line), or a single `--token`. */
+function identities(parsed) {
+  const file = parsed.get('tokens-file');
+  const tokens =
+    file !== undefined && file !== ''
+      ? readFileSync(file, 'utf8')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line !== '')
+      : [required(parsed, 'token')];
+  if (tokens.length === 0) {
+    stdout.write('--tokens-file holds no tokens.\n');
+    exit(2);
+  }
+  return tokens;
+}
+
 /**
  * The percentile of a sorted sample, by nearest rank.
  *
@@ -70,8 +97,13 @@ async function runScenario(scenario, context) {
   const deadline = performance.now() + scenario.durationSeconds * 1_000;
   const latencies = [];
   let failures = 0;
+  let rateLimited = 0;
+  // Users sharing an identity share its allowance: pace each so the identity stays inside it.
+  const usersPerIdentity = Math.ceil(scenario.concurrency / context.tokens.length);
+  const intervalMs = (scenario.perUserIntervalMs ?? 0) * usersPerIdentity;
 
-  const worker = async () => {
+  const worker = async (index) => {
+    const token = context.tokens[index % context.tokens.length];
     while (performance.now() < deadline) {
       const spec = scenario.request(context);
       const startedAt = performance.now();
@@ -79,7 +111,7 @@ async function runScenario(scenario, context) {
         const response = await fetch(`${context.baseUrl}${spec.path}`, {
           method: spec.method,
           headers: {
-            authorization: `Bearer ${context.token}`,
+            authorization: `Bearer ${token}`,
             ...(spec.body === undefined ? {} : { 'content-type': 'application/json' }),
           },
           ...(spec.body === undefined ? {} : { body: JSON.stringify(spec.body) }),
@@ -90,6 +122,9 @@ async function runScenario(scenario, context) {
         const elapsed = performance.now() - startedAt;
         if (response.ok) {
           latencies.push(elapsed);
+        } else if (response.status === 429) {
+          // Counted apart: a run whose users exceed their allowance measures the limiter.
+          rateLimited += 1;
         } else {
           // A refusal is not a measurement. Counted, never timed: mixing 403s into the sample is
           // how a load test reports an excellent p95 for a scenario that authorised nothing.
@@ -98,10 +133,15 @@ async function runScenario(scenario, context) {
       } catch {
         failures += 1;
       }
+      // Paced from the start of the request, so a slow answer does not also slow the next ask.
+      const wait = intervalMs - (performance.now() - startedAt);
+      if (wait > 0 && performance.now() + wait < deadline) {
+        await sleep(wait);
+      }
     }
   };
 
-  await Promise.all(Array.from({ length: scenario.concurrency }, () => worker()));
+  await Promise.all(Array.from({ length: scenario.concurrency }, (_, index) => worker(index)));
 
   const sorted = [...latencies].sort((left, right) => left - right);
   return {
@@ -109,6 +149,11 @@ async function runScenario(scenario, context) {
     title: scenario.title,
     requests: latencies.length,
     failures,
+    rateLimited,
+    concurrency: scenario.concurrency,
+    identities: Math.min(context.tokens.length, scenario.concurrency),
+    intervalMs,
+    durationSeconds: scenario.durationSeconds,
     p50: percentile(sorted, 0.5),
     p95: percentile(sorted, 0.95),
     p99: percentile(sorted, 0.99),
@@ -117,17 +162,27 @@ async function runScenario(scenario, context) {
 }
 
 function report(results) {
-  stdout.write('\n| Scenario | Requests | Failures | p50 | p95 | target | p99 | target | |\n');
-  stdout.write('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n');
+  stdout.write(
+    '\n| Scenario | Users | Identities | Pace | Duration | Requests | Failures | 429 | p50 | p95 | target | p99 | target | |\n',
+  );
+  stdout.write(
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n',
+  );
   let missed = 0;
   for (const result of results) {
-    const ok = result.p95 <= result.thresholds.p95 && result.p99 <= result.thresholds.p99;
+    // A scenario that authorised nothing, or was mostly refused, has not met anything.
+    const ok =
+      result.requests > 0 &&
+      result.failures + result.rateLimited <= result.requests * 0.01 &&
+      result.p95 <= result.thresholds.p95 &&
+      result.p99 <= result.thresholds.p99;
     if (!ok) {
       missed += 1;
     }
     const ms = (value) => (Number.isNaN(value) ? '—' : `${Math.round(value)} ms`);
     stdout.write(
-      `| ${result.title} | ${result.requests} | ${result.failures} | ${ms(result.p50)} | ` +
+      `| ${result.title} | ${result.concurrency} | ${result.identities} | ${result.intervalMs} ms | ` +
+        `${result.durationSeconds} s | ${result.requests} | ${result.failures} | ${result.rateLimited} | ${ms(result.p50)} | ` +
         `${ms(result.p95)} | ${result.thresholds.p95} ms | ${ms(result.p99)} | ` +
         `${result.thresholds.p99} ms | ${ok ? 'met' : '**missed**'} |\n`,
     );
@@ -143,10 +198,9 @@ function report(results) {
 const parsed = options();
 const context = {
   baseUrl: required(parsed, 'base-url').replace(/\/+$/, ''),
-  token: required(parsed, 'token'),
+  tokens: identities(parsed),
   folderId: required(parsed, 'folder-id'),
   documentId: required(parsed, 'document-id'),
-  fileObjectId: required(parsed, 'file-object-id'),
   searchTerm: parsed.get('search-term') ?? 'policy',
 };
 

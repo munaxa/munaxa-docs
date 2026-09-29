@@ -108,7 +108,7 @@ The test passes when all four hold:
 
 1. The restored database migrates cleanly with `apply-post-migrate.mjs`, which **raises** on a
    tenant-scoped table without row-level security rather than reporting success.
-2. `audit.verify-chain` walks the restored trail from genesis and reports `intact`.
+2. `audit.verify-chain` walks the restored trail from genesis and reports it intact: the log says "The audit chain verified" for the tenant, and the metric `audit.chain.verified` is recorded with `intact="true"` (a break logs "The audit chain failed verification").
 3. The last signed checkpoint before the restore point **recomputes** against the restored rows.
    A checkpoint that does not is the one signal that distinguishes a restore from a rewrite.
 4. A sample of documents' blobs re-hash to their recorded checksums — which since Phase 18 is a

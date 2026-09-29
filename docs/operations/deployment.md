@@ -279,9 +279,10 @@ Go/No-Go checklist is [`go-live-runbook.md`](./go-live-runbook.md).
 - [ ] `node infra/antivirus/probe.mjs <AV_ICAP_URL>` exits 0 against the production scanner — clean
       passed *and* EICAR blocked (§3.2) — and `/api/health` lists `antivirus` as `UP`
 - [ ] Staging smoke: sign in, open a document, run a search, and confirm the audit chain verifies
-- [ ] `infra/loadtest/run.mjs` against staging, and the table it prints attached to the release —
-      see the caveat in `scenarios.mjs`: no phase has yet recorded a baseline, so the first run
-      *is* the baseline rather than a comparison
+- [ ] `infra/loadtest/run.mjs` against staging with many test identities (`--tokens-file`), and the
+      table it prints attached to the release — see the caveat in `scenarios.mjs`: no phase has yet
+      recorded a baseline, so the first run *is* the baseline rather than a comparison. A run with
+      more than 1% failures or 429s is not a baseline
 - [ ] The backup restore test is within its quarter ([backup-and-restore.md](./backup-and-restore.md))
 - [ ] Production migration from a checkout at the release commit, then API, then web — see §1 on
       why the worker image is not part of an ordinary deployment

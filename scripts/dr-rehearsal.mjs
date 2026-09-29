@@ -29,9 +29,11 @@
 //
 // ## Usage
 //
-//   DATABASE_MIGRATION_URL=…        the first tenant's database, as its owner
+//   DATABASE_MIGRATION_URL=…        the first tenant's database, as a role that reads through forced
+//                                   RLS (a BYPASSRLS backup role or a superuser — the owner is refused)
 //   SECOND_DATABASE_MIGRATION_URL=… the second tenant's, or empty for a one-tenant rehearsal
-//   DR_DEST_ADMIN_URL=…             a superuser on the EMPTY destination cluster
+//   DR_DEST_ADMIN_URL=…             a superuser on the EMPTY destination cluster, which must accept
+//                                   edms_owner and edms_app without a password (see destUrl)
 //   DR_BACKUP_DIR=…                 where the artefacts are written
 //
 //   node scripts/dr-rehearsal.mjs

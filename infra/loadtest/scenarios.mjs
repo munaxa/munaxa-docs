@@ -25,6 +25,16 @@
  * do with the release.
  */
 
+/**
+ * How often one person can ask, per the API's own per-identity limits (`core/security/rate-limit.ts`):
+ * `search` 60 a minute, everything else here `default` 300 a minute. A virtual user is paced to
+ * stay inside its identity's allowance, with a margin, so a run measures the application rather
+ * than its rate limiter — STG-7. The limits are not changed to make a test pass; the harness models
+ * people who each keep to them, and `run.mjs` shares an allowance when users share an identity.
+ */
+const DEFAULT_RULE_INTERVAL_MS = 250; // 300/min → one per 200 ms, plus margin
+const SEARCH_RULE_INTERVAL_MS = 1_100; // 60/min → one per 1,000 ms, plus margin
+
 /** Every threshold below is `19-performance-and-scalability.md` §1's own table, in milliseconds. */
 export const SCENARIOS = Object.freeze([
   {
@@ -35,9 +45,12 @@ export const SCENARIOS = Object.freeze([
     /** Concurrent virtual users. 19 §1's "500 concurrent" divided across the read scenarios. */
     concurrency: 50,
     durationSeconds: 60,
+    perUserIntervalMs: DEFAULT_RULE_INTERVAL_MS,
+    // The folder listing the web application uses. The previous target, `/folders/:id/documents`,
+    // does not exist (STG-7: every request answered 404).
     request: (context) => ({
       method: 'GET',
-      path: `/api/v1/folders/${context.folderId}/documents?limit=100`,
+      path: `/api/v1/documents?folderId=${context.folderId}&pageSize=100`,
     }),
   },
   {
@@ -46,6 +59,7 @@ export const SCENARIOS = Object.freeze([
     thresholds: { p95: 300, p99: 700 },
     concurrency: 50,
     durationSeconds: 60,
+    perUserIntervalMs: DEFAULT_RULE_INTERVAL_MS,
     request: (context) => ({ method: 'GET', path: `/api/v1/documents/${context.documentId}` }),
   },
   {
@@ -54,6 +68,7 @@ export const SCENARIOS = Object.freeze([
     thresholds: { p95: 800, p99: 1_500 },
     concurrency: 100,
     durationSeconds: 120,
+    perUserIntervalMs: SEARCH_RULE_INTERVAL_MS,
     request: (context) => ({
       method: 'GET',
       path: `/api/v1/search?q=${encodeURIComponent(context.searchTerm)}&limit=20`,
@@ -65,10 +80,12 @@ export const SCENARIOS = Object.freeze([
     thresholds: { p95: 150, p99: 400 },
     concurrency: 25,
     durationSeconds: 60,
+    perUserIntervalMs: DEFAULT_RULE_INTERVAL_MS,
+    // The download a person makes: the API audits the issuance and signs a short-lived URL. The
+    // previous target, `/files/:id/download-url`, does not exist (STG-7: every request 404).
     request: (context) => ({
       method: 'POST',
-      path: `/api/v1/files/${context.fileObjectId}/download-url`,
-      body: { filename: 'procedure.pdf' },
+      path: `/api/v1/documents/${context.documentId}/content`,
     }),
   },
   {
@@ -82,6 +99,7 @@ export const SCENARIOS = Object.freeze([
     thresholds: { p95: 500, p99: 1_200 },
     concurrency: 100,
     durationSeconds: 60,
+    perUserIntervalMs: DEFAULT_RULE_INTERVAL_MS,
     request: () => ({ method: 'GET', path: '/api/v1/dashboard' }),
   },
 ]);
@@ -97,12 +115,14 @@ export const NOT_IMPLEMENTED = Object.freeze([
   {
     scenario: '100 parallel uploads',
     why: 'Bytes never pass through the API (19 §2), so what this measures is the object store’s ingest rate and the presign path — and the presign path is measured above. A harness that uploaded through this process would be measuring a path production does not have.',
-    closes: 'A driver that writes to the presigned URL directly, which is a storage benchmark rather than an application one.',
+    closes:
+      'A driver that writes to the presigned URL directly, which is a storage benchmark rather than an application one.',
   },
   {
     scenario: '500 approvals per minute',
     why: 'A write scenario needs a seeded corpus with documents in the right state and an approver per request, and it leaves the tenant permanently changed. That is a fixture generator, not a request loop, and it is the larger half of the work.',
-    closes: 'A seeding step in the same directory, which the deployment runbook’s staging refresh would run first.',
+    closes:
+      'A seeding step in the same directory, which the deployment runbook’s staging refresh would run first.',
   },
   {
     scenario: 'A full-tenant index rebuild',

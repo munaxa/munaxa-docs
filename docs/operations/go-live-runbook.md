@@ -136,7 +136,7 @@ Every row is a gate for go-live. "Deployment-specific" means **[PRODUCTION-SPECI
 
 Capacity figures (CPU, replica counts, database sizes, storage growth) are **[PRODUCTION-SPECIFIC]**.
 The repository records no production load baseline: `infra/loadtest/run.mjs` against staging
-produces the first one (§14).
+produces the first one (§14), run with many test identities.
 
 ## 5. Environment variables and secrets
 
@@ -151,7 +151,7 @@ with a placeholder. **Secrets come from the secret store. Never put a real value
 | --- | --- | --- | --- | --- | --- |
 | `NODE_ENV` | Turns on production validation | yes | `production` (the image sets it) | no | Must be `production` |
 | `PORT` | Listen port | no (3001) | integer | no | — |
-| `DATABASE_URL` | Runtime connection, single-tenant installs | yes, or via the catalogue | `postgresql://edms_app@host:5432/db` | **yes** | The restricted `edms_app` role (`NOBYPASSRLS`) |
+| `DATABASE_URL` | Runtime connection. **Required even with a tenant catalogue**: the configuration schema refuses to start without it (staging finding STG-5). With a catalogue, set it to one tenant's `edms_app` URL, as CI does with its first tenant | **yes, always** | `postgresql://edms_app@host:5432/db` | **yes** | The restricted `edms_app` role (`NOBYPASSRLS`) |
 | `DATABASE_MIGRATION_URL` | Owner connection, **migrations only** | only where migrations run | `postgresql://edms_owner@…` | **yes** | Never in a running API's environment (deployment.md §3) |
 | `DEPLOYMENT_PROFILE` | `ON_PREMISE` or `CLOUD` | no (`ON_PREMISE`) | enum | no | `CLOUD` requires a tenant catalogue and remote storage |
 | `TENANT_ID` + `TENANT_SLUG` | Single-tenant install | one of these **or** a catalogue | UUID, slug | no | Cannot be combined with a catalogue |
@@ -169,7 +169,8 @@ with a placeholder. **Secrets come from the secret store. Never put a real value
 | `STORAGE_REGION` / `STORAGE_ENDPOINT` | Region, custom endpoint | as the provider needs | region; URL | no | **[PRODUCTION-SPECIFIC]** |
 | `STORAGE_ACCESS_KEY_ID` + `STORAGE_SECRET_ACCESS_KEY` (+ `STORAGE_SESSION_TOKEN`) | Store credentials | both or neither (neither = instance role) | — | **yes** | Half a pair is refused |
 | `STORAGE_FORCE_PATH_STYLE` | Path-style addressing (MinIO and most S3-compatibles) | no (`false`) | `true`/`false` | no | — |
-| `STORAGE_LOCAL_ROOT`, `STORAGE_PUBLIC_URL` | `LOCAL` driver only: directory, and the API's public URL for transfers | with `LOCAL` | path; URL | no | `LOCAL` needs a mounted volume |
+| `STORAGE_LOCAL_ROOT` | `LOCAL` driver only: the directory | with `LOCAL` | path | no | `LOCAL` needs a mounted volume |
+| `STORAGE_PUBLIC_URL` | The public origin at which browsers reach the API. It is the base of the **preview stream URLs** handed to browsers under **every** storage driver, and of `LOCAL`'s transfer URLs | **yes in production, with every driver** | URL, e.g. `https://docs.example.com` | no | Unset, it defaults to `http://localhost:<PORT>` and every preview is broken for every user (staging finding STG-3). Set it to the origin the browser uses for `/api` **[PRODUCTION-SPECIFIC]** |
 | `STORAGE_MAX_UPLOAD_BYTES` | Deployment upload ceiling | no (2 GiB) | integer | no | Under ICAP the effective limit is `min(this, AV_ICAP_MAX_BYTES)` |
 | `MAIL_DRIVER` | Mail | **yes in production** | `SMTP` or `RESEND` | no | `NONE` refused |
 | `MAIL_FROM_ADDRESS` | Sender | yes with a mail driver | email | no | **[PRODUCTION-SPECIFIC]** |
@@ -212,6 +213,7 @@ browser signs in from the web server's address and shares one rate-limit allowan
 | `TENANT_SLUG`, `TENANT_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` (+ the API's database variables) | `node dist/provision.js`, from `apps/api` (a new tenant's first administrator) | From the environment, never from arguments. `ADMIN_PASSWORD` is **secret** |
 | `REDIS_URL` | `scripts/dr-verify-chain.mjs`, `scripts/run-schedule.mjs` | Enqueue a schedule now |
 | `STORAGE_*` | `scripts/storage-backup.mjs` | Backup, verify, restore |
+| A **backup role** URL (`edms_backup`, §6 step 1b) | `pg_dump` (§19.2), and as `DATABASE_MIGRATION_URL`/`SECOND_DATABASE_MIGRATION_URL` for `scripts/dr-rehearsal.mjs` (§23) | Must read through forced row-level security (STG-2). **Secret** |
 | `DATABASE_MIGRATION_URL`, `SECOND_DATABASE_MIGRATION_URL`, `DATABASE_URL`, `SECOND_DATABASE_URL`, `DR_DEST_ADMIN_URL`, `DR_BACKUP_DIR` | `scripts/dr-rehearsal.mjs` | DR rehearsal into an empty cluster |
 | `AV_ICAP_TEST_URL` | the integration suite only | **Never** set in production |
 
@@ -224,6 +226,20 @@ Once per cluster, then once per tenant database. Order from `infra/sql/README.md
    and `edms_app` gets no password. Issue its credential from your secret store
    **[PRODUCTION-SPECIFIC]**. Do not use `02-app-credentials.sh` in production: it exists for the
    local compose stack.
+
+   **1b. A backup role, once per cluster** (staging finding STG-2). Row-level security is **forced**
+   on every tenant table, so it applies to the table owner too: `pg_dump` as `edms_owner` fails with
+   *"query would be affected by row-level security policy"*. A logical backup needs a role that
+   bypasses row-level security and can read everything, and nothing else:
+
+   ```sql
+   CREATE ROLE edms_backup LOGIN BYPASSRLS PASSWORD '<from the secret store>';
+   GRANT pg_read_all_data TO edms_backup;   -- PostgreSQL 14+: read access, no write
+   ```
+
+   Or use the cluster superuser, or your backup product's own role if it already bypasses
+   row-level security. **Never** grant `BYPASSRLS` to `edms_owner` or `edms_app`, and never weaken
+   or disable the policies to take a backup. Physical backups (base backup + WAL) are not affected.
 2. **One empty database per tenant**, owned by `edms_owner`, with names that match the catalogue
    **[PRODUCTION-SPECIFIC]**.
 3. **The catalogue.** List every tenant's `id`, `slug`, database URLs and storage prefix, in
@@ -511,7 +527,7 @@ results are attached to the change record.
 | Object storage and database outage | §24.3, §24.4 |
 | Backup and restore | §23: a DR rehearsal into an empty environment, ending with a real-scanner smoke test |
 | Tenant isolation | Two tenants: tenant B cannot open, list, search or download tenant A's documents, and gets the same answer as for an identifier that does not exist |
-| Load-test baseline | `infra/loadtest/run.mjs` against staging, with the table it prints attached. The first run *is* the baseline (deployment.md §7) |
+| Load-test baseline | `infra/loadtest/run.mjs` against staging, with the table it prints attached. The first run *is* the baseline (deployment.md §7). Run it with **many test identities** (`--tokens-file`, one access token per line, at least the largest scenario's concurrency). Each virtual user keeps to its identity's API rate limit, and 429s are reported in their own column. A run whose 429 or failure column exceeds 1% of requests is not a baseline (STG-7). Sign the identities in from several client addresses: sign-in is limited per address |
 | Monitoring verification | Every alert in §18 fired once, by provoking it in staging |
 
 **Do not declare production ready until this staging gate passes.**
@@ -577,8 +593,13 @@ afterwards, per your data policy.
 
 **Audit**
 
-18. The audit timeline of the document (`GET /audit/timeline/DOCUMENT/:id`) shows creation, upload,
-    download, submission and approval, attributed to the right users.
+18. The audit trail records each step on **its own subject**, attributed to the right user (staging
+    finding STG-4):
+    - the document's timeline (`GET /audit/timeline/DOCUMENT/:id`): creation (`DOCUMENT_CHANGED`,
+      operation `CREATED`) and submission (`SUBMITTED`);
+    - the file's timeline (`GET /audit/timeline/FILE/:fileObjectId`): the upload (`FILE_UPLOADED`)
+      and the download link issued (`FILE_DOWNLOAD_ISSUED`);
+    - the approval task's timeline (`GET /audit/timeline/TASK/:taskId`): the decision (`APPROVED`).
 
 **Permissions**
 
@@ -653,7 +674,11 @@ The tooling (WAL archiver, backup product, replication) is **[PRODUCTION-SPECIFI
 
 1. **Databases:** a base backup of **every** tenant database, e.g. `pg_dump -Fc` per tenant, which is
    the format `scripts/dr-rehearsal.mjs` uses, or your backup product's snapshot. Store it outside the
-   production cluster **[PRODUCTION-SPECIFIC]**.
+   production cluster **[PRODUCTION-SPECIFIC]**. Run the dump **as the backup role** (§6 step 1b),
+   not as `edms_owner`, which forced row-level security refuses:
+   ```bash
+   pg_dump --format=custom --file <dir>/<database>.dump "postgresql://edms_backup@<host>:5432/<database>"
+   ```
 2. **Object storage:** confirm versioning is on, and record the time, so the pre-deployment state is
    addressable. Optionally take a verifiable copy:
    `node scripts/storage-backup.mjs backup --dir <path>`, then `verify --dir <path>`.
@@ -736,11 +761,22 @@ in the staging gate**. The test passes only if the audit chain verifies (backup-
 
 1. **Database restoration** into an **empty** cluster with the repository tooling:
    ```bash
-   DATABASE_MIGRATION_URL=<tenant 1 owner URL> DATABASE_URL=<tenant 1 app URL> \
-   SECOND_DATABASE_MIGRATION_URL=<tenant 2 owner URL> SECOND_DATABASE_URL=<tenant 2 app URL> \
+   DATABASE_MIGRATION_URL=<tenant 1 URL as the backup role> DATABASE_URL=<tenant 1 app URL> \
+   SECOND_DATABASE_MIGRATION_URL=<tenant 2 URL as the backup role> SECOND_DATABASE_URL=<tenant 2 app URL> \
    DR_DEST_ADMIN_URL=<superuser URL on the empty DR cluster> DR_BACKUP_DIR=<path> \
      node scripts/dr-rehearsal.mjs --prepare-destination > dr.json
    ```
+   Two requirements of the tooling as it stands:
+   - **The dump source** (`DATABASE_MIGRATION_URL`, `SECOND_DATABASE_MIGRATION_URL`) must be a role
+     that reads through forced row-level security: the backup role (§6 step 1b) or a superuser.
+     The tenant owner fails (STG-2). The script uses these URLs only to dump.
+   - **The destination cluster must accept password-less connections** for `edms_owner` and
+     `edms_app`: the script connects to the restored databases with those role names and **no
+     password** (it blanks the password in the destination URLs). Give the rehearsal cluster
+     `trust` authentication for those two roles, restricted to the rehearsal host's address in
+     `pg_hba.conf`, and keep that cluster off every other network (staging finding STG-6). This is a
+     property of the rehearsal destination only. A production restore uses the production cluster's
+     own authentication and credentials (backup-and-restore.md §2).
    It covers two tenants per run and prints the evidence as JSON. In the RC gate: zero differences
    across 79 tables per tenant, restore about 24 s.
 2. **RLS verification:** `dr.json` `posture`: RLS enabled and **forced** on every tenant table, one
@@ -750,7 +786,10 @@ in the staging gate**. The test passes only if the audit chain verifies (backup-
    (182/182 in the RC gate).
 4. **Audit-chain verification:** `dr.json` shows the restored chain ending on the source's last
    sequence and hash. Run `audit.verify-chain` on the restored deployment
-   (`REDIS_URL=… node scripts/dr-verify-chain.mjs`) and read `intact` in its log.
+   (`REDIS_URL=… node scripts/dr-verify-chain.mjs`). The deployment's log then says
+   **"The audit chain verified"** for each tenant, with `eventsVerified` and `checkpointed`. A break
+   logs **"The audit chain failed verification"**. The metric `audit.chain.verified` carries
+   `intact="true"` or `intact="false"` (STG-4).
 5. **Redis rebuild:** start the API against the restored databases with an **empty** Redis. It logs
    "Queue state rebuilt from durable state after the broker lost it".
 6. **Cron schedules:** present afterwards on all six lanes: `audit.export`, `audit.stream`,
