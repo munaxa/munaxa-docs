@@ -759,6 +759,9 @@ most of them at boot, but it cannot provide them:
 9. **Release notes** for D-1, D-4, D-9, D-10, D-14, D-15, D-21 and the idempotency upgrade window.
 10. **Staging** per the checklist: migration, smoke, load-test baseline, a restore test within its quarter.
 
+The executable procedure for meeting these prerequisites and going live is
+[`docs/operations/go-live-runbook.md`](../operations/go-live-runbook.md).
+
 ## 13. Final release gate
 
 **A. Validated by evidence**

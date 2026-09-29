@@ -266,6 +266,9 @@ backfill is a resumable job rather than a schema somebody has to reverse.
 
 Everything below is a gate. A failing gate is never skipped to go green.
 
+For the first production deployment of the validated RC, the step-by-step procedure with its
+Go/No-Go checklist is [`go-live-runbook.md`](./go-live-runbook.md).
+
 - [ ] CI green on the commit: `format:check`, `lint`, `typecheck`, `test`, `test:integration` against **two** real tenant databases, `build`, and the product-isolation job
 - [ ] The three images built from that commit, tagged with it
 - [ ] `scripts/migrate-tenants.mjs` run against staging's catalogue; the post-migration gate passed

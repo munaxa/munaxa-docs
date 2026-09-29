@@ -12,11 +12,12 @@ one nobody finishes reading at three in the morning.
 | Runbook | For |
 | --- | --- |
 | [Deployment](./deployment.md) | Building the images, migrating every tenant, releasing, rolling back |
+| [Production deployment & go-live](./go-live-runbook.md) | The first production deployment of the validated RC `a560bb0`, step by step: prerequisites, the scanner, migration under drain, staging gate, smoke tests, rollback, and the Go/No-Go checklist |
 | [Backup and restore](./backup-and-restore.md) | What is backed up, how a restore is performed, and the quarterly test that is the only thing making a backup real |
 | [Disaster recovery](./disaster-recovery.md) | The scenarios in 20 §7, each as a procedure with an owner and a stated RTO |
 | [Penetration testing](./penetration-testing.md) | The threat surface, the scope boundary, the test-account story, and what a tester may do to a tenant's data |
 
-Two rules run through all four.
+Two rules run through all five.
 
 **A procedure that has not been performed is a hypothesis.** 20 §6 says an untested backup is not
 a backup, and the same is true of every step below. Where a procedure has never been executed
