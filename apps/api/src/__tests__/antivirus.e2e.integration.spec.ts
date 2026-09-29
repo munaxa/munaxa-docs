@@ -1,8 +1,9 @@
 import 'reflect-metadata';
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { EventEmitter, once } from 'node:events';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
-import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
+import { connect, createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32 } from 'node:zlib';
@@ -104,6 +105,12 @@ const apps: INestApplication[] = [];
 let healthy: string[] = [];
 let down = '';
 let hung = '';
+let slow = '';
+let slowHung = '';
+let erroring = '';
+let slowProxy: Server | undefined;
+/** Emits `scan` when an instance behind the slow proxy opens a scanner connection — a barrier. */
+const slowScans = new EventEmitter();
 let storageRoot = '';
 let silent: Server | undefined;
 const held: Socket[] = [];
@@ -430,6 +437,58 @@ async function freePort(): Promise<number> {
   return port;
 }
 
+/** How long the slow scanner holds its answer: longer than Prisma's 5,000 ms transaction default. */
+const SLOW_SCAN_MS = 6_000;
+
+/**
+ * The real scanner, slower — STG-1.
+ *
+ * A TCP proxy in front of `AV_ICAP_TEST_URL` that forwards the request at once and holds the
+ * scanner's answer until {@link SLOW_SCAN_MS} after the connection opened. Every verdict is still
+ * c-icap's and ClamAV's own; only its arrival is late, which is what a large file, a loaded engine
+ * or a slow network looks like to the API. Each connection announces itself on `slowScans`, so a
+ * test can act while a scan is provably in flight rather than after a guessed sleep.
+ */
+async function delayingProxy(target: URL, delayMs: number): Promise<Server> {
+  const server = createServer((client) => {
+    held.push(client);
+    const opened = Date.now();
+    const upstream = connect(Number(target.port === '' ? '1344' : target.port), target.hostname);
+    const waiting: Buffer[] = [];
+    let released = false;
+    let upstreamEnded = false;
+    const release = () => {
+      released = true;
+      for (const chunk of waiting.splice(0)) {
+        client.write(chunk);
+      }
+      if (upstreamEnded) {
+        client.end();
+      }
+    };
+    const timer = setTimeout(release, Math.max(0, opened + delayMs - Date.now()));
+    upstream.on('data', (chunk: Buffer) => (released ? client.write(chunk) : waiting.push(chunk)));
+    upstream.on('end', () => {
+      upstreamEnded = true;
+      if (released) {
+        client.end();
+      }
+    });
+    const close = () => {
+      clearTimeout(timer);
+      upstream.destroy();
+      client.destroy();
+    };
+    upstream.on('error', close);
+    client.on('error', close);
+    client.on('close', () => upstream.destroy());
+    client.pipe(upstream);
+    slowScans.emit('scan');
+  });
+  await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
+  return server;
+}
+
 beforeAll(async () => {
   if (!ACME_APP_URL || !ACME_OWNER_URL || !RIVAL_APP_URL || !RIVAL_OWNER_URL) {
     throw new Error(
@@ -498,18 +557,36 @@ beforeAll(async () => {
     AV_ICAP_URL: `icap://127.0.0.1:${String(hungPort)}/avscan`,
     AV_SCAN_TIMEOUT_MS: '1000',
   });
+  // STG-1: the scanner outlives the database transaction's 5 s — slowly verdicting, or not at all.
+  const scannerUrl = new URL(SCANNER);
+  slowProxy = await delayingProxy(scannerUrl, SLOW_SCAN_MS);
+  const slowPort = (slowProxy.address() as AddressInfo).port;
+  slow = await boot({
+    ...common,
+    AV_ICAP_URL: `icap://127.0.0.1:${String(slowPort)}${scannerUrl.pathname}`,
+    AV_SCAN_TIMEOUT_MS: '60000',
+  });
+  slowHung = await boot({
+    ...common,
+    AV_ICAP_URL: `icap://127.0.0.1:${String(hungPort)}/avscan`,
+    AV_SCAN_TIMEOUT_MS: '7000',
+  });
+  const wrongService = new URL(SCANNER);
+  wrongService.pathname = '/no-such-service';
+  erroring = await boot({ ...common, AV_ICAP_URL: wrongService.toString() });
   await signIn(acme);
   await signIn(rival);
-}, 240_000);
+}, 300_000);
 
 afterAll(async () => {
   for (const app of apps) {
     await app.close();
   }
   held.forEach((socket) => socket.destroy());
-  const server = silent;
-  if (server !== undefined) {
-    await new Promise((done) => server.close(done));
+  for (const server of [silent, slowProxy]) {
+    if (server !== undefined) {
+      await new Promise((done) => server.close(done));
+    }
   }
   await acme?.owner.$disconnect();
   await rival?.owner.$disconnect();
@@ -864,6 +941,278 @@ describe('tenant isolation', () => {
       expect(JSON.stringify(reply.body)).not.toMatch(/INFECTED|CLEAN|NOT_SCANNED|eicar/i);
     }
   });
+});
+
+describe('STG-1: the scan is not bound by a database transaction', () => {
+  /*
+   * Staging found every upload whose store read and scan took longer than 5 s answering 500: the
+   * scan ran inside the completion's PostgreSQL transaction, whose Prisma default timeout is
+   * 5,000 ms, so `AV_SCAN_TIMEOUT_MS` never governed anything. A clean 50 MiB PDF could not be
+   * filed. Every test here outlives that transaction on purpose and asserts the verdict the
+   * scanner actually gave — never a 500, never a CLEAN it did not give.
+   */
+  const digestOf = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+
+  it('a real verdict slower than the transaction: CLEAN, filed, downloaded intact, audited once', async () => {
+    const bytes = aPdf(`slow-clean ${uuidv7()}`);
+    const started = Date.now();
+    const uploaded = await upload(slow, acme, bytes, 'slow.pdf', 'application/pdf');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(SLOW_SCAN_MS);
+
+    expect(uploaded.scanStatus).toBe('CLEAN');
+    const row = await blobRow(acme, uploaded.fileObjectId);
+    expect(row).toMatchObject({ scanStatus: 'CLEAN', checksumSha256: digestOf(bytes) });
+    expect(row.scanner).toMatch(/^ICAP C-ICAP\/[\d.]+ ISTag=\S+/);
+
+    const filed = await fileDocument(slow, acme, uploaded.fileObjectId, `Slow ${uuidv7()}`);
+    expect(filed.status).toBe(201);
+    const link = await call(
+      slow,
+      'POST',
+      `/api/v1/documents/${String(filed.body?.['id'])}/content`,
+      acme.token,
+    );
+    const fetched = await fetch(onInstance(String(link.body?.['url']), slow));
+    expect(Buffer.from(await fetched.arrayBuffer()).equals(bytes)).toBe(true);
+
+    expect(await uploadAudit(acme, uploaded.fileObjectId)).toEqual([
+      expect.objectContaining({ scanStatus: 'CLEAN', checksumSha256: digestOf(bytes) }),
+    ]);
+    expect(await scanEvents(acme, uploaded.fileObjectId)).toEqual([
+      { type: 'storage.scan-completed', status: 'CLEAN', threat: null },
+    ]);
+  }, 60_000);
+
+  it('a slow INFECTED verdict is still INFECTED, quarantined once, and never filed', async () => {
+    const uploaded = await upload(slow, acme, eicarZip(uuidv7()), 'slow.zip', 'application/zip');
+    expect(uploaded.scanStatus).toBe('INFECTED');
+    expect((await blobRow(acme, uploaded.fileObjectId)).scanThreat).toMatch(/eicar/i);
+    expect((await scanEvents(acme, uploaded.fileObjectId)).map((event) => event.type)).toEqual([
+      'storage.scan-completed',
+      'storage.file-quarantined',
+    ]);
+    const refused = await fileDocument(slow, acme, uploaded.fileObjectId, `Slow eicar ${uuidv7()}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+    expect((await blobRow(acme, uploaded.fileObjectId)).refCount).toBe(0);
+  }, 60_000);
+
+  it('AV_SCAN_TIMEOUT_MS above 5 s governs: a hung scanner is FAILED/TIMEOUT at its bound, not a 500', async () => {
+    const started = Date.now();
+    const uploaded = await upload(
+      slowHung,
+      acme,
+      aPdf(`hung7 ${uuidv7()}`),
+      'h.pdf',
+      'application/pdf',
+    );
+    const elapsed = Date.now() - started;
+    expect(uploaded.scanStatus).toBe('FAILED');
+    expect(elapsed).toBeGreaterThanOrEqual(7_000);
+    expect(elapsed).toBeLessThan(20_000);
+    expect(await uploadAudit(acme, uploaded.fileObjectId)).toEqual([
+      expect.objectContaining({ scanStatus: 'FAILED', scanFailure: 'TIMEOUT' }),
+    ]);
+    expect(
+      (await fileDocument(slowHung, acme, uploaded.fileObjectId, `T ${uuidv7()}`)).status,
+    ).toBe(409);
+  }, 60_000);
+
+  it('a scanner that answers with an error is FAILED/SCANNER_ERROR, never CLEAN, never filed', async () => {
+    const uploaded = await upload(
+      erroring,
+      acme,
+      aPdf(`err ${uuidv7()}`),
+      'e.pdf',
+      'application/pdf',
+    );
+    expect(uploaded.scanStatus).toBe('FAILED');
+    expect(await uploadAudit(acme, uploaded.fileObjectId)).toEqual([
+      expect.objectContaining({ scanStatus: 'FAILED', scanFailure: 'SCANNER_ERROR' }),
+    ]);
+    expect(
+      (await fileDocument(erroring, acme, uploaded.fileObjectId, `E ${uuidv7()}`)).status,
+    ).toBe(409);
+  });
+
+  it('retry after FAILED gets a fresh real verdict through a slow scanner, by either route', async () => {
+    // Transferred again: completion finds the digest and re-scans outside the transaction.
+    const one = aPdf(`retry-transfer ${uuidv7()}`);
+    const failedOne = await upload(slowHung, acme, one, 'one.pdf', 'application/pdf');
+    expect(failedOne.scanStatus).toBe('FAILED');
+    const again = await upload(slow, acme, one, 'one.pdf', 'application/pdf');
+    expect(again).toMatchObject({
+      fileObjectId: failedOne.fileObjectId,
+      deduplicated: true,
+      scanStatus: 'CLEAN',
+    });
+    expect((await uploadAudit(acme, failedOne.fileObjectId)).at(-1)).toMatchObject({
+      rescanned: { from: 'FAILED', to: 'CLEAN' },
+    });
+    expect((await scanEvents(acme, failedOne.fileObjectId)).map((event) => event.status)).toEqual([
+      'FAILED',
+      'CLEAN',
+    ]);
+    expect((await fileDocument(slow, acme, failedOne.fileObjectId, `R1 ${uuidv7()}`)).status).toBe(
+      201,
+    );
+
+    // Digest announced: the session is never issued a target, and the re-scan happens at presign.
+    const two = aPdf(`retry-announce ${uuidv7()}`);
+    const failedTwo = await upload(slowHung, acme, two, 'two.pdf', 'application/pdf');
+    await upload(slow, acme, two, 'two.pdf', 'application/pdf', { announceDigest: true });
+    expect((await blobRow(acme, failedTwo.fileObjectId)).scanStatus).toBe('CLEAN');
+    expect((await fileDocument(slow, acme, failedTwo.fileObjectId, `R2 ${uuidv7()}`)).status).toBe(
+      201,
+    );
+  }, 120_000);
+
+  it.each([5, 20, 30, 50, 120])(
+    'a %i MiB clean file, real scanner: CLEAN, filed, downloaded byte-identical, audited',
+    async (mebibytes) => {
+      const bytes = Buffer.concat([
+        Buffer.from('%PDF-1.7\n', 'latin1'),
+        randomBytes(mebibytes * 1024 * 1024),
+        Buffer.from('\n%%EOF\n', 'latin1'),
+      ]);
+      const uploaded = await upload(
+        A(),
+        acme,
+        bytes,
+        `large-${String(mebibytes)}.pdf`,
+        'application/pdf',
+      );
+      expect(uploaded.scanStatus).toBe('CLEAN');
+      const row = await blobRow(acme, uploaded.fileObjectId);
+      expect(row).toMatchObject({
+        scanStatus: 'CLEAN',
+        checksumSha256: digestOf(bytes),
+        sizeBytes: BigInt(bytes.length),
+      });
+
+      const filed = await fileDocument(
+        A(),
+        acme,
+        uploaded.fileObjectId,
+        `Large ${String(mebibytes)} ${uuidv7()}`,
+      );
+      expect(filed.status).toBe(201);
+      const link = await call(
+        A(),
+        'POST',
+        `/api/v1/documents/${String(filed.body?.['id'])}/content`,
+        acme.token,
+      );
+      const fetched = await fetch(onInstance(String(link.body?.['url']), A()));
+      const got = Buffer.from(await fetched.arrayBuffer());
+      expect(digestOf(got)).toBe(digestOf(bytes));
+
+      expect(await uploadAudit(acme, uploaded.fileObjectId)).toEqual([
+        expect.objectContaining({ scanStatus: 'CLEAN', checksumSha256: digestOf(bytes) }),
+      ]);
+      expect(await scanEvents(acme, uploaded.fileObjectId)).toEqual([
+        { type: 'storage.scan-completed', status: 'CLEAN', threat: null },
+      ]);
+    },
+    240_000,
+  );
+
+  it('clean and infected bytes scanned at the same time, slow and fast: verdicts never cross', async () => {
+    const pairs = Array.from({ length: 3 }, () => ({
+      clean: aPdf(`cross-clean ${uuidv7()}`),
+      infected: eicarZip(uuidv7()),
+    }));
+    const results = await Promise.all(
+      pairs.flatMap(({ clean, infected }, index) => [
+        upload(index % 2 === 0 ? slow : A(), acme, clean, 'c.pdf', 'application/pdf').then((r) => ({
+          r,
+          bytes: clean,
+          want: 'CLEAN',
+        })),
+        upload(index % 2 === 0 ? A() : slow, acme, infected, 'i.zip', 'application/zip').then(
+          (r) => ({ r, bytes: infected, want: 'INFECTED' }),
+        ),
+      ]),
+    );
+    for (const { r, bytes, want } of results) {
+      expect(r.scanStatus).toBe(want);
+      const row = await blobRow(acme, r.fileObjectId);
+      // The verdict sits on the row of the bytes that were scanned, and nowhere else.
+      expect(row).toMatchObject({ scanStatus: want, checksumSha256: digestOf(bytes) });
+    }
+  }, 120_000);
+
+  it('identical bytes uploaded while an earlier scan is still running: one blob, one verdict event', async () => {
+    const bytes = aPdf(`same-slow ${uuidv7()}`);
+    const results = await Promise.all([
+      upload(slow, acme, bytes, 's.pdf', 'application/pdf'),
+      upload(slow, acme, bytes, 's.pdf', 'application/pdf'),
+      upload(A(), acme, bytes, 's.pdf', 'application/pdf'),
+    ]);
+    expect(new Set(results.map((r) => r.fileObjectId)).size).toBe(1);
+    expect(results.every((r) => r.scanStatus === 'CLEAN')).toBe(true);
+    expect(await acme.owner.fileObject.count({ where: { checksumSha256: digestOf(bytes) } })).toBe(
+      1,
+    );
+    expect(await scanEvents(acme, results[0]?.fileObjectId ?? '')).toEqual([
+      { type: 'storage.scan-completed', status: 'CLEAN', threat: null },
+    ]);
+  }, 120_000);
+
+  it('filing a blob while its slow re-scan is in flight is refused, and INFECTED stays unfileable', async () => {
+    const bytes = eicarZip(uuidv7());
+    const failed = await upload(slowHung, acme, bytes, 'f.zip', 'application/zip');
+    expect(failed.scanStatus).toBe('FAILED');
+
+    const scanning = once(slowScans, 'scan');
+    const rescan = upload(slow, acme, bytes, 'f.zip', 'application/zip');
+    await scanning; // the re-scan is now provably at the scanner
+    const title = `In flight ${uuidv7()}`;
+    const during = await fileDocument(A(), acme, failed.fileObjectId, title);
+    expect(during.status).toBe(409);
+    expect(during.body).toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+
+    expect((await rescan).scanStatus).toBe('INFECTED');
+    expect((await fileDocument(A(), acme, failed.fileObjectId, title)).status).toBe(409);
+    expect(await acme.owner.document.count({ where: { title } })).toBe(0);
+    expect((await blobRow(acme, failed.fileObjectId)).refCount).toBe(0);
+  }, 120_000);
+
+  it('a session claimed by the expiry sweep during a slow scan: refused, no blob row, nothing to file', async () => {
+    const bytes = aPdf(`reaped ${uuidv7()}`);
+    const opened = await call(slow, 'POST', '/api/v1/uploads', acme.token, {
+      filename: 'r.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: bytes.length,
+      magicBytes: bytes.subarray(0, 64).toString('base64'),
+    });
+    const sessionId = String(opened.body?.['uploadSessionId']);
+    await fetch(onInstance(String(opened.body?.['url']), slow), {
+      method: String(opened.body?.['method']),
+      headers: opened.body?.['headers'] as Record<string, string>,
+      body: bytes,
+    });
+    const scanning = once(slowScans, 'scan');
+    const completing = call(slow, 'POST', `/api/v1/uploads/${sessionId}/complete`, acme.token, {
+      parts: [],
+    });
+    await scanning;
+    // What `storage.sweep-upload-sessions` does to an OPEN session past its deadline: claim it.
+    await acme.owner.uploadSession.updateMany({
+      where: { id: sessionId, state: 'OPEN' },
+      data: { state: 'EXPIRED' },
+    });
+
+    const done = await completing;
+    expect(done.status).toBe(422);
+    expect(done.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(await acme.owner.fileObject.count({ where: { checksumSha256: digestOf(bytes) } })).toBe(
+      0,
+    );
+    expect(
+      (await acme.owner.uploadSession.findUniqueOrThrow({ where: { id: sessionId } })).state,
+    ).toBe('EXPIRED');
+  }, 60_000);
 });
 
 describe('what this suite wrote', () => {

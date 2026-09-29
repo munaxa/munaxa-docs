@@ -29,6 +29,7 @@ import {
   ValidationError,
 } from '../../../core/errors/application-errors';
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
+import { currentTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import {
@@ -137,15 +138,21 @@ export class DefaultStorageService implements StorageService {
       throw new UnsupportedContentError(verdict.detail, { reason: verdict.reason });
     }
 
+    const digest = normalizeDigest(input.checksumSha256);
+    // A blob that never received a verdict is scanned when its bytes are offered again, so
+    // re-uploading is how it recovers — RC D-3. The scan runs here, before the transaction opens,
+    // and the transaction below only records it — STG-1 (`verdictFor`).
+    const offered =
+      digest === null ? null : await this.writer.read(() => this.files.findByChecksum(digest));
+    const known = offered === null ? null : await this.verdictFor(offered);
+
     return this.writer.write<IssuedUploadTarget>(async () => {
-      const digest = normalizeDigest(input.checksumSha256);
       if (digest !== null) {
         const found = await this.files.findByChecksum(digest);
         if (found !== null) {
           // Nothing to transfer. Still audited, and still a session, because "an upload happened"
-          // is a fact an auditor asks about whether or not bytes moved. A blob that never received
-          // a verdict is scanned now, so re-uploading it is how it recovers — RC D-3.
-          const { file: existing, rescan } = await this.settleVerdict(found, null);
+          // is a fact an auditor asks about whether or not bytes moved.
+          const { file: existing, rescan } = await this.settleVerdict(found, known);
           const sessionId = this.writer.clock.nextId();
           return {
             result: {
@@ -224,68 +231,105 @@ export class DefaultStorageService implements StorageService {
    *
    * The order is the point. Read the store's answer, compare, scan, and only then write a row —
    * so there is no state in which a `file_object` exists for bytes that were never verified.
+   *
+   * ## Only the last step is a database transaction — STG-1
+   *
+   * Staging found this whole method inside one PostgreSQL transaction, and Prisma closes an
+   * interactive transaction after 5,000 ms. Reading a 50 MiB object back and scanning it takes
+   * longer than that, so every such upload answered `500` with nothing recorded, and a slow or hung
+   * scanner did the same instead of recording `FAILED` — `AV_SCAN_TIMEOUT_MS` governed nothing.
+   *
+   * So the work is split where the database stops being involved:
+   *
+   * 1. **Read** the session (a short read) and the store's own answer about the bytes.
+   * 2. **Outside any transaction**: promote the bytes to their content key and scan them — or, for
+   *    a digest already stored without a verdict, scan that blob (`verdictFor`). Only the scanner's
+   *    bound (`AV_SCAN_TIMEOUT_MS`) limits this now.
+   * 3. **One short transaction** records the verdict: the row (inserted with its verdict, never
+   *    before it), the session's claim, the outbox events and the audit record, together.
+   *
+   * Nothing in step 2 can make bytes fileable. A `file_object` row exists only from step 3, with
+   * the verdict the scanner gave for exactly the bytes whose digest the row carries: the content
+   * key is the digest, and the adapter refuses bytes that do not hash to it (RC D-3). The claim on
+   * the session is still `settle`'s compare-and-set in step 3, so a completion racing this one, or
+   * the expiry sweep, decides the winner exactly as before; the loser's row insert rolls back with
+   * its claim. Deduplication is asked again inside step 3, because the answer from step 1 is only
+   * as fresh as step 2 was short, and a verdict carried into step 3 is applied only to a row
+   * holding the digest it was computed for, only from `FAILED`/`SKIPPED` (`settleVerdict`).
    */
   async completeUploadSession(
     id: UploadSessionId,
     parts: readonly { partNumber: number; etag: string }[],
   ): Promise<CompletedUpload> {
-    return this.writer.write<CompletedUpload>(async () => {
-      const session = await this.sessions.findById(id);
-      if (session === null) {
-        throw new NotFoundError('The requested upload');
-      }
-      this.refuseAnotherPersonsUpload(session);
-      if (session.state !== UploadSessionState.OPEN) {
-        throw new ValidationError('That upload has already been finished.', [
-          { field: 'state', message: session.state },
-        ]);
-      }
+    const session = await this.writer.read(() => this.sessions.findById(id));
+    if (session === null) {
+      throw new NotFoundError('The requested upload');
+    }
+    this.refuseAnotherPersonsUpload(session);
+    if (session.state !== UploadSessionState.OPEN) {
+      throw new ValidationError('That upload has already been finished.', [
+        { field: 'state', message: session.state },
+      ]);
+    }
 
-      const metadata = await this.storage.completeUpload(
-        session.targetKey,
-        parts.map((part) => ({
-          partNumber: part.partNumber,
-          url: '',
-          etag: part.etag,
-          ...(session.multipartUploadId !== null && { uploadId: session.multipartUploadId }),
-        })),
-      );
+    const metadata = await this.storage.completeUpload(
+      session.targetKey,
+      parts.map((part) => ({
+        partNumber: part.partNumber,
+        url: '',
+        etag: part.etag,
+        ...(session.multipartUploadId !== null && { uploadId: session.multipartUploadId }),
+      })),
+    );
 
-      if (metadata.sizeBytes !== session.declaredSizeBytes) {
-        // The bytes that arrived are not the bytes that were approved. The target was signed for a
-        // size, so this is a store that did not enforce it — and the honest response is to remove
-        // what arrived rather than to record a blob whose provenance is already in question.
-        await this.discard(session.targetKey, id);
-        throw new UnsupportedContentError('The upload did not match the size it declared.', {
+    if (metadata.sizeBytes !== session.declaredSizeBytes) {
+      // The bytes that arrived are not the bytes that were approved. The target was signed for a
+      // size, so this is a store that did not enforce it — and the honest response is to remove
+      // what arrived rather than to record a blob whose provenance is already in question.
+      return this.refuseTransfer(
+        session,
+        new UnsupportedContentError('The upload did not match the size it declared.', {
           declared: session.declaredSizeBytes,
           stored: metadata.sizeBytes,
-        });
-      }
-
-      const digest = metadata.checksumSha256;
-      if (digest === null) {
-        await this.discard(session.targetKey, id);
-        throw new UnsupportedContentError('Storage could not confirm the file’s digest.');
-      }
-
-      // Deduplication, at the only moment the digest is a fact. Two people uploading the same
-      // standard form converge here rather than at the client's optional pre-check.
-      const existing = await this.files.findByChecksum(digest);
-      if (existing !== null) {
-        await this.storage.delete(session.targetKey);
-        return await this.deduplicatedOnto(existing, id, null);
-      }
-
-      const contentKey = blobKeyFor(digest);
-      await this.storage.copy(session.targetKey, contentKey);
-      await this.storage.delete(session.targetKey);
-
-      const scan = await this.scan(
-        contentKey,
-        digest,
-        metadata.sizeBytes,
-        session.declaredMimeType,
+        }),
       );
+    }
+
+    const digest = metadata.checksumSha256;
+    if (digest === null) {
+      return this.refuseTransfer(
+        session,
+        new UnsupportedContentError('Storage could not confirm the file’s digest.'),
+      );
+    }
+
+    // Deduplication, at the only moment the digest is a fact. Two people uploading the same
+    // standard form converge here rather than at the client's optional pre-check.
+    const existing = await this.writer.read(() => this.files.findByChecksum(digest));
+    if (existing !== null) {
+      await this.storage.delete(session.targetKey);
+      const known = await this.verdictFor(existing);
+      return this.writer.write<CompletedUpload>(async () => {
+        const current = await this.files.findByChecksum(digest);
+        if (current === null) {
+          // Reclaimed while this upload was being scanned: the bytes it would settle onto are gone,
+          // and this session's own staged copy was already removed. Nothing is recorded; the
+          // session stays open until it expires, and uploading the file again stores it afresh.
+          throw new StorageUnavailableError(
+            'The stored copy of this file was removed while the upload finished.',
+          );
+        }
+        return await this.deduplicatedOnto(current, id, known);
+      });
+    }
+
+    const contentKey = blobKeyFor(digest);
+    await this.storage.copy(session.targetKey, contentKey);
+    await this.storage.delete(session.targetKey);
+
+    const scan = await this.scan(contentKey, digest, metadata.sizeBytes, session.declaredMimeType);
+
+    return this.writer.write<CompletedUpload>(async () => {
       const fileObjectId = this.writer.clock.nextId();
       const created = await this.files.insert({
         id: fileObjectId,
@@ -301,7 +345,7 @@ export class DefaultStorageService implements StorageService {
       });
       if (!created) {
         /*
-         * Somebody stored these very bytes while this transaction was scanning them — Slice 46.
+         * Somebody stored these very bytes while this upload was scanning them — Slice 46.
          *
          * The read above and the insert are the same question asked at two moments, and between
          * them sit the copy to the content key and the scan. Two people uploading the same standard
@@ -322,9 +366,9 @@ export class DefaultStorageService implements StorageService {
           // index refused the row, and answering "stored" would be a lie about durable content.
           throw new StorageUnavailableError('The blob could not be stored.');
         }
-        // This transaction already scanned these very bytes. If the winner has no verdict yet, this
-        // one is it — the verdict is not lost because the row was somebody else's to insert.
-        return await this.deduplicatedOnto(winner, id, scan);
+        // This upload already scanned these very bytes. If the winner has no verdict yet, this one
+        // is it — the verdict is not lost because the row was somebody else's to insert.
+        return await this.deduplicatedOnto(winner, id, { checksumSha256: digest, outcome: scan });
       }
       this.requireClaimed(
         await this.sessions.settle(id, UploadSessionState.COMPLETED, fileObjectId),
@@ -741,6 +785,12 @@ export class DefaultStorageService implements StorageService {
     sizeBytes: number,
     mimeType: string,
   ): Promise<ScanOutcome> {
+    // Outside the `try`, so it can never be mistaken for a scanner failure: a scan inside a
+    // database transaction is the defect STG-1 found — the transaction's own 5 s timeout, not
+    // `AV_SCAN_TIMEOUT_MS`, would decide how long the scanner may take.
+    if (currentTransaction() !== null) {
+      throw new Error('A malware scan must not run inside a database transaction (STG-1).');
+    }
     try {
       const verdict = await this.antivirus.scan({
         storageKey: key,
@@ -770,34 +820,60 @@ export class DefaultStorageService implements StorageService {
   }
 
   /**
-   * Gives a blob with no verdict its verdict, when somebody uploads its bytes again — RC D-3.
+   * Scans a stored blob that has no verdict yet, when somebody offers its bytes again — RC D-3.
    *
    * A blob recorded `FAILED` (the scanner was down) or `SKIPPED` (no scanner was configured when it
    * arrived) could otherwise never become `CLEAN`: every later upload of the same bytes deduplicates
    * onto it, and nothing else scans. Re-uploading is what a person does when a file is refused, so
-   * that is where it recovers. `known` is a verdict this transaction already has for these bytes.
+   * that is where it recovers. Answers `null` for a blob that already has a verdict, or that the
+   * product made itself — nothing to scan.
    *
-   * The write is `recordScan`'s compare-and-set from those two states only, so a blob that has a
-   * verdict is never re-marked, and two uploads racing here converge on one verdict. A product-made
+   * **Called outside any transaction** — STG-1. The verdict it returns is recorded afterwards, in a
+   * short transaction, by `settleVerdict`; the verdict carries the digest it was computed for, and
+   * the adapter refuses bytes that do not hash to that digest, so it cannot be about other bytes.
+   */
+  private async verdictFor(existing: FileObjectRecord): Promise<KnownVerdict | null> {
+    const unverdicted =
+      existing.scanStatus === ScanStatus.FAILED || existing.scanStatus === ScanStatus.SKIPPED;
+    if (existing.derived || !unverdicted) {
+      return null;
+    }
+    return {
+      checksumSha256: existing.checksumSha256,
+      outcome: await this.scan(
+        existing.storageKey,
+        existing.checksumSha256,
+        existing.sizeBytes,
+        existing.mimeType,
+      ),
+    };
+  }
+
+  /**
+   * Records a verdict obtained outside the transaction on a blob that had none — RC D-3, STG-1.
+   *
+   * Never scans: it runs inside the caller's transaction, and a scan there is STG-1. `known` is
+   * applied only if it is a real verdict (`CLEAN` or `INFECTED`) for **this row's digest** — a
+   * verdict about other bytes is never recorded here, whatever raced in between.
+   *
+   * The write is `recordScan`'s compare-and-set from `FAILED`/`SKIPPED` only, so a blob that has a
+   * verdict is never re-marked — an `INFECTED` blob in particular never becomes `CLEAN` this way —
+   * and two uploads racing here converge on one verdict, with one set of events. A product-made
    * artefact is `SKIPPED` by construction and is left alone.
    */
   private async settleVerdict(
     existing: FileObjectRecord,
-    known: ScanOutcome | null,
+    known: KnownVerdict | null,
   ): Promise<{ file: FileObjectRecord; rescan: Readonly<Record<string, unknown>> }> {
     const unverdicted =
       existing.scanStatus === ScanStatus.FAILED || existing.scanStatus === ScanStatus.SKIPPED;
     if (existing.derived || !unverdicted) {
       return { file: existing, rescan: {} };
     }
-    const scan =
-      known ??
-      (await this.scan(
-        existing.storageKey,
-        existing.checksumSha256,
-        existing.sizeBytes,
-        existing.mimeType,
-      ));
+    if (known === null || known.checksumSha256 !== existing.checksumSha256) {
+      return { file: existing, rescan: {} };
+    }
+    const scan = known.outcome;
     if (scan.status !== ScanStatus.CLEAN && scan.status !== ScanStatus.INFECTED) {
       return { file: existing, rescan: {} };
     }
@@ -921,6 +997,21 @@ export class DefaultStorageService implements StorageService {
    * rolls back with the rest of that transaction and the object is gone either way — the same net
    * effect as before, and the reason that caller needs no change.
    */
+  /**
+   * Refuses a completed transfer whose bytes are not the ones approved, removing what arrived.
+   *
+   * The same effect the refusal always had: `discard` claims the session and deletes the staged
+   * object, and the refusal is thrown inside that transaction so the claim rolls back with it — the
+   * session stays as it was, and the bytes are gone either way. Its own short transaction now,
+   * because completion no longer runs inside one (STG-1).
+   */
+  private refuseTransfer(session: UploadSessionRecord, refusal: Error): Promise<never> {
+    return this.writer.change<never>(async () => {
+      await this.discard(session.targetKey, session.id);
+      throw refusal;
+    });
+  }
+
   private async discard(key: string, id: UploadSessionId): Promise<boolean> {
     const claimed = await this.sessions.settle(id, UploadSessionState.ABORTED, null);
     if (claimed) {
@@ -1025,7 +1116,7 @@ export class DefaultStorageService implements StorageService {
   private async deduplicatedOnto(
     found: FileObjectRecord,
     id: UploadSessionId,
-    known: ScanOutcome | null,
+    known: KnownVerdict | null,
   ) {
     this.requireClaimed(await this.sessions.settle(id, UploadSessionState.COMPLETED, found.id));
     const { file: existing, rescan } = await this.settleVerdict(found, known);
@@ -1124,6 +1215,12 @@ interface ScanOutcome {
   readonly scanner: string | null;
   readonly threat: string | null;
   readonly failure: string | null;
+}
+
+/** A scan's outcome, bound to the digest of the bytes that were scanned — STG-1. */
+interface KnownVerdict {
+  readonly checksumSha256: string;
+  readonly outcome: ScanOutcome;
 }
 
 function normalizeDigest(raw: string | undefined): string | null {
