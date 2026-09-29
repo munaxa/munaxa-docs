@@ -15,8 +15,10 @@ below, then execute the go-live runbook.
 | Difference from the baseline | STG-12 only: the web stage of the `Dockerfile` now ships the generated brand artwork (`apps/web/public`), plus a CI guard. No application source changed (`apps/`, `packages/`, `prisma/` and `infra/sql` are identical), and `apps/api/dist` is byte-identical between the two API images. Also between them: the STG-11 fix to the operator tool `scripts/dr-rehearsal.mjs` (`ab4fa7b`) |
 | STG-12 validation | Staging with real Chromium, light and dark: favicons and logos `200 image/png`, byte-identical to `@munaxa/platform`, no branding 404, login and the authenticated shell render; before the fix 3/10, after 10/10. On the final images: scanner probe passes, §16 smoke 22/22 |
 | Images (built from a clean checkout of `f5d5bb2`, labelled `org.opencontainers.image.revision=f5d5bb2…`) | `munaxa-docs-api:f5d5bb2` `sha256:53bf43be9ade46f494ec20258f9f9703f9ce2a688fd3ddc8677a47849872a0eb` · `munaxa-docs-web:f5d5bb2` `sha256:ada7ddb0acb709cf89a1ddcad6ed7ae369cabe6c9b5f2681b9685c26f8ee3727` · the scanner `munaxa-antivirus:7442853` `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4` (`infra/antivirus` is unchanged since `7442853`) |
-| Registry digests | NOT APPLICABLE yet. There is no registry: CI builds and does not push. These are local image IDs. The production build must be pushed to an immutable registry and recorded by digest (prerequisite 9) |
+| Registry digests | **BLOCKED — ENVIRONMENT: production image registry not configured.** CI builds and does not push, and no registry was supplied. The IDs above are local image IDs from the ephemeral release-engineering environment. They are evidence, not a deliverable artifact. The operator must publish images built from `f5d5bb2` (and the scanner) to an immutable registry and record them by digest. [production-prerequisites-checklist.md](../operations/production-prerequisites-checklist.md) §2 lists exactly what to provide and verify |
 | Working tree | Clean at `f5d5bb2` (`git status --porcelain` empty in the build checkout) |
+| Never deploy as the release | `a560bb0` (historical RC baseline, staging NO-GO), `e94c295` (STG-10), or `416ca94` (its web image lacks the brand artwork). Deploy `f5d5bb2` only. `a560bb0`–`416ca94` appear in the rollback section only as last-resort rollback targets above the D-3 floor |
+| Scanner version pinning | The scanner Dockerfile installs unpinned Ubuntu packages. A rebuild must record `clamd --version` and `c-icap -V` and pass `probe.mjs` (runbook §1, §9.2) |
 
 ## 2. Documentation
 
@@ -27,6 +29,8 @@ below, then execute the go-live runbook.
   - §14 there covers STG-12 on `f5d5bb2`.
   - The historical NO-GO for `a560bb0` stays in
     [staging-acceptance-gate-a560bb0.md](./staging-acceptance-gate-a560bb0.md).
+- **Production prerequisites checklist (status, missing inputs, configuration, Go/No-Go):**
+  [../operations/production-prerequisites-checklist.md](../operations/production-prerequisites-checklist.md).
 - **Production go-live runbook:**
   [../operations/go-live-runbook.md](../operations/go-live-runbook.md), with release identity pinned
   to `f5d5bb2`.
@@ -70,24 +74,37 @@ Two notes from staging bear on these:
 
 The repository defines no downtime duration. The approved change window sets it.
 
-1. Confirm the release SHA: `f5d5bb2`, and images built from it (by digest).
-2. Confirm the approved change window and approver.
-3. Confirm the staging gate: the report above, `416ca94` GO plus the STG-12 targeted regression on
-   `f5d5bb2`.
-4. Confirm the scanner and signatures: deployed on the private network (§9.2), `probe.mjs` passes,
-   signatures current (§9.3).
-5. Drain traffic (§13).
-6. Back up as `edms_backup` and verify (§19.2), confirmed by a named person.
-7. Deploy: images available to the runtime; configuration and secrets set for API and web (§5).
-8. Run migrations from a checkout of `f5d5bb2` (§12).
-9. Start the API.
-10. Start the web.
-11. Probe the scanner from the API's network (§15).
-12. Health checks (§14, §15).
-13. Smoke tests (§16).
-14. Monitoring confirmation: active and alerting to the on-call rota (§18).
-15. Go / No-Go (§25). On NO-GO: roll back (§20) or fix within the window.
-16. Restore traffic.
-17. Monitor (§22).
-18. Record the result: SHA, times, backup identifiers, probe output, smoke results, the go/no-go
-    table, operators.
+1. Confirm the final release SHA `f5d5bb2` and the images by registry digest.
+2. Confirm the production change window.
+3. Confirm the staging gate.
+4. Confirm the production prerequisites (every item in the checklist READY with evidence).
+5. Confirm the scanner: private network, signatures current, `probe.mjs` exit 0.
+6. Drain traffic.
+7. Take the backup (as `edms_backup`).
+8. Verify the backup.
+9. A named person confirms the backup.
+10. Deploy the release (images by digest, configuration and secrets).
+11. Run the tenant migrations from a checkout of `f5d5bb2`.
+12. Start the API.
+13. Start the web.
+14. Probe the scanner from the API's network.
+15. Run the health checks.
+16. Run the smoke tests.
+17. Confirm monitoring, with alerts reaching the production on-call.
+18. Make the Go/No-Go decision (runbook §25).
+19. Restore traffic.
+20. Monitor (§22).
+21. Record the result.
+
+## 5. Rollback (go-live runbook §20)
+
+- **Application:** redeploy earlier images by digest. They must be at or above the **D-3 floor**
+  (`a560bb0` or later on this line; prefer `416ca94` or later). Rolling back below D-3 is
+  **prohibited**, because it removes real malware scanning. On a first production deployment, or
+  when the previous production images are below the floor, there is no application rollback: fix
+  forward or keep traffic drained.
+- **Database:** migrations are forward-only. Never reverse them, and **never restore over the live
+  database**. If the migrated database must be abandoned, restore the pre-deployment backup (or PITR)
+  into a new database, verify it, then repoint the catalogue. This discards writes since the backup
+  and is the change approver's decision.
+- **Object storage:** nothing is deleted. **Scanner:** keeps running.

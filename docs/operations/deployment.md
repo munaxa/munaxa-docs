@@ -69,9 +69,10 @@ added (`docs/reports/release-candidate-final-validation.md`):
 7. **Smoke test** before reopening traffic: sign in, upload and file a document, download it,
    search for it, and confirm the audit chain verifies.
 8. **Rollback** is §6: the previous images against the migrated schema. This release's migrations
-   are additive or relaxing, and the previous build does not read the new idempotency columns. A
-   rollback to a build before D-3 loses scanning: uploads are recorded `SKIPPED` and cannot be
-   filed. That is safe, but it is an outage of uploading.
+   are additive or relaxing, and the previous build does not read the new idempotency columns.
+   **Rolling back below the D-3 antivirus fix is prohibited:** such a build has no real scanning
+   (every upload is recorded `SKIPPED`). Permitted targets and the database rule (never restore over
+   the live database) are in the go-live runbook §20.
 
 **Worker images are built per deployment shape.** `--build-arg WITH_LIBREOFFICE=true` and
 `--build-arg WITH_TESSERACT=true` decide whether the binaries are *present*; `OFFICE_DRIVER` and
@@ -257,6 +258,10 @@ migration in this product is expand-only until the release after the one that st
 old shape, which is precisely what makes the previous images safe to run against the new schema. A
 migration that cannot be written that way documents why in its own SQL, and a release containing one
 is a release with a maintenance window rather than a rollback.
+
+**Never roll back below the D-3 antivirus fix, and never restore a backup over the live database.**
+A database that must be abandoned is restored into a new database and the catalogue repointed (go-live
+runbook §20, backup-and-restore.md §2).
 
 What a rollback does **not** undo: rows written by the new code. That is not a defect to be
 engineered away — it is why data backfills are jobs rather than migrations (20 §4), so a partial

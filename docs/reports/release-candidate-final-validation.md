@@ -1,5 +1,8 @@
 # Release candidate — final validation gate
 
+> **Later:** this RC (`a560bb0`) was superseded after the staging gates. The production release is
+> `f5d5bb2`: see [production-release-package-f5d5bb2.md](./production-release-package-f5d5bb2.md).
+
 **Scope:** release-candidate validation of Munaxa Docs, Phases 1–19, from baseline `f1d9385` to RC head
 `584e555`. **Date:** 2026-09-28. This report is point-in-time evidence.
 

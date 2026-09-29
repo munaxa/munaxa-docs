@@ -38,8 +38,30 @@ web image's contents (brand artwork) and CI only. Commits after it on the branch
 documentation only. The release record must name `f5d5bb2`. Never use a documentation commit's SHA as
 the application SHA.
 
+**Release lineage.** Three commits matter, and only one of them is deployed:
+
+| Role | Commit | Status |
+| --- | --- | --- |
+| Historical RC baseline | `a560bb0` | Validated by the RC gate ([release-candidate-final-validation.md](../reports/release-candidate-final-validation.md)). **Staging NO-GO** (STG-1, [staging-acceptance-gate-a560bb0.md](../reports/staging-acceptance-gate-a560bb0.md)). **Never deploy it** |
+| Functional staging baseline | `416ca946f6afaee8bcea7fcf94c9705af800c5a8` (`416ca94`) | Passed the full staging gate ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md), CI run 548). Not the artifact to deploy: its web image lacks the brand artwork (STG-12) |
+| **Final production release** | **`f5d5bb28146c57ab7937eff90cebd7621a28c9f2`** (`f5d5bb2`) | `416ca94` plus STG-12 (web image contents and CI only), CI run 550, targeted staging regression. **Deploy this** ([production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md)) |
+
+| Scanner | Value |
+| --- | --- |
+| Image validated in the staging gate | `munaxa-antivirus:7442853`, local image `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4`: **ClamAV 1.5.4, c-icap 0.5.10** |
+| Its sources | `infra/antivirus/`, unchanged from `7442853` to `f5d5bb2` |
+| Version pinning | **None.** The Dockerfile is `FROM ubuntu:24.04` with unpinned `apt-get install clamav-daemon clamav-freshclam c-icap …`. A rebuild can therefore carry different ClamAV or c-icap versions |
+| Production rule | Publish and deploy the validated image by digest. If it has to be rebuilt, record the versions (`clamd --version`, `c-icap -V`) and pass `probe.mjs` (§9.6) before any traffic; a different version must be recorded in the change record |
+
+**Images are deployed by registry digest (§10).** Any rebuild of `f5d5bb2` is a new artifact. Before
+it replaces the validated one, it must pass the release package's targeted checks: the scanner probe,
+the §16 smoke test, and the brand artwork being served.
+
+The prerequisites still to be satisfied are listed in
+[production-prerequisites-checklist.md](./production-prerequisites-checklist.md).
+
 **In scope:** the API, the web application, the malware scanner, tenant databases, object storage and
-Redis for a new production deployment, or an upgrade of an existing one to this RC.
+Redis for a new production deployment, or an upgrade of an existing one to release `f5d5bb2`.
 **Out of scope:** choosing an infrastructure provider, an orchestrator or a monitoring product. The
 repository mandates none of them.
 
@@ -304,15 +326,21 @@ whole body, is recorded **CLEAN**. A `200` naming a threat is **INFECTED**. Anyt
 Use `infra/antivirus/`. Its image is validated in the RC gate, and its `c-icap.conf` and `clamd.conf`
 carry the four fail-closed properties marked `REQUIRED`.
 
+Prefer the image validated in staging (`munaxa-antivirus:7442853`, ClamAV 1.5.4 / c-icap 0.5.10,
+§1), pushed to your registry and deployed by digest. If you build it, the packages are unpinned (§1).
+Record `clamd --version` and `c-icap -V`, and treat a version change as a new artifact that must pass
+§9.6.
+
 ```bash
-# From a checkout of f5d5bb2. Tag it with the release.
+# Only if building: from a checkout of f5d5bb2 (infra/antivirus is unchanged since 7442853).
 docker build -t munaxa-antivirus:f5d5bb2 infra/antivirus
+docker run --rm --entrypoint sh munaxa-antivirus:f5d5bb2 -c 'clamd --version; c-icap -V'
 
 # One volume for the signatures, so a restart does not re-download them.
 docker run -d --name munaxa-antivirus --restart unless-stopped \
   -p <private-address>:1344:1344 \
   -v munaxa-antivirus-signatures:/var/lib/clamav \
-  munaxa-antivirus:f5d5bb2
+  <registry>/munaxa-antivirus@sha256:<digest>
 ```
 
 `<private-address>`, the orchestration and the restart policy are **[PRODUCTION-SPECIFIC]**. Inside
@@ -395,8 +423,20 @@ for target in api web worker; do
 done
 ```
 
-Pushing to your registry is **[PRODUCTION-SPECIFIC]**. CI run 550 built the same three targets from
-`f5d5bb2`, and asserted that the web image serves its brand artwork.
+CI run 550 built the same three targets from `f5d5bb2`, and asserted that the web image serves its
+brand artwork. **CI does not push**, and the repository has no image registry or publishing
+process.
+
+**Publish, then deploy by digest.**
+
+- Push the API, web and scanner images to an immutable registry **[PRODUCTION-SPECIFIC]**. Record each
+  digest (`docker buildx imagetools inspect <ref>` or the registry's own record) in the change record.
+- Deploy with `image@sha256:…`, never with a mutable tag.
+- Before go-live, verify that the published API and web images carry the label
+  `org.opencontainers.image.revision=f5d5bb28146c57ab7937eff90cebd7621a28c9f2`.
+- Before go-live, verify that the published web image serves `/branding/docs/favicon/favicon-32.png`
+  (the CI step "The web image serves the brand artwork its pages reference").
+- Keep the previous production images, by digest, available for rollback (§20).
 
 **Order**, which §21 turns into the go-live steps:
 
@@ -696,50 +736,89 @@ The tooling (WAL archiver, backup product, replication) is **[PRODUCTION-SPECIFI
 ## 20. Rollback procedure
 
 **Migrations are forward-only.** The repository has no down-migrations, and Prisma does not roll them
-back. A rollback is **the previous images against the migrated schema**, not a reversal
-(deployment.md §6).
+back. An application rollback is **earlier images against the migrated schema**, never a reversal of
+the schema (deployment.md §6).
+
+**The rollback floor: never roll back below the D-3 antivirus fix.** A build without it (for example
+`f1d9385` or anything older) has no working ICAP adapter. It records every upload SKIPPED, so real
+malware scanning is gone. That is prohibited, not merely an outage.
+
+The only allowed rollback targets are images whose application code includes D-3: `a560bb0` or later
+on this release line. Within that range:
+
+- Prefer `416ca94` or later.
+- `a560bb0` and `e94c295` also carry known defects that `f5d5bb2` fixes:
+  - STG-1: large uploads fail with a 500;
+  - STG-10: uploads above 64 MiB are refused on S3.
+
+  Use them only if the alternative is worse, and record the decision.
+
+If the previous production images are below the floor (including a **first** production deployment,
+where there are none), there is no application rollback. The choices are to fix forward within the
+window or to keep traffic drained.
 
 | Layer | Procedure |
 | --- | --- |
-| API | Redeploy the previous `munaxa-docs-api` image. This release's two migrations are relaxing: partial unique indexes, and an idempotency table the previous build never reads. So the previous build runs against the new schema |
-| Web | Redeploy the previous `munaxa-docs-web` image, with the matching API |
+| API | Redeploy the previous permitted `munaxa-docs-api` image **by digest**. Schema compatibility: every release on this line from `a560bb0` to `f5d5bb2` has the same 30 migrations. `a560bb0`'s two additions (partial unique indexes and an idempotency table) are relaxing, so a build from that line runs against this schema |
+| Web | Redeploy the previous permitted `munaxa-docs-web` image by digest, with the matching API |
 | Worker | Nothing to roll back (§11) |
-| Database | **Do not** attempt to reverse migrations. If the migrated database itself must be abandoned, that is a **restore** from the pre-deployment backup or PITR into a new database, then repointing the catalogue (backup-and-restore.md §2). It **discards every write since the backup** and needs its own decision |
-| Object storage | Objects written by the new release stay; the previous build ignores what it does not reference. Versioning keeps the previous state addressable |
-| Scanner | Keep it running: a scanner does no harm to an older build. **Rolling back to a build before D-3 loses scanning** — uploads are recorded SKIPPED and cannot be filed. That is safe, but it is an outage of uploading |
-| Traffic | Restore traffic only after §14 items 1–7 pass on the rolled-back build |
+| Scanner | Keep it running. It does no harm to an earlier build, and every permitted target needs it |
+| Database | **Never reverse migrations, and never restore over the live database.** If the migrated database itself must be abandoned, **restore** the pre-deployment backup (or PITR) **into a new database**, verify it (backup-and-restore.md §2 and §3: row counts, RLS posture, audit chain), then repoint the catalogue to it. This **discards every write since the backup** and needs its own recorded decision by the change approver. The original database is kept untouched until the incident is closed |
+| Object storage | Objects written by the new release stay. Earlier builds ignore what they do not reference, and versioning keeps the previous state addressable. Never delete objects as part of a rollback |
+| Traffic | Restore traffic only after §14 items 1–7 pass on the rolled-back build **and** `probe.mjs` passes from the API's network |
 
-Rollback decision points: a failed migration (fix and re-run, since it is idempotent, or restore), a
-failed health check or smoke test after deploy, or a NO-GO condition (§25) that cannot be fixed in the
-window.
+Rollback decision points:
+
+- a failed migration: it is idempotent, so fix and re-run it, or restore as above;
+- a failed health check or smoke test after the deploy;
+- a NO-GO condition (§25) that cannot be fixed in the window.
 
 ## 21. Go-live procedure
 
 Execute in order. Record each step's result, time and operator in the change record.
 
-1. **Confirm the approved release SHA:** `f5d5bb28146c57ab7937eff90cebd7621a28c9f2`, and images built
-   from it (`munaxa-docs-{api,web,worker}:f5d5bb2` or your registry's tags).
-2. **Confirm the maintenance and change window** and the approver **[PRODUCTION-SPECIFIC]**. The
-   repository defines no downtime duration; this release's drain and index rebuild set it.
-3. **Confirm the staging gate passed** (§14), with results attached.
-4. **Confirm the scanner:** deployed (§9.2), `probe.mjs` exit 0 (§9.6), signatures current.
-5. **Drain traffic** (§13).
-6. **Take and verify the backup** (§19.2), confirmed by a named person.
-7. **Deploy the release:** images available to the runtime, configuration and secrets set for API
-   (§5.1) and web (§5.2).
-8. **Run migrations from the checkout** (§12 steps 4–6).
-9. **Start workers:** none in this release. Confirm the API will run with consumers enabled (§11).
-10. **Start the API** instances.
-11. **Start the web** instances.
-12. **Run the scanner probe** again from the API's network (§15 step 1).
-13. **Run the health checks** (§14 items 1–15, §15 step 2).
-14. **Run the smoke tests** (§16).
-15. **Confirm monitoring** is active and alerting (§18).
-16. **Go / No-Go** (§25). On NO-GO: roll back (§20) or fix within the window.
-17. **Restore traffic** at the proxy or load balancer.
-18. **Monitor** (§22).
-19. **Record the deployment result:** release SHA, times, the backup identifiers, the probe output,
-    smoke results, the go/no-go table, and the operator names.
+1. **Confirm the final release SHA:** `f5d5bb28146c57ab7937eff90cebd7621a28c9f2`. Confirm the API,
+   web and scanner images by **registry digest** (§1, §10); the API and web carry
+   `org.opencontainers.image.revision=f5d5bb2…`. Not `a560bb0`, and not `416ca94`.
+2. **Confirm the production change window** and the approver **[PRODUCTION-SPECIFIC]**. The
+   repository defines no downtime duration: the approved window sets it.
+3. **Confirm the staging gate:**
+   - [staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md): the full gate
+     passed on `416ca94`;
+   - §14 of that report: STG-12 on `f5d5bb2`;
+   - the [release package](../reports/production-release-package-f5d5bb2.md).
+4. **Confirm the production prerequisites:** every item in
+   [production-prerequisites-checklist.md](./production-prerequisites-checklist.md) is READY, with
+   evidence.
+5. **Confirm the scanner:**
+   - deployed on the private network (§9.2), with its image digest and versions recorded;
+   - signatures current (§9.3);
+   - `probe.mjs` exit 0 (§9.6).
+6. **Drain traffic** (§13).
+7. **Take the backup** (§19.2), as `edms_backup`.
+8. **Verify the backup:** `pg_restore --list` per tenant and `storage-backup.mjs verify` → `intact`.
+9. **A named person confirms the backup** (identifiers recorded).
+10. **Deploy the release:**
+    - images by digest available to the runtime;
+    - configuration and secrets set for the API (§5.1) and the web (§5.2).
+11. **Run the tenant migrations from a checkout of `f5d5bb2`** (§12 steps 4–6). A re-run must report
+    nothing pending. There are no separate workers in this release: the API runs the consumers (§11).
+12. **Start the API** instances.
+13. **Start the web** instances.
+14. **Probe the scanner from the API's network** (§15 step 1).
+15. **Run the health checks** (§14 items 1–15, §15 step 2).
+16. **Run the smoke tests** (§16).
+17. **Confirm monitoring** is active, and that alerts reach the production on-call (§18).
+18. **Go / No-Go** (§25). On NO-GO: roll back (§20) or fix within the window.
+19. **Restore traffic** at the proxy or load balancer.
+20. **Monitor** (§22).
+21. **Record the result** in the change record:
+    - release SHA and image digests;
+    - times;
+    - backup identifiers and who confirmed them;
+    - probe output and smoke results;
+    - the go/no-go table;
+    - the operator names.
 
 ## 22. Post-go-live verification
 
@@ -866,8 +945,14 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 
 | Check | Required | Result | Evidence | Operator |
 | --- | --- | --- | --- | --- |
-| Release SHA is `f5d5bb2`; images built from it | yes | | image tags / digests | |
-| Staging gate (§14) passed, results attached | yes | | staging record | |
+| Release SHA is `f5d5bb2`; API, web and scanner images deployed **by registry digest** | yes | | digests, image labels | |
+| Staging gate passed (`416ca94` full gate; `f5d5bb2` STG-12 regression), results attached | yes | | staging report, release package | |
+| Every production prerequisite READY with evidence ([checklist](./production-prerequisites-checklist.md)) | yes | | checklist | |
+| Production DNS and a publicly trusted TLS certificate for the web origin (and the store endpoint) | yes | | certificate chain, HTTPS check | |
+| SMTP relay configured and verified (TLS/STARTTLS, SPF/DKIM/DMARC) | yes | | relay test, DNS records | |
+| Object storage: versioning, replication, CORS for the production origin, independent monitoring | yes | | bucket settings, probe | |
+| PITR / WAL archiving and the recovery procedure in place (`edms_backup`, scheduled backups, backup alerts) | yes | | archiver status, backup job, alert | |
+| Production capacity/load requirements established and met where required | yes | | load baseline on production-sized infrastructure | |
 | Change window approved | yes | | change record | |
 | Backup taken **and verified** immediately before migration, confirmed by a named person | yes | | backup IDs, `pg_restore --list`, storage verify | |
 | Traffic drained (this release) | yes | | proxy state, `outbox.pending` ≈ 0 | |
@@ -887,8 +972,8 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 | Tenant and permission isolation (unauthorized user refused as if nonexistent) | yes | | smoke steps 19–20; staging isolation test | |
 | Trusted proxy: session records the browser's address | yes | | `session_family.ip_address` | |
 | TLS and security headers; OpenAPI explorer off | yes | | response headers | |
-| Monitoring active: readiness, web probe, `antivirus` DEGRADED, object store, queues, backups | yes | | test alert received | |
-| Rollback path confirmed (previous images available; restore procedure known) | yes | | registry, runbook §20 | |
+| Monitoring active: readiness, web probe, `antivirus` DEGRADED, object store, queues, backups | yes | | test alert received **by the production on-call** | |
+| Rollback path confirmed: previous permitted images (at or above the D-3 floor) available by digest, or "none, fix forward" recorded; restore-into-a-new-database procedure known | yes | | registry, runbook §20 | |
 
 **NO-GO if any of the following is true:**
 
@@ -903,9 +988,18 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 - tenant or permission isolation fails;
 - a clean document cannot be scanned, filed or downloaded intact;
 - EICAR can be filed, downloaded or previewed, or is recorded anything but INFECTED;
-- monitoring is not active, or the `antivirus: DEGRADED` alert does not reach a human;
-- the traffic drain was not performed for this release.
+- monitoring is not active, or the `antivirus: DEGRADED` alert does not reach the **production**
+  on-call (a staging mailbox does not count);
+- the traffic drain was not performed for this release;
+- the migration procedure is not ready (no checkout of `f5d5bb2`, no migration URL, or no verified
+  backup to fall back on);
+- production DNS or a publicly trusted TLS certificate is missing;
+- SMTP is missing or unverified where notifications are required;
+- object-storage protection (versioning, replication, CORS) or its independent monitoring is missing;
+- PITR or the recovery requirements are not satisfied;
+- immutable release images are not available by digest;
+- production load or capacity requirements have not been established where they are required.
 
 **The state this runbook establishes:** Munaxa Docs has a documented, executable production
-deployment and go-live procedure for the validated RC. Production deployment remains dependent on the
+deployment and go-live procedure for release `f5d5bb2`. Production deployment remains dependent on the
 operator-supplied infrastructure and staging prerequisites.

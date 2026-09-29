@@ -12,7 +12,8 @@ one nobody finishes reading at three in the morning.
 | Runbook | For |
 | --- | --- |
 | [Deployment](./deployment.md) | Building the images, migrating every tenant, releasing, rolling back |
-| [Production deployment & go-live](./go-live-runbook.md) | The first production deployment of the validated RC `a560bb0`, step by step: prerequisites, the scanner, migration under drain, staging gate, smoke tests, rollback, and the Go/No-Go checklist |
+| [Production deployment & go-live](./go-live-runbook.md) | The production deployment of release **`f5d5bb2`** (final application release; functional staging baseline `416ca94`; historical RC baseline `a560bb0`, never deployed), step by step: prerequisites, the scanner, migrations, drain, backup, smoke tests, monitoring, rollback (with the D-3 floor) and the Go/No-Go checklist |
+| [Production prerequisites checklist](./production-prerequisites-checklist.md) | The nine production infrastructure prerequisites for `f5d5bb2` with their status and evidence required, the missing operator inputs, image publication (registry not configured), the production configuration checklist, the monitoring signals, what a production load baseline must measure, and the final Go/No-Go table |
 | [Backup and restore](./backup-and-restore.md) | What is backed up, how a restore is performed, and the quarterly test that is the only thing making a backup real |
 | [Disaster recovery](./disaster-recovery.md) | The scenarios in 20 §7, each as a procedure with an owner and a stated RTO |
 | [Penetration testing](./penetration-testing.md) | The threat surface, the scope boundary, the test-account story, and what a tester may do to a tenant's data |

@@ -400,6 +400,10 @@ The staging forms of these differ from production:
 
 ## 14. After the gate — STG-12 fixed in `f5d5bb2` (targeted regression)
 
+> Release package: [production-release-package-f5d5bb2.md](./production-release-package-f5d5bb2.md) ·
+> prerequisites: [production-prerequisites-checklist.md](../operations/production-prerequisites-checklist.md) ·
+> runbook: [go-live-runbook.md](../operations/go-live-runbook.md).
+
 `416ca94` remains the commit the full gate passed. **`f5d5bb28146c57ab7937eff90cebd7621a28c9f2`**
 changes only the `Dockerfile` (the web stage) and CI. No file under `apps/`, `packages/`, `prisma/`
 or `infra/sql` differs from `416ca94`. The API's compiled output (`apps/api/dist`) is byte-identical
