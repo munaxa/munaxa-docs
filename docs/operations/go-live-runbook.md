@@ -2,7 +2,7 @@
 
 **Purpose:** the procedure an administrator follows, step by step, to deploy the validated release
 candidate to production and put it live. **Audience:** the deployment operator and the change
-approver. **Status:** written 2026-09-29 for the RC at `a560bb0`. A living document, like everything
+approver. **Status:** written 2026-09-29 for the RC at `a560bb0`; release identity updated to `f5d5bb2` after the staging gate. A living document, like everything
 in `docs/operations/`.
 
 **This runbook has not yet been executed against a production environment.** Every step comes
@@ -26,17 +26,17 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 
 | Item | Value |
 | --- | --- |
-| Application code to deploy | **`a560bb0afd91504b09f7e64d235e78951c4bf877`** (`a560bb0`) |
-| Validated by | CI run 544 on `a560bb0`, 9/9 jobs green: lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner and two tenant databases; five end-to-end shards; three container images; product isolation |
-| Test totals at `a560bb0` | unit 1,713; integration 1,176 in 54 files; end to end 233 |
+| Application code to deploy | **`f5d5bb28146c57ab7937eff90cebd7621a28c9f2`** (`f5d5bb2`) |
+| Validated by | CI run 550 on `f5d5bb2`, 9/9 jobs green: lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner and two tenant databases; five end-to-end shards; three container images (the web image's brand artwork asserted); product isolation |
+| Staging gate | [staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md): the full gate passed on `416ca94`; `f5d5bb2` adds only the web image's brand artwork (STG-12), validated there by a targeted regression |
 | Branch | `claude/gifted-wozniak-g94u76` |
-| Readiness verdict | "Final production-readiness validation found no remaining release blocker" (RC report, Part II §13) |
+| Readiness verdict | "Final production-readiness validation found no remaining release blocker" (RC report, Part II §13), then the staging gate |
 
-**Build the images from `a560bb0` and run the migrations from a checkout of `a560bb0`.** The
-commits after it on the branch (`952c2f3`, `c373502`, `05d7b0a` and this runbook's commit) change
-documentation only. Building from one of them produces the same application, but the release record
-must name `a560bb0`, the commit CI validated. Never use a documentation commit's SHA as the
-application SHA.
+**Build the images from `f5d5bb2` and run the migrations from a checkout of `f5d5bb2`.** Its
+application code is that of `416ca94`, the commit the full staging gate passed; `f5d5bb2` changes the
+web image's contents (brand artwork) and CI only. Commits after it on the branch change
+documentation only. The release record must name `f5d5bb2`. Never use a documentation commit's SHA as
+the application SHA.
 
 **In scope:** the API, the web application, the malware scanner, tenant databases, object storage and
 Redis for a new production deployment, or an upgrade of an existing one to this RC.
@@ -98,7 +98,7 @@ Every row is a gate for go-live. "Deployment-specific" means **[PRODUCTION-SPECI
 | Antivirus | A host or container for c-icap + ClamAV on the private network: **about 1 GB RAM for `clamd`**, plus headroom for signature reloads; about 110 MB disk for signatures (§9) | host, scheduling, alerting |
 | API memory | The scan reads a whole upload into memory: the API must hold `AV_ICAP_MAX_BYTES` × the number of concurrent upload completions on top of its normal heap (§9.7) | memory limit, `NODE_OPTIONS` |
 | Build | Docker with BuildKit, and a registry token for the `@munaxa/*` packages, passed as a build secret (`--secret id=npmrc,...`) | registry and token |
-| Release engineer workstation | A checkout of `a560bb0` with Node 22 and pnpm 10.33, network access to every tenant database as `edms_owner` (§12) | host |
+| Release engineer workstation | A checkout of `f5d5bb2` with Node 22 and pnpm 10.33, network access to every tenant database as `edms_owner` (§12) | host |
 | Backups | Base backups plus WAL archiving; bucket versioning and replication; a place to keep the pre-migration backup (§6, §19) | tooling, retention location |
 | Monitoring | Something that polls health endpoints and scrapes `/api/metrics`, and alerts a human (§18) | monitoring product, thresholds, on-call |
 | Secrets | A secret store that injects environment variables. Never in files committed to git (§5) | secret store |
@@ -305,14 +305,14 @@ Use `infra/antivirus/`. Its image is validated in the RC gate, and its `c-icap.c
 carry the four fail-closed properties marked `REQUIRED`.
 
 ```bash
-# From a checkout of a560bb0. Tag it with the release.
-docker build -t munaxa-antivirus:a560bb0 infra/antivirus
+# From a checkout of f5d5bb2. Tag it with the release.
+docker build -t munaxa-antivirus:f5d5bb2 infra/antivirus
 
 # One volume for the signatures, so a restart does not re-download them.
 docker run -d --name munaxa-antivirus --restart unless-stopped \
   -p <private-address>:1344:1344 \
   -v munaxa-antivirus-signatures:/var/lib/clamav \
-  munaxa-antivirus:a560bb0
+  munaxa-antivirus:f5d5bb2
 ```
 
 `<private-address>`, the orchestration and the restart policy are **[PRODUCTION-SPECIFIC]**. Inside
@@ -356,7 +356,7 @@ can be filed.
 ### 9.6 The go-live probe
 
 ```bash
-# From any host on the private network, with Node 22 and a checkout of a560bb0:
+# From any host on the private network, with Node 22 and a checkout of f5d5bb2:
 node infra/antivirus/probe.mjs icap://<scanner private address>:1344/avscan
 # exit 0: "clean passed (204), EICAR blocked (Eicar-Test-Signature)"
 # add --wait 300 on a first start, while freshclam is downloading
@@ -385,18 +385,18 @@ Keep the scanner on a network only the API can reach, and do not route ICAP over
 
 ## 10. Application deployment
 
-**Build**, once, from `a560bb0` (deployment.md §1):
+**Build**, once, from `f5d5bb2` (deployment.md §1):
 
 ```bash
-git checkout a560bb0afd91504b09f7e64d235e78951c4bf877
-export TAG=a560bb0
+git checkout f5d5bb28146c57ab7937eff90cebd7621a28c9f2
+export TAG=f5d5bb2
 for target in api web worker; do
   docker build --target "$target" --secret id=npmrc,src="$HOME/.npmrc" -t "munaxa-docs-$target:$TAG" .
 done
 ```
 
-Pushing to your registry is **[PRODUCTION-SPECIFIC]**. CI run 544 built the same three targets from
-`a560bb0`.
+Pushing to your registry is **[PRODUCTION-SPECIFIC]**. CI run 550 built the same three targets from
+`f5d5bb2`, and asserted that the web image serves its brand artwork.
 
 **Order**, which §21 turns into the go-live steps:
 
@@ -431,7 +431,7 @@ read that as a crash loop (deployment.md §1).
 
 ## 12. Database migration procedure
 
-From a **checkout of `a560bb0`** on the release engineer's workstation. Never from inside an image:
+From a **checkout of `f5d5bb2`** on the release engineer's workstation. Never from inside an image:
 the runtime images carry neither pnpm nor the Prisma CLI (deployment.md §1).
 
 1. **Backup** every tenant database and the object store, immediately before this step (§19). Record
@@ -440,7 +440,7 @@ the runtime images carry neither pnpm nor the Prisma CLI (deployment.md §1).
 3. **Drain traffic** (§13). Required for this release.
 4. **Prepare the checkout:**
    ```bash
-   git checkout a560bb0afd91504b09f7e64d235e78951c4bf877
+   git checkout f5d5bb28146c57ab7937eff90cebd7621a28c9f2
    pnpm install --frozen-lockfile
    ```
 5. **Run the tenant migrations**, with the owner role and the production catalogue:
@@ -717,8 +717,8 @@ window.
 
 Execute in order. Record each step's result, time and operator in the change record.
 
-1. **Confirm the approved release SHA:** `a560bb0afd91504b09f7e64d235e78951c4bf877`, and images built
-   from it (`munaxa-docs-{api,web,worker}:a560bb0` or your registry's tags).
+1. **Confirm the approved release SHA:** `f5d5bb28146c57ab7937eff90cebd7621a28c9f2`, and images built
+   from it (`munaxa-docs-{api,web,worker}:f5d5bb2` or your registry's tags).
 2. **Confirm the maintenance and change window** and the approver **[PRODUCTION-SPECIFIC]**. The
    repository defines no downtime duration; this release's drain and index rebuild set it.
 3. **Confirm the staging gate passed** (§14), with results attached.
@@ -866,7 +866,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 
 | Check | Required | Result | Evidence | Operator |
 | --- | --- | --- | --- | --- |
-| Release SHA is `a560bb0`; images built from it | yes | | image tags / digests | |
+| Release SHA is `f5d5bb2`; images built from it | yes | | image tags / digests | |
 | Staging gate (§14) passed, results attached | yes | | staging record | |
 | Change window approved | yes | | change record | |
 | Backup taken **and verified** immediately before migration, confirmed by a named person | yes | | backup IDs, `pg_restore --list`, storage verify | |

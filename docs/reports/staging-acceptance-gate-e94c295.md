@@ -45,7 +45,7 @@ only after correcting the test harness says so, with the correction.
 | SMTP | **PASS** | Application e-mail (approval needed, approved, published) and alert e-mail delivered through a STARTTLS-required relay (§11) |
 
 **Application defects found in this gate:** STG-10 (release-blocking, fixed), STG-11 (DR tooling,
-fixed), STG-12 (cosmetic, open, non-blocking). See §12.
+fixed), STG-12 (cosmetic, non-blocking; fixed afterwards in `f5d5bb2`, §14). See §12.
 
 ---
 
@@ -321,7 +321,7 @@ deploy.
     full chain verification were unaffected.
   - **Fix:** `ORDER BY audit_event.sequence`. Proven on staging: old query 999, fixed query 1120.
 
-### Non-blocking defect (open)
+### Non-blocking defect (fixed after the gate, in `f5d5bb2`; see §14)
 
 - **STG-12: the web image serves no brand artwork.**
   - **Cause:** `/branding/docs/…` (the logo lockups and favicons) answers 404. The Dockerfile's web
@@ -396,4 +396,39 @@ The staging forms of these differ from production:
 9. **Images:** an image registry with immutable digests (and signing, if required). This staging
    built images locally from the commit.
 10. **Secrets:** a secret store and configuration versioning.
-11. **Artwork:** fix STG-12 (brand artwork) before production.
+11. ~~**Artwork:** fix STG-12 (brand artwork) before production.~~ Done in `f5d5bb2` (§14).
+
+## 14. After the gate — STG-12 fixed in `f5d5bb2` (targeted regression)
+
+`416ca94` remains the commit the full gate passed. **`f5d5bb28146c57ab7937eff90cebd7621a28c9f2`**
+changes only the `Dockerfile` (the web stage) and CI. No file under `apps/`, `packages/`, `prisma/`
+or `infra/sql` differs from `416ca94`. The API's compiled output (`apps/api/dist`) is byte-identical
+between the two images. Only the application's static artwork changed, so the full gate was not
+repeated.
+
+- **Cause:**
+  - the pages reference the favicon and logos under `/branding/docs/…`;
+  - `munaxa-sync-brand` (the web's `prebuild`) copies that artwork from `@munaxa/platform` into
+    `apps/web/public/branding/` (git-ignored, never authored here);
+  - the web stage of the Dockerfile copied no `public/`.
+- **Fix:** the web stage copies `apps/web/public` from the build stage. It holds only the 14
+  generated brand assets (1.8 MB). The image was built from a clean checkout with no `public/`, so
+  the build generated the artwork itself ("branding: 14 docs assets").
+- **CI guard:** the images job runs the web image, and every `/branding/` URL its own login page
+  references must answer `200 image/*`. The guard fails on the `416ca94` image (404) and passes on
+  `f5d5bb2`.
+- **Staging, real Chromium, light and dark:**
+  - before the fix, 3/10: every favicon and logo 404;
+  - after the fix, 10/10: favicons (32, 512, apple-touch) and the logo lockups `200 image/png`, the
+    visible logo loaded, no branding 404, login renders, the authenticated shell (`/documents`)
+    renders with its logo;
+  - the served files are byte-identical to `@munaxa/platform`'s `assets/docs` (14/14);
+  - screenshots before and after differ only where the logo replaced its alt text.
+- **Targeted regression on the final images** `munaxa-docs-{api,web}:f5d5bb2`: scanner probe passes
+  from the API's network; §16 smoke 22/22; branding 10/10.
+- **Checks:**
+  - format, lint, typecheck and build pass;
+  - web unit and accessibility tests pass 503/503;
+  - the web visual suite passes except 14 Arabic right-to-left baselines. This container has no
+    Arabic fonts, and the same 14 fail on the unchanged tree; CI's visual job is the reference.
+  - CI run 550 on `f5d5bb2`.
