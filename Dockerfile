@@ -139,8 +139,10 @@ FROM runtime AS web
 
 COPY --from=build --chown=node:node /app/node_modules            ./node_modules
 COPY --from=build --chown=node:node /app/packages                ./packages
-# No `public/`: this product serves no static assets of its own. Every icon, font and token comes
-# from `@munaxa/*` and is bundled, which is ARCHITECTURE.md's rule made visible in the image.
+# `public/` holds only the brand artwork `munaxa-sync-brand` copies out of `@munaxa/platform` in the
+# web's `prebuild` (git-ignored, never authored here). The pages reference it by URL: the favicon
+# and the logo lockups under `/branding/docs/`. Without it every one of them was a 404 (STG-12).
+COPY --from=build --chown=node:node /app/apps/web/public         ./apps/web/public
 COPY --from=build --chown=node:node /app/apps/web/.next          ./apps/web/.next
 COPY --from=build --chown=node:node /app/apps/web/node_modules   ./apps/web/node_modules
 COPY --from=build --chown=node:node /app/apps/web/package.json   ./apps/web/

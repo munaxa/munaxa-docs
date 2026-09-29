@@ -733,9 +733,36 @@ jobs:
           context: .
           target: web
           push: false
-          load: false
+          # Loaded, for the same reason as the API image: the next step runs it.
+          load: true
+          tags: munaxa-docs-web:ci
           secret-files: npmrc=${{ runner.temp }}/npmrc
           cache-from: type=gha
+
+      # STG-12. The pages name their favicon and logo by URL under `/branding/`, and that artwork is
+      # generated into `apps/web/public/` by the web's `prebuild` — which the image did not copy, so
+      # every deployment served the login page with a broken logo and no favicon. This asks the
+      # running image for every branding URL its own login page references, rather than for a list
+      # typed here, and needs no API: static files are served without one.
+      - name: The web image serves the brand artwork its pages reference
+        run: |
+          set -euo pipefail
+          docker run -d --name web-ci -e PORT=3000 -e NEXT_PUBLIC_API_URL=http://127.0.0.1:9 \
+            -p 127.0.0.1:3000:3000 munaxa-docs-web:ci
+          trap 'docker rm -f web-ci >/dev/null' EXIT
+          for _ in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:3000/login && break; sleep 1; done
+          paths=$(curl -sf http://127.0.0.1:3000/login | grep -oE '(src|href)="/branding/[^"]+"' \
+            | sed -E 's/^[a-z]+="([^"]+)"$/\1/' | sort -u)
+          echo "$paths" | grep -q '/favicon/' || { echo "FAIL - the login page references no favicon."; exit 1; }
+          echo "$paths" | grep -q '/logos/'   || { echo "FAIL - the login page references no logo."; exit 1; }
+          failed=0
+          for path in $paths; do
+            answer=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:3000$path")
+            echo "$path -> $answer"
+            case "$answer" in "200 image/"*) ;; *) failed=1 ;; esac
+          done
+          [ "$failed" = 0 ] || { echo "FAIL - the web image does not serve its brand artwork."; docker logs web-ci | tail -20; exit 1; }
+          echo "OK - every branding asset the login page references is served."
 
   boundaries:
     name: Product isolation
