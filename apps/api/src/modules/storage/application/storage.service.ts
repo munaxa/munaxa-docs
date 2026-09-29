@@ -177,7 +177,11 @@ export class DefaultStorageService implements StorageService {
 
       const sessionId = this.writer.clock.nextId();
       const targetKey = stagingKeyFor(sessionId);
-      const multipart = input.sizeBytes > MULTIPART_THRESHOLD_BYTES;
+      // One signed PUT at every size (STG-10), never a multipart target. The store verifies the
+      // signed SHA-256 against the bytes and reports it back, which is the digest completion
+      // requires; a multipart object has no full-object SHA-256, and the web client sends one
+      // body to one URL. A single PUT is bounded by the store at 5 GiB, above the 2 GiB default
+      // ceiling and far above the scanner's.
       const target = await this.storage.createUploadTarget({
         key: targetKey,
         // The *sniffed* type is signed into the target, not the declared one. A URL issued for a
@@ -186,7 +190,6 @@ export class DefaultStorageService implements StorageService {
         sizeBytes: input.sizeBytes,
         expiresInSeconds: this.config.storage.signedUrlTtlSeconds,
         ...(digest !== null && { checksumSha256: digest }),
-        multipart,
       });
 
       await this.sessions.insert({
@@ -220,7 +223,6 @@ export class DefaultStorageService implements StorageService {
           filename,
           sizeBytes: input.sizeBytes,
           mimeType: verdict.format.mimeType,
-          multipart,
         }),
       };
     });
@@ -1205,9 +1207,6 @@ function integrityFrom(expected: string, actual: string | null): IntegrityStatus
   }
   return actual === expected ? IntegrityStatus.VERIFIED : IntegrityStatus.MISMATCH;
 }
-
-/** Above this an upload is offered as a resumable transfer. Mirrors the S3 adapter's threshold. */
-const MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024;
 
 /** What one scan came to. `failure` is why a configured scanner gave no verdict, for the audit. */
 interface ScanOutcome {

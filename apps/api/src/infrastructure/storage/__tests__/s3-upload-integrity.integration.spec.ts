@@ -107,6 +107,38 @@ describe('a presigned upload target with a digest', () => {
   }, 60_000);
 
   /**
+   * STG-10: above the old 64 MiB multipart threshold, the single signed PUT the service now issues
+   * stores the object and reports its SHA-256, which is what upload completion requires. (A
+   * multipart object carries no full-object SHA-256, so completion refused every one of them.)
+   */
+  it('stores a 70 MiB single PUT and answers with its digest', async () => {
+    const content = Buffer.concat([aPdf('STG-10-LARGE'), Buffer.alloc(70 * 1024 * 1024, 7)]);
+    const digest = sha256Hex(content);
+    const key = aKey();
+    written.push(key);
+
+    const target = await storage.createUploadTarget({
+      key,
+      contentType: 'application/pdf',
+      sizeBytes: content.length,
+      checksumSha256: digest,
+      expiresInSeconds: 300,
+    });
+    expect(target.parts).toBeUndefined();
+
+    const put = await fetch(target.url, {
+      method: target.method,
+      headers: target.headers,
+      body: content,
+    });
+    expect(put.status).toBeLessThan(300);
+
+    const metadata = await storage.completeUpload(key, []);
+    expect(metadata.checksumSha256).toBe(digest);
+    expect(metadata.sizeBytes).toBe(content.length);
+  }, 120_000);
+
+  /**
    * The digest is a **condition of the write**, not a label on it.
    *
    * Different bytes are sent to a target signed for one digest. The store recomputes SHA-256 over

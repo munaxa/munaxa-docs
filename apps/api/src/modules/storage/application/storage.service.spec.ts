@@ -53,6 +53,7 @@ interface Harness {
   readonly scans: { readonly checksum: string; readonly inTransaction: boolean }[];
   readonly events: string[];
   readonly transactions: { opened: number };
+  readonly targets: Record<string, unknown>[];
 }
 
 function harness(options: {
@@ -64,6 +65,7 @@ function harness(options: {
   const scans: Harness['scans'] = [];
   const events: string[] = [];
   const transactions = { opened: 0 };
+  const targets: Record<string, unknown>[] = [];
   const now = () => new Date('2026-09-29T12:00:00Z');
   let sequence = 0;
   const nextId = () => `0199f5a1-5a9e-7000-8000-${String(++sequence).padStart(12, '0')}`;
@@ -105,6 +107,10 @@ function harness(options: {
     },
   } as unknown as FileObjectRepository;
   const sessionRepo: UploadSessionRepository = {
+    insert: (row: UploadSessionRecord) => {
+      sessions.set(row.id, { ...row, state: UploadSessionState.OPEN, fileObjectId: null });
+      return Promise.resolve();
+    },
     findById: (id: UploadSessionId) => Promise.resolve(sessions.get(id) ?? null),
     settle: (id: UploadSessionId, state: UploadSessionStateKey, fileObjectId: string | null) => {
       const row = sessions.get(id);
@@ -117,6 +123,24 @@ function harness(options: {
   } as unknown as UploadSessionRepository;
   const storage = {
     driver: 'LOCAL',
+    // Answers as the S3 adapter does: a multipart request gets part URLs and an upload id.
+    createUploadTarget: (input: Record<string, unknown>) => {
+      targets.push(input);
+      return Promise.resolve({
+        key: input.key,
+        url: 'https://store.test/staging?partNumber=1',
+        method: 'PUT',
+        headers: {},
+        expiresAt: new Date('2026-09-29T13:00:00Z'),
+        ...(input.multipart === true && {
+          parts: [1, 2, 3, 4, 5, 6, 7, 8].map((partNumber) => ({
+            partNumber,
+            url: `https://store.test/staging?partNumber=${String(partNumber)}`,
+            uploadId: 'upload-1',
+          })),
+        }),
+      });
+    },
     completeUpload: () =>
       Promise.resolve({ sizeBytes: 10, checksumSha256: sha(options.stored ?? 'clean bytes') }),
     copy: () => Promise.resolve(),
@@ -157,7 +181,7 @@ function harness(options: {
     config,
     writer,
   );
-  return { service, files, sessions, scans, events, transactions };
+  return { service, files, sessions, scans, events, transactions, targets };
 }
 
 function record(file: {
@@ -390,5 +414,37 @@ describe('STG-1: a verdict is recorded only for the bytes it was computed for', 
     // The in-memory repository has no rollback, so the row the insert wrote is still visible here;
     // in PostgreSQL it rolls back with the refused claim (the integration spec asserts that).
     expect(h.sessions.get(id)?.state).toBe('EXPIRED');
+  });
+});
+
+/**
+ * Large uploads — STG-10.
+ *
+ * Above 64 MiB the service asked for a multipart target. On S3 that could never finish: the web
+ * client PUTs the whole file to the target URL (part 1) and completes with no parts, and even a
+ * client that sent every part got an object with no full-object SHA-256, which
+ * `completeUploadSession` refuses ("Storage could not confirm the file's digest"). Every upload
+ * between 64 MiB and the ceiling was refused on the production storage driver.
+ */
+describe('STG-10: a large browser upload is one signed PUT bound to its digest', () => {
+  it('a 120 MiB upload is issued a single PUT carrying the digest, never a multipart target', async () => {
+    const h = harness({});
+    const digest = sha('one hundred and twenty mebibytes');
+    const issued = await inContext(() =>
+      h.service.createUploadSession({
+        filename: 'large.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 120 * 1024 * 1024,
+        magicBytes: Buffer.from('%PDF-1.7\n'),
+        checksumSha256: digest,
+      }),
+    );
+
+    expect(h.targets).toHaveLength(1);
+    expect(h.targets[0]).toMatchObject({ sizeBytes: 120 * 1024 * 1024, checksumSha256: digest });
+    expect(h.targets[0]?.multipart).not.toBe(true);
+    expect(issued).toMatchObject({ method: 'PUT', parts: null, alreadyStored: null });
+    const session = h.sessions.get((issued as { uploadSessionId: string }).uploadSessionId);
+    expect(session?.multipartUploadId).toBeNull();
   });
 });
