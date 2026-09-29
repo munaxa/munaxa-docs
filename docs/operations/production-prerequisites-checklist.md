@@ -4,7 +4,8 @@
 [production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md), the
 [staging acceptance report](../reports/staging-acceptance-gate-e94c295.md), the
 [RC report](../reports/release-candidate-final-validation.md) and the
-[go-live runbook](./go-live-runbook.md) (§21 step 4 requires this checklist).
+[go-live runbook](./go-live-runbook.md) (§21 step 4 requires this checklist). **How** to implement each item, in order, with commands and
+the final readiness gate: [production-infrastructure-implementation.md](./production-infrastructure-implementation.md).
 
 **Rules.** Nothing here is READY without evidence **from the production environment**. Staging
 evidence shows the application and procedure work. It does not satisfy a production prerequisite.
@@ -29,7 +30,7 @@ item is therefore not READY.
 | 6 | Object storage | **MISSING** (no production bucket or origin supplied) | Bucket CORS for the web origin (browser upload), versioning, replication failover, `STORAGE_PUBLIC_URL` previews, independent store probe | Production bucket and its scope. Credentials scoped to it. `STORAGE_PUBLIC_URL` = the production web origin. CORS allowing `PUT`/`GET` from **the actual production origin** (supplied by the operator). Versioning on. Replication configured. Capacity and quota known. Independent monitoring (item 3) | Operator (storage) |
 | 7 | Backup / PITR / failover | **MISSING** (no production database provider, restore destination or credentials supplied) | `edms_backup` backups, verify, a scheduled backup with `BackupFailed` alert, zero-difference DR restore, PITR to a timestamp, replica failover | `edms_backup` created (runbook §6 step 1b). Scheduled backups with verification. WAL archiving/PITR on. Replication. A written failover procedure. Backup alerts reaching on-call. A restore destination and restore credentials. **If the provider's PITR/failover cannot be rehearsed before go-live, this stays NOT READY** and the risk goes to the change approver. No destructive production tests | Operator (DBA) |
 | 8 | Production load baseline | **MISSING** (no production-sized infrastructure; no approved thresholds) | 100 identities, 29,551 requests, 0 failures, 0 rate-limited. **Latency targets missed** on a single 4-CPU host. This does **not** establish production capacity | The measurement in §5 on production-sized infrastructure, compared against thresholds **supplied or approved by the operator** (or existing capacity requirements) | Operator (capacity owner) + release engineer |
-| 9 | Image registry / secrets / configuration | **BLOCKED — ENVIRONMENT: production image registry not configured** | Images build reproducibly from `f5d5bb2` (CI run 550). Local image IDs recorded (§2) | A registry with immutable digests and access control (signing if policy requires). API, web and scanner pushed and verified **by digest**. A secret store holding every secret in §3. Configuration versioned. A deployment identity for pulls. Rollback images (at or above the D-3 floor, runbook §20) available by digest | Operator (platform) |
+| 9 | Image registry / secrets / configuration | **BLOCKED — ENVIRONMENT: production image registry not configured** | Images build reproducibly from `f5d5bb2` (CI run 550). Local image IDs recorded (§2) | A registry with immutable digests and access control (signing if policy requires). API, web and scanner pushed and verified **by digest**. A secret store holding every secret in §3. Configuration versioned. A deployment identity for pulls. A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
 
 ## 2. Images and publication
 
@@ -179,6 +180,6 @@ harness's built-in targets are not approved thresholds, and the staging result s
 | Migration procedure ready (checkout of `f5d5bb2`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
 | All required secrets present (§3) | API starts under `NODE_ENV=production` | NOT READY | Platform |
 | Production load/capacity requirements established | §5 results against approved thresholds | NOT READY | Capacity owner |
-| Rollback path (images at or above the D-3 floor by digest, or "fix forward" recorded) | registry, runbook §20 | NOT READY | Release engineer |
+| Rollback path (the previous production release's digest, or "no rollback target — first deployment" recorded) | registry, runbook §20 | NOT READY | Release engineer |
 
 **Production is NO-GO while any row above is not READY.** The complete NO-GO list is in runbook §25.

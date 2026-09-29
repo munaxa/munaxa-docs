@@ -743,19 +743,27 @@ the schema (deployment.md §6).
 `f1d9385` or anything older) has no working ICAP adapter. It records every upload SKIPPED, so real
 malware scanning is gone. That is prohibited, not merely an outage.
 
-The only allowed rollback targets are images whose application code includes D-3: `a560bb0` or later
-on this release line. Within that range:
+**A rollback target is the immutable registry digest of a validated release that has already run in
+this production environment**, recorded in that release's change record. Nothing else is a
+rollback target. In particular, none of these is:
 
-- Prefer `416ca94` or later.
-- `a560bb0` and `e94c295` also carry known defects that `f5d5bb2` fixes:
-  - STG-1: large uploads fail with a 500;
-  - STG-10: uploads above 64 MiB are refused on S3.
+- a tag;
+- a rebuild;
+- a commit that never ran here;
+- a release below the D-3 floor.
 
-  Use them only if the alternative is worse, and record the decision.
+`a560bb0` is only the **historical RC and the D-3 floor**: the oldest code that scans for real. It is
+never a rollback target. It and `e94c295` carry defects that `f5d5bb2` fixes (STG-1: large uploads
+fail with a 500; STG-10: uploads above 64 MiB are refused on S3), and neither ever ran in production.
+`416ca94` has the same application code as `f5d5bb2` without the brand artwork, so rolling back to it
+gains nothing.
 
-If the previous production images are below the floor (including a **first** production deployment,
-where there are none), there is no application rollback. The choices are to fix forward within the
-window or to keep traffic drained.
+- **First production deployment (`f5d5bb2`):** there is **no application rollback target**. On a
+  failed deployment, fix forward within the window, or keep traffic drained and restore the database
+  as below if the migrated database must be abandoned. Record "no rollback target — first
+  deployment" in the change record before go-live.
+- **Later releases:** the rollback target is the previous production release's digest, for example
+  `f5d5bb2`'s once it has run here, provided it is at or above the D-3 floor.
 
 | Layer | Procedure |
 | --- | --- |
@@ -787,7 +795,9 @@ Execute in order. Record each step's result, time and operator in the change rec
      passed on `416ca94`;
    - §14 of that report: STG-12 on `f5d5bb2`;
    - the [release package](../reports/production-release-package-f5d5bb2.md).
-4. **Confirm the production prerequisites:** every item in
+4. **Confirm the production prerequisites:** the readiness gate (§D) of
+   [production-infrastructure-implementation.md](./production-infrastructure-implementation.md) is
+   complete and signed, and every item in
    [production-prerequisites-checklist.md](./production-prerequisites-checklist.md) is READY, with
    evidence.
 5. **Confirm the scanner:**
@@ -973,7 +983,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 | Trusted proxy: session records the browser's address | yes | | `session_family.ip_address` | |
 | TLS and security headers; OpenAPI explorer off | yes | | response headers | |
 | Monitoring active: readiness, web probe, `antivirus` DEGRADED, object store, queues, backups | yes | | test alert received **by the production on-call** | |
-| Rollback path confirmed: previous permitted images (at or above the D-3 floor) available by digest, or "none, fix forward" recorded; restore-into-a-new-database procedure known | yes | | registry, runbook §20 | |
+| Rollback path confirmed: the previous production release's image digest (validated, at or above the D-3 floor), or "no rollback target — first deployment" recorded; restore-into-a-new-database procedure known | yes | | registry, runbook §20 | |
 
 **NO-GO if any of the following is true:**
 

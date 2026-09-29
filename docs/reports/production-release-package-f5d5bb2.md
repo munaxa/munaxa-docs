@@ -17,8 +17,24 @@ below, then execute the go-live runbook.
 | Images (built from a clean checkout of `f5d5bb2`, labelled `org.opencontainers.image.revision=f5d5bb2…`) | `munaxa-docs-api:f5d5bb2` `sha256:53bf43be9ade46f494ec20258f9f9703f9ce2a688fd3ddc8677a47849872a0eb` · `munaxa-docs-web:f5d5bb2` `sha256:ada7ddb0acb709cf89a1ddcad6ed7ae369cabe6c9b5f2681b9685c26f8ee3727` · the scanner `munaxa-antivirus:7442853` `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4` (`infra/antivirus` is unchanged since `7442853`) |
 | Registry digests | **BLOCKED — ENVIRONMENT: production image registry not configured.** CI builds and does not push, and no registry was supplied. The IDs above are local image IDs from the ephemeral release-engineering environment. They are evidence, not a deliverable artifact. The operator must publish images built from `f5d5bb2` (and the scanner) to an immutable registry and record them by digest. [production-prerequisites-checklist.md](../operations/production-prerequisites-checklist.md) §2 lists exactly what to provide and verify |
 | Working tree | Clean at `f5d5bb2` (`git status --porcelain` empty in the build checkout) |
-| Never deploy as the release | `a560bb0` (historical RC baseline, staging NO-GO), `e94c295` (STG-10), or `416ca94` (its web image lacks the brand artwork). Deploy `f5d5bb2` only. `a560bb0`–`416ca94` appear in the rollback section only as last-resort rollback targets above the D-3 floor |
+| Never deploy as the release | `a560bb0` (historical RC baseline, staging NO-GO), `e94c295` (STG-10), or `416ca94` (its web image lacks the brand artwork). Deploy `f5d5bb2` only. `a560bb0` is the historical RC and D-3 floor, never a rollback target |
 | Scanner version pinning | The scanner Dockerfile installs unpinned Ubuntu packages. A rebuild must record `clamd --version` and `c-icap -V` and pass `probe.mjs` (runbook §1, §9.2) |
+
+## 1a. Published registry digests (to be completed by the operator)
+
+Filled in after publishing and verifying the images
+([production-infrastructure-implementation.md](../operations/production-infrastructure-implementation.md)
+prerequisite 9d). **Until every row holds a verified digest, production is NO-GO.** Record the digests
+here as a documentation commit, and in the go-live change record. The application SHA stays
+`f5d5bb2`.
+
+| Image | Repository (operator-supplied) | Digest (after push) | Revision label verified | Pulled with the production pull identity | Extra check |
+| --- | --- | --- | --- | --- | --- |
+| API | `<REGISTRY_HOST>/<API_REPOSITORY>` | `sha256:<API_DIGEST>` | ☐ `f5d5bb2…` | ☐ | — |
+| Web | `<REGISTRY_HOST>/<WEB_REPOSITORY>` | `sha256:<WEB_DIGEST>` | ☐ `f5d5bb2…` | ☐ | ☐ `/branding/docs/favicon/favicon-32.png` → `200 image/png` |
+| Antivirus | `<REGISTRY_HOST>/<AV_REPOSITORY>` | `sha256:<AV_DIGEST>` | ☐ `f5d5bb2…` | ☐ | ☐ ClamAV `1.5.4` / c-icap `0.5.10` (or the versions recorded here), `probe.mjs` exit 0 |
+
+Status: **BLOCKED — ENVIRONMENT: production image registry not configured.**
 
 ## 2. Documentation
 
@@ -29,6 +45,9 @@ below, then execute the go-live runbook.
   - §14 there covers STG-12 on `f5d5bb2`.
   - The historical NO-GO for `a560bb0` stays in
     [staging-acceptance-gate-a560bb0.md](./staging-acceptance-gate-a560bb0.md).
+- **Production infrastructure implementation checklist (what the operator does, in order, with
+  validation and evidence; the final readiness gate before §21):**
+  [../operations/production-infrastructure-implementation.md](../operations/production-infrastructure-implementation.md).
 - **Production prerequisites checklist (status, missing inputs, configuration, Go/No-Go):**
   [../operations/production-prerequisites-checklist.md](../operations/production-prerequisites-checklist.md).
 - **Production go-live runbook:**
@@ -98,11 +117,11 @@ The repository defines no downtime duration. The approved change window sets it.
 
 ## 5. Rollback (go-live runbook §20)
 
-- **Application:** redeploy earlier images by digest. They must be at or above the **D-3 floor**
-  (`a560bb0` or later on this line; prefer `416ca94` or later). Rolling back below D-3 is
-  **prohibited**, because it removes real malware scanning. On a first production deployment, or
-  when the previous production images are below the floor, there is no application rollback: fix
-  forward or keep traffic drained.
+- **Application:** a rollback target is the immutable digest of a validated release that has already
+  run in this production environment. For this **first** production deployment there is none: fix
+  forward or keep traffic drained, and record "no rollback target — first deployment" before
+  go-live. `a560bb0` is only the historical RC and the D-3 floor, never a target. Rolling back below
+  D-3 is **prohibited**: it removes real malware scanning.
 - **Database:** migrations are forward-only. Never reverse them, and **never restore over the live
   database**. If the migrated database must be abandoned, restore the pre-deployment backup (or PITR)
   into a new database, verify it, then repoint the catalogue. This discards writes since the backup
