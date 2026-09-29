@@ -95,9 +95,11 @@ const TENANTS = [
  * losing — Redis, the search index — is outside the artefact rather than inside it and different,
  * and `backup-and-restore.md` §1 records why for each.
  */
+// Ordered by the column, not the text output that shares its name: `ORDER BY sequence` resolves to
+// the output column first, and as text '999' sorts after '1120' (staging finding STG-11).
 const AUDIT_TAIL = `
-  SELECT sequence::text, hash, previous_hash, action
-  FROM audit_event ORDER BY sequence DESC LIMIT 1`;
+  SELECT sequence::text AS sequence, hash, previous_hash, action
+  FROM audit_event ORDER BY audit_event.sequence DESC LIMIT 1`;
 
 const step = [];
 const started = Date.now();

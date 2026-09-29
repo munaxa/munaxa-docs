@@ -23,6 +23,8 @@ configuration in the repository was modified during this gate.
 
 ## Update — STG-1 fixed at `e94c295` (2026-09-29)
 
+> **Later:** the repeated gate is recorded in [staging-acceptance-gate-e94c295.md](./staging-acceptance-gate-e94c295.md).
+
 **STG-1 is FIXED.** The new application SHA is `e94c29585a6aa18b5a7a27ecebb2320d5b59f75a`, validated
 by **CI run 545 (9/9 green)**. `a560bb0` is no longer the release candidate. **The staging gate must
 be repeated against `e94c295`.** Nothing below is a production-readiness claim.
