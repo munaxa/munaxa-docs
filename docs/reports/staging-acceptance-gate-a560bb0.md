@@ -21,6 +21,94 @@ configuration in the repository was modified during this gate.
 >
 > Per the gate's instructions, the defect is **reported, not fixed**. No code change has been made.
 
+## Update — STG-1 fixed at `e94c295` (2026-09-29)
+
+**STG-1 is FIXED.** The new application SHA is `e94c29585a6aa18b5a7a27ecebb2320d5b59f75a`, validated
+by **CI run 545 (9/9 green)**. `a560bb0` is no longer the release candidate. **The staging gate must
+be repeated against `e94c295`.** Nothing below is a production-readiness claim.
+
+**Root cause.** `StorageService.completeUploadSession` ran inside a single `AdministeredWriter.write`,
+which is one Prisma interactive transaction with the default 5,000 ms timeout
+(`tenant-database.ts:76`). That transaction covered the store copy and delete, reading the object
+back, and the ICAP scan. The D-3 re-scan of a FAILED/SKIPPED duplicate ran inside the same kind of
+transaction at presign and at completion (`settleVerdict`).
+
+**Transaction-boundary change.** Completion now runs in three phases:
+
+1. A short read of the session and the store's own size and digest. A mismatch is refused exactly
+   as before: claim, delete and rollback in their own short transaction.
+2. **No transaction open**: promote the bytes to their content key and scan them with the real
+   scanner. For a digest already stored without a verdict, the new `verdictFor` scans that blob
+   instead. `AV_SCAN_TIMEOUT_MS` now governs.
+3. **One short transaction**:
+   - re-resolve the digest;
+   - insert the row with its verdict, or settle a duplicate;
+   - claim the session with the existing `settle` compare-and-set;
+   - write the outbox events and the audit record together.
+
+`settleVerdict` no longer scans. `scan()` refuses to run inside a transaction. No timeout was raised,
+and no scan state was added: a row still exists only with its verdict.
+
+**Concurrency safety.** The mechanisms are unchanged, and none is process-local:
+
+- **Content addressing:** the content key is the digest.
+- **Digest binding:** the adapter refuses bytes that do not hash to the recorded digest (D-3), and a
+  verdict carried into phase 3 is applied only to a row with the same digest.
+- **Compare-and-set:** a verdict can only replace FAILED/SKIPPED, so INFECTED is never re-marked.
+- **Session claim:** the `settle` compare-and-set decides between racing completions and the expiry
+  sweep.
+- **Insert conflict:** a same-bytes race converges on one row through the conflict-tolerant insert.
+- **Cleanup:** a scan failure is now a recorded FAILED row with a COMPLETED session, recoverable by
+  re-uploading, so it leaves nothing behind. A phase-3 failure (for example the session reaped
+  mid-scan) records no row and leaves the session to the existing `storage.sweep-upload-sessions`,
+  as before.
+
+**Tests.**
+
+- **Unit:** `storage.service.spec.ts`, 11 tests over the real unit of work. **7 fail on `a560bb0`**:
+  a scan ran with a transaction open.
+- **Real scanner:** 15 new tests in `antivirus.e2e.integration.spec.ts`, using a delaying proxy in
+  front of the real c-icap/ClamAV:
+  - a 6 s CLEAN verdict and a 6 s INFECTED verdict;
+  - a 7 s `AV_SCAN_TIMEOUT_MS` producing FAILED/TIMEOUT;
+  - a scanner error producing FAILED/SCANNER_ERROR;
+  - retry after FAILED, by either route;
+  - 5/20/30/50/**120 MiB** clean files, filed and downloaded byte-identical, with audit and outbox;
+  - clean and infected bytes racing, with no crossed verdicts;
+  - same-bytes races;
+  - filing while a re-scan is in flight;
+  - a session reaped mid-scan.
+
+  **10 fail on `a560bb0`**, all with HTTP 500. **All pass on `e94c295`.**
+
+**Totals on `e94c295`:** unit 1,724; integration 1,190 in 54 files (real scanner); E2E 233;
+format, lint, typecheck, Prisma validate and build all green; CI run 545 9/9.
+
+**Staging re-validation on `e94c295`.** No schema change, so it was an image redeploy. Scanner
+probe exit 0, `antivirus: UP`.
+
+| Affected test | Result |
+| --- | --- |
+| Large clean uploads through S3 + real ClamAV: 5/20/30/**40/50/60 MiB** → CLEAN in up to 10.5 s, filed, downloaded byte-identical, one row, session COMPLETED, events `file-created` + `scan-completed` | PASS 6/6 (40 and 50 MiB were HTTP 500 on `a560bb0`) |
+| Scanner stopped → FAILED/UNREACHABLE (38.8 s, answered 201); filing refused; EICAR during the outage FAILED; restart → probe exit 0; retry → CLEAN / INFECTED | PASS |
+| Hung scanner → **FAILED/TIMEOUT at 122 s** (`AV_SCAN_TIMEOUT_MS=120000`, answered 201) | PASS (was HTTP 500) |
+| Redis, object-store and single-database outage and recovery | PASS (store monitoring still BLOCKED — ENVIRONMENT) |
+| §16 smoke 22/22, including EICAR, filing, download, preview, revision, audit and bulk | PASS |
+| D-20 idempotency 7/7 | PASS |
+| Security 14/14, including tenant isolation, signed URLs and RLS | PASS |
+| Upload-completion 5xx and transaction-timeout errors since the deploy | **0** |
+
+**Not re-run on `e94c295`:** DR restore and the load baseline. They are part of the repeated staging
+gate.
+
+**Unchanged and still open** (handled separately, not in this code change):
+
+- the runbook corrections STG-2 to STG-7;
+- the environment blockers: monitoring and alerting, TLS/DNS, scanner network isolation, SMTP,
+  bucket CORS, PITR, replication failover, and signature-update egress.
+
+---
+
 Every result below is classified **PASS**, **FAIL**, **BLOCKED — ENVIRONMENT** or **NOT
 APPLICABLE**. A result obtained only after correcting the test harness is stated as such, with the
 correction.
@@ -413,7 +501,7 @@ does not exist in this environment.
 
 ### RELEASE BLOCKERS
 
-**Application (validated code, reproducible). STOP-level:**
+**Application (validated code, reproducible). STOP-level — FIXED in `e94c295` (see the update at the top):**
 
 - **STG-1: the malware scan runs inside a 5-second database transaction.**
   - **Where:** `StorageService.completeUploadSession`
