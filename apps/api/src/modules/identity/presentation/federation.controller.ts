@@ -50,9 +50,8 @@ export class FederationController {
   async discover(
     @Query(new ZodValidationPipe(federationDiscoverySchema))
     query: ReturnType<typeof federationDiscoverySchema.parse>,
-    @Req() request: Request,
   ): Promise<FederationDiscovery> {
-    const offer = await this.federation.offerFor(query.email, tenantFromHost(request));
+    const offer = await this.federation.offerFor(query.email, query.tenant ?? '');
     return { federated: offer.federated, authorizationUrl: offer.authorizationUrl };
   }
 
@@ -65,7 +64,8 @@ export class FederationController {
     const result = await this.federation.complete({
       code: body.code,
       state: body.state,
-      tenantSlug: body.tenant ?? tenantFromHost(request),
+      // Named by the caller or nothing — never read from the host; see `AuthController`.
+      tenantSlug: body.tenant ?? '',
       ipAddress: request.ip ?? null,
       userAgent: request.header('user-agent') ?? null,
       correlationId: correlationIdOf(request),
@@ -129,11 +129,4 @@ function toWire(record: IdentityProviderRecord): WireIdentityProvider {
     // `clientSecret` is absent from the wire type entirely, which is the enforcement: there is no
     // field a mapper could forget to omit.
   };
-}
-
-/** The same host rule `AuthController` and the API-key middleware apply. See either for why. */
-function tenantFromHost(request: Request): string {
-  const host = (request.hostname || '').toLowerCase();
-  const labels = host.split('.');
-  return labels.length > 2 ? (labels[0] ?? '') : '';
 }

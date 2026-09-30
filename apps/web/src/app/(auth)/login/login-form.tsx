@@ -119,10 +119,15 @@ export function LoginForm({
         </Field>
       ) : null}
 
-      <Field label={translate('auth.organisationLabel')} hint={translate('auth.organisationHint')}>
-        {/* Optional: on a tenant subdomain the API reads it from the host. It is here for the
-            shared hostname a development or single-tenant deployment uses. */}
-        <Input name="tenant" autoComplete="organization" spellCheck={false} />
+      <Field
+        label={translate('auth.organisationLabel')}
+        hint={translate('auth.organisationHint')}
+        required
+      >
+        {/* Required: every organisation signs in at the one shared hostname, and the API never
+            reads an organisation from the host — `docs.munaxa.com` names the product, not a
+            tenant. */}
+        <Input name="tenant" autoComplete="organization" spellCheck={false} required />
       </Field>
 
       <SubmitButton />

@@ -38,14 +38,16 @@ export async function signInAction(
   const tenant = textField(formData, 'tenant').trim().toLowerCase();
   const mfaCode = textField(formData, 'mfaCode').trim();
 
-  if (email.length === 0 || password.length === 0) {
+  // The organisation is required as the address and password are: the API reads no tenant from the
+  // host, so a sign-in that names none cannot succeed and is not worth a round trip.
+  if (email.length === 0 || password.length === 0 || tenant.length === 0) {
     return { reason: 'REJECTED' };
   }
 
   const outcome = await signIn({
     email,
     password,
-    ...(tenant ? { tenant } : {}),
+    tenant,
     ...(mfaCode ? { mfaCode } : {}),
   });
   if (!outcome.ok) {

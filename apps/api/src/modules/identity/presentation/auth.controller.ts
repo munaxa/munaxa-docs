@@ -148,25 +148,21 @@ function respond(result: AuthenticationResult): AuthenticationResponse {
   return respondWith(result);
 }
 
+/**
+ * The caller's context for a sign-in, a refresh or a sign-out.
+ *
+ * The tenant is the one the caller named, or nothing. It is never read from the host: the product is
+ * served at `docs.munaxa.com` and its API at a host of the operator's choosing, so the leftmost label
+ * of either names the product or the API (`docs`, `api`) and never an organisation — and deriving a
+ * slug from it would sign a blank-tenant form into whichever tenant happened to carry that slug. An
+ * empty slug resolves to no tenant, which fails as every other credential failure does.
+ */
 function sessionContext(request: Request, explicitTenant?: string): SessionContext {
   return {
-    tenantSlug: explicitTenant ?? tenantFromHost(request),
+    tenantSlug: explicitTenant ?? '',
     ipAddress: request.ip ?? null,
     userAgent: request.header('user-agent') ?? null,
     correlationId: correlationIdOf(request),
     locale: negotiateLocale(request.headers['accept-language']),
   };
-}
-
-/**
- * The leftmost label of the host, when the host has one to spare.
- *
- * This selects whose login screen this is and nothing more. What the caller may then do is
- * decided by the signed `tenantId` claim in the token — the host is never an authorisation
- * input (`docs/architecture/21-saas-commercial-architecture.md` §5).
- */
-function tenantFromHost(request: Request): string {
-  const host = (request.hostname || '').toLowerCase();
-  const labels = host.split('.');
-  return labels.length > 2 ? (labels[0] ?? '') : '';
 }

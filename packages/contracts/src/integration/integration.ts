@@ -283,7 +283,14 @@ export interface FederationDiscovery {
 }
 
 export const federationDiscoverySchema = z
-  .object({ email: z.string().trim().email().max(320) })
+  .object({
+    email: z.string().trim().email().max(320),
+    /**
+     * The organisation the sign-in screen names. Optional, and never inferred from the host: without
+     * it the answer is simply "not federated", which is also what an unknown organisation gets.
+     */
+    tenant: z.string().trim().min(1).max(63).optional(),
+  })
   .strict();
 
 export const federationCallbackSchema = z

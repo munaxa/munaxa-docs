@@ -123,7 +123,10 @@ export class AuthenticationMiddleware implements NestMiddleware {
       return null;
     }
     try {
-      const principal = await this.apiKeys.authenticate(tenantFromHost(request), key);
+      // No slug, and never one read from the host: the product's own hostname (`docs.munaxa.com`,
+      // `api.docs.munaxa.com`) names the product, not an organisation. The authenticator resolves an
+      // unnamed tenant only where the deployment has exactly one.
+      const principal = await this.apiKeys.authenticate('', key);
       if (!principal) {
         return null;
       }
@@ -165,21 +168,4 @@ export class AuthenticationMiddleware implements NestMiddleware {
 function traceOf(request: Request): { traceId: string; spanId: string } {
   const trace = traceContextOf(request);
   return { traceId: trace.traceId, spanId: trace.spanId };
-}
-
-/**
- * The leftmost label of the host, when the host has one to spare.
- *
- * The same rule `AuthController` applies at sign-in, and with the same standing: it selects whose
- * directory this is and is never an authorisation input. What the caller may do is decided by the
- * `api_client` row this resolves to, inside that tenant's own database, under that tenant's RLS.
- *
- * Duplicated from the controller rather than shared, deliberately: `core/` may not import a
- * module, and lifting five lines into a shared helper to avoid repeating them would put a
- * host-parsing rule somewhere neither of its two readers would look for it.
- */
-function tenantFromHost(request: Request): string {
-  const host = (request.hostname || '').toLowerCase();
-  const labels = host.split('.');
-  return labels.length > 2 ? (labels[0] ?? '') : '';
 }

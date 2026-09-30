@@ -13,8 +13,10 @@ export const signInSchema = z.object({
   email: z.string().min(3).max(320),
   password: z.string().min(1).max(MAXIMUM_PASSWORD_LENGTH),
   /**
-   * Which organisation to sign in to. Optional because the host normally answers it; supplied
-   * explicitly by API clients and local development, where every tenant shares one hostname.
+   * Which organisation to sign in to. Every organisation shares one hostname and the host is never
+   * read for a tenant, so a sign-in that omits this is refused. It stays optional in the schema so
+   * that omission fails as every other credential failure does — `401` — rather than as a `400`
+   * that would tell the caller which field was missing.
    */
   tenant: z
     .string()

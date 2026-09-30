@@ -16,8 +16,8 @@ import { API_CLIENT_SERVICE, type ApiClientAuthenticator } from '../application/
  * Its whole job is the thing `DefaultAuthenticationService.withinTenant` does for sign-in: **a
  * context has to exist before any query can run**, because every read is inside a transaction
  * carrying `app.tenant_id` and under row-level security keyed on it. A key is presented before any
- * context exists — that is what it is for — so the tenant is resolved from the host through the
- * registry, a context is established with no user in it, and only then is the credential read.
+ * context exists — that is what it is for — so the tenant is resolved through the registry, a
+ * context is established with no user in it, and only then is the credential read.
  *
  * The context established here is *provisional*: no user, no roles, no permissions. Nothing can be
  * authorised inside it. What the caller may actually do comes from the principal this returns,
@@ -69,13 +69,13 @@ export class IdentityApiKeyAuthenticator implements ApiKeyAuthenticator {
   }
 
   /**
-   * The tenant the host names, or — for a host with no label to spare — the deployment's only one.
+   * The tenant the caller named, or — when none is named — the deployment's only one.
    *
-   * The fallback exists because a single-tenant installation is served at `docs.customer.example`
-   * with nothing to the left of it, and requiring such a customer to invent a subdomain in order
-   * to use an API key would be configuration for its own sake. It is safe precisely because it is
-   * only reachable when the deployment has exactly one tenant: with two, an unqualified host is
-   * ambiguous and the key is refused rather than resolved against a guess.
+   * The middleware names none: the host is never read for a tenant, because the product's own
+   * hostname (`docs.munaxa.com`, `api.docs.munaxa.com`) names the product rather than an
+   * organisation. The fallback is what keeps a single-tenant installation's keys working. It is safe
+   * precisely because it is only reachable when the deployment has exactly one tenant: with two, an
+   * unnamed tenant is ambiguous and the key is refused rather than resolved against a guess.
    */
   private async resolvePlacement(slug: string): Promise<string | null> {
     if (slug !== '') {
