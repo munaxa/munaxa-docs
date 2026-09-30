@@ -1,0 +1,438 @@
+# Publishing the production images to GHCR, so a deployment pulls an artifact that was built and
+# verified here rather than building one itself — and pins it by digest.
+#
+# Three images, each from one named commit:
+#
+#   ghcr.io/munaxa/munaxa-docs-api        the `api` target of ./Dockerfile
+#   ghcr.io/munaxa/munaxa-docs-web        the `web` target of ./Dockerfile
+#   ghcr.io/munaxa/munaxa-docs-antivirus  ./infra/antivirus — c-icap in front of ClamAV
+#
+# **Tag-triggered, and the tag names the commit to build.** Publishing is a decision about one
+# validated commit, not something every push should do — the convention munaxa-work's own
+# publish-images.yml set. `workflow_dispatch` is only offered by GitHub for workflows on the default
+# branch, and the release lineage sits on an unmerged branch, so the trigger is a tag of the form
+#
+#   image/<full 40-character commit SHA>
+#
+# pushed on any commit that carries this file. The tag's *name* is the source; the tagged commit only
+# has to carry the workflow. `.github/` is in .dockerignore, so which commit the workflow file lives on
+# cannot change a byte of what is built.
+#
+# **No `latest`, ever.** Two immutable tags per image (`<short>`, `sha-<full>`) for humans, and the
+# digest for machines: a production manifest names `image@sha256:<digest>` and nothing else.
+#
+# **The scanner is accepted before it is pushed.** Its Dockerfile installs unpinned Ubuntu packages, so
+# every rebuild may carry a different ClamAV or c-icap. The job records both versions and runs
+# infra/antivirus/probe.mjs — a clean payload passed, EICAR blocked with a named threat — on the
+# freshly built image, again after a restart (STG-8/9), and a third time on the pulled digest. A
+# scanner that answers 204 to everything never reaches the registry.
+
+name: Publish images
+
+on:
+  push:
+    tags:
+      - 'image/**'
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false # never cancel a half-finished push to a registry
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  source:
+    name: Resolve the source commit
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      short: ${{ steps.resolve.outputs.short }}
+      owner: ${{ steps.resolve.outputs.owner }}
+    steps:
+      - name: Read the commit from the tag name
+        id: resolve
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          sha="${REF_NAME#image/}"
+          # A full SHA only: a short one is ambiguous in principle, and a branch name is mutable —
+          # either would make "what was published" a question with more than one answer.
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::tag must be image/<40-hex commit SHA>, got '$REF_NAME'"; exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          # GHCR repository names must be lower case.
+          echo "owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.resolve.outputs.sha }}
+
+      - name: Confirm the checkout is that commit and is clean
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$SHA" ] || { echo "::error::checked out $(git rev-parse HEAD), expected $SHA"; exit 1; }
+          [ -z "$(git status --porcelain)" ] || { echo "::error::working tree not clean"; git status --porcelain; exit 1; }
+          echo "Building $SHA"
+
+  application:
+    name: ${{ matrix.image }}
+    needs: source
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # one image failing should not hide the other's result
+      matrix:
+        include:
+          - image: munaxa-docs-api
+            target: api
+          - image: munaxa-docs-web
+            target: web
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+      SHORT: ${{ needs.source.outputs.short }}
+      REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
+      # argument is recorded in the image's history. The same construction the CI images job uses.
+      - name: Write the package-registry credential for the build secret
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # The per-run token, scoped by `packages: write` above. Nothing longer-lived is needed.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          push: true
+          tags: |
+            ${{ env.REPOSITORY }}:${{ env.SHORT }}
+            ${{ env.REPOSITORY }}:sha-${{ env.SHA }}
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          # A single-platform manifest, so the digest names the image itself rather than an index
+          # over it. Predictable pinning matters more than multi-arch, which nothing here asks for.
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.version=${{ env.SHORT }}
+            org.opencontainers.image.title=${{ matrix.image }}
+
+      - name: Fail if no digest was produced
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no digest was produced; nothing pinnable was published"; exit 1
+          fi
+          echo "Published $REPOSITORY@$DIGEST"
+
+      - name: Pull by digest and verify the revision label
+        env:
+          REF: ${{ env.REPOSITORY }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "$REF"
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REF")
+          echo "revision label: $revision"
+          [ "$revision" = "$SHA" ] || { echo "::error::revision label $revision != $SHA"; exit 1; }
+
+          user=$(docker run --rm --entrypoint sh "$REF" -c 'id -un')
+          [ "$user" != "root" ] || { echo "::error::image runs as root"; exit 1; }
+          echo "runs as: $user"
+
+          if docker history --no-trunc --format '{{.CreatedBy}}' "$REF" \
+               | grep -qE 'ghp_|ghs_|github_pat_|_authToken=[A-Za-z0-9]'; then
+            echo "::error::a credential appears in image history"; exit 1
+          fi
+          if docker run --rm --entrypoint sh "$REF" -c \
+               'find / -name ".npmrc" 2>/dev/null | xargs -r grep -l "_authToken=[A-Za-z0-9]" 2>/dev/null' | grep -q .; then
+            echo "::error::an npmrc carrying a token is present in the image"; exit 1
+          fi
+          echo "no credentials in history or filesystem"
+
+      # Phase 9.2: the query engine the runtime's OpenSSL asks for must be in the image.
+      - name: The API image carries the query engine its own runtime asks for
+        if: matrix.target == 'api'
+        env:
+          REF: ${{ env.REPOSITORY }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker run --rm --entrypoint sh "$REF" -eu -c '
+            ssl=$(ls /usr/lib/x86_64-linux-gnu/libssl.so.* 2>/dev/null | sed -n "s/.*libssl\.so\.\([0-9]\).*/\1/p" | head -1)
+            case "${ssl:-}" in
+              3) want=debian-openssl-3.0.x ;;
+              1) want=debian-openssl-1.1.x ;;
+              *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
+            esac
+            find /app/node_modules -name "libquery_engine-$want.so.node" | grep -q . \
+              || { echo "FAIL - no libquery_engine-$want.so.node"; exit 1; }
+            echo "OK - query engine $want present"
+          '
+
+      # STG-12: the pulled web image serves every branding URL its login page references, plus the
+      # one favicon the release package names explicitly.
+      - name: The web image serves the Munaxa artwork
+        if: matrix.target == 'web'
+        env:
+          REF: ${{ env.REPOSITORY }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker run -d --name web-verify -e PORT=3000 -e NEXT_PUBLIC_API_URL=http://127.0.0.1:9 \
+            -p 127.0.0.1:3000:3000 "$REF"
+          trap 'docker rm -f web-verify >/dev/null' EXIT
+          for _ in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:3000/login && break; sleep 1; done
+          paths=$(curl -sf http://127.0.0.1:3000/login | grep -oE '(src|href)="/branding/[^"]+"' \
+            | sed -E 's/^[a-z]+="([^"]+)"$/\1/' | sort -u)
+          echo "$paths" | grep -q '/favicon/' || { echo "FAIL - the login page references no favicon."; exit 1; }
+          echo "$paths" | grep -q '/logos/'   || { echo "FAIL - the login page references no logo."; exit 1; }
+          failed=0
+          for path in $paths /branding/docs/favicon/favicon-32.png; do
+            answer=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:3000$path")
+            echo "$path -> $answer"
+            case "$answer" in "200 image/"*) ;; *) failed=1 ;; esac
+          done
+          [ "$failed" = 0 ] || { echo "FAIL - the web image does not serve its artwork."; docker logs web-verify | tail -20; exit 1; }
+          echo "OK - every branding asset is served."
+
+      # An artifact rather than a job output: a matrix's legs overwrite each other's outputs.
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p digests && printf '%s@%s\n' "$REPOSITORY" "$DIGEST" > "digests/$TARGET"
+          {
+            echo "### ${{ matrix.image }}"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| source commit | \`$SHA\` |"
+            echo "| reference | \`$REPOSITORY@$DIGEST\` |"
+            echo "| revision label | verified \`$SHA\` |"
+            echo "| run | ${{ github.run_id }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.target }}
+          path: digests/${{ matrix.target }}
+          retention-days: 90
+
+  antivirus:
+    name: munaxa-docs-antivirus
+    needs: source
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      clamav: ${{ steps.versions.outputs.clamav }}
+      cicap: ${{ steps.versions.outputs.cicap }}
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+      SHORT: ${{ needs.source.outputs.short }}
+      REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/munaxa-docs-antivirus
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Built and loaded first, and only pushed once it has proved it scans.
+      - name: Build the scanner (not yet pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/antivirus
+          push: false
+          load: true
+          tags: munaxa-docs-antivirus:candidate
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.version=${{ env.SHORT }}
+            org.opencontainers.image.title=munaxa-docs-antivirus
+
+      - name: Record the scanner versions this build installed
+        id: versions
+        run: |
+          set -euo pipefail
+          clamav=$(docker run --rm --entrypoint clamd munaxa-docs-antivirus:candidate --version | head -1)
+          cicap=$(docker run --rm --entrypoint c-icap munaxa-docs-antivirus:candidate -V 2>&1 | head -1)
+          packages=$(docker run --rm --entrypoint dpkg-query munaxa-docs-antivirus:candidate \
+            -W -f '${Package}=${Version}\n' clamav-daemon clamav-freshclam c-icap libc-icap-mod-virus-scan)
+          echo "clamd --version: $clamav"
+          echo "c-icap -V:       $cicap"
+          echo "$packages"
+          [ -n "$clamav" ] && [ -n "$cicap" ] || { echo "::error::could not read scanner versions"; exit 1; }
+          echo "clamav=$clamav" >> "$GITHUB_OUTPUT"
+          echo "cicap=$cicap" >> "$GITHUB_OUTPUT"
+          { echo "packages<<EOF"; echo "$packages"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+
+      - name: Probe the candidate — clean passed, EICAR blocked
+        run: |
+          set -euo pipefail
+          docker volume create av-signatures >/dev/null
+          docker run -d --name av-candidate -p 127.0.0.1:1344:1344 \
+            -v av-signatures:/var/lib/clamav munaxa-docs-antivirus:candidate
+          # freshclam fetches the official databases at start, so the first probe waits for them.
+          node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 600 \
+            || { docker logs av-candidate | tail -40; exit 1; }
+
+      # STG-8/STG-9: a restart — including after an unclean stop — must come back scanning, on the
+      # signatures already in the volume.
+      - name: Probe again after an unclean restart
+        run: |
+          set -euo pipefail
+          docker kill av-candidate >/dev/null
+          docker start av-candidate >/dev/null
+          node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 300 \
+            || { docker logs av-candidate | tail -40; exit 1; }
+          docker rm -f av-candidate >/dev/null
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The probed image itself is pushed — tagged and pushed, not rebuilt — so the digest in the
+      # registry is the image the probes above accepted, layer for layer.
+      - name: Push the accepted scanner
+        id: build
+        run: |
+          set -euo pipefail
+          for tag in "$SHORT" "sha-$SHA"; do
+            docker tag munaxa-docs-antivirus:candidate "$REPOSITORY:$tag"
+            docker push "$REPOSITORY:$tag"
+          done
+          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' munaxa-docs-antivirus:candidate \
+            | grep "^$REPOSITORY@" | head -1 | sed 's/^.*@//')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the pushed digest is the image that was probed
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          CLAMAV: ${{ steps.versions.outputs.clamav }}
+          CICAP: ${{ steps.versions.outputs.cicap }}
+          # Multi-line, so it travels as an env value rather than inline in the script.
+          PACKAGES: ${{ steps.versions.outputs.packages }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::no digest"; exit 1; }
+          ref="$REPOSITORY@$DIGEST"
+          candidate=$(docker inspect --format '{{.Id}}' munaxa-docs-antivirus:candidate)
+          # Drop every local name for the image, so the pull below really fetches from the registry.
+          docker rmi "$REPOSITORY:$SHORT" "$REPOSITORY:sha-$SHA" munaxa-docs-antivirus:candidate >/dev/null
+          docker pull "$ref"
+          [ "$(docker inspect --format '{{.Id}}' "$ref")" = "$candidate" ] \
+            || { echo "::error::the pushed image is not the probed candidate"; exit 1; }
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")
+          [ "$revision" = "$SHA" ] || { echo "::error::revision label $revision != $SHA"; exit 1; }
+          [ "$(docker run --rm --entrypoint clamd "$ref" --version | head -1)" = "$CLAMAV" ] || { echo "::error::ClamAV version drifted"; exit 1; }
+          [ "$(docker run --rm --entrypoint c-icap "$ref" -V 2>&1 | head -1)" = "$CICAP" ] || { echo "::error::c-icap version drifted"; exit 1; }
+          docker run -d --name av-pulled -p 127.0.0.1:1344:1344 -v av-signatures:/var/lib/clamav "$ref"
+          node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 300 \
+            || { docker logs av-pulled | tail -40; exit 1; }
+          docker rm -f av-pulled >/dev/null
+          {
+            echo "### munaxa-docs-antivirus"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| source commit | \`$SHA\` (infra/antivirus) |"
+            echo "| reference | \`$ref\` |"
+            echo "| revision label | verified \`$SHA\` |"
+            echo "| ClamAV | \`$CLAMAV\` |"
+            echo "| c-icap | \`$CICAP\` |"
+            echo "| probe.mjs | exit 0 on the candidate, after an unclean restart, and on the pulled digest |"
+            echo "| run | ${{ github.run_id }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p digests && printf '%s\n' "$ref" > digests/antivirus
+          printf 'clamd --version: %s\nc-icap -V: %s\n' "$CLAMAV" "$CICAP" > digests/antivirus-versions
+          printf '%s\n' "$PACKAGES" >> digests/antivirus-versions
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-antivirus
+          path: digests/
+          retention-days: 90
+
+  pull-identity:
+    name: Pull with the production identity
+    needs: [source, application, antivirus]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: The three references this run published
+        run: |
+          set -euo pipefail
+          cat digests/api digests/web digests/antivirus digests/antivirus-versions
+          {
+            echo "### Release images"
+            echo ""
+            echo '```'
+            cat digests/api digests/web digests/antivirus
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The deployment pulls with its own read-only identity, not with this run's token. It is an
+      # operator-provisioned secret pair; nothing here invents one. Without it the job says so and
+      # fails, because "the registry has the images" and "production can pull them" are different
+      # claims and only the second one matters on the night.
+      - name: Pull every digest with the production pull identity
+        env:
+          PULL_USER: ${{ secrets.DOCS_PRODUCTION_PULL_USER }}
+          PULL_TOKEN: ${{ secrets.DOCS_PRODUCTION_PULL_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PULL_USER" ] || [ -z "$PULL_TOKEN" ]; then
+            echo "::error::DOCS_PRODUCTION_PULL_USER / DOCS_PRODUCTION_PULL_TOKEN are not configured. Provision a read:packages identity for the production host and add both as repository secrets, then re-run this job."
+            echo "| production pull identity | NOT CONFIGURED — operator action |" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          printf '%s' "$PULL_TOKEN" | docker login ghcr.io -u "$PULL_USER" --password-stdin
+          for ref in $(cat digests/api digests/web digests/antivirus); do docker pull "$ref"; done
+          docker logout ghcr.io
+          echo "| production pull identity | pulled all three digests as \`$PULL_USER\` |" >> "$GITHUB_STEP_SUMMARY"
