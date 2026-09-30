@@ -16,6 +16,14 @@ import { DEFAULT_LOCALE, type LocaleKey, isLocale } from '@edms/i18n';
  */
 export const ACCESS_TOKEN_COOKIE = 'edms_at';
 export const REFRESH_TOKEN_COOKIE = 'edms_rt';
+/**
+ * The organisation the session was signed in to — WEB-1.
+ *
+ * Kept beside the refresh token, with the same attributes and lifetime, for one reason: the API
+ * reads no tenant from the host, so sign-out has to name it or the API cannot find the session to
+ * revoke. A slug is not a secret, but it is only ever needed by the server, so it is `httpOnly` too.
+ */
+export const TENANT_COOKIE = 'edms_tenant';
 export const LOCALE_COOKIE = 'edms_locale';
 
 export interface Session {

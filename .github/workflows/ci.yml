@@ -499,7 +499,7 @@ jobs:
           # sharing a job with it should have to survive. Four sign-ins, then five for the login
           # flow's `next` (D-19), each file on its own Redis database and so its own budget.
           - name: 'session states'
-            files: 'src/test/e2e/session-states.e2e.spec.ts src/test/e2e/open-redirect.e2e.spec.ts'
+            files: 'src/test/e2e/session-states.e2e.spec.ts src/test/e2e/open-redirect.e2e.spec.ts src/test/e2e/sign-out-revocation.e2e.spec.ts'
 
     services:
       postgres:

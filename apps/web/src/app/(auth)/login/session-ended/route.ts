@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 
 import { safeDestination } from '../../../../lib/destination';
 import { checkSession } from '../../../../lib/session-check';
-import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '../../../../lib/session';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, TENANT_COOKIE } from '../../../../lib/session';
 
 /**
  * Where a refused session is cleared — RC validation, D-18.
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const response = seeOther(loginPath(next, true));
   // The attributes `storeSession` set them with, because a cookie is only replaced by one with the
   // same name, path and domain.
-  for (const name of [ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE]) {
+  for (const name of [ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, TENANT_COOKIE]) {
     response.cookies.set(name, '', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',

@@ -40,7 +40,7 @@ beforeEach(() => {
 });
 
 describe('GET /login/session-ended', () => {
-  it('clears both cookies and sends the browser to sign in when the API refused the session', async () => {
+  it('clears the session cookies and sends the browser to sign in when the API refused the session', async () => {
     checkSession.mockResolvedValue({ state: 'REJECTED' });
 
     const response = await GET(request('?next=%2Fdocuments', 'stale'));
@@ -48,7 +48,8 @@ describe('GET /login/session-ended', () => {
     expect(checkSession).toHaveBeenCalledWith('stale');
     expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe('/login?next=%2Fdocuments&ended=1');
-    expect(expired(response).sort()).toEqual(['edms_at', 'edms_rt']);
+    // The tenant cookie goes with them (WEB-1): it exists only to serve this session's sign-out.
+    expect(expired(response).sort()).toEqual(['edms_at', 'edms_rt', 'edms_tenant']);
     // Same attributes the session was stored with, or the browser keeps the original.
     for (const line of response.headers.getSetCookie()) {
       expect(line).toMatch(/Path=\//);

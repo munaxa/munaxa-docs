@@ -6,7 +6,7 @@ import { DomainError, ErrorCode } from '@edms/domain';
 
 import { apiFetch } from './api-client';
 import { clientAddress } from './client-address';
-import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from './session';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, TENANT_COOKIE } from './session';
 
 /**
  * Sign-in, from the server's side of the application.
@@ -69,7 +69,7 @@ export async function signIn(input: SignInInput): Promise<SignInOutcome> {
       // The sign-in limit is per address, and without this every browser is this server.
       ...(forwardedFor !== undefined && { forwardedFor }),
     });
-    await storeSession(result);
+    await storeSession(result, input.tenant);
     return { ok: true };
   } catch (error) {
     if (error instanceof DomainError && error.code === ErrorCode.MFA_REQUIRED) {
@@ -90,16 +90,26 @@ export async function signIn(input: SignInInput): Promise<SignInOutcome> {
 /**
  * Ends the session at the API and locally.
  *
+ * The refresh token goes to the API **with the tenant it belongs to** (WEB-1). The API reads no
+ * tenant from the host, so a sign-out that named none was refused, the refusal was swallowed below,
+ * and the refresh family stayed live: a copy of the token taken before sign-out could still be
+ * exchanged, and rotated, for a month at a time.
+ *
  * The cookies are cleared whatever the API says. The caller's intent was to sign out, and
  * leaving a token in the browser because the server was slow is the wrong way to fail.
  */
 export async function signOut(): Promise<void> {
   const store = await cookies();
   const refreshToken = store.get(REFRESH_TOKEN_COOKIE)?.value;
+  const tenant = store.get(TENANT_COOKIE)?.value;
 
   if (refreshToken) {
     try {
-      await apiFetch<void>({ path: '/auth/logout', method: 'POST', body: { refreshToken } });
+      await apiFetch<void>({
+        path: '/auth/logout',
+        method: 'POST',
+        body: { refreshToken, ...(tenant ? { tenant } : {}) },
+      });
     } catch {
       // Already expired, already revoked, or unreachable. None of them change what happens next.
     }
@@ -107,9 +117,10 @@ export async function signOut(): Promise<void> {
 
   store.delete(ACCESS_TOKEN_COOKIE);
   store.delete(REFRESH_TOKEN_COOKIE);
+  store.delete(TENANT_COOKIE);
 }
 
-async function storeSession(result: AuthenticationResponse): Promise<void> {
+async function storeSession(result: AuthenticationResponse, tenant?: string): Promise<void> {
   const store = await cookies();
   const secure = process.env.NODE_ENV === 'production';
 
@@ -126,4 +137,12 @@ async function storeSession(result: AuthenticationResponse): Promise<void> {
     ...shared,
     expires: new Date(result.refreshTokenExpiresAt),
   });
+  // The organisation this session belongs to, for as long as its refresh token lives — sign-out
+  // has to name it (WEB-1).
+  if (tenant) {
+    store.set(TENANT_COOKIE, tenant, {
+      ...shared,
+      expires: new Date(result.refreshTokenExpiresAt),
+    });
+  }
 }
