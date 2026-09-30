@@ -6,6 +6,7 @@ import { Permission, type UserId, asId } from '@edms/domain';
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
 import { UnauthenticatedError } from '../../../core/errors/application-errors';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
+import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import {
   MFA_SERVICE,
@@ -42,6 +43,7 @@ export class MfaController {
   constructor(
     @Inject(MFA_SERVICE) private readonly mfa: MfaService,
     @Inject(CREDENTIAL_REPOSITORY) private readonly credentials: CredentialRepository,
+    @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
   ) {}
 
   @Get()
@@ -59,7 +61,10 @@ export class MfaController {
   @HttpCode(HttpStatus.OK)
   async begin(): Promise<MfaEnrolmentOffer> {
     const userId = this.caller();
-    const credential = await this.credentials.findById(userId);
+    // Inside a unit of work: the repository reads through `requireTransaction()`, and the API opens
+    // none per request — outside one this threw `NoActiveTransactionError` and every enrolment
+    // from the web's `/mfa` screen answered 500. The same shape as `AuthController`'s `/me`.
+    const credential = await this.unitOfWork.run(() => this.credentials.findById(userId));
     // The account's own address, so the entry in the authenticator says who it is for. A person
     // with three tenants sees three entries and needs to tell them apart.
     return this.mfa.begin(userId, credential?.email ?? String(userId));
