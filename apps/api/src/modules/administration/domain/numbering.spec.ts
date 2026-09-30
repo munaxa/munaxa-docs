@@ -457,3 +457,103 @@ describe('matching a manually supplied number (§3)', () => {
     expect(matchManualNumber(ruleFor(), {}, '0000')).toBe('SEQUENCE_OUT_OF_RANGE');
   });
 });
+
+/**
+ * NUM-1: a counter that restarts per scope must carry that scope in its text, or two scopes render
+ * the same number. Until this was checked for the organisational and type scopes, a rule reset per
+ * document type with no type code was saved, and the second type to draw met the database's
+ * uniqueness on every attempt.
+ */
+describe('a scoped reset needs its scope in the number (NUM-1)', () => {
+  const PAIRINGS = [
+    [SequenceResetScope.PER_COMPANY, NumberSegmentKind.COMPANY_CODE],
+    [SequenceResetScope.PER_ENTITY, NumberSegmentKind.ENTITY_CODE],
+    [SequenceResetScope.PER_BRANCH, NumberSegmentKind.BRANCH_CODE],
+    [SequenceResetScope.PER_DOCUMENT_TYPE, NumberSegmentKind.DOCUMENT_TYPE_CODE],
+    [SequenceResetScope.PER_CATEGORY, NumberSegmentKind.CATEGORY_CODE],
+  ] as const;
+
+  for (const [scope, kind] of PAIRINGS) {
+    it(`refuses a ${scope} reset whose number carries no ${kind}`, () => {
+      expect(
+        checkRule(
+          ruleFor({
+            resetScope: [scope],
+            segments: [
+              { kind: NumberSegmentKind.LITERAL, value: 'SOP' },
+              { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+            ],
+          }),
+        ),
+      ).toContain('RESET_SCOPE_WITHOUT_SEGMENT');
+    });
+
+    it(`accepts a ${scope} reset whose number carries ${kind}`, () => {
+      expect(
+        checkRule(
+          ruleFor({
+            resetScope: [scope],
+            segments: [
+              { kind: NumberSegmentKind.LITERAL, value: 'SOP' },
+              { kind, optional: false },
+              { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+            ],
+          }),
+        ),
+      ).toEqual([]);
+    });
+  }
+
+  it('keeps the documented per-department exception: no department code is required', () => {
+    expect(
+      checkRule(
+        ruleFor({
+          resetScope: [SequenceResetScope.PER_DEPARTMENT],
+          segments: [
+            { kind: NumberSegmentKind.LITERAL, value: 'SOP' },
+            { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('still accepts the calendar rules that were already valid', () => {
+    expect(
+      checkRule(
+        ruleFor({
+          resetScope: [SequenceResetScope.YEARLY],
+          segments: [
+            { kind: NumberSegmentKind.LITERAL, value: 'SOP' },
+            { kind: NumberSegmentKind.YEAR, digits: 4 },
+            { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      checkRule(
+        ruleFor({
+          resetScope: [SequenceResetScope.MONTHLY],
+          segments: [
+            { kind: NumberSegmentKind.YEAR, digits: 4 },
+            { kind: NumberSegmentKind.MONTH },
+            { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      checkRule(
+        ruleFor({
+          resetScope: [SequenceResetScope.PER_ENTITY, SequenceResetScope.YEARLY],
+          segments: [
+            { kind: NumberSegmentKind.ENTITY_CODE, optional: false },
+            { kind: NumberSegmentKind.YEAR, digits: 4 },
+            { kind: NumberSegmentKind.SEQUENCE, padding: 4 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+  });
+});

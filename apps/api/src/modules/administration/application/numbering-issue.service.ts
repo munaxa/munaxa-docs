@@ -20,6 +20,7 @@ import type { Page } from '@edms/utils';
 import {
   DuplicateError,
   NotFoundError,
+  NumberSeriesCollisionError,
   ValidationError,
 } from '../../../core/errors/application-errors';
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
@@ -420,7 +421,17 @@ export class NumberingIssueService implements NumberingService {
     return rule;
   }
 
-  /** Claims the next value of the right series and renders it. The one path every draw takes. */
+  /**
+   * Claims the next value of the right series and renders it. The one path every draw takes.
+   *
+   * The rendered text is checked against every number this tenant has issued, in any state, before
+   * anything is inserted — NUM-1. Uniqueness is the database's (`uq_number_reservation_formatted`)
+   * and stays so; what the read adds is the *answer*. A unique violation aborts the transaction and
+   * cannot say which of `number_reservation`'s three unique indexes it hit, so it reached the caller
+   * as a 500. Refusing here, with the transaction still sound, rolls everything back — the counter's
+   * advance included — and names the rule and the value. Two first-time draws in different series
+   * racing within the same instant can still meet the index; the next attempt meets this check.
+   */
   private async draw(rule: IssuableRule, codes: NumberingCodes): Promise<IssuedNumber> {
     const context = await this.contextFor(codes);
     const scopeKey = scopeKeyFor(rule, context);
@@ -431,6 +442,15 @@ export class NumberingIssueService implements NumberingService {
       at: this.writer.clock.now(),
     });
     const { formatted } = formatNumber(rule, context, sequenceValue);
+    const issued = await this.repository.findByFormatted(formatted);
+    if (issued !== null) {
+      throw new NumberSeriesCollisionError({
+        formatted,
+        numberingRuleId: rule.id,
+        numberingRuleKey: rule.key,
+        issuedByRuleId: issued.numberingRuleId,
+      });
+    }
     return {
       reservationId: asId<NumberReservationId>(this.writer.clock.nextId()),
       formatted,

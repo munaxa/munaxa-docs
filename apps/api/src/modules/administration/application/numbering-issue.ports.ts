@@ -25,6 +25,8 @@ export const NUMBER_ISSUE_REPOSITORY = Symbol('NumberIssueRepository');
 /** A rule as the formatter needs it — shape and flags, nothing administrative. */
 export interface IssuableRule {
   readonly id: NumberingRuleId;
+  /** What an administrator calls it — named in a collision refusal (NUM-1). */
+  readonly key: string;
   readonly separator: string;
   readonly segments: readonly NumberSegment[];
   readonly resetScope: readonly SequenceResetScopeKey[];

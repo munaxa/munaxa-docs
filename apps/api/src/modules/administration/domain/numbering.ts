@@ -77,14 +77,26 @@ const MAXIMUM_PADDING = 12;
  * text distinguishes them. That is the one way a reset scope can silently break uniqueness, so the
  * validator checks the pairing rather than trusting whoever configured it.
  *
- * `PER_DEPARTMENT` is the exception: a department code is not required, because two departments in one
- * entity drawing from separate counters still produce distinguishable numbers as long as *something*
- * varies — and the department is frequently deliberately absent from a customer-facing number. It is
- * checked against the sequence's scope key instead, which always contains it.
+ * NUM-1: until 2026-09-30 only the calendar scopes were paired, although this comment described the
+ * entity case as the example. A rule reset per document type with no type code in its text was saved,
+ * and the second type to draw met `uq_number_reservation_formatted` on its first number and on every
+ * attempt after. Company, entity, branch, document-type and category resets now need their code too —
+ * category because it fails in exactly the same way.
+ *
+ * `PER_DEPARTMENT` remains the documented exception, deliberately and unchanged: a department code is
+ * not required, because the department is frequently absent from a customer-facing number. A rule
+ * that relies on it must make its text differ some other way; one that does not is refused at the
+ * draw (`NumberSeriesCollisionError`, 409) rather than failing with a 500 — see
+ * `docs/architecture/09-numbering-architecture.md` §1.
  */
 const SCOPE_REQUIRES_SEGMENT: Readonly<
   Partial<Record<SequenceResetScopeKey, readonly NumberSegmentKindKey[]>>
 > = Object.freeze({
+  [SequenceResetScope.PER_COMPANY]: [NumberSegmentKind.COMPANY_CODE],
+  [SequenceResetScope.PER_ENTITY]: [NumberSegmentKind.ENTITY_CODE],
+  [SequenceResetScope.PER_BRANCH]: [NumberSegmentKind.BRANCH_CODE],
+  [SequenceResetScope.PER_DOCUMENT_TYPE]: [NumberSegmentKind.DOCUMENT_TYPE_CODE],
+  [SequenceResetScope.PER_CATEGORY]: [NumberSegmentKind.CATEGORY_CODE],
   [SequenceResetScope.YEARLY]: [NumberSegmentKind.YEAR],
   // Month *and* year: a monthly counter restarts every month of every year, and a number whose
   // text carries only the month renders identically in March of two different years — the same

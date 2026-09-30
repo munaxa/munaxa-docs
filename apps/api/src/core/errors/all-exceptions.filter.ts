@@ -14,7 +14,7 @@ import { negotiateLocale, translate } from '@edms/i18n';
 
 import { LOGGER, type Logger } from '../observability/logger';
 import { correlationIdOf } from '../http/correlation-id.middleware';
-import { ValidationError } from './application-errors';
+import { NumberSeriesCollisionError, ValidationError } from './application-errors';
 
 /** `problem.status` is a plain number on the wire, so the thresholds it is compared against
  *  are numbers too rather than enum members that only look comparable. */
@@ -156,7 +156,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       detail: translate(locale, `error.${error.code}`),
       correlationId,
     };
-    if (error instanceof ValidationError && error.fieldErrors.length > 0) {
+    if (
+      (error instanceof ValidationError || error instanceof NumberSeriesCollisionError) &&
+      error.fieldErrors.length > 0
+    ) {
       return { ...problem, errors: [...error.fieldErrors] };
     }
     return problem;

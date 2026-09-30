@@ -38,6 +38,7 @@ export class PrismaNumberIssueRepository implements NumberIssueRepository {
       where: { id, tenantId: this.tenantId(), deletedAt: null },
       select: {
         id: true,
+        key: true,
         separator: true,
         segments: true,
         resetScope: true,
@@ -49,6 +50,7 @@ export class PrismaNumberIssueRepository implements NumberIssueRepository {
       ? null
       : {
           id: asId<NumberingRuleId>(row.id),
+          key: row.key,
           separator: row.separator,
           segments: row.segments as unknown as readonly NumberSegment[],
           resetScope: row.resetScope,

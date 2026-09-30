@@ -75,6 +75,52 @@ export class DuplicateError extends DomainError {
   }
 }
 
+/**
+ * A drawn number that another series already issued — NUM-1.
+ *
+ * Two series render the same text: two rules whose formats overlap, or one rule whose counter
+ * restarts per scope while its text omits that scope. The database refuses the second
+ * `uq_number_reservation_formatted` row, which is what keeps numbers unique; this is the refusal the
+ * caller gets instead of the unique violation, raised *before* the insert so the transaction is
+ * still sound and rolls back whole. `DUPLICATE` (409) rather than a new code, because the copy a
+ * client shows for `DUPLICATE` already says the right thing; what is specific is in the field
+ * error, which names the rule and the value so an administrator can find the overlap.
+ *
+ * Retrying cannot succeed: the counter's advance rolls back with the refusal, so the next attempt
+ * draws the same value. The series needs its rule changed.
+ */
+export class NumberSeriesCollisionError extends DomainError {
+  readonly fieldErrors: readonly { field: string; message: string }[];
+
+  constructor(input: {
+    readonly formatted: string;
+    readonly numberingRuleId: string;
+    readonly numberingRuleKey: string;
+    readonly issuedByRuleId: string;
+  }) {
+    super(
+      ErrorCode.DUPLICATE,
+      `Numbering rule "${input.numberingRuleKey}" drew ${input.formatted}, which is already issued. ` +
+        'Two numbering series produce the same text; an administrator must change a numbering rule.',
+      {
+        reason: 'NUMBER_SERIES_COLLISION',
+        formatted: input.formatted,
+        numberingRuleId: input.numberingRuleId,
+        numberingRuleKey: input.numberingRuleKey,
+        issuedByRuleId: input.issuedByRuleId,
+      },
+    );
+    this.fieldErrors = [
+      {
+        field: 'documentNumber',
+        message:
+          `NUMBER_SERIES_COLLISION: numbering rule "${input.numberingRuleKey}" drew ` +
+          `${input.formatted}, which is already issued`,
+      },
+    ];
+  }
+}
+
 export class DocumentLockedError extends DomainError {
   constructor(holderUserId: string, expiresAt: Date) {
     super(ErrorCode.LOCKED, 'This document is checked out by somebody else.', {

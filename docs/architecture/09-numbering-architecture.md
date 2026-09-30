@@ -52,6 +52,19 @@ changes. `["ENTITY","DOC_TYPE","YEAR"]` gives every entity its own per-type year
   documents collide — the validator refuses a rule where that is possible.
 - Padding is fixed; widening padding mid-series is refused (it would create two textual forms of
   one number). A new series is created instead.
+- A counter that restarts per scope must carry that scope in its text: yearly needs `YEAR`, monthly
+  `MONTH` and `YEAR`, and — since NUM-1 (2026-09-30) — per company, entity, branch, document type and
+  category need `COMPANY_CODE`, `ENTITY_CODE`, `BRANCH_CODE`, `DOCUMENT_TYPE_CODE` and
+  `CATEGORY_CODE` respectively (`RESET_SCOPE_WITHOUT_SEGMENT`). Without it two scopes render the same
+  number. **Per department is the documented exception** and stays one: a department code is often
+  deliberately absent from a customer-facing number, so a rule reset per department must make its text
+  differ some other way.
+- What validation cannot see — two rules whose formats overlap, or a per-department rule whose text
+  does not differ — is refused at the draw: the rendered value is checked against every number the
+  tenant has issued, in any state, before the reservation is written. The caller gets `409 DUPLICATE`
+  with a `documentNumber` field error `NUMBER_SERIES_COLLISION` naming the rule and the value, and the
+  whole transaction — the counter's advance included — rolls back, so a retry is refused the same way
+  until an administrator changes a rule. `uq_number_reservation_formatted` remains the guarantee.
 - Changing a rule affects only documents numbered afterwards. Existing numbers are never
   recomputed — a re-render of an existing number is a bug, not a feature.
 
