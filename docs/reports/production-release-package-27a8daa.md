@@ -104,15 +104,60 @@ appear as a Go/No-Go row (§25).
 
 ### 4.1 CI
 
-Pending: CI run 554 on `27a8daa` in progress.
+| Run | Commit | Result |
+| --- | --- | --- |
+| **554** (push) | `27a8daa` exactly | **success, 9/9 jobs**: lint, typecheck, test, build, platform stylesheet, accessibility contrast and visual regression; integration with a real object store and a real ClamAV/c-icap scanner over two tenant databases — **1202/1202, 56 files**, including `numbering-collision.e2e` (2), `tenant-resolution.e2e` (9), `antivirus.e2e` (28), `icap-antivirus` (10), `s3-upload-integrity` (5), `storage-integrity-and-reclamation` (13); five end-to-end shards — "session states" ran `sign-out-revocation.e2e` (22/22 in the shard); container images (API query engine; web branding); product isolation — https://github.com/munaxa/munaxa-docs/actions/runs/36701105091 |
 
 ### 4.2 Local gate on `27a8daa` (fresh tenant databases)
 
-Pending: the local gate is in progress.
+| Gate | Result |
+| --- | --- |
+| Formatting (`pnpm format:check`) | PASS |
+| Lint (all packages, uncached) | PASS (warnings only, none new in changed files) |
+| Typecheck (all packages, uncached) | PASS |
+| Unit | PASS — api 892 passed / 1 skipped (the same pre-existing skip as `c87519e`); web 508; contracts 63; domain 164; i18n 80; utils 38; worker 2 |
+| Build | PASS |
+| **Integration** (real PostgreSQL, two tenants, **real object store and real ClamAV 1.5.4 / c-icap 0.5.10**) | **PASS — 1202/1202, 56 files, 0 skipped**, including `numbering-collision.e2e` (2), `tenant-resolution.e2e` (9), `antivirus.e2e` (28), `icap-antivirus` (10), `s3-upload-integrity` (5), `storage-integrity-and-reclamation` (13) |
+| **Web sign-out replay** (`sign-out-revocation.e2e`, real Chromium, real API) | **PASS — 1/1** |
 
 ### 4.3 Staging smoke on `27a8daa`'s own images
 
-Pending: the staging smoke runs on images built from `27a8daa`.
+A staging-shaped deployment of API and web images built from a clean export of `27a8daa`, labelled
+`org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`. Local image IDs:
+API `sha256:ec46937671da…`, web `sha256:11767ea5c33a…`. These are **local** IDs, not registry
+digests. The procedure is the same as in the `c87519e` package §4:
+
+1. fresh tenant databases, then `scripts/migrate-tenants.mjs` (no new migration);
+2. each tenant's administrator by the image's `dist/provision.js`;
+3. API, then web, then the scanner probe, then readiness, then smoke.
+
+The environment: `NODE_ENV=production`, `DEPLOYMENT_PROFILE=CLOUD`, and two tenants (`acme` and a
+decoy slugged `docs`). Storage used the S3 driver on MinIO, and antivirus was `AV_DRIVER=ICAP` on
+the scanner built from `infra/antivirus` (unchanged). Readiness: both tenant databases, cache and
+antivirus `UP`.
+
+| Suite | Result |
+| --- | --- |
+| **Runbook §16, steps 1–21** | **21/21** |
+| Release-candidate checks RC-1 … RC-6 (tenant never from the host; TOTP) | **6/6** |
+| **NUM-1a** — a per-company reset without `COMPANY_CODE` is refused on save; per-entity + yearly with its segments is accepted | **PASS** |
+| **NUM-1b** — a second rule rendering `SMK-0001` (already issued in step 16): submission answers **409 `DUPLICATE`**, field error `NUMBER_SERIES_COLLISION: numbering rule "…" drew SMK-0001, which is already issued`, **twice**; the document stays `DRAFT`, unnumbered and unchanged; no review task; no submission in its audit timeline | **PASS** |
+| **Smoke total** | **29/29** |
+| Real Chromium on the web image: organisation field required; blank organisation refused; named-tenant sign-in; branding assets 5/5; session cookies httpOnly and host-only | **5/5** |
+| **WEB-1 in Chromium**: `edms_tenant` = `acme`, httpOnly, `SameSite=Lax`, `Secure`, expiry equal to `edms_rt`; sign-out via the account menu returns to `/login` and clears `edms_at`, `edms_rt` and `edms_tenant`; the refresh token copied before sign-out, replayed **with its tenant**, is **refused 401** | **3/3** |
+| **Browser total** | **8/8** |
+| Scanner | ClamAV **1.5.4**, c-icap **0.5.10**; `probe.mjs`: clean → 204, EICAR blocked (`Eicar-Test-Signature`) |
+
+**Notes on the harness.** The smoke and browser scripts are those of the `c87519e` run, extended
+with NUM-1a/b and the three WEB-1 browser checks. The first run failed only at NUM-1b, and the
+fault was the harness. It expected the collision at approval, but the rule reserves its number at
+submission (the default), and the product refused there with the correct 409. The check was
+corrected to assert at submission, the environment was redeployed fresh, and the table above is
+**one clean run**. The sandbox's proxy CA was given to the **build stage only**. It is absent from
+both runtime images (verified: no `/proxy-ca.crt`, no proxy environment, apt sources restored).
+
+The first build of the web image was refused by Docker Hub's rate limit (429) while resolving
+`node:22-bookworm-slim`. It was retried unchanged and succeeded.
 
 ## 5. Production images
 
@@ -148,3 +193,17 @@ Pending: the staging smoke runs on images built from `27a8daa`.
 The production infrastructure prerequisites, the go-live sequence (runbook §21) and the rollback
 rules (runbook §20) apply to `27a8daa` exactly as they did to `c87519e`. Status and evidence:
 [production-prerequisites-checklist.md](../operations/production-prerequisites-checklist.md).
+
+## 7. Status of the candidate
+
+`27a8daa` passed every check this release required: unit tests, the complete local gate,
+real-Postgres two-tenant integration with object storage and antivirus, tenant resolution, the new
+WEB-1 and NUM-1 regressions, full CI (run 554, 9/9), and the staging smoke on its own images
+including Chromium. It is therefore **eligible to become the production release**, subject to three
+steps outside this package:
+
+1. the change approver's acceptance, including the accepted limitations WF-1 and KEY-1 (§3);
+2. publishing its images by tag, and recording their digests (§5a);
+3. the open production infrastructure prerequisites.
+
+Production remains **NO-GO** until those are done.

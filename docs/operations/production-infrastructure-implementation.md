@@ -456,7 +456,7 @@ change approver, and does not count as READY.
 **READY** (application side; evidence in the staging report, release package and CI run 550):
 
 - Application release candidate `27a8daa`, CI run 554 9/9 (the historical `f5d5bb2` was CI run 550).
-- The staging gate on `416ca94`, plus the STG-12 targeted regression on `f5d5bb2`, plus the §16 smoke (pending) on `27a8daa`'s own images.
+- The staging gate on `416ca94`, plus the STG-12 targeted regression on `f5d5bb2`, plus the §16 smoke 29/29 and browser 8/8 on `27a8daa`'s own images.
 - The deployment, rollback and recovery **procedures** (runbook, this checklist).
 - The scanner architecture, `probe.mjs`, and the alert rule definitions, all proven in staging.
 

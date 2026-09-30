@@ -28,7 +28,7 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 | --- | --- |
 | Application code to deploy | **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`) — the application release candidate |
 | Validated by | CI run 554 on `27a8daa`, 9/9 jobs green (lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner, a real object store and two tenant databases; five end-to-end shards; visual regression; three container images; product isolation), plus the local gate and the staging smoke in [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md) |
-| Staging gate | The full gate passed on `416ca94` ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md)); `f5d5bb2` added the web image's brand artwork (STG-12); `c87519e` added the tenant-resolution and TOTP-enrolment fixes; `27a8daa` adds the web sign-out revocation (WEB-1) and numbering-collision (NUM-1) fixes and repeats the §16 smoke ((pending)) on its own images |
+| Staging gate | The full gate passed on `416ca94` ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md)); `f5d5bb2` added the web image's brand artwork (STG-12); `c87519e` added the tenant-resolution and TOTP-enrolment fixes; `27a8daa` adds the web sign-out revocation (WEB-1) and numbering-collision (NUM-1) fixes and repeats the §16 smoke (29/29, browser 8/8) on its own images |
 | Branch | `claude/docs-release-rc2` |
 
 **Build the images from `27a8daa` and run the migrations from a checkout of `27a8daa`.** Relative to
@@ -47,7 +47,7 @@ commit's SHA as the application SHA.
 | Functional staging baseline | `416ca946f6afaee8bcea7fcf94c9705af800c5a8` (`416ca94`) | Passed the full staging gate (CI run 548). Not deployable: its web image lacks the brand artwork (STG-12) |
 | Previous production baseline (historical) | `f5d5bb28146c57ab7937eff90cebd7621a28c9f2` (`f5d5bb2`) | `416ca94` plus STG-12, CI run 550 ([production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md)). **Superseded — do not deploy**: a blank organisation field is resolved from the hostname (a sign-in at `docs.munaxa.com` could reach a tenant slugged `docs`), and TOTP enrolment answers 500 |
 | Superseded release candidate | `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`) | `f5d5bb2` plus `6f135e5` and `14311c2`, CI run 552, staging smoke 27/27 ([production-release-package-c87519e.md](../reports/production-release-package-c87519e.md)). **Superseded — do not deploy**: web sign-out does not revoke the session at the API (WEB-1), and colliding numbering rules answer 500 (NUM-1) |
-| **Application release candidate** | **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke (pending). **Deploy this** ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)) |
+| **Application release candidate** | **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke 29/29, browser 8/8. **Deploy this** ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)) |
 
 | Scanner | Value |
 | --- | --- |
@@ -990,7 +990,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 | Check | Required | Result | Evidence | Operator |
 | --- | --- | --- | --- | --- |
 | Release SHA is `27a8daa`; API, web and scanner images deployed **by registry digest** | yes | | digests, image labels | |
-| Staging gate passed (`416ca94` full gate; `f5d5bb2` STG-12 regression; `27a8daa` §16 smoke (pending) on its own images), results attached | yes | | staging report, release package | |
+| Staging gate passed (`416ca94` full gate; `f5d5bb2` STG-12 regression; `27a8daa` §16 smoke 29/29 and browser 8/8 on its own images), results attached | yes | | staging report, release package | |
 | Every production prerequisite READY with evidence ([checklist](./production-prerequisites-checklist.md)) | yes | | checklist | |
 | Production DNS and a publicly trusted TLS certificate for the web origin (and the store endpoint) | yes | | certificate chain, HTTPS check | |
 | SMTP relay configured and verified (TLS/STARTTLS, SPF/DKIM/DMARC) | yes | | relay test, DNS records | |
