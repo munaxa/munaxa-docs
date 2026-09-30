@@ -7,7 +7,13 @@ set -eu
 # script is PID 1 of the container's own process namespace, where no other clamd or c-icap can be
 # running. The paths are the PidFile/CommandsSocket values in c-icap.conf and clamd.conf.
 rm -f /var/run/c-icap/c-icap.pid /var/run/c-icap/c-icap.ctl /var/run/clamav/clamd.pid
-chown -R clamav:clamav /var/lib/clamav
+# The container runs as `clamav` (Dockerfile), so it cannot take ownership of the signature volume;
+# a fresh named volume inherits the image directory's clamav ownership, and one written by an earlier
+# root-started image was chowned to clamav by it. Anything else is the operator's to fix — the update
+# below then fails, and the scanner starts only if the volume already holds signatures.
+if [ ! -w /var/lib/clamav ]; then
+  echo "/var/lib/clamav is not writable by $(id -un) ($(id -u):$(id -g)); signatures cannot be updated" >&2
+fi
 if ! freshclam --stdout; then
   if /usr/local/bin/has-signatures /var/lib/clamav; then
     echo "freshclam failed; scanning with the signatures already in the volume" >&2

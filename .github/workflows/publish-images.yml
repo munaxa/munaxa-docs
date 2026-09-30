@@ -312,6 +312,11 @@ jobs:
           node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 600 \
             || { docker logs av-candidate | tail -40; exit 1; }
 
+      # The container never starts as root, the signature update still works as its user, and no
+      # credential reached the image.
+      - name: The candidate runs as non-root and carries no credentials
+        run: sh infra/antivirus/verify-container.sh av-candidate munaxa-docs-antivirus:candidate
+
       # STG-8/STG-9: a restart — including after an unclean stop — must come back scanning, on the
       # signatures already in the volume.
       - name: Probe again after an unclean restart
