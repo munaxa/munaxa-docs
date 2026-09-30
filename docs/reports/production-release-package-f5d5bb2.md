@@ -127,3 +127,66 @@ The repository defines no downtime duration. The approved change window sets it.
   into a new database, verify it, then repoint the catalogue. This discards writes since the backup
   and is the change approver's decision.
 - **Object storage:** nothing is deleted. **Scanner:** keeps running.
+
+## 6. Addendum — 2026-09-30: tenant login fix, image publishing, ecosystem decision
+
+Appended; §1–§5 above are unchanged and remain the record of 2026-09-29.
+
+### 6.1 Ecosystem architecture
+
+Docs production follows the accepted ecosystem decision
+([munaxa ADR-0002](https://github.com/munaxa/munaxa/blob/main/docs/adr/0002-independent-products-one-shared-foundation.md)):
+Docs is independently deployable, owns its databases, tenants, users and authentication, and has
+no runtime dependency on Work, School, Munaxa Identity or any control plane. The Identity ADR
+([munaxa ADR-0001](https://github.com/munaxa/munaxa/blob/main/docs/adr/0001-munaxa-identity-is-a-sixth-peer-product.md))
+was merged in `e173217` (munaxa PR #263); it does not oblige Docs to use Identity. Nothing in this
+release package introduces Identity, a shared tenant table, a shared database or the Work/Identity
+Render blueprint into Docs.
+
+### 6.2 Tenant login fix — NOT in `f5d5bb2`
+
+| Item | Value |
+| --- | --- |
+| Defect | With the organisation field blank, sign-in/refresh/sign-out, OIDC discovery/callback and API-key resolution took the leftmost host label as the tenant: `docs.munaxa.com` → `docs`, `api.docs.munaxa.com` → `api`. Measured: a blank-tenant sign-in at `docs.munaxa.com` **authenticated into a tenant whose slug is `docs`**. |
+| Fix commit | **`14311c2`** `fix(auth): never read the tenant from the host; require it at sign-in` (branch `claude/docs-tenant-login-and-images`) |
+| Related fix | **`6f135e5`** `fix(mfa): read the enrolling account inside a unit of work` — `POST /auth/mfa/enrolment` answered 500 on every call (NoActiveTransactionError), so the web's `/mfa` screen could not enrol an authenticator. Found by the new suite's TOTP test. Present in `f5d5bb2`. |
+| Regression suite | `apps/api/src/__tests__/tenant-resolution.e2e.integration.spec.ts`, 9 tests over HTTP with tenants named `docs` and `api`: blank tenant at `docs.munaxa.com` and at `api.docs.munaxa.com` refused (401, same as a wrong password); named tenant signs in at both hosts into the named tenant; named-tenant sign-in and refresh on a plain host; refresh without a tenant refused; TOTP enrol → `MFA_REQUIRED` → recovery code accepted; OIDC discovery accepts `tenant`. 9/9 pass; with the old host rule restored 4 fail. |
+| Other gates (local, this session) | API unit 880 passed / 1 skipped; web unit 503; contracts 63; typecheck and lint clean (warnings only, in untouched files); format clean. API integration: 1145 passed, 17 failed, 38 skipped — all 17 failures `ECONNREFUSED 127.0.0.1:9000` (no object store in this container), the 38 skips are the scanner suites (no scanner). CI run 551 on `c87519e`: see §6.4. |
+| Known limit | API keys resolve an unnamed tenant only where the deployment has exactly one. A multi-tenant cloud deployment has no way for a machine caller to name its tenant (it could not on `f5d5bb2` either at `docs.munaxa.com`). |
+
+**Consequence for the release SHA.** Both fixes post-date `f5d5bb2`. Images built from `f5d5bb2`
+carry the defect: a blank organisation field on `docs.munaxa.com` fails sign-in (or, if a tenant is
+ever given the slug `docs` or `api`, signs into it), and TOTP enrolment fails. Deploying `f5d5bb2`
+therefore requires, operationally, that no tenant is provisioned with the slug `docs`, `api` or any
+other label of a Docs hostname, and that MFA enrolment is not offered. Shipping the fixes requires a
+new application SHA and the targeted staging re-validation this project applies to any source change
+— **a release decision, not taken here.**
+
+### 6.3 Production images
+
+| Item | Value |
+| --- | --- |
+| Registry | `ghcr.io/munaxa` — repositories `munaxa-docs-api`, `munaxa-docs-web`, `munaxa-docs-antivirus` (the convention munaxa-work and munaxa-identity already use) |
+| Publishing workflow | `.github/workflows/publish-images.yml`, commit **`c87519e`**. Trigger: tag `image/<40-hex SHA>`; builds exactly that commit, two immutable tags per image, never `latest`. Verifies on the pulled digest: revision label, non-root, no credential in history or filesystem, API query engine, web branding (every `/branding/` URL of the login page plus `/branding/docs/favicon/favicon-32.png` → `200 image/*`). Scanner: records `clamd --version`, `c-icap -V` and package versions; `probe.mjs` exit 0 on the candidate, after an unclean restart, and on the pulled digest; pushes the probed image itself. Final job pulls all three with the production pull identity. |
+| Source for API and Web | `f5d5bb28146c57ab7937eff90cebd7621a28c9f2`, as instructed |
+| Source for antivirus | `infra/antivirus` at the same commit (unchanged since the validated `7442853`), rebuilt — the staging image `munaxa-antivirus:7442853` is not the production artifact |
+| API digest | **not published** |
+| Web digest | **not published** |
+| Antivirus digest | **not published** |
+| Scanner versions | **not recorded for a production build** — they are recorded by the workflow run. Staging's `7442853` image had ClamAV `1.5.4`, c-icap `0.5.10`; an unpinned rebuild may differ. |
+| Production pull identity | **not configured** — repository secrets `DOCS_PRODUCTION_PULL_USER` / `DOCS_PRODUCTION_PULL_TOKEN` (a read-only `read:packages` identity for the production host) are operator-provisioned |
+
+**Why nothing is published.** The release session's git transport accepted the branch push and
+refused the tag push (`fatal: the remote end hung up unexpectedly`, three attempts; the branch push
+over the same transport succeeded). No image was built or pushed, so no digest exists. To publish,
+from any clone with push rights:
+
+```bash
+git fetch origin claude/docs-tenant-login-and-images
+git tag image/f5d5bb28146c57ab7937eff90cebd7621a28c9f2 c87519e
+git push origin image/f5d5bb28146c57ab7937eff90cebd7621a28c9f2
+```
+
+Then copy the three `image@sha256:` references and the scanner versions from the run summary into
+§1a above, as a documentation commit. Until every §1a row holds a verified digest, production stays
+NO-GO — unchanged from §1a.
