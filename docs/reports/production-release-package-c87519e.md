@@ -1,5 +1,10 @@
 # Production Release Package — release candidate `c87519e`
 
+> **Superseded by `27a8daa` — do not deploy `c87519e`.** It carries findings WEB-1 (web sign-out does
+> not revoke the session at the API) and NUM-1 (colliding numbering rules answer 500), both fixed in
+> `27a8daa`. See [production-release-package-27a8daa.md](./production-release-package-27a8daa.md).
+> This package is kept unchanged below as the historical record.
+
 **Date:** 2026-09-30. This package names the application release candidate that supersedes
 `f5d5bb2`, records the two fixes it adds and every validation it passed. **It is not a
 production-readiness declaration.** Nothing has been deployed to production and no image has been

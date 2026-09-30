@@ -1,8 +1,8 @@
-# Production Prerequisites Checklist — release candidate `c87519e`
+# Production Prerequisites Checklist — release candidate `27a8daa`
 
-**Release:** `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`, the application release
-candidate; it supersedes `f5d5bb2`, which is historical and not deployable). See
-[production-release-package-c87519e.md](../reports/production-release-package-c87519e.md), the
+**Release:** `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` (`27a8daa`, the application release
+candidate; it supersedes `c87519e` and `f5d5bb2`, which are historical and not deployable; accepted launch limitations WF-1 and KEY-1 are in runbook §1a). See
+[production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md), the
 [staging acceptance report](../reports/staging-acceptance-gate-e94c295.md), the
 [RC report](../reports/release-candidate-final-validation.md) and the
 [go-live runbook](./go-live-runbook.md) (§21 step 4 requires this checklist). **How** to implement each item, in order, with commands and
@@ -31,14 +31,14 @@ item is therefore not READY.
 | 6 | Object storage | **MISSING** (no production bucket or origin supplied) | Bucket CORS for the web origin (browser upload), versioning, replication failover, `STORAGE_PUBLIC_URL` previews, independent store probe | Production bucket and its scope. Credentials scoped to it. `STORAGE_PUBLIC_URL` = the production web origin. CORS allowing `PUT`/`GET` from **the actual production origin** (supplied by the operator). Versioning on. Replication configured. Capacity and quota known. Independent monitoring (item 3) | Operator (storage) |
 | 7 | Backup / PITR / failover | **MISSING** (no production database provider, restore destination or credentials supplied) | `edms_backup` backups, verify, a scheduled backup with `BackupFailed` alert, zero-difference DR restore, PITR to a timestamp, replica failover | `edms_backup` created (runbook §6 step 1b). Scheduled backups with verification. WAL archiving/PITR on. Replication. A written failover procedure. Backup alerts reaching on-call. A restore destination and restore credentials. **If the provider's PITR/failover cannot be rehearsed before go-live, this stays NOT READY** and the risk goes to the change approver. No destructive production tests | Operator (DBA) |
 | 8 | Production load baseline | **MISSING** (no production-sized infrastructure; no approved thresholds) | 100 identities, 29,551 requests, 0 failures, 0 rate-limited. **Latency targets missed** on a single 4-CPU host. This does **not** establish production capacity | The measurement in §5 on production-sized infrastructure, compared against thresholds **supplied or approved by the operator** (or existing capacity requirements) | Operator (capacity owner) + release engineer |
-| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry chosen: GHCR `munaxa`; publishing workflow ready; nothing published yet) | Images build reproducibly from `c87519e` (CI run 552) and ran the §16 smoke 27/27 in a staging-shaped deployment (§2) | A registry with immutable digests and access control (signing if policy requires). API, web and scanner pushed and verified **by digest**. A secret store holding every secret in §3. Configuration versioned. A deployment identity for pulls. A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
+| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry chosen: GHCR `munaxa`; publishing workflow ready; nothing published yet) | Images build reproducibly from `27a8daa` (CI run 554) and ran the §16 smoke (pending) in a staging-shaped deployment (§2) | A registry with immutable digests and access control (signing if policy requires). API, web and scanner pushed and verified **by digest**. A secret store holding every secret in §3. Configuration versioned. A deployment identity for pulls. A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
 
 ## 2. Images and publication
 
 **Registry:** `ghcr.io/munaxa` — `munaxa-docs-api`, `munaxa-docs-web`, `munaxa-docs-antivirus`.
 **Process:** `.github/workflows/publish-images.yml`, started by pushing the tag
-`image/c87519eeade4392ab656d9bfef5ff694b9c4c594`. It builds exactly that commit, tags each image
-`c87519e` and `sha-<full SHA>` — **never `latest`** — and verifies each **pulled digest**: revision
+`image/27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`. It builds exactly that commit, tags each image
+`27a8daa` and `sha-<full SHA>` — **never `latest`** — and verifies each **pulled digest**: revision
 label, non-root, no credential in history or filesystem, the API's query engine, the web image's
 branding, and for the scanner the recorded ClamAV/c-icap versions plus `probe.mjs` (candidate, after
 an unclean restart, and pulled digest). A final job pulls all three with the production pull identity.
@@ -56,8 +56,8 @@ Deployment manifests reference **`image@sha256:<digest>` only** — never a tag.
 
 | Release candidate evidence (not deliverable artifacts) | Value |
 | --- | --- |
-| Local API/web images of `c87519e` used for the staging smoke | Built from a clean checkout of `c87519e`, labelled `org.opencontainers.image.revision=c87519eeade4392ab656d9bfef5ff694b9c4c594`; release package §4 |
-| Scanner rebuilt from `infra/antivirus` at `c87519e` | ClamAV **1.5.4**, c-icap **0.5.10**; `probe.mjs` exit 0 |
+| Local API/web images of `27a8daa` used for the staging smoke | Built from a clean checkout of `27a8daa`, labelled `org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`; release package §4 |
+| Scanner rebuilt from `infra/antivirus` at `27a8daa` | ClamAV **1.5.4**, c-icap **0.5.10**; `probe.mjs` exit 0 |
 
 Historical — the superseded `f5d5bb2` build, kept as evidence of that release and **not** to be
 published or deployed:
@@ -70,7 +70,7 @@ published or deployed:
 
 Before go-live, on the **published digests**, verify:
 
-- the API, web and scanner images carry `org.opencontainers.image.revision=c87519eeade4392ab656d9bfef5ff694b9c4c594`;
+- the API, web and scanner images carry `org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`;
 - the web image serves `/branding/docs/favicon/favicon-32.png`;
 - the scanner's recorded versions match the workflow run, and `probe.mjs` passes;
 - §16 smoke passes on these digests.
@@ -179,8 +179,8 @@ harness's built-in targets are not approved thresholds, and the staging result s
 
 | Requirement | Evidence | Status | Owner |
 | --- | --- | --- | --- |
-| Release `c87519e`; API, web and scanner by registry digest | digests, image labels | NOT READY (not yet published) | Platform |
-| Staging gate (`416ca94` full; `f5d5bb2` STG-12 targeted; `c87519e` §16 smoke 27/27 on its own images) | staging report §1, §14; release package | READY (staging evidence) | Release engineer |
+| Release `27a8daa`; API, web and scanner by registry digest | digests, image labels | NOT READY (not yet published) | Platform |
+| Staging gate (`416ca94` full; `f5d5bb2` STG-12 targeted; `27a8daa` §16 smoke (pending) on its own images) | staging report §1, §14; release package | READY (staging evidence) | Release engineer |
 | Production DNS and public TLS | cert chain, HTTPS | NOT READY | Network/PKI |
 | Monitoring stack, signals in §4 | targets up, rules loaded | NOT READY | SRE |
 | Scanner DEGRADED alert reaches the **production** on-call | test alert acknowledged by on-call | NOT READY | On-call owner |
@@ -189,7 +189,7 @@ harness's built-in targets are not approved thresholds, and the staging result s
 | Scanner UP on the private network; `probe.mjs` passes from the API network | probe output, `/api/health` | NOT READY | Network + release engineer |
 | Backup taken, verified and confirmed by a named person | backup IDs, verify output | NOT READY (at go-live) | DBA + named person |
 | PITR/recovery requirements satisfied | archiver status, procedure, rehearsal or recorded risk | NOT READY | DBA |
-| Migration procedure ready (checkout of `c87519e`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
+| Migration procedure ready (checkout of `27a8daa`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
 | All required secrets present (§3) | API starts under `NODE_ENV=production` | NOT READY | Platform |
 | Production load/capacity requirements established | §5 results against approved thresholds | NOT READY | Capacity owner |
 | Rollback path (the previous production release's digest, or "no rollback target — first deployment" recorded) | registry, runbook §20 | NOT READY | Release engineer |
