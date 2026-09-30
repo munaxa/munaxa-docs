@@ -2,7 +2,7 @@
 
 **Purpose:** the procedure an administrator follows, step by step, to deploy the validated release
 candidate to production and put it live. **Audience:** the deployment operator and the change
-approver. **Status:** written 2026-09-29 for the RC at `a560bb0`; release identity updated to `f5d5bb2` after the staging gate. A living document, like everything
+approver. **Status:** written 2026-09-29 for the RC at `a560bb0`; release identity updated to `f5d5bb2` after the staging gate, then to the release candidate `c87519e` (2026-09-30). A living document, like everything
 in `docs/operations/`.
 
 **This runbook has not yet been executed against a production environment.** Every step comes
@@ -26,34 +26,35 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 
 | Item | Value |
 | --- | --- |
-| Application code to deploy | **`f5d5bb28146c57ab7937eff90cebd7621a28c9f2`** (`f5d5bb2`) |
-| Validated by | CI run 550 on `f5d5bb2`, 9/9 jobs green: lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner and two tenant databases; five end-to-end shards; three container images (the web image's brand artwork asserted); product isolation |
-| Staging gate | [staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md): the full gate passed on `416ca94`; `f5d5bb2` adds only the web image's brand artwork (STG-12), validated there by a targeted regression |
-| Branch | `claude/gifted-wozniak-g94u76` |
-| Readiness verdict | "Final production-readiness validation found no remaining release blocker" (RC report, Part II §13), then the staging gate |
+| Application code to deploy | **`c87519eeade4392ab656d9bfef5ff694b9c4c594`** (`c87519e`) — the application release candidate |
+| Validated by | CI run 552 on `c87519e`, 9/9 jobs green (lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner, a real object store and two tenant databases; five end-to-end shards; visual regression; three container images; product isolation), plus the local gate and the staging smoke in [production-release-package-c87519e.md](../reports/production-release-package-c87519e.md) |
+| Staging gate | The full gate passed on `416ca94` ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md)); `f5d5bb2` added the web image's brand artwork (STG-12); `c87519e` adds the tenant-resolution and TOTP-enrolment fixes and repeats the §16 smoke (27/27) on its own images |
+| Branch | `claude/docs-release-rc-c87519e` |
 
-**Build the images from `f5d5bb2` and run the migrations from a checkout of `f5d5bb2`.** Its
-application code is that of `416ca94`, the commit the full staging gate passed; `f5d5bb2` changes the
-web image's contents (brand artwork) and CI only. Commits after it on the branch change
-documentation only. The release record must name `f5d5bb2`. Never use a documentation commit's SHA as
-the application SHA.
+**Build the images from `c87519e` and run the migrations from a checkout of `c87519e`.** Relative to
+`f5d5bb2` it changes application code in exactly two commits — `6f135e5` (TOTP enrolment) and
+`14311c2` (tenant resolution) — and adds the image-publishing workflow (`.github/`, outside the image
+build context). No migration, no SQL and no scanner source changed. Commits after it on the branch
+change documentation only. The release record must name `c87519e`. Never use a documentation
+commit's SHA as the application SHA.
 
-**Release lineage.** Three commits matter, and only one of them is deployed:
+**Release lineage.** Four commits matter, and only one of them is deployed:
 
 | Role | Commit | Status |
 | --- | --- | --- |
 | Historical RC baseline | `a560bb0` | Validated by the RC gate ([release-candidate-final-validation.md](../reports/release-candidate-final-validation.md)). **Staging NO-GO** (STG-1, [staging-acceptance-gate-a560bb0.md](../reports/staging-acceptance-gate-a560bb0.md)). **Never deploy it** |
-| Functional staging baseline | `416ca946f6afaee8bcea7fcf94c9705af800c5a8` (`416ca94`) | Passed the full staging gate ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md), CI run 548). Not the artifact to deploy: its web image lacks the brand artwork (STG-12) |
-| **Final production release** | **`f5d5bb28146c57ab7937eff90cebd7621a28c9f2`** (`f5d5bb2`) | `416ca94` plus STG-12 (web image contents and CI only), CI run 550, targeted staging regression. **Deploy this** ([production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md)) |
+| Functional staging baseline | `416ca946f6afaee8bcea7fcf94c9705af800c5a8` (`416ca94`) | Passed the full staging gate (CI run 548). Not deployable: its web image lacks the brand artwork (STG-12) |
+| Previous production baseline (historical) | `f5d5bb28146c57ab7937eff90cebd7621a28c9f2` (`f5d5bb2`) | `416ca94` plus STG-12, CI run 550 ([production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md)). **Superseded — do not deploy**: a blank organisation field is resolved from the hostname (a sign-in at `docs.munaxa.com` could reach a tenant slugged `docs`), and TOTP enrolment answers 500 |
+| **Application release candidate** | **`c87519eeade4392ab656d9bfef5ff694b9c4c594`** (`c87519e`) | `f5d5bb2` plus `6f135e5` and `14311c2`, CI run 552, staging smoke 27/27. **Deploy this** ([production-release-package-c87519e.md](../reports/production-release-package-c87519e.md)) |
 
 | Scanner | Value |
 | --- | --- |
 | Image validated in the staging gate | `munaxa-antivirus:7442853`, local image `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4`: **ClamAV 1.5.4, c-icap 0.5.10** |
-| Its sources | `infra/antivirus/`, unchanged from `7442853` to `f5d5bb2` |
+| Its sources | `infra/antivirus/`, unchanged from `7442853` to `c87519e` |
 | Version pinning | **None.** The Dockerfile is `FROM ubuntu:24.04` with unpinned `apt-get install clamav-daemon clamav-freshclam c-icap …`. A rebuild can therefore carry different ClamAV or c-icap versions |
 | Production rule | Publish and deploy the validated image by digest. If it has to be rebuilt, record the versions (`clamd --version`, `c-icap -V`) and pass `probe.mjs` (§9.6) before any traffic; a different version must be recorded in the change record |
 
-**Images are deployed by registry digest (§10).** Any rebuild of `f5d5bb2` is a new artifact. Before
+**Images are deployed by registry digest (§10).** Any rebuild of `c87519e` is a new artifact. Before
 it replaces the validated one, it must pass the release package's targeted checks: the scanner probe,
 the §16 smoke test, and the brand artwork being served.
 
@@ -61,7 +62,7 @@ The prerequisites still to be satisfied are listed in
 [production-prerequisites-checklist.md](./production-prerequisites-checklist.md).
 
 **In scope:** the API, the web application, the malware scanner, tenant databases, object storage and
-Redis for a new production deployment, or an upgrade of an existing one to release `f5d5bb2`.
+Redis for a new production deployment, or an upgrade of an existing one to release `c87519e`.
 **Out of scope:** choosing an infrastructure provider, an orchestrator or a monitoring product. The
 repository mandates none of them.
 
@@ -120,7 +121,7 @@ Every row is a gate for go-live. "Deployment-specific" means **[PRODUCTION-SPECI
 | Antivirus | A host or container for c-icap + ClamAV on the private network: **about 1 GB RAM for `clamd`**, plus headroom for signature reloads; about 110 MB disk for signatures (§9) | host, scheduling, alerting |
 | API memory | The scan reads a whole upload into memory: the API must hold `AV_ICAP_MAX_BYTES` × the number of concurrent upload completions on top of its normal heap (§9.7) | memory limit, `NODE_OPTIONS` |
 | Build | Docker with BuildKit, and a registry token for the `@munaxa/*` packages, passed as a build secret (`--secret id=npmrc,...`) | registry and token |
-| Release engineer workstation | A checkout of `f5d5bb2` with Node 22 and pnpm 10.33, network access to every tenant database as `edms_owner` (§12) | host |
+| Release engineer workstation | A checkout of `c87519e` with Node 22 and pnpm 10.33, network access to every tenant database as `edms_owner` (§12) | host |
 | Backups | Base backups plus WAL archiving; bucket versioning and replication; a place to keep the pre-migration backup (§6, §19) | tooling, retention location |
 | Monitoring | Something that polls health endpoints and scrapes `/api/metrics`, and alerts a human (§18) | monitoring product, thresholds, on-call |
 | Secrets | A secret store that injects environment variables. Never in files committed to git (§5) | secret store |
@@ -332,9 +333,9 @@ Record `clamd --version` and `c-icap -V`, and treat a version change as a new ar
 §9.6.
 
 ```bash
-# Only if building: from a checkout of f5d5bb2 (infra/antivirus is unchanged since 7442853).
-docker build -t munaxa-antivirus:f5d5bb2 infra/antivirus
-docker run --rm --entrypoint sh munaxa-antivirus:f5d5bb2 -c 'clamd --version; c-icap -V'
+# Only if building: from a checkout of c87519e (infra/antivirus is unchanged since 7442853).
+docker build -t munaxa-antivirus:c87519e infra/antivirus
+docker run --rm --entrypoint sh munaxa-antivirus:c87519e -c 'clamd --version; c-icap -V'
 
 # One volume for the signatures, so a restart does not re-download them.
 docker run -d --name munaxa-antivirus --restart unless-stopped \
@@ -384,7 +385,7 @@ can be filed.
 ### 9.6 The go-live probe
 
 ```bash
-# From any host on the private network, with Node 22 and a checkout of f5d5bb2:
+# From any host on the private network, with Node 22 and a checkout of c87519e:
 node infra/antivirus/probe.mjs icap://<scanner private address>:1344/avscan
 # exit 0: "clean passed (204), EICAR blocked (Eicar-Test-Signature)"
 # add --wait 300 on a first start, while freshclam is downloading
@@ -413,17 +414,17 @@ Keep the scanner on a network only the API can reach, and do not route ICAP over
 
 ## 10. Application deployment
 
-**Build**, once, from `f5d5bb2` (deployment.md §1):
+**Build**, once, from `c87519e` (deployment.md §1):
 
 ```bash
-git checkout f5d5bb28146c57ab7937eff90cebd7621a28c9f2
-export TAG=f5d5bb2
+git checkout c87519eeade4392ab656d9bfef5ff694b9c4c594
+export TAG=c87519e
 for target in api web worker; do
   docker build --target "$target" --secret id=npmrc,src="$HOME/.npmrc" -t "munaxa-docs-$target:$TAG" .
 done
 ```
 
-CI run 550 built the same three targets from `f5d5bb2`, and asserted that the web image serves its
+CI run 552 built the same three targets from `c87519e`, and asserted that the web image serves its
 brand artwork. **CI does not push**, and the repository has no image registry or publishing
 process.
 
@@ -433,7 +434,7 @@ process.
   digest (`docker buildx imagetools inspect <ref>` or the registry's own record) in the change record.
 - Deploy with `image@sha256:…`, never with a mutable tag.
 - Before go-live, verify that the published API and web images carry the label
-  `org.opencontainers.image.revision=f5d5bb28146c57ab7937eff90cebd7621a28c9f2`.
+  `org.opencontainers.image.revision=c87519eeade4392ab656d9bfef5ff694b9c4c594`.
 - Before go-live, verify that the published web image serves `/branding/docs/favicon/favicon-32.png`
   (the CI step "The web image serves the brand artwork its pages reference").
 - Keep the previous production images, by digest, available for rollback (§20).
@@ -471,7 +472,7 @@ read that as a crash loop (deployment.md §1).
 
 ## 12. Database migration procedure
 
-From a **checkout of `f5d5bb2`** on the release engineer's workstation. Never from inside an image:
+From a **checkout of `c87519e`** on the release engineer's workstation. Never from inside an image:
 the runtime images carry neither pnpm nor the Prisma CLI (deployment.md §1).
 
 1. **Backup** every tenant database and the object store, immediately before this step (§19). Record
@@ -480,7 +481,7 @@ the runtime images carry neither pnpm nor the Prisma CLI (deployment.md §1).
 3. **Drain traffic** (§13). Required for this release.
 4. **Prepare the checkout:**
    ```bash
-   git checkout f5d5bb28146c57ab7937eff90cebd7621a28c9f2
+   git checkout c87519eeade4392ab656d9bfef5ff694b9c4c594
    pnpm install --frozen-lockfile
    ```
 5. **Run the tenant migrations**, with the owner role and the production catalogue:
@@ -758,16 +759,16 @@ fail with a 500; STG-10: uploads above 64 MiB are refused on S3), and neither ev
 `416ca94` has the same application code as `f5d5bb2` without the brand artwork, so rolling back to it
 gains nothing.
 
-- **First production deployment (`f5d5bb2`):** there is **no application rollback target**. On a
+- **First production deployment (`c87519e`):** there is **no application rollback target**. On a
   failed deployment, fix forward within the window, or keep traffic drained and restore the database
   as below if the migrated database must be abandoned. Record "no rollback target — first
   deployment" in the change record before go-live.
 - **Later releases:** the rollback target is the previous production release's digest, for example
-  `f5d5bb2`'s once it has run here, provided it is at or above the D-3 floor.
+  `c87519e`'s once it has run here, provided it is at or above the D-3 floor.
 
 | Layer | Procedure |
 | --- | --- |
-| API | Redeploy the previous permitted `munaxa-docs-api` image **by digest**. Schema compatibility: every release on this line from `a560bb0` to `f5d5bb2` has the same 30 migrations. `a560bb0`'s two additions (partial unique indexes and an idempotency table) are relaxing, so a build from that line runs against this schema |
+| API | Redeploy the previous permitted `munaxa-docs-api` image **by digest**. Schema compatibility: every release on this line from `a560bb0` to `c87519e` has the same 30 migrations. `a560bb0`'s two additions (partial unique indexes and an idempotency table) are relaxing, so a build from that line runs against this schema |
 | Web | Redeploy the previous permitted `munaxa-docs-web` image by digest, with the matching API |
 | Worker | Nothing to roll back (§11) |
 | Scanner | Keep it running. It does no harm to an earlier build, and every permitted target needs it |
@@ -785,16 +786,16 @@ Rollback decision points:
 
 Execute in order. Record each step's result, time and operator in the change record.
 
-1. **Confirm the final release SHA:** `f5d5bb28146c57ab7937eff90cebd7621a28c9f2`. Confirm the API,
+1. **Confirm the final release SHA:** `c87519eeade4392ab656d9bfef5ff694b9c4c594`. Confirm the API,
    web and scanner images by **registry digest** (§1, §10); the API and web carry
-   `org.opencontainers.image.revision=f5d5bb2…`. Not `a560bb0`, and not `416ca94`.
+   `org.opencontainers.image.revision=c87519e…`. Not `a560bb0`, not `416ca94`, and not `f5d5bb2`.
 2. **Confirm the production change window** and the approver **[PRODUCTION-SPECIFIC]**. The
    repository defines no downtime duration: the approved window sets it.
 3. **Confirm the staging gate:**
    - [staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md): the full gate
      passed on `416ca94`;
-   - §14 of that report: STG-12 on `f5d5bb2`;
-   - the [release package](../reports/production-release-package-f5d5bb2.md).
+   - §14 of that report: STG-12 on `f5d5bb2`; the release candidate `c87519e` repeated the §16 smoke on its own images (release package §4);
+   - the [release package](../reports/production-release-package-c87519e.md).
 4. **Confirm the production prerequisites:** the readiness gate (§D) of
    [production-infrastructure-implementation.md](./production-infrastructure-implementation.md) is
    complete and signed, and every item in
@@ -811,7 +812,7 @@ Execute in order. Record each step's result, time and operator in the change rec
 10. **Deploy the release:**
     - images by digest available to the runtime;
     - configuration and secrets set for the API (§5.1) and the web (§5.2).
-11. **Run the tenant migrations from a checkout of `f5d5bb2`** (§12 steps 4–6). A re-run must report
+11. **Run the tenant migrations from a checkout of `c87519e`** (§12 steps 4–6). A re-run must report
     nothing pending. There are no separate workers in this release: the API runs the consumers (§11).
 12. **Start the API** instances.
 13. **Start the web** instances.
@@ -955,8 +956,8 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 
 | Check | Required | Result | Evidence | Operator |
 | --- | --- | --- | --- | --- |
-| Release SHA is `f5d5bb2`; API, web and scanner images deployed **by registry digest** | yes | | digests, image labels | |
-| Staging gate passed (`416ca94` full gate; `f5d5bb2` STG-12 regression), results attached | yes | | staging report, release package | |
+| Release SHA is `c87519e`; API, web and scanner images deployed **by registry digest** | yes | | digests, image labels | |
+| Staging gate passed (`416ca94` full gate; `f5d5bb2` STG-12 regression; `c87519e` §16 smoke 27/27 on its own images), results attached | yes | | staging report, release package | |
 | Every production prerequisite READY with evidence ([checklist](./production-prerequisites-checklist.md)) | yes | | checklist | |
 | Production DNS and a publicly trusted TLS certificate for the web origin (and the store endpoint) | yes | | certificate chain, HTTPS check | |
 | SMTP relay configured and verified (TLS/STARTTLS, SPF/DKIM/DMARC) | yes | | relay test, DNS records | |
@@ -1001,7 +1002,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 - monitoring is not active, or the `antivirus: DEGRADED` alert does not reach the **production**
   on-call (a staging mailbox does not count);
 - the traffic drain was not performed for this release;
-- the migration procedure is not ready (no checkout of `f5d5bb2`, no migration URL, or no verified
+- the migration procedure is not ready (no checkout of `c87519e`, no migration URL, or no verified
   backup to fall back on);
 - production DNS or a publicly trusted TLS certificate is missing;
 - SMTP is missing or unverified where notifications are required;
@@ -1011,5 +1012,5 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 - production load or capacity requirements have not been established where they are required.
 
 **The state this runbook establishes:** Munaxa Docs has a documented, executable production
-deployment and go-live procedure for release `f5d5bb2`. Production deployment remains dependent on the
+deployment and go-live procedure for release `c87519e`. Production deployment remains dependent on the
 operator-supplied infrastructure and staging prerequisites.

@@ -1,4 +1,4 @@
-# Production Infrastructure Implementation Checklist — release `f5d5bb2`
+# Production Infrastructure Implementation Checklist — release candidate `c87519e`
 
 **What this is.** The operator's work plan for the nine production prerequisites, to be executed
 **before** the first production deployment of Munaxa Docs. When §D's gate passes, the operator
@@ -8,11 +8,12 @@ proceeds to the [go-live runbook](./go-live-runbook.md) §21.
 
 - [go-live runbook](./go-live-runbook.md) (procedures);
 - [production prerequisites checklist](./production-prerequisites-checklist.md) (status);
-- [release package](../reports/production-release-package-f5d5bb2.md) (artifact identity);
+- [release package](../reports/production-release-package-c87519e.md) (artifact identity);
 - [staging acceptance report](../reports/staging-acceptance-gate-e94c295.md) (what staging proved).
 
-**Release.** Application `f5d5bb28146c57ab7937eff90cebd7621a28c9f2` (`f5d5bb2`); functional staging
-baseline `416ca94`.
+**Release.** Application release candidate `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`) = `f5d5bb2` plus the tenant-resolution
+and TOTP-enrolment fixes. `f5d5bb2` is historical and not deployable. Functional staging baseline
+`416ca94`.
 
 **Scanner.** The validated architecture is c-icap **0.5.10** → ClamAV **1.5.4** over plain ICAP on a
 private network, built from `infra/antivirus/`.
@@ -234,33 +235,27 @@ recorded as READY.
 | **Purpose** | Deploy exactly the validated artifacts, by immutable digest, with credentials never in Git and configuration traceable |
 | **Operator action** | 1. Registry `<REGISTRY_HOST>` with three repositories: **API** `<REGISTRY_HOST>/<API_REPOSITORY>`, **web** `<REGISTRY_HOST>/<WEB_REPOSITORY>`, **antivirus** `<REGISTRY_HOST>/<AV_REPOSITORY>`. Tags immutable (if supported). Pull access restricted.<br>2. A **push identity** for the release engineer or build system only.<br>3. A **separate production pull identity**, read-only, used by the runtime.<br>4. Signing, if `<SIGNING_POLICY>` requires it.<br>5. A secret store holding every secret in §C.<br>6. Configuration versioning: the non-secret configuration for API, web and catalogue in a versioned store, with the version recorded per deployment |
 | **Required inputs** | `<REGISTRY_HOST>`, the three repository names, `<PUSH_IDENTITY>`, `<PULL_IDENTITY>`, `<SIGNING_POLICY>`, `<SECRET_STORE>`, `<CONFIG_REPOSITORY>` |
-| **Owner / Blocking** | `<PLATFORM_OWNER>` · **Yes.** Currently **BLOCKED — ENVIRONMENT: production image registry not configured** |
+| **Owner / Blocking** | `<PLATFORM_OWNER>` · **Yes.** Registry chosen: GHCR `munaxa` (`ghcr.io/munaxa/munaxa-docs-{api,web,antivirus}`). Currently **OPERATOR ACTION REQUIRED**: publish (9d) and provision the pull identity |
 
-**9d. Publishing the images (the repository has no publishing process; CI builds and does not push)**
+**9d. Publishing the images — `.github/workflows/publish-images.yml`**
+
+Publishing is a tag push; the workflow builds exactly the commit the tag names, in GitHub Actions
+(where the `@munaxa/*` build secret is available), and never tags `latest`.
 
 ```bash
-# On the release-engineer workstation, logged in with <PUSH_IDENTITY>.
-git clone <REPOSITORY_URL> munaxa-docs && cd munaxa-docs
-git checkout f5d5bb28146c57ab7937eff90cebd7621a28c9f2
-test -z "$(git status --porcelain)"            # clean tree, required
-REV=$(git rev-parse HEAD)                       # f5d5bb28146c57ab7937eff90cebd7621a28c9f2
-
-for target in api web; do
-  repo=$([ "$target" = api ] && echo "<REGISTRY_HOST>/<API_REPOSITORY>" || echo "<REGISTRY_HOST>/<WEB_REPOSITORY>")
-  docker buildx build --target "$target" --secret id=npmrc,src="$HOME/.npmrc" \
-    --label org.opencontainers.image.revision="$REV" -t "$repo:f5d5bb2" --push .
-done
-
-# Scanner: infra/antivirus is unchanged since the validated 7442853. Build it from the same checkout.
-docker buildx build --label org.opencontainers.image.revision="$REV" \
-  -t "<REGISTRY_HOST>/<AV_REPOSITORY>:f5d5bb2" --push infra/antivirus
-
-# Resolve and record the immutable digests.
-for ref in "<REGISTRY_HOST>/<API_REPOSITORY>:f5d5bb2" "<REGISTRY_HOST>/<WEB_REPOSITORY>:f5d5bb2" \
-           "<REGISTRY_HOST>/<AV_REPOSITORY>:f5d5bb2"; do
-  docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}'
-done
+# From any clone with push rights to munaxa/munaxa-docs.
+git fetch origin claude/docs-release-rc-c87519e
+git tag image/c87519eeade4392ab656d9bfef5ff694b9c4c594 c87519eeade4392ab656d9bfef5ff694b9c4c594
+git push origin image/c87519eeade4392ab656d9bfef5ff694b9c4c594
 ```
+
+The run publishes `ghcr.io/munaxa/munaxa-docs-api`, `-web` and `-antivirus`, each tagged `c87519e`
+and `sha-c87519eeade4392ab656d9bfef5ff694b9c4c594`, and prints the three `image@sha256:<digest>` references in its summary (and as the
+`digest-*` artifacts). It fails — publishing nothing it has not verified — unless each **pulled
+digest** carries the revision label, runs as non-root, holds no credential, and (API) carries its query
+engine, (web) serves its branding, (scanner) reports its recorded versions and passes `probe.mjs` on the
+candidate, after an unclean restart and on the pulled digest. Its last job pulls all three with the
+production pull identity (`DOCS_PRODUCTION_PULL_USER` / `DOCS_PRODUCTION_PULL_TOKEN`).
 
 **The validated scanner image is not transferable from staging.** `munaxa-antivirus:7442853`
 (`sha256:805574b9…`, ClamAV 1.5.4 / c-icap 0.5.10) existed only in the ephemeral staging
@@ -274,16 +269,16 @@ accepted. Record the versions it actually carries.
 | --- | --- | --- |
 | Pull by digest works with the pull identity | `docker pull <REGISTRY_HOST>/<API_REPOSITORY>@sha256:<API_DIGEST>` (and web, antivirus) | Pull succeeds; the pull identity cannot push |
 | Digest is immutable | Re-resolve the tag later and confirm the digest is unchanged. Registry immutability setting: on | Same digest |
-| Revision label | `docker image inspect <ref>@sha256:… -f '{{index .Config.Labels "org.opencontainers.image.revision"}}'` | `f5d5bb28146c57ab7937eff90cebd7621a28c9f2` for API, web and scanner |
+| Revision label | `docker image inspect <ref>@sha256:… -f '{{index .Config.Labels "org.opencontainers.image.revision"}}'` | `c87519eeade4392ab656d9bfef5ff694b9c4c594` for API, web and scanner |
 | Web serves its brand artwork (STG-12) | Run the web digest with `PORT=3000 NEXT_PUBLIC_API_URL=http://127.0.0.1:9`, then `curl -so /dev/null -w '%{http_code} %{content_type}' http://127.0.0.1:3000/branding/docs/favicon/favicon-32.png` (the same check as CI's "The web image serves the brand artwork its pages reference") | `200 image/png` |
 | Scanner versions and probe | Prerequisite 5 | ClamAV 1.5.4, c-icap 0.5.10 (or recorded) and the probe passes |
 | Signature, if required | `<SIGNING_TOOL> verify <ref>@sha256:…` | Valid signature |
 
 **Where the digests are recorded:**
 
-1. The release package, [production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md),
+1. The release package, [production-release-package-c87519e.md](../reports/production-release-package-c87519e.md),
    in its **"Published registry digests"** table (§1a). Commit it as a documentation change. The
-   application SHA stays `f5d5bb2`.
+   application SHA stays `c87519e`.
 2. The go-live **change record** (runbook §21 steps 1 and 21).
 3. The deployment manifests, as `image@sha256:<digest>`, never a tag.
 
@@ -333,9 +328,9 @@ digests, once they have run here.
 
 **Phase 3 — artifacts, routing, monitoring**
 
-- [ ] 9d API and web images built from a clean `f5d5bb2` checkout and pushed
-- [ ] 9d Scanner image built from `infra/antivirus` at `f5d5bb2` and pushed
-- [ ] 9d Digests resolved; pulled **with the pull identity**; revision labels = `f5d5bb2…`
+- [ ] 9d Tag `image/<c87519e full SHA>` pushed; the publish workflow built API and web from `c87519e` and pushed them
+- [ ] 9d Scanner image built by the same run from `infra/antivirus` at `c87519e`, probed and pushed; versions recorded
+- [ ] 9d Digests resolved; pulled **with the pull identity**; revision labels = `c87519e…`
 - [ ] 9d Web digest serves `/branding/docs/favicon/favicon-32.png` → `200 image/png`
 - [ ] 9d Signatures verified (if required)
 - [ ] 9d Digests entered in the release package §1a and the change record
@@ -436,7 +431,7 @@ change approver, and does not count as READY.
 
 | # | Requirement | Evidence that must exist | Owner |
 | --- | --- | --- | --- |
-| D1 | Release identity | `f5d5bb2`; CI run 550 9/9; API, web and scanner **digests** in the release package §1a; revision labels verified with the pull identity | Release engineer |
+| D1 | Release identity | `c87519e`; CI run 552 9/9; API, web and scanner **digests** in the release package §1a; revision labels verified with the pull identity | Release engineer |
 | D2 | Images | Pulled by digest with the production pull identity; web serves its brand artwork; signatures (if required) | Platform |
 | D3 | Rollback target | "No rollback target — first deployment" recorded (runbook §20) | Release engineer |
 | D4 | DNS / TLS / LB | Prerequisite 1 evidence: public chain verified, HTTPS headers, 80 → 443, health checks, `TRUST_PROXY` ranges | Network/PKI |
@@ -448,7 +443,7 @@ change approver, and does not count as READY.
 | D10 | Database and recovery | Prerequisite 7 evidence: `edms_backup`; backup created and verified; **PITR verified**; **restore into a separate destination** with `differences: []`; **restored API connected, audit chain verified**; failover procedure; **named confirmation by `<BACKUP_CONFIRMER>`** | DBA + named confirmer |
 | D11 | Capacity | Prerequisite 8 evidence: approved thresholds and the measurement table within them (where capacity requirements exist) | Capacity owner |
 | D12 | Configuration and secrets | §C complete in the secret store and the versioned configuration; a dry start of the API under `NODE_ENV=production` against production dependencies (not in rotation) starts without refusal | Platform |
-| D13 | Migration readiness | A clean checkout of `f5d5bb2` on the release workstation with Node 22 / pnpm 10.33; `DATABASE_MIGRATION_URL` available from the secret store; runbook §12 reviewed | Release engineer |
+| D13 | Migration readiness | A clean checkout of `c87519e` on the release workstation with Node 22 / pnpm 10.33; `DATABASE_MIGRATION_URL` available from the secret store; runbook §12 reviewed | Release engineer |
 | D14 | Change control | Change window and approver recorded; users notified if the installation has served traffic (runbook §13) | Change approver |
 
 ---
@@ -457,8 +452,8 @@ change approver, and does not count as READY.
 
 **READY** (application side; evidence in the staging report, release package and CI run 550):
 
-- Application release `f5d5bb2`, CI run 550 9/9.
-- The staging gate on `416ca94`, plus the STG-12 targeted regression on `f5d5bb2`.
+- Application release candidate `c87519e`, CI run 552 9/9 (the historical `f5d5bb2` was CI run 550).
+- The staging gate on `416ca94`, plus the STG-12 targeted regression on `f5d5bb2`, plus the §16 smoke 27/27 on `c87519e`'s own images.
 - The deployment, rollback and recovery **procedures** (runbook, this checklist).
 - The scanner architecture, `probe.mjs`, and the alert rule definitions, all proven in staging.
 

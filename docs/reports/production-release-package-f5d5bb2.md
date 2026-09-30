@@ -1,5 +1,10 @@
 # Production Release Package — `f5d5bb2`
 
+> **Superseded on 2026-09-30 — historical record, not a deployable release.** The application release
+> candidate is **`c87519e`** ([production-release-package-c87519e.md](./production-release-package-c87519e.md)),
+> which adds the tenant-resolution fix (`14311c2`) and the TOTP-enrolment fix (`6f135e5`). Do not
+> build, publish or deploy `f5d5bb2`. Everything below is kept unchanged as the record of 2026-09-29.
+
 **Date:** 2026-09-29. This package names the candidate production artifact and what must happen
 before and during go-live. **It is not a production-readiness declaration.** Nothing has been
 deployed to production. The next step is to satisfy the production infrastructure prerequisites

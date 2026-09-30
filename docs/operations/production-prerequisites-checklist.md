@@ -1,7 +1,8 @@
-# Production Prerequisites Checklist — release `f5d5bb2`
+# Production Prerequisites Checklist — release candidate `c87519e`
 
-**Release:** `f5d5bb28146c57ab7937eff90cebd7621a28c9f2`. See
-[production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md), the
+**Release:** `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`, the application release
+candidate; it supersedes `f5d5bb2`, which is historical and not deployable). See
+[production-release-package-c87519e.md](../reports/production-release-package-c87519e.md), the
 [staging acceptance report](../reports/staging-acceptance-gate-e94c295.md), the
 [RC report](../reports/release-candidate-final-validation.md) and the
 [go-live runbook](./go-live-runbook.md) (§21 step 4 requires this checklist). **How** to implement each item, in order, with commands and
@@ -14,7 +15,7 @@ credentials are invented here, and no secret value belongs in Git or in this fil
 
 Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 
-**Recorded 2026-09-29.** No production environment, domain, registry, relay, on-call destination or
+**Recorded 2026-09-29; release identity updated 2026-09-30.** No production environment, domain, registry, relay, on-call destination or
 provider has been supplied, and none was reachable from the release engineering environment. Every
 item is therefore not READY.
 
@@ -30,37 +31,48 @@ item is therefore not READY.
 | 6 | Object storage | **MISSING** (no production bucket or origin supplied) | Bucket CORS for the web origin (browser upload), versioning, replication failover, `STORAGE_PUBLIC_URL` previews, independent store probe | Production bucket and its scope. Credentials scoped to it. `STORAGE_PUBLIC_URL` = the production web origin. CORS allowing `PUT`/`GET` from **the actual production origin** (supplied by the operator). Versioning on. Replication configured. Capacity and quota known. Independent monitoring (item 3) | Operator (storage) |
 | 7 | Backup / PITR / failover | **MISSING** (no production database provider, restore destination or credentials supplied) | `edms_backup` backups, verify, a scheduled backup with `BackupFailed` alert, zero-difference DR restore, PITR to a timestamp, replica failover | `edms_backup` created (runbook §6 step 1b). Scheduled backups with verification. WAL archiving/PITR on. Replication. A written failover procedure. Backup alerts reaching on-call. A restore destination and restore credentials. **If the provider's PITR/failover cannot be rehearsed before go-live, this stays NOT READY** and the risk goes to the change approver. No destructive production tests | Operator (DBA) |
 | 8 | Production load baseline | **MISSING** (no production-sized infrastructure; no approved thresholds) | 100 identities, 29,551 requests, 0 failures, 0 rate-limited. **Latency targets missed** on a single 4-CPU host. This does **not** establish production capacity | The measurement in §5 on production-sized infrastructure, compared against thresholds **supplied or approved by the operator** (or existing capacity requirements) | Operator (capacity owner) + release engineer |
-| 9 | Image registry / secrets / configuration | **BLOCKED — ENVIRONMENT: production image registry not configured** | Images build reproducibly from `f5d5bb2` (CI run 550). Local image IDs recorded (§2) | A registry with immutable digests and access control (signing if policy requires). API, web and scanner pushed and verified **by digest**. A secret store holding every secret in §3. Configuration versioned. A deployment identity for pulls. A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
+| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry chosen: GHCR `munaxa`; publishing workflow ready; nothing published yet) | Images build reproducibly from `c87519e` (CI run 552) and ran the §16 smoke 27/27 in a staging-shaped deployment (§2) | A registry with immutable digests and access control (signing if policy requires). API, web and scanner pushed and verified **by digest**. A secret store holding every secret in §3. Configuration versioned. A deployment identity for pulls. A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
 
 ## 2. Images and publication
 
+**Registry:** `ghcr.io/munaxa` — `munaxa-docs-api`, `munaxa-docs-web`, `munaxa-docs-antivirus`.
+**Process:** `.github/workflows/publish-images.yml`, started by pushing the tag
+`image/c87519eeade4392ab656d9bfef5ff694b9c4c594`. It builds exactly that commit, tags each image
+`c87519e` and `sha-<full SHA>` — **never `latest`** — and verifies each **pulled digest**: revision
+label, non-root, no credential in history or filesystem, the API's query engine, the web image's
+branding, and for the scanner the recorded ClamAV/c-icap versions plus `probe.mjs` (candidate, after
+an unclean restart, and pulled digest). A final job pulls all three with the production pull identity.
+
+**Publication status: NOT PUBLISHED.** No digest exists yet. The operator must:
+
+- push the tag above from a clone with push rights (the release session's git transport refused tag
+  pushes);
+- provision the production pull identity as repository secrets `DOCS_PRODUCTION_PULL_USER` /
+  `DOCS_PRODUCTION_PULL_TOKEN` (`read:packages` only);
+- decide the signing policy, if any;
+- record the three `image@sha256:…` references in the release package §1a and the change record.
+
+Deployment manifests reference **`image@sha256:<digest>` only** — never a tag.
+
+| Release candidate evidence (not deliverable artifacts) | Value |
+| --- | --- |
+| Local API/web images of `c87519e` used for the staging smoke | Built from a clean checkout of `c87519e`, labelled `org.opencontainers.image.revision=c87519eeade4392ab656d9bfef5ff694b9c4c594`; release package §4 |
+| Scanner rebuilt from `infra/antivirus` at `c87519e` | ClamAV **1.5.4**, c-icap **0.5.10**; `probe.mjs` exit 0 |
+
+Historical — the superseded `f5d5bb2` build, kept as evidence of that release and **not** to be
+published or deployed:
+
 | Image | Built from | Local image ID (not a registry digest) | Validated by |
 | --- | --- | --- | --- |
-| `munaxa-docs-api:f5d5bb2` | clean checkout of `f5d5bb2` | `sha256:53bf43be9ade46f494ec20258f9f9703f9ce2a688fd3ddc8677a47849872a0eb` | CI 550; staging smoke 22/22; `apps/api/dist` byte-identical to the staging-gated `416ca94` |
+| `munaxa-docs-api:f5d5bb2` | clean checkout of `f5d5bb2` | `sha256:53bf43be9ade46f494ec20258f9f9703f9ce2a688fd3ddc8677a47849872a0eb` | CI 550; staging smoke 22/22 |
 | `munaxa-docs-web:f5d5bb2` | clean checkout of `f5d5bb2` | `sha256:ada7ddb0acb709cf89a1ddcad6ed7ae369cabe6c9b5f2681b9685c26f8ee3727` | CI 550 (brand-artwork check); staging browser 10/10 |
-| `munaxa-antivirus:7442853` | `infra/antivirus` at `7442853` (unchanged at `f5d5bb2`) | `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4` (ClamAV 1.5.4, c-icap 0.5.10) | Full staging gate |
+| `munaxa-antivirus:7442853` | `infra/antivirus` at `7442853` | `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4` (ClamAV 1.5.4, c-icap 0.5.10) | Full staging gate |
 
-**Publication: BLOCKED — ENVIRONMENT: production image registry not configured.**
+Before go-live, on the **published digests**, verify:
 
-- The repository has no publishing process: CI builds and does not push.
-- The local images above exist only in the ephemeral release-engineering environment. They are
-  evidence, not deliverable artifacts.
-
-To publish, the operator must provide:
-
-- The registry: host, repository names for `munaxa-docs-api`, `munaxa-docs-web` and
-  `munaxa-antivirus`, and whether tags are immutable.
-- A push credential for the build and a separate pull identity for the runtime.
-- The signing policy, if any (tool and keys).
-- Where digests are recorded (the change record).
-
-Then build `api` and `web` from a checkout of `f5d5bb2` (runbook §10) and the scanner from
-`infra/antivirus` (runbook §9.2), push them, and record `repo@sha256:…`. Before go-live, verify:
-
-- the API and web images carry the label `org.opencontainers.image.revision=f5d5bb28146c57ab7937eff90cebd7621a28c9f2`;
+- the API, web and scanner images carry `org.opencontainers.image.revision=c87519eeade4392ab656d9bfef5ff694b9c4c594`;
 - the web image serves `/branding/docs/favicon/favicon-32.png`;
-- the scanner reports ClamAV 1.5.4 and c-icap 0.5.10 (or its different versions are recorded) and
-  passes `probe.mjs`;
+- the scanner's recorded versions match the workflow run, and `probe.mjs` passes;
 - §16 smoke passes on these digests.
 
 ## 3. Production configuration checklist (no values here)
@@ -167,8 +179,8 @@ harness's built-in targets are not approved thresholds, and the staging result s
 
 | Requirement | Evidence | Status | Owner |
 | --- | --- | --- | --- |
-| Release `f5d5bb2`; API, web and scanner by registry digest | digests, image labels | NOT READY (registry blocked) | Platform |
-| Staging gate (`416ca94` full; `f5d5bb2` STG-12 targeted) | staging report §1, §14; release package | READY (staging evidence) | Release engineer |
+| Release `c87519e`; API, web and scanner by registry digest | digests, image labels | NOT READY (not yet published) | Platform |
+| Staging gate (`416ca94` full; `f5d5bb2` STG-12 targeted; `c87519e` §16 smoke 27/27 on its own images) | staging report §1, §14; release package | READY (staging evidence) | Release engineer |
 | Production DNS and public TLS | cert chain, HTTPS | NOT READY | Network/PKI |
 | Monitoring stack, signals in §4 | targets up, rules loaded | NOT READY | SRE |
 | Scanner DEGRADED alert reaches the **production** on-call | test alert acknowledged by on-call | NOT READY | On-call owner |
@@ -177,7 +189,7 @@ harness's built-in targets are not approved thresholds, and the staging result s
 | Scanner UP on the private network; `probe.mjs` passes from the API network | probe output, `/api/health` | NOT READY | Network + release engineer |
 | Backup taken, verified and confirmed by a named person | backup IDs, verify output | NOT READY (at go-live) | DBA + named person |
 | PITR/recovery requirements satisfied | archiver status, procedure, rehearsal or recorded risk | NOT READY | DBA |
-| Migration procedure ready (checkout of `f5d5bb2`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
+| Migration procedure ready (checkout of `c87519e`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
 | All required secrets present (§3) | API starts under `NODE_ENV=production` | NOT READY | Platform |
 | Production load/capacity requirements established | §5 results against approved thresholds | NOT READY | Capacity owner |
 | Rollback path (the previous production release's digest, or "no rollback target — first deployment" recorded) | registry, runbook §20 | NOT READY | Release engineer |
