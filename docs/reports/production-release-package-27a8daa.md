@@ -1,5 +1,12 @@
 # Production Release Package — release candidate `27a8daa`
 
+> **Published as release `4e8e1ca`.** This application code was published, unchanged, from
+> `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` (which adds only the non-root antivirus image and
+> documentation) by run `36819091004`. The deployable release, its three image digests and their
+> verification are in [production-release-package-4e8e1ca.md](./production-release-package-4e8e1ca.md).
+> No image was ever published from `27a8daa` itself. The approval, fixes and validation below still
+> apply to the application code.
+
 **Date:** 2026-09-30. This package names the application release candidate that supersedes
 `c87519e`, records the two fixes it adds (WEB-1, NUM-1), the two findings accepted as launch
 limitations (WF-1, KEY-1), and every validation it passed. **It is not a production-readiness
@@ -164,20 +171,21 @@ The first build of the web image was refused by Docker Hub's rate limit (429) wh
 | Item | Value |
 | --- | --- |
 | Registry | `ghcr.io/munaxa` — `munaxa-docs-api`, `munaxa-docs-web`, `munaxa-docs-antivirus` |
-| Process | `.github/workflows/publish-images.yml`, started by the tag `image/27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` |
-| Tags | `27a8daa` and `sha-27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` — **no `latest`, ever** |
+| Process | `.github/workflows/publish-images.yml`, started by a tag `image/<full SHA>` |
+| Tags | `<short>` and `sha-<full SHA>` — **no `latest`, ever** |
 | Deployment references | **`image@sha256:<digest>` only** |
-| **Status** | **NOT PUBLISHED**, and no image tag was pushed. Publishing is the operator's step, after the change approver accepts this candidate ([production-infrastructure-implementation.md](../operations/production-infrastructure-implementation.md) 9d) |
+| **Status** | **PUBLISHED as release `4e8e1ca`** — tag `image/4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`, run `36819091004`. No tag was pushed for `27a8daa` itself. The release record is [production-release-package-4e8e1ca.md](./production-release-package-4e8e1ca.md) |
 
-### 5a. Published registry digests (to be completed after publishing)
+### 5a. Published registry digests (release `4e8e1ca`)
 
-| Image | Repository | Digest | Revision label | Pulled with the production pull identity | Extra check |
-| --- | --- | --- | --- | --- | --- |
-| API | `ghcr.io/munaxa/munaxa-docs-api` | `sha256:<API_DIGEST>` | ☐ `27a8daa…` | ☐ | ☐ query engine |
-| Web | `ghcr.io/munaxa/munaxa-docs-web` | `sha256:<WEB_DIGEST>` | ☐ `27a8daa…` | ☐ | ☐ `/branding/docs/favicon/favicon-32.png` → `200 image/png` |
-| Antivirus | `ghcr.io/munaxa/munaxa-docs-antivirus` | `sha256:<AV_DIGEST>` | ☐ `27a8daa…` | ☐ | ☐ ClamAV/c-icap versions from the run; `probe.mjs` exit 0 |
+| Image | Digest | Revision label | Pulled with the production pull identity | Extra check |
+| --- | --- | --- | --- | --- |
+| API | `ghcr.io/munaxa/munaxa-docs-api@sha256:6c1a6b31fa3502ddfe6df2fdc9d6c723edc7def711bd90f5d8525f2247872f10` | ☑ `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` | ☑ | ☑ query engine (`debian-openssl-3.0.x`) |
+| Web | `ghcr.io/munaxa/munaxa-docs-web@sha256:815a4aa28cf75c58bd4cd4cb4031db26ef60acaa9ba7649f7b6c0a710341d4eb` | ☑ `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` | ☑ | ☑ `/branding/docs/favicon/favicon-32.png` → `200 image/png` |
+| Antivirus | `ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc` | ☑ `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` | ☑ | ☑ non-root 101:102; ClamAV 1.5.4 / c-icap 0.5.10; `probe.mjs` exit 0 |
 
-**Until every row holds a verified digest, production is NO-GO.**
+The images of the superseded line `8cb4c14` (run `36722457128`) are **not deployable**; its
+antivirus image `sha256:02298beca666…` is the old root-starting scanner.
 
 ## 6. Infrastructure and migration impact
 
@@ -203,7 +211,7 @@ including Chromium. It is therefore **eligible to become the production release*
 steps outside this package:
 
 1. the change approver's acceptance, including the accepted limitations WF-1 and KEY-1 (§3);
-2. publishing its images by tag, and recording their digests (§5a);
-3. the open production infrastructure prerequisites.
+2. publishing its images by tag, and recording their digests (§5a) — **done**, as release `4e8e1ca`;
+3. the open production infrastructure prerequisites — **still NOT READY**.
 
-Production remains **NO-GO** until those are done.
+Production remains **NO-GO** until the first and third are done.

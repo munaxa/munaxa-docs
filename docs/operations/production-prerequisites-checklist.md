@@ -1,7 +1,10 @@
-# Production Prerequisites Checklist — release candidate `27a8daa`
+# Production Prerequisites Checklist — release `4e8e1ca`
 
-**Release:** `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` (`27a8daa`, the application release
-candidate; it supersedes `c87519e` and `f5d5bb2`, which are historical and not deployable; accepted launch limitations WF-1 and KEY-1 are in runbook §1a). See
+**Release:** `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` (`4e8e1ca`), **published and verified** as
+three immutable images by run `36819091004`
+([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)). Its
+application code is the approved `27a8daa`; it supersedes `c87519e`, `f5d5bb2` and the `8cb4c14`
+image line, which are historical and not deployable. Accepted launch limitations WF-1 and KEY-1 are in runbook §1a. See
 [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md), the
 [staging acceptance report](../reports/staging-acceptance-gate-e94c295.md), the
 [RC report](../reports/release-candidate-final-validation.md) and the
@@ -15,9 +18,12 @@ credentials are invented here, and no secret value belongs in Git or in this fil
 
 Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 
-**Recorded 2026-09-29; release identity updated 2026-09-30.** No production environment, domain, registry, relay, on-call destination or
-provider has been supplied, and none was reachable from the release engineering environment. Every
-item is therefore not READY.
+**Recorded 2026-09-29; release identity updated 2026-09-30; release publication recorded 2026-10-01.**
+
+| Area | Status |
+| --- | --- |
+| **Release artifacts** (§2) | **PUBLISHED AND VERIFIED.** API, web and scanner of `4e8e1ca` by digest, revision-labelled, pulled with the production pull identity |
+| **Production infrastructure** (§1) | **NOT READY.** No production environment, domain, relay, on-call destination or provider has been supplied, and none was reachable from the release engineering environment. Every item in §1 is therefore not READY |
 
 ## 1. Prerequisite matrix
 
@@ -31,26 +37,39 @@ item is therefore not READY.
 | 6 | Object storage | **MISSING** (no production bucket or origin supplied) | Bucket CORS for the web origin (browser upload), versioning, replication failover, `STORAGE_PUBLIC_URL` previews, independent store probe | Production bucket and its scope. Credentials scoped to it. `STORAGE_PUBLIC_URL` = the production web origin. CORS allowing `PUT`/`GET` from **the actual production origin** (supplied by the operator). Versioning on. Replication configured. Capacity and quota known. Independent monitoring (item 3) | Operator (storage) |
 | 7 | Backup / PITR / failover | **MISSING** (no production database provider, restore destination or credentials supplied) | `edms_backup` backups, verify, a scheduled backup with `BackupFailed` alert, zero-difference DR restore, PITR to a timestamp, replica failover | `edms_backup` created (runbook §6 step 1b). Scheduled backups with verification. WAL archiving/PITR on. Replication. A written failover procedure. Backup alerts reaching on-call. A restore destination and restore credentials. **If the provider's PITR/failover cannot be rehearsed before go-live, this stays NOT READY** and the risk goes to the change approver. No destructive production tests | Operator (DBA) |
 | 8 | Production load baseline | **MISSING** (no production-sized infrastructure; no approved thresholds) | 100 identities, 29,551 requests, 0 failures, 0 rate-limited. **Latency targets missed** on a single 4-CPU host. This does **not** establish production capacity | The measurement in §5 on production-sized infrastructure, compared against thresholds **supplied or approved by the operator** (or existing capacity requirements) | Operator (capacity owner) + release engineer |
-| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry chosen: GHCR `munaxa`; publishing workflow ready; nothing published yet) | Images build reproducibly from `27a8daa` (CI run 554) and ran the §16 smoke 29/29 and browser 8/8 in a staging-shaped deployment (§2) | A registry with immutable digests and access control (signing if policy requires). API, web and scanner pushed and verified **by digest**. A secret store holding every secret in §3. Configuration versioned. A deployment identity for pulls. A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
+| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry and images done: GHCR `munaxa`, release `4e8e1ca` published by digest and pulled with the production pull identity, §2. Secret store, versioned configuration and signing policy still open) | Images build reproducibly from `27a8daa` (CI run 554) and ran the §16 smoke 29/29 and browser 8/8 in a staging-shaped deployment; release `4e8e1ca` was published and verified by run `36819091004` (§2) | ☑ A registry with immutable digests and access control. ☑ API, web and scanner pushed and verified **by digest**. ☑ A deployment identity for pulls (`DOCS_PRODUCTION_PULL_USER`/`_TOKEN`, pulled all three digests; confirm the token's expiry). ☐ Signing, if policy requires. ☐ A secret store holding every secret in §3. ☐ Configuration versioned. ☐ A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
 
 ## 2. Images and publication
 
 **Registry:** `ghcr.io/munaxa` — `munaxa-docs-api`, `munaxa-docs-web`, `munaxa-docs-antivirus`.
-**Process:** `.github/workflows/publish-images.yml`, started by pushing the tag
-`image/27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`. It builds exactly that commit, tags each image
-`27a8daa` and `sha-<full SHA>` — **never `latest`** — and verifies each **pulled digest**: revision
-label, non-root, no credential in history or filesystem, the API's query engine, the web image's
-branding, and for the scanner the recorded ClamAV/c-icap versions plus `probe.mjs` (candidate, after
-an unclean restart, and pulled digest). A final job pulls all three with the production pull identity.
+**Process:** `.github/workflows/publish-images.yml`, started by pushing a tag `image/<full SHA>`. It
+builds exactly that commit, tags each image `<short>` and `sha-<full SHA>` — **never `latest`** — and
+verifies each **pulled digest**: revision label, non-root, no credential in history or filesystem, the
+API's query engine, the web image's branding, and for the scanner the recorded ClamAV/c-icap versions,
+`verify-container.sh` (non-root, no UID 0 process, `freshclam` as the container user) and `probe.mjs`
+(candidate, after an unclean restart, and pulled digest). A final job pulls all three with the
+production pull identity.
 
-**Publication status: NOT PUBLISHED.** No digest exists yet. The operator must:
+**Publication status: PUBLISHED AND VERIFIED** — release `4e8e1ca`, tag
+`image/4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`, run `36819091004` (every job succeeded):
 
-- push the tag above from a clone with push rights (the release session's git transport refused tag
-  pushes);
-- provision the production pull identity as repository secrets `DOCS_PRODUCTION_PULL_USER` /
-  `DOCS_PRODUCTION_PULL_TOKEN` (`read:packages` only);
-- decide the signing policy, if any;
-- record the three `image@sha256:…` references in the release package §1a and the change record.
+| Image | Digest | Revision label |
+| --- | --- | --- |
+| API | `ghcr.io/munaxa/munaxa-docs-api@sha256:6c1a6b31fa3502ddfe6df2fdc9d6c723edc7def711bd90f5d8525f2247872f10` | `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` |
+| Web | `ghcr.io/munaxa/munaxa-docs-web@sha256:815a4aa28cf75c58bd4cd4cb4031db26ef60acaa9ba7649f7b6c0a710341d4eb` | `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` |
+| Antivirus | `ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc` | `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` |
+
+All three were pulled with the production pull identity (`DOCS_PRODUCTION_PULL_USER` /
+`DOCS_PRODUCTION_PULL_TOKEN`). The antivirus image runs as **UID/GID 101:102** (`clamav`) with no
+UID 0 process; clean file passed, EICAR blocked, `freshclam` and the unclean-restart check passed.
+Its signature volume must be writable by 101:102 (runbook §9.2).
+
+**Superseded — do not deploy:** the `8cb4c14` images (run `36722457128`). Its antivirus image
+`sha256:02298beca666d7db346de82e42cab2f692faa4ed417fa7259e3b1ff3999e33d4` is the **old
+root-starting scanner** and must not be used in production.
+
+Still open for the operator: decide the signing policy, if any; confirm the pull token's expiry; record
+the three `image@sha256:…` references in the change record.
 
 Deployment manifests reference **`image@sha256:<digest>` only** — never a tag.
 
@@ -59,8 +78,8 @@ Deployment manifests reference **`image@sha256:<digest>` only** — never a tag.
 | Local API/web images of `27a8daa` used for the staging smoke | Built from a clean checkout of `27a8daa`, labelled `org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`; release package §4 |
 | Scanner rebuilt from `infra/antivirus` at `27a8daa` | ClamAV **1.5.4**, c-icap **0.5.10**; `probe.mjs` exit 0 |
 
-Historical — the superseded `f5d5bb2` build, kept as evidence of that release and **not** to be
-published or deployed:
+Historical — the superseded `f5d5bb2` build and the staging-gate scanner (which started as root),
+kept as evidence and **not** to be published or deployed:
 
 | Image | Built from | Local image ID (not a registry digest) | Validated by |
 | --- | --- | --- | --- |
@@ -68,9 +87,9 @@ published or deployed:
 | `munaxa-docs-web:f5d5bb2` | clean checkout of `f5d5bb2` | `sha256:ada7ddb0acb709cf89a1ddcad6ed7ae369cabe6c9b5f2681b9685c26f8ee3727` | CI 550 (brand-artwork check); staging browser 10/10 |
 | `munaxa-antivirus:7442853` | `infra/antivirus` at `7442853` | `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4` (ClamAV 1.5.4, c-icap 0.5.10) | Full staging gate |
 
-Before go-live, on the **published digests**, verify:
+At go-live, on the **published digests**, re-confirm (the publishing run verified each already):
 
-- the API, web and scanner images carry `org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`;
+- the API, web and scanner images carry `org.opencontainers.image.revision=4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`;
 - the web image serves `/branding/docs/favicon/favicon-32.png`;
 - the scanner's recorded versions match the workflow run, and `probe.mjs` passes;
 - §16 smoke passes on these digests.
@@ -179,7 +198,8 @@ harness's built-in targets are not approved thresholds, and the staging result s
 
 | Requirement | Evidence | Status | Owner |
 | --- | --- | --- | --- |
-| Release `27a8daa`; API, web and scanner by registry digest | digests, image labels | NOT READY (not yet published) | Platform |
+| Release `4e8e1ca` images published by registry digest | digests, image labels (§2) | **READY** (published and verified, run `36819091004`) | Platform |
+| Release `4e8e1ca` deployed by those digests in production | deployment manifests, running image IDs | NOT READY (not deployed) | Platform |
 | Staging gate (`416ca94` full; `f5d5bb2` STG-12 targeted; `27a8daa` §16 smoke 29/29 and browser 8/8 on its own images) | staging report §1, §14; release package | READY (staging evidence) | Release engineer |
 | Production DNS and public TLS | cert chain, HTTPS | NOT READY | Network/PKI |
 | Monitoring stack, signals in §4 | targets up, rules loaded | NOT READY | SRE |
@@ -189,7 +209,7 @@ harness's built-in targets are not approved thresholds, and the staging result s
 | Scanner UP on the private network; `probe.mjs` passes from the API network | probe output, `/api/health` | NOT READY | Network + release engineer |
 | Backup taken, verified and confirmed by a named person | backup IDs, verify output | NOT READY (at go-live) | DBA + named person |
 | PITR/recovery requirements satisfied | archiver status, procedure, rehearsal or recorded risk | NOT READY | DBA |
-| Migration procedure ready (checkout of `27a8daa`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
+| Migration procedure ready (checkout of `4e8e1ca`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
 | All required secrets present (§3) | API starts under `NODE_ENV=production` | NOT READY | Platform |
 | Production load/capacity requirements established | §5 results against approved thresholds | NOT READY | Capacity owner |
 | Rollback path (the previous production release's digest, or "no rollback target — first deployment" recorded) | registry, runbook §20 | NOT READY | Release engineer |

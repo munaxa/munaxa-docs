@@ -2,7 +2,7 @@
 
 **Purpose:** the procedure an administrator follows, step by step, to deploy the validated release
 candidate to production and put it live. **Audience:** the deployment operator and the change
-approver. **Status:** written 2026-09-29 for the RC at `a560bb0`; release identity updated to `f5d5bb2` after the staging gate, then to the release candidate `c87519e`, then to `27a8daa` with the WEB-1 and NUM-1 fixes (2026-09-30). A living document, like everything
+approver. **Status:** written 2026-09-29 for the RC at `a560bb0`; release identity updated to `f5d5bb2` after the staging gate, then to the release candidate `c87519e`, then to `27a8daa` with the WEB-1 and NUM-1 fixes (2026-09-30), then to the published release `4e8e1ca` with the non-root scanner (2026-10-01). A living document, like everything
 in `docs/operations/`.
 
 **This runbook has not yet been executed against a production environment.** Every step comes
@@ -26,20 +26,25 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 
 | Item | Value |
 | --- | --- |
-| Application code to deploy | **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`) — the application release candidate |
+| Release to deploy | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) — published as three immutable images by run `36819091004` ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
+| Images | API `ghcr.io/munaxa/munaxa-docs-api@sha256:6c1a6b31fa3502ddfe6df2fdc9d6c723edc7def711bd90f5d8525f2247872f10`; web `ghcr.io/munaxa/munaxa-docs-web@sha256:815a4aa28cf75c58bd4cd4cb4031db26ef60acaa9ba7649f7b6c0a710341d4eb`; antivirus `ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc` — all labelled `org.opencontainers.image.revision=4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`, verified by digest and pulled with the production pull identity |
+| Application code | Identical to the approved application release **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`): `4e8e1ca` adds only the non-root antivirus image and documentation |
 | Validated by | CI run 554 on `27a8daa`, 9/9 jobs green (lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner, a real object store and two tenant databases; five end-to-end shards; visual regression; three container images; product isolation), plus the local gate and the staging smoke in [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md) |
 | Staging gate | The full gate passed on `416ca94` ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md)); `f5d5bb2` added the web image's brand artwork (STG-12); `c87519e` added the tenant-resolution and TOTP-enrolment fixes; `27a8daa` adds the web sign-out revocation (WEB-1) and numbering-collision (NUM-1) fixes and repeats the §16 smoke (29/29, browser 8/8) on its own images |
-| Branch | `claude/docs-release-rc2` |
+| Branch | `main` |
 
-**Build the images from `27a8daa` and run the migrations from a checkout of `27a8daa`.** Relative to
-`f5d5bb2` it changes application code in exactly four commits — `6f135e5` (TOTP enrolment),
+**Deploy the published `4e8e1ca` images by digest, and run the migrations from a checkout of
+`4e8e1ca`.** Its application code, migrations and SQL are those of `27a8daa` (`git diff 27a8daa
+4e8e1ca` touches nothing under `apps/`, `packages/`, `prisma/`, `infra/sql/` or the root
+`Dockerfile`); it adds the non-root antivirus image (#118). The application history: relative to
+`f5d5bb2`, `27a8daa` changes application code in exactly four commits — `6f135e5` (TOTP enrolment),
 `14311c2` (tenant resolution), `efcb955` (web sign-out revokes the session, WEB-1) and `27a8daa`
 (numbering collisions answer 409, NUM-1) — and adds the image-publishing workflow (`.github/`,
 outside the image build context). No migration, no SQL and no scanner source changed. Commits after it on the branch
-change documentation only. The release record must name `27a8daa`. Never use a documentation
-commit's SHA as the application SHA.
+change documentation only. The release record must name **`4e8e1ca`**, the commit the published
+images were built from. Never use a later documentation commit's SHA as the release SHA.
 
-**Release lineage.** Five commits matter, and only one of them is deployed:
+**Release lineage.** Seven commits matter, and only one of them is deployed:
 
 | Role | Commit | Status |
 | --- | --- | --- |
@@ -47,16 +52,19 @@ commit's SHA as the application SHA.
 | Functional staging baseline | `416ca946f6afaee8bcea7fcf94c9705af800c5a8` (`416ca94`) | Passed the full staging gate (CI run 548). Not deployable: its web image lacks the brand artwork (STG-12) |
 | Previous production baseline (historical) | `f5d5bb28146c57ab7937eff90cebd7621a28c9f2` (`f5d5bb2`) | `416ca94` plus STG-12, CI run 550 ([production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md)). **Superseded — do not deploy**: a blank organisation field is resolved from the hostname (a sign-in at `docs.munaxa.com` could reach a tenant slugged `docs`), and TOTP enrolment answers 500 |
 | Superseded release candidate | `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`) | `f5d5bb2` plus `6f135e5` and `14311c2`, CI run 552, staging smoke 27/27 ([production-release-package-c87519e.md](../reports/production-release-package-c87519e.md)). **Superseded — do not deploy**: web sign-out does not revoke the session at the API (WEB-1), and colliding numbering rules answer 500 (NUM-1) |
-| **Application release candidate** | **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke 29/29, browser 8/8. **Deploy this** ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)) |
+| Approved application release | `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke 29/29, browser 8/8 ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)). Its application code is deployed as `4e8e1ca`; no image was ever published from `27a8daa` itself |
+| Superseded image line | `8cb4c14454e2e0e3b4508ef4e6eba76d3e1b0051` (`8cb4c14`) | Published by run `36722457128`. **Superseded — do not deploy**: its antivirus image (`sha256:02298beca666…`) is the old **root-starting** scanner |
+| **Production release** | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) | `27a8daa`'s application code plus the non-root antivirus image. Published by run `36819091004`. **Deploy this, by the digests above** ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
 
 | Scanner | Value |
 | --- | --- |
-| Image validated in the staging gate | `munaxa-antivirus:7442853`, local image `sha256:805574b9640df49959b82d4f42ad56280db07cc9dcb2efccc63f91b56b2cf8e4`: **ClamAV 1.5.4, c-icap 0.5.10** |
-| Its sources | `infra/antivirus/`, unchanged from `7442853` to `27a8daa` |
+| **Image to deploy** | `ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc`: **ClamAV 1.5.4, c-icap 0.5.10**, runs as **UID/GID 101:102** (`clamav`) with no UID 0 process (§9.2) |
+| **Do not use** | The root-starting scanner images: `…munaxa-docs-antivirus@sha256:02298beca666d7db346de82e42cab2f692faa4ed417fa7259e3b1ff3999e33d4` (`8cb4c14`) and the staging-gate build `munaxa-antivirus:7442853` (local image `sha256:805574b9…`), which validated the scanning behaviour but started as root |
+| Its sources | `infra/antivirus/` at `4e8e1ca`; scanning configuration unchanged since `7442853`, process user changed by #118 |
 | Version pinning | **None.** The Dockerfile is `FROM ubuntu:24.04` with unpinned `apt-get install clamav-daemon clamav-freshclam c-icap …`. A rebuild can therefore carry different ClamAV or c-icap versions |
 | Production rule | Publish and deploy the validated image by digest. If it has to be rebuilt, record the versions (`clamd --version`, `c-icap -V`) and pass `probe.mjs` (§9.6) before any traffic; a different version must be recorded in the change record |
 
-**Images are deployed by registry digest (§10).** Any rebuild of `27a8daa` is a new artifact. Before
+**Images are deployed by registry digest (§10).** Any rebuild of `4e8e1ca` is a new artifact. Before
 it replaces the validated one, it must pass the release package's targeted checks: the scanner probe,
 the §16 smoke test, and the brand artwork being served.
 
@@ -64,13 +72,13 @@ The prerequisites still to be satisfied are listed in
 [production-prerequisites-checklist.md](./production-prerequisites-checklist.md).
 
 **In scope:** the API, the web application, the malware scanner, tenant databases, object storage and
-Redis for a new production deployment, or an upgrade of an existing one to release `27a8daa`.
+Redis for a new production deployment, or an upgrade of an existing one to release `4e8e1ca`.
 **Out of scope:** choosing an infrastructure provider, an orchestrator or a monitoring product. The
 repository mandates none of them.
 
 ### 1a. Accepted launch limitations
 
-Two known behaviours of `27a8daa` are **accepted for launch** by the release owner. They are not
+Two known behaviours of this release (`27a8daa`'s application code, deployed as `4e8e1ca`) are **accepted for launch** by the release owner. They are not
 defects to work around in production, and neither is changed by this release. Confirm both in the
 change record (§25).
 
@@ -151,7 +159,7 @@ Every row is a gate for go-live. "Deployment-specific" means **[PRODUCTION-SPECI
 | Antivirus | A host or container for c-icap + ClamAV on the private network: **about 1 GB RAM for `clamd`**, plus headroom for signature reloads; about 110 MB disk for signatures (§9) | host, scheduling, alerting |
 | API memory | The scan reads a whole upload into memory: the API must hold `AV_ICAP_MAX_BYTES` × the number of concurrent upload completions on top of its normal heap (§9.7) | memory limit, `NODE_OPTIONS` |
 | Build | Docker with BuildKit, and a registry token for the `@munaxa/*` packages, passed as a build secret (`--secret id=npmrc,...`) | registry and token |
-| Release engineer workstation | A checkout of `27a8daa` with Node 22 and pnpm 10.33, network access to every tenant database as `edms_owner` (§12) | host |
+| Release engineer workstation | A checkout of `4e8e1ca` with Node 22 and pnpm 10.33, network access to every tenant database as `edms_owner` (§12) | host |
 | Backups | Base backups plus WAL archiving; bucket versioning and replication; a place to keep the pre-migration backup (§6, §19) | tooling, retention location |
 | Monitoring | Something that polls health endpoints and scrapes `/api/metrics`, and alerts a human (§18) | monitoring product, thresholds, on-call |
 | Secrets | A secret store that injects environment variables. Never in files committed to git (§5) | secret store |
@@ -357,21 +365,34 @@ whole body, is recorded **CLEAN**. A `200` naming a threat is **INFECTED**. Anyt
 Use `infra/antivirus/`. Its image is validated in the RC gate, and its `c-icap.conf` and `clamd.conf`
 carry the four fail-closed properties marked `REQUIRED`.
 
-Prefer the image validated in staging (`munaxa-antivirus:7442853`, ClamAV 1.5.4 / c-icap 0.5.10,
-§1), pushed to your registry and deployed by digest. If you build it, the packages are unpinned (§1).
-Record `clamd --version` and `c-icap -V`, and treat a version change as a new artifact that must pass
-§9.6.
+Deploy the **published release image by digest**:
+`ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc`
+(ClamAV 1.5.4 / c-icap 0.5.10, release `4e8e1ca`). **Do not use the old root-starting scanner**
+(`sha256:02298beca666…` from `8cb4c14`, or a `7442853` build). A rebuild is a new artifact: the
+packages are unpinned (§1), so record `clamd --version` and `c-icap -V` and pass §9.6 and
+`infra/antivirus/verify-container.sh` before using it.
+
+**The container runs as UID/GID 101:102 (`clamav`), never as root.** `freshclam`, `clamd` and
+`c-icap` all run as that account, and nothing in the container can change ownership. So:
+
+- **The signature volume must be writable by 101:102.** A fresh Docker named volume inherits the
+  image directory's `clamav` ownership and works as is. A bind mount or a provisioned volume must be
+  owned by, or group-writable for, 101:102 (on Kubernetes, `runAsUser: 101`, `runAsGroup: 102`,
+  `fsGroup: 102`) **[PRODUCTION-SPECIFIC]**.
+- **A fresh, empty, root-owned signature volume refuses to start:** the entrypoint reports
+  `/var/lib/clamav is not writable by clamav (101:102)`, `freshclam` cannot write, and with no
+  signatures the container exits 1 rather than scan with nothing. Fix the ownership; do not run the
+  container as root.
+- A root-owned volume that **already holds signatures** starts with a warning and scans with those
+  signatures, but cannot update them: fix the ownership before relying on it.
+- A volume written by an earlier root-started scanner was already chowned to `clamav` by it, and works.
 
 ```bash
-# Only if building: from a checkout of 27a8daa (infra/antivirus is unchanged since 7442853).
-docker build -t munaxa-antivirus:27a8daa infra/antivirus
-docker run --rm --entrypoint sh munaxa-antivirus:27a8daa -c 'clamd --version; c-icap -V'
-
 # One volume for the signatures, so a restart does not re-download them.
 docker run -d --name munaxa-antivirus --restart unless-stopped \
   -p <private-address>:1344:1344 \
   -v munaxa-antivirus-signatures:/var/lib/clamav \
-  <registry>/munaxa-antivirus@sha256:<digest>
+  ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc
 ```
 
 `<private-address>`, the orchestration and the restart policy are **[PRODUCTION-SPECIFIC]**. Inside
@@ -385,8 +406,9 @@ the image c-icap listens on `0.0.0.0:1344`; publish it **only** on the private n
   **refuses to start**. If it fails and older signatures exist, it starts with those and logs that it
   did.
 - **Updates.** The image runs `freshclam` **only when it starts**. Production must refresh signatures
-  on a schedule: restart the container, or run `freshclam` inside it, from a scheduler
-  **[PRODUCTION-SPECIFIC]**. After an update `clamd` picks up the new database at its self-check (every
+  on a schedule: restart the container, or run `freshclam` inside it (it runs as `clamav`, which
+  owns the signatures), from a scheduler **[PRODUCTION-SPECIFIC]**. Without that scheduled update
+  and its egress (below), signatures go stale. After an update `clamd` picks up the new database at its self-check (every
   600 seconds by default; the container logs "Self checking every 600 seconds").
 - **Freshness.** Each file row records the scanner's `ISTag`, which changes when the signatures do.
   Alert when the daily database stops advancing (§18).
@@ -415,7 +437,7 @@ can be filed.
 ### 9.6 The go-live probe
 
 ```bash
-# From any host on the private network, with Node 22 and a checkout of 27a8daa:
+# From any host on the private network, with Node 22 and a checkout of 4e8e1ca:
 node infra/antivirus/probe.mjs icap://<scanner private address>:1344/avscan
 # exit 0: "clean passed (204), EICAR blocked (Eicar-Test-Signature)"
 # add --wait 300 on a first start, while freshclam is downloading
@@ -444,27 +466,21 @@ Keep the scanner on a network only the API can reach, and do not route ICAP over
 
 ## 10. Application deployment
 
-**Build**, once, from `27a8daa` (deployment.md §1):
+**The images are already built and published.** `.github/workflows/publish-images.yml`, started by
+the tag `image/<full SHA>`, builds API, web and scanner from that exact commit, verifies each pulled
+digest (revision label, non-root, no credentials, the API's query engine, the web's brand artwork,
+and for the scanner its versions, `verify-container.sh` and `probe.mjs`), pushes them to GHCR
+(`ghcr.io/munaxa`), never as `latest`, and pulls all three with the production pull identity. The
+release `4e8e1ca` was published by run `36819091004`; its three digests are in §1 and in
+[production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md). Do not
+rebuild them for production: a rebuild is a new artifact.
 
-```bash
-git checkout 27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5
-export TAG=27a8daa
-for target in api web worker; do
-  docker build --target "$target" --secret id=npmrc,src="$HOME/.npmrc" -t "munaxa-docs-$target:$TAG" .
-done
-```
+**Deploy by digest.**
 
-CI run 554 built the same three targets from `27a8daa`, and asserted that the web image serves its
-brand artwork. **CI does not push**, and the repository has no image registry or publishing
-process.
-
-**Publish, then deploy by digest.**
-
-- Push the API, web and scanner images to an immutable registry **[PRODUCTION-SPECIFIC]**. Record each
-  digest (`docker buildx imagetools inspect <ref>` or the registry's own record) in the change record.
+- Record the three `image@sha256:…` references in the change record.
 - Deploy with `image@sha256:…`, never with a mutable tag.
-- Before go-live, verify that the published API and web images carry the label
-  `org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`.
+- Before go-live, verify that the API, web and scanner images carry the label
+  `org.opencontainers.image.revision=4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`.
 - Before go-live, verify that the published web image serves `/branding/docs/favicon/favicon-32.png`
   (the CI step "The web image serves the brand artwork its pages reference").
 - Keep the previous production images, by digest, available for rollback (§20).
@@ -502,7 +518,7 @@ read that as a crash loop (deployment.md §1).
 
 ## 12. Database migration procedure
 
-From a **checkout of `27a8daa`** on the release engineer's workstation. Never from inside an image:
+From a **checkout of `4e8e1ca`** on the release engineer's workstation. Never from inside an image:
 the runtime images carry neither pnpm nor the Prisma CLI (deployment.md §1).
 
 1. **Backup** every tenant database and the object store, immediately before this step (§19). Record
@@ -511,7 +527,7 @@ the runtime images carry neither pnpm nor the Prisma CLI (deployment.md §1).
 3. **Drain traffic** (§13). Required for this release.
 4. **Prepare the checkout:**
    ```bash
-   git checkout 27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5
+   git checkout 4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b
    pnpm install --frozen-lockfile
    ```
 5. **Run the tenant migrations**, with the owner role and the production catalogue:
@@ -792,16 +808,17 @@ fail with a 500; STG-10: uploads above 64 MiB are refused on S3), and neither ev
 `416ca94` has the same application code as `f5d5bb2` without the brand artwork, so rolling back to it
 gains nothing.
 
-- **First production deployment (`27a8daa`):** there is **no application rollback target**. On a
+- **First production deployment (`4e8e1ca`):** there is **no application rollback target**. On a
   failed deployment, fix forward within the window, or keep traffic drained and restore the database
   as below if the migrated database must be abandoned. Record "no rollback target — first
   deployment" in the change record before go-live.
 - **Later releases:** the rollback target is the previous production release's digest, for example
-  `27a8daa`'s once it has run here, provided it is at or above the D-3 floor.
+  `4e8e1ca`'s once it has run here, provided it is at or above the D-3 floor. Never the `8cb4c14`
+  images, which never ran here and whose scanner starts as root.
 
 | Layer | Procedure |
 | --- | --- |
-| API | Redeploy the previous permitted `munaxa-docs-api` image **by digest**. Schema compatibility: every release on this line from `a560bb0` to `27a8daa` has the same 30 migrations. `a560bb0`'s two additions (partial unique indexes and an idempotency table) are relaxing, so a build from that line runs against this schema |
+| API | Redeploy the previous permitted `munaxa-docs-api` image **by digest**. Schema compatibility: every release on this line from `a560bb0` to `27a8daa` (and so `4e8e1ca`) has the same 30 migrations. `a560bb0`'s two additions (partial unique indexes and an idempotency table) are relaxing, so a build from that line runs against this schema |
 | Web | Redeploy the previous permitted `munaxa-docs-web` image by digest, with the matching API |
 | Worker | Nothing to roll back (§11) |
 | Scanner | Keep it running. It does no harm to an earlier build, and every permitted target needs it |
@@ -819,16 +836,19 @@ Rollback decision points:
 
 Execute in order. Record each step's result, time and operator in the change record.
 
-1. **Confirm the final release SHA:** `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`. Confirm the API,
-   web and scanner images by **registry digest** (§1, §10); the API and web carry
-   `org.opencontainers.image.revision=27a8daa…`. Not `a560bb0`, not `416ca94`, and not `f5d5bb2`.
+1. **Confirm the final release SHA:** `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`. Confirm the API,
+   web and scanner images by **registry digest** (§1, §10); all three carry
+   `org.opencontainers.image.revision=4e8e1ca…`. Not `a560bb0`, not `416ca94`, not `f5d5bb2`, and
+   not the `8cb4c14` images.
 2. **Confirm the production change window** and the approver **[PRODUCTION-SPECIFIC]**. The
    repository defines no downtime duration: the approved window sets it.
 3. **Confirm the staging gate:**
    - [staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md): the full gate
      passed on `416ca94`;
    - §14 of that report: STG-12 on `f5d5bb2`; the release candidate `27a8daa` repeated the §16 smoke on its own images (release package §4);
-   - the [release package](../reports/production-release-package-27a8daa.md).
+   - the release packages: [`27a8daa`](../reports/production-release-package-27a8daa.md) (application
+     approval and validation) and [`4e8e1ca`](../reports/production-release-package-4e8e1ca.md)
+     (published images).
 4. **Confirm the production prerequisites:** the readiness gate (§D) of
    [production-infrastructure-implementation.md](./production-infrastructure-implementation.md) is
    complete and signed, and every item in
@@ -845,7 +865,7 @@ Execute in order. Record each step's result, time and operator in the change rec
 10. **Deploy the release:**
     - images by digest available to the runtime;
     - configuration and secrets set for the API (§5.1) and the web (§5.2).
-11. **Run the tenant migrations from a checkout of `27a8daa`** (§12 steps 4–6). A re-run must report
+11. **Run the tenant migrations from a checkout of `4e8e1ca`** (§12 steps 4–6). A re-run must report
     nothing pending. There are no separate workers in this release: the API runs the consumers (§11).
 12. **Start the API** instances.
 13. **Start the web** instances.
@@ -989,7 +1009,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 
 | Check | Required | Result | Evidence | Operator |
 | --- | --- | --- | --- | --- |
-| Release SHA is `27a8daa`; API, web and scanner images deployed **by registry digest** | yes | | digests, image labels | |
+| Release SHA is `4e8e1ca`; API, web and scanner images deployed **by the registry digests in §1** (scanner running as 101:102) | yes | | digests, image labels | |
 | Staging gate passed (`416ca94` full gate; `f5d5bb2` STG-12 regression; `27a8daa` §16 smoke 29/29 and browser 8/8 on its own images), results attached | yes | | staging report, release package | |
 | Every production prerequisite READY with evidence ([checklist](./production-prerequisites-checklist.md)) | yes | | checklist | |
 | Production DNS and a publicly trusted TLS certificate for the web origin (and the store endpoint) | yes | | certificate chain, HTTPS check | |
@@ -1036,7 +1056,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 - monitoring is not active, or the `antivirus: DEGRADED` alert does not reach the **production**
   on-call (a staging mailbox does not count);
 - the traffic drain was not performed for this release;
-- the migration procedure is not ready (no checkout of `27a8daa`, no migration URL, or no verified
+- the migration procedure is not ready (no checkout of `4e8e1ca`, no migration URL, or no verified
   backup to fall back on);
 - production DNS or a publicly trusted TLS certificate is missing;
 - SMTP is missing or unverified where notifications are required;
@@ -1046,5 +1066,5 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 - production load or capacity requirements have not been established where they are required.
 
 **The state this runbook establishes:** Munaxa Docs has a documented, executable production
-deployment and go-live procedure for release `27a8daa`. Production deployment remains dependent on the
+deployment and go-live procedure for release `4e8e1ca`. Production deployment remains dependent on the
 operator-supplied infrastructure and staging prerequisites.
