@@ -106,6 +106,7 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0018](./architecture/adr/0018-machine-identity-as-a-delegated-subject.md) | A machine caller is bound to a person and acts as them, narrowed by scopes — never a principal of its own |
 | [0019](./architecture/adr/0019-webhooks-are-not-notifications.md) | A webhook is its own delivery path; `NotificationChannel.WEBHOOK` is a value nothing uses |
 | [0020](./architecture/adr/0020-key-management-and-rotation.md) | The deployment's secret store *is* the key management service; what the product owes is one key per purpose and a rotation each sealed value can survive |
+| [0021](./architecture/adr/0021-multi-tenant-hosted-launch.md) | The hosted service launches multi-tenant: one deployment serves many customers, each in its own database; KEY-1 and D-1 are launch limitations; single-tenant deployments remain a future model |
 
 ## 2. Reports
 
