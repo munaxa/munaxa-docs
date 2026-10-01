@@ -6,7 +6,7 @@
 ## 0. The two things to do before anything else
 
 **Do not destroy the evidence.** Every procedure below restores *beside* the failure rather than
-over it. A PITR onto a live database, a re-upload over a corrupted object, a re-provision of a lost
+over it. A point-in-time recovery onto the live cluster, a re-upload over a corrupted object, a re-provision of a lost
 tenant — each removes the only record of what happened, and this product's whole value proposition
 is that its records survive.
 
@@ -18,13 +18,13 @@ that reason.
 
 | Scenario | First action | Then | Done when |
 | --- | --- | --- | --- |
-| **API or worker instance lost** | Nothing. They are stateless and replaced automatically | Confirm `/api/health/ready` on the replacement | The instance is back in the load balancer |
+| **API or web instance lost** | Nothing. They are stateless and replaced automatically. In this release the queue consumers run inside the API ([go-live-runbook.md §11](./go-live-runbook.md)) | Confirm `/api/health/ready` on the replacement | The instance is back in the load balancer |
 | **Database primary lost** | Promote the replica; repoint the tenant's catalogue entry | Reconnect; the API's pools reconnect lazily per tenant | The chain verifies on the promoted primary |
-| **Region lost** | Restore into the secondary region from replicated object storage and PITR; switch DNS | Per tenant, in contractual order — the catalogue is the list | Every tenant's chain verifies, and the integrity sweep reports no mismatches on a sample |
+| **Region lost** | Restore into the secondary region from replicated object storage and a cluster-level point-in-time recovery (every tenant database comes back together); switch DNS | Repoint and verify per tenant, in contractual order — the catalogue is the list | Every tenant's chain verifies, and the integrity sweep reports no mismatches on a sample |
 | **Storage object lost or corrupted** | §2 below | | |
 | **Ransomware or destructive action** | §3 below | | |
 | **Tenant-level mistake (mass delete)** | **Do not restore.** The recycle bin is the first line of defence | A restore of a soft delete is a restore of something that is not gone. [ADR-0010](../architecture/adr/0010-soft-delete-and-retention.md) | The documents are back and one cascade identifier reversed exactly one delete |
-| **One tenant needs a point-in-time restore** | [backup-and-restore.md §2](./backup-and-restore.md) | Nobody else is touched, which is ADR-0015's operational dividend | That tenant's chain verifies |
+| **One tenant needs a point-in-time restore** | [backup-and-restore.md §2.2](./backup-and-restore.md#22-restoring-one-tenant-to-a-point-in-time): recover the **whole cluster** to the target time in a separate recovery environment — point-in-time recovery is cluster-level — then extract that tenant's database and restore it beside the live one | No other tenant's live database is touched, which is ADR-0015's operational dividend; the recovery takes as long as recovering the whole cluster ([ADR-0021](../architecture/adr/0021-multi-tenant-hosted-launch.md) §8). If the last logical dump is recent enough, §2.1 restores that tenant alone, to the dump's time | That tenant's chain verifies |
 
 ## 2. A storage object lost or corrupted
 
@@ -60,8 +60,10 @@ The order matters more here than anywhere else.
 2. **Do not restore yet.** Establish *when*, and the trail is how: the hash chain identifies exactly
    what was touched and when, and the audit table refuses `UPDATE` and `DELETE` to every role
    including the owner — so the attacker's own actions are in it unless they had the cluster.
-3. **PITR to before the event, per tenant, into new databases.** Object versioning restores the
-   blobs.
+3. **Recover to before the event, beside the live data.** Point-in-time recovery is cluster-level:
+   recover the cluster to before the event in a separate recovery environment, then extract each
+   affected tenant's database into a new database (backup-and-restore.md §2.2). Object versioning
+   restores the blobs.
 4. **Verify before opening.** Chain end to end; the last pre-incident checkpoint recomputes; the
    integrity sweep over a sample. The checkpoints are signed with a key held in neither the database
    nor the bucket, which is what makes step 4 meaningful against an attacker who reached both.
@@ -81,6 +83,8 @@ database and 4 for object storage. Phase 6.10 performed the first restore this p
 database procedure is no longer a hypothesis — but two small tenant databases restoring in 20.5
 seconds is evidence that the *sequence* works, not that a customer's corpus fits inside two hours.
 The object-storage figure has no measurement at all: nothing in that rehearsal restored a bucket.
+And a point-in-time restore of one tenant has no figure either: it recovers the whole cluster first
+(backup-and-restore.md §2.2), so its duration is the whole cluster's, and it has not been timed.
 
 Both remain targets. What changed is that the procedure behind them has been executed once, by
 somebody who was not in an incident at the time.

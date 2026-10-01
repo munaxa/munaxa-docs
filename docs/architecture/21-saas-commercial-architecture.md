@@ -14,16 +14,33 @@ model rather than inside it.
 | --- | --- | --- |
 | Isolation | A database, storage location and search index per tenant | [ADR-0015](./adr/0015-database-per-tenant.md) |
 | Dedicated-database tenants | Every tenant, not only the largest — the routing is uniform | [ADR-0015](./adr/0015-database-per-tenant.md) |
+| Hosted launch | Multi-tenant: one deployment serves many customer companies, each in its own database | [ADR-0021](./adr/0021-multi-tenant-hosted-launch.md) |
+| Dedicated deployments | Single-tenant, for a customer who needs one — a future deployment model, not the launch | [ADR-0021](./adr/0021-multi-tenant-hosted-launch.md) |
 | On-premise | The same code with a single tenant and local drivers | [20](./20-deployment-architecture.md) §2 |
 | Plans and limits | Data, not code; enforced centrally | [ADR-0012](./adr/0012-entitlements-as-data-enforced-centrally.md) |
 | Cross-tenant operations | A separate, permission-gated, fully audited console | [ADR-0013](./adr/0013-operator-console-as-separate-surface.md) |
 
-Why shared-database multi-tenancy is right for this product, stated once so it is not re-litigated:
-a tenant costs rows rather than infrastructure, onboarding is a transaction rather than a deploy,
-one migration and one backup serve everyone — and because `tenant_id` is on every row and every job,
-moving a large or regulated tenant to its own database later is a routing change, not a migration of
-the model. The cost is that isolation is a property that must be continuously proven, which is what
-the five enforcement layers and the Phase 0.5 isolation tests are for.
+What the hosted service is, stated once so it is not re-litigated: **one multi-tenant deployment
+serving many companies, with a separate PostgreSQL database per tenant**
+([ADR-0015](./adr/0015-database-per-tenant.md), [ADR-0021](./adr/0021-multi-tenant-hosted-launch.md)).
+The application tier is shared — the API and web processes, Redis and its queues, the malware
+scanner, the object-storage bucket and its credential, and the deployment's signing keys — while each
+tenant's rows live in a database no other tenant's queries reach, and each tenant's bytes under its
+own storage prefix. The trade-offs follow from that, not from a shared schema:
+
+- **Onboarding is an operator procedure, not a transaction.** A tenant is given a database, a
+  catalogue entry and a migration, the API is restarted to read the catalogue, and the tenant is then
+  provisioned in single-tenant form (known finding D-1; [20](./20-deployment-architecture.md) §8,
+  [go-live-runbook.md §6](../operations/go-live-runbook.md)).
+- **Migrations and backups are per tenant database.** A release migrates every tenant database in
+  turn; a logical backup and restore is per tenant; point-in-time recovery is per PostgreSQL cluster
+  ([backup-and-restore.md](../operations/backup-and-restore.md) §1–§2).
+- **Isolation is a boundary and still a property to prove.** `tenant_id` and forced row-level security
+  stay on every row inside each tenant's database, and the isolation tests keep running, because the
+  schema is the same for an on-premise installation that serves two companies from one database.
+- **What is shared is shared by every tenant**, and a compliance review decides where that is
+  acceptable ([ADR-0021](./adr/0021-multi-tenant-hosted-launch.md) §9). A customer who needs more is
+  the future dedicated deployment, not a special case in code.
 
 ## 2. Domain additions
 
@@ -109,6 +126,14 @@ UI shows live, deleted-but-retained, and derived bytes separately
 
 ## 5. Provisioning and lifecycle
 
+**Current behaviour, at release `4e8e1ca`.** There is no signup, no subscription and no automatic
+provisioning. A tenant is provisioned by an **operator command** (`provision.js`), after the tenant
+has been given a database and a catalogue entry and has been migrated; on a multi-tenant deployment
+the command runs in single-tenant form for that one tenant (known finding D-1,
+[go-live-runbook.md §6](../operations/go-live-runbook.md)). The command creates the tenant and its
+first administrator. The sequence below is the **target design** for self-service signup, which is
+"Later" in §7; it is not what the current release does.
+
 ```mermaid
 sequenceDiagram
     participant V as Visitor
@@ -128,11 +153,18 @@ Provisioning is **one transaction plus idempotent seed jobs**: a half-provisione
 retryable and never leaves a workspace without an administrator. Every seeded object is ordinary
 configuration a tenant can then change — nothing seeded is special-cased in code.
 
-Custom domains: a tenant may claim a subdomain (`acme.docs.munaxa.com`) at provisioning and a custom
-domain later, verified by DNS record, with certificates issued automatically. The tenant is resolved
-from the host **only to select the login screen and branding** — never as an authorisation input.
-The `tenant_id` claim in the token remains the sole isolation authority, and it is what selects the
-tenant's database ([ADR-0015](./adr/0015-database-per-tenant.md)).
+**How a user reaches their tenant today.** Every organisation shares one hostname, and **the host is
+never read for a tenant**. A user types their organisation (the tenant slug) on the sign-in form, and
+the sign-in is refused without it; the API resolves the slug through the tenant registry
+(`apps/api/src/modules/identity/presentation/auth.dto.ts`, `auth.controller.ts`). The `tenant_id`
+claim in the issued token is the sole isolation authority, and it is what selects the tenant's
+database ([ADR-0015](./adr/0015-database-per-tenant.md)).
+
+**Custom domains are a future capability, not current behaviour.** The target design: a tenant may
+claim a subdomain (`acme.docs.munaxa.com`) at provisioning and a custom domain later, verified by DNS
+record, with certificates issued automatically, and the host would then be read **only to select the
+login screen and branding** — never as an authorisation input, and never in place of the token's
+`tenant_id` (§8). None of this exists in the current release; it is in the "Later" row of §7.
 
 ## 6. Payment provider
 
@@ -166,6 +198,12 @@ Phase 2. Commerce belongs there too, not at the end:
 | 2 | Entitlement resolution + the two guards, wired but permissive; usage counters projected from events |
 | 3+ | Each feature phase declares its `Feature` key and its `Limit` as it lands |
 | Later | Payment provider adapter, self-service signup, custom domains, the operator console |
+
+**Where this stands at release `4e8e1ca`:** the schema has a `tenant` table but no subscription or
+plan tables, and the entitlement and feature-flag ports are not yet bound
+(`apps/api/src/modules/administration/administration.module.ts`). Nothing in the "Later" row exists:
+tenants are provisioned by an operator, users name their organisation at sign-in, and there is no
+billing ([ADR-0021](./adr/0021-multi-tenant-hosted-launch.md) §10).
 
 The point is **not** to build billing early. It is that the entitlement guard and the usage
 projection exist before there are twenty modules to retrofit — the same argument as audit and the

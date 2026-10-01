@@ -10,13 +10,22 @@ making either statement true.
 
 | Asset | Method | Retention | RPO | RTO |
 | --- | --- | --- | --- | --- |
-| PostgreSQL, **per tenant database** | Continuous WAL archiving + nightly base backup | 35 days PITR, monthly for 12 months | 5 min | 2 h |
+| PostgreSQL **cluster** (every tenant database in it) | Continuous WAL archiving + nightly base backup — **point-in-time recovery, at cluster level** | 35 days PITR, monthly for 12 months | 5 min | 2 h |
+| PostgreSQL, **per tenant database** | Logical dump (`pg_dump --format=custom`, as `edms_backup`) — **restorable per tenant, to the time of the dump** | Per the backup policy (runbook §19) | The dump's time | — |
 | Object storage | Versioning + cross-region replication | The tenant's retention policy | 15 min | 4 h |
 | Redis | **None** | — | — | Minutes |
 | Search index | **None** | — | — | Hours (rebuild) |
 | Audit checkpoints | Written to a store the database cannot reach | 7 years | Immediate | Immediate |
 
-Two of those are absences with reasons.
+**The two PostgreSQL rows are different mechanisms, and they restore different things.** Every tenant
+has its own database ([ADR-0015](../architecture/adr/0015-database-per-tenant.md)), but those
+databases live in a PostgreSQL cluster, and **WAL-based point-in-time recovery works on the whole
+cluster, not on one database in it** — a managed PostgreSQL service likewise recovers a whole
+instance. Nothing in this product recovers a single tenant database to a point in time in place.
+What *is* per tenant is the logical dump: one tenant's database, restorable on its own, but only to
+the moment the dump was taken. §2 gives both procedures.
+
+Two of the rows above are absences with reasons.
 
 **Redis is not backed up because nothing in it is a record.** Queues are fed from the transactional
 outbox, which is in PostgreSQL and commits with the change that caused it, so an event not yet
@@ -49,8 +58,16 @@ corpus that no longer exists.
 ## 2. A restore, per tenant
 
 Under [ADR-0015](../architecture/adr/0015-database-per-tenant.md) each tenant has its own database,
-so a restore is one customer's, to the minute, without touching anybody else's. That is the whole of
-the commercial argument for the per-tenant split and it is also the operational one.
+so a restore puts back one customer's database without touching anybody else's live database. How
+far back it can go depends on which backup it starts from (§1):
+
+- **From a logical dump (§2.1):** that tenant alone, to the time of the dump.
+- **To a point in time (§2.2):** the **whole cluster** is recovered to that time in a separate
+  recovery environment, and the one tenant's database is extracted from it and restored by §2.1.
+  The recovered cluster is temporary; the live cluster and every other tenant's live database are
+  not touched ([ADR-0021](../architecture/adr/0021-multi-tenant-hosted-launch.md) §8).
+
+### 2.1 Restoring one tenant from a logical dump
 
 ```bash
 # 1. The cluster's roles FIRST, on the destination — before anything is restored into it.
@@ -63,11 +80,11 @@ the commercial argument for the per-tenant split and it is also the operational 
 psql "$DEST_ADMIN_URL" -f infra/sql/cluster/01-roles.sql
 
 # 2. Restore that tenant's database, under a NEW name. Never over the live one: the live database
-#    is the evidence of what went wrong, and PITR onto it destroys it.
+#    is the evidence of what went wrong, and restoring onto it destroys it.
 #    `--exit-on-error` deliberately: without it a restore that failed half its statements is
-#    indistinguishable from one that worked.
+#    indistinguishable from one that worked. The dump is a logical backup: this restores the
+#    tenant to the time the dump was taken, no later. For a point in time, see §2.2.
 pg_restore --create --exit-on-error --dbname="$DEST_ADMIN_URL" edms_acme_base.dump
-psql "$ADMIN_URL" -c "SELECT pg_wal_replay_pause()"   # then recover to the target LSN or time
 
 # 3. Apply this repository's own per-database and post-migration SQL to the restored copy.
 #    A restored database has the tables and may not have the policies, depending on how the dump
@@ -86,11 +103,32 @@ node scripts/apply-post-migrate.mjs   # with the restored URL in the catalogue
 
 **Steps 1 to 3 are `scripts/dr-rehearsal.mjs`**, which is the same commands in the same order with
 the comparison and the timings recorded. It is the rehearsal §3 asks for rather than a shortcut
-around the procedure: an operator can run it, and a quarterly test is one invocation.
+around the procedure: an operator can run it, and a quarterly test is one invocation. It is a
+logical restore, not a point-in-time one.
 
-**Step 4 is an edit, not a migration.** A tenant's catalogue entry names its own connection string,
+**Step 5 is an edit, not a migration.** A tenant's catalogue entry names its own connection string,
 so moving a tenant between databases — or clusters — is a configuration change and a restore. That
 is the same mechanism 19 §6's Stage 4 uses to spread tenants across clusters.
+
+### 2.2 Restoring one tenant to a point in time
+
+PostgreSQL's point-in-time recovery replays the WAL of a **whole cluster**, so one tenant is
+recovered to a point in time by recovering the cluster and taking that tenant's database out of it:
+
+1. **Recover the cluster to the target time into a separate recovery environment** — a new cluster
+   or instance, never the live one. Use the provider's point-in-time restore, or a base backup with
+   `restore_command` and `recovery_target_time`. The tooling is
+   **[PRODUCTION-SPECIFIC]** ([go-live-runbook.md §19](./go-live-runbook.md)).
+2. **Extract the tenant's database** from the recovered cluster as a logical dump, as the backup role
+   (`pg_dump --format=custom` as `edms_backup`, which reads through forced row-level security).
+3. **Restore that dump by §2.1**, under a new name, beside the live database: roles first, grants and
+   post-migration SQL, the audit chain verified, and only then the catalogue entry repointed.
+4. **Retire the recovery environment** once the restored database is verified. It holds every
+   tenant's data as of the target time and is handled with the same care as production.
+
+Every tenant's data is in the recovered cluster, but only the one tenant's database leaves it. The
+time this takes is the time to recover the **whole** cluster plus the time of §2.1, which is what the
+recovery rehearsal must measure (§3).
 
 ## 3. The test, which is the only thing that makes any of this real
 
@@ -115,13 +153,22 @@ The test passes when all four hold:
    button rather than a script: run one pass of the integrity sweep against the restored tenant
    (`storage.verify-integrity`) and confirm it reports no mismatches.
 
+**The test exercises both restore paths of §2.** A logical restore (§2.1) proves the dump
+reconstitutes a tenant. It says nothing about the 5-minute RPO, which only cluster-level
+point-in-time recovery provides. So the rehearsal also restores **one tenant to a point in time by
+§2.2**: the whole cluster recovered to a target time in a separate environment, that tenant's
+database extracted and restored beside the live one, the four conditions above checked on it, and
+the time of the whole sequence recorded
+([ADR-0021](../architecture/adr/0021-multi-tenant-hosted-launch.md) §8;
+[production-infrastructure-implementation.md](./production-infrastructure-implementation.md) 7b).
+
 Record the result, dated, in `docs/reports/`. A quarter with no record is a failed test.
 
 ## 4. What has and has not been performed
 
 **Stated plainly, because this document's own §3 says an untested procedure is a hypothesis.**
 
-**§2 has now been executed** — Phase 6.10, and the first restore in this repository's history. Two
+**§2.1 has now been executed** — Phase 6.10, and the first restore in this repository's history. Two
 tenants in two databases were backed up, a fresh PostgreSQL cluster was provisioned empty, the
 procedure above was run into it, and the product was booted against the result and driven through a
 real browser. The record is
@@ -139,9 +186,14 @@ proved and did not prove is worth carrying here rather than leaving in a report:
 is versioning and cross-region replication, which is a property of a bucket rather than of this
 repository — the checkpoint store was carried across by pointing the restored deployment at the same
 storage root, which *models* a replicated bucket rather than exercising one, and no document blob was
-re-hashed. And §1's PostgreSQL row is continuous WAL archiving with a 5-minute RPO; what was
-rehearsed is the base-backup half. `pg_wal_replay_pause()` and recovery to a target LSN need an
-archive, and an archive needs a running cluster to have been producing one.
+re-hashed. And §1's cluster row is continuous WAL archiving with a 5-minute RPO; what was rehearsed
+is the logical restore of §2.1. Point-in-time recovery (§2.2) needs a WAL archive, and an archive
+needs a running cluster to have been producing one. Cluster-level recovery to a timestamp was later
+exercised in staging — a base backup plus the WAL archive, recovered into a new container with both
+tenant databases present
+([staging-acceptance-gate-e94c295.md §9](../reports/staging-acceptance-gate-e94c295.md)). **The
+rest of §2.2 — extracting one tenant's database from the recovered cluster and restoring it beside
+the live one — has not been executed.**
 
 So: **the database restore is verified and the object-storage restore is not.** The RTO in §1 is
 still a target rather than a measurement of a production-scale dataset, though it now has a first

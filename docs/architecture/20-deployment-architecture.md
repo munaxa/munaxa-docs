@@ -22,8 +22,8 @@ first day rather than stubbed.
 graph TB
     CDN[CDN — static assets, preview images]
     WEB["Web (Next.js) ×N"]
-    API["API (NestJS) ×N — stateless"]
-    WRK["Workers ×M — preview · OCR · index · notify · retention"]
+    API["API (NestJS) ×N — stateless; runs the queue consumers"]
+    WRK["Workers ×M — FUTURE / DEFERRED: not in the current release"]
     PG[("PostgreSQL 16 — one database per tenant")]
     RR[("Read replica")]
     RED[("Redis — queues · cache · locks")]
@@ -35,14 +35,19 @@ graph TB
     API --> RED
     API --> OBJ
     API -.reports · search.-> RR
-    RED --> WRK
-    WRK --> PG
-    WRK --> OBJ
+    RED -.future.-> WRK
+    WRK -.-> PG
+    WRK -.-> OBJ
 ```
 
 - **API and web are stateless** — scale horizontally, no sticky sessions, no local disk.
-- **Workers scale independently** by queue; the preview pool is CPU-shaped and sits in its own
-  deployment with no database credentials ([14](./14-preview-architecture.md)).
+- **In the current release there is no separate worker deployment.** Every queue consumer and cron
+  schedule runs **inside the API process**, gated on `QUEUE_CONSUMERS_ENABLED`, and the `worker`
+  image starts, prints one line and exits 0 — it is built but not deployed
+  ([go-live-runbook.md §11](../operations/go-live-runbook.md)). The dashed worker tier in the diagram
+  is the **future, deferred** shape: workers scaling independently by queue, with the preview pool
+  CPU-shaped in its own deployment and no database credentials
+  ([14](./14-preview-architecture.md)). Until it exists, the API's consumers do that work.
 - **Storage and its CDN are a separate origin** from the application, so user content can never
   inherit application privileges.
 - **One database per tenant** ([ADR-0015](./adr/0015-database-per-tenant.md)). The API resolves which
@@ -131,14 +136,15 @@ unmigrated fails here rather than in production.
 | Applied migrations are never edited | Environments would diverge permanently |
 | Migrations run as the owner role, the app as a restricted role | RLS cannot be bypassed by the application |
 | Every release migrates **every** tenant database | Half the customers running against a schema the code no longer matches is worse than none of them migrated |
-| The runner reads the same catalogue the API reads | A separate list is how a tenant comes to be missed |
+| The runner reads the same tenant list, in the same catalogue format, as the API — from an **operator catalogue** that adds the owner credentials the running API must never hold ([ADR-0021](./adr/0021-multi-tenant-hosted-launch.md) §3) | A separate list is how a tenant comes to be missed, so the two catalogues must name the same tenants with the same `id` and `slug` |
 | A failed run names the tenant it stopped on, and every step is idempotent | The re-run continues rather than restarting |
 | Expand → migrate → contract for any breaking change | Deploys stay rolling; old and new code coexist |
 | Every migration is reversible or documents why it is not | Rollback must be a decision, not a discovery |
 | Data backfills are jobs, not migrations | A migration that runs for an hour is an outage |
 
 Deploys are rolling with health gates: `/health/live` and `/health/ready` (ready means the database,
-Redis and storage all answer). Workers drain their in-flight jobs before exiting.
+Redis and storage all answer). The API's queue consumers drain their in-flight jobs before the
+process exits; a separate worker deployment would do the same, when there is one.
 
 ### What Phase 18 added to this section
 
@@ -161,7 +167,7 @@ pre-installed would look like progress and change nothing.
 
 **The release procedure is a runbook**, not a paragraph here:
 [`docs/operations/deployment.md`](../operations/deployment.md). Its order is fixed — migrate every
-tenant, then workers, then API, then web — and it names the one gate this section had asserted and
+tenant, then workers (nothing to start in the current release), then API, then web — and it names the one gate this section had asserted and
 never had: a load-test run against staging, from `infra/loadtest/`, whose thresholds are §1 of
 [19](./19-performance-and-scalability.md).
 
@@ -216,7 +222,7 @@ incident it was set for. Both become real with one lockfile change, named in the
 
 | Asset | Method | Retention | RPO | RTO |
 | --- | --- | --- | --- | --- |
-| PostgreSQL | Continuous WAL archiving + nightly base backup, **per tenant database** | 35 days PITR, monthly for 12 months | 5 min | 2 h |
+| PostgreSQL | Continuous WAL archiving + nightly base backup, **per cluster** — point-in-time recovery is cluster-level and recovers every tenant database in the cluster together — plus a logical dump **per tenant database**, restorable on its own to the dump's time | 35 days PITR, monthly for 12 months | 5 min | 2 h |
 | Object storage | Versioning + cross-region replication | Per tenant retention policy | 15 min | 4 h |
 | Redis | None — rebuildable | — | — | Minutes |
 | Search index | None — rebuildable from source | — | — | Hours (rebuild) |
@@ -242,13 +248,13 @@ first execution rather than an emergency.
 
 | Scenario | Response |
 | --- | --- |
-| API or worker instance lost | Replaced automatically; stateless |
+| API or web instance lost | Replaced automatically; stateless (the queue consumers run inside the API in this release) |
 | Database primary lost | Promote the replica; reconnect; verify the audit chain |
-| Region lost | Restore into the secondary region from replicated storage and PITR; DNS switch |
+| Region lost | Restore into the secondary region from replicated storage and a cluster-level point-in-time recovery; DNS switch |
 | Storage object lost or corrupted | **Since Phase 18 the product usually reports this rather than a customer**: the nightly integrity sweep re-reads blobs, quarantines any whose bytes no longer hash to the recorded checksum, writes `INTEGRITY_MISMATCH` with both digests and raises the alert. Restore from versioning or replication, then re-run the sweep — a successful re-read is the only thing that clears the quarantine, deliberately, because a blob marked good by a human is what the control exists to prevent. If unrecoverable, mark the revision and raise a compliance incident — never silently substitute |
-| Ransomware or destructive action | PITR to before the event; object versioning restores blobs; the hash chain identifies exactly what was touched and when |
+| Ransomware or destructive action | Cluster-level point-in-time recovery to before the event, in a separate environment, then the affected tenants' databases extracted into new databases; object versioning restores blobs; the hash chain identifies exactly what was touched and when |
 | Tenant-level mistake (mass delete) | Soft delete makes this recoverable without a restore — the recycle bin is the first line of defence ([ADR-0010](./adr/0010-soft-delete-and-retention.md)) |
-| One tenant needs a point-in-time restore | Restore that tenant's database alone, to the minute, without touching anybody else's — which a shared database could not offer ([ADR-0015](./adr/0015-database-per-tenant.md)) |
+| One tenant needs a point-in-time restore | Point-in-time recovery is **cluster-level**: recover the whole cluster to the target time in a separate recovery environment, extract that tenant's database, and restore it beside the live one. No other tenant's live database is touched — which a shared database could not offer ([ADR-0015](./adr/0015-database-per-tenant.md)) — but the recovery takes as long as the whole cluster's ([ADR-0021](./adr/0021-multi-tenant-hosted-launch.md) §8; [backup-and-restore.md §2](../operations/backup-and-restore.md)) |
 
 Each scenario is a procedure in
 [`docs/operations/disaster-recovery.md`](../operations/disaster-recovery.md) (Phase 18), which adds

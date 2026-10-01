@@ -20,8 +20,9 @@ for target in api web worker; do
     -t "munaxa-docs-$target:$TAG" .
 done
 
-# 2. Every tenant database, using the same runner and the same catalogue the API reads.
-TENANT_CATALOGUE_PATH=/etc/munaxa/tenants.json node scripts/migrate-tenants.mjs
+# 2. Every tenant database, using the same runner and the same tenant list the API reads — from the
+#    operator catalogue, which adds the owner (migration) URLs the running API never holds (ADR-0021 §3).
+TENANT_CATALOGUE_PATH=/etc/munaxa/operator-catalogue.json node scripts/migrate-tenants.mjs
 
 # 3. The rolling replacement, in this order.
 #    Workers first: they drain, and a worker running old code against a migrated schema is the

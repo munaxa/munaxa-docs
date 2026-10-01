@@ -76,11 +76,15 @@ Redis for a new production deployment, or an upgrade of an existing one to relea
 **Out of scope:** choosing an infrastructure provider, an orchestrator or a monitoring product. The
 repository mandates none of them.
 
-### 1a. Accepted launch limitations
+### 1a. Launch limitations (subject to formal sign-off)
 
-Two known behaviours of this release (`27a8daa`'s application code, published as `4e8e1ca`) are **accepted for launch** by the release owner. They are not
-defects to work around in production, and neither is changed by this release. Confirm both in the
-change record (§25).
+Three known behaviours of this release (`27a8daa`'s application code, published as `4e8e1ca`) are
+**accepted as launch limitations, subject to formal sign-off before go-live**. The hosted launch is
+**multi-tenant** — one deployment serving many customer companies, each in its own database
+([ADR-0021](../architecture/adr/0021-multi-tenant-hosted-launch.md)) — and that is the deployment
+these acceptances are given for. None of the three is changed by this release. The formal sign-off of
+all three is a go-live item recorded in the change record (§25); until it is given, they are not
+accepted.
 
 **WF-1 — built-in role keys cannot be workflow participants.** A workflow `ROLE` participant takes a
 configuration key (`configurationKeySchema`: lower-case letters, digits and hyphens), and the
@@ -103,6 +107,20 @@ This is intentional: the behaviour **fails closed**, so a key can never reach an
 - On a **multi-tenant production deployment** (such as `docs.munaxa.com`), administrators must
   **not create or offer API-key integrations**. Integrations there use a user sign-in instead.
 - API keys are supported on **single-tenant deployments** only.
+- The multi-tenant launch (ADR-0021 §1) therefore offers **no** API-key integrations. KEY-1 was
+  first accepted on the condition that the launch was single-tenant, so its sign-off must be given
+  again for the multi-tenant launch.
+
+**D-1 — tenant provisioning cannot run beside a tenant catalogue.** `provision.js` reads
+`TENANT_SLUG`, and configuration refuses `TENANT_SLUG` alongside a catalogue, so on a multi-tenant
+deployment the command cannot run in the deployment's own configuration. This is a **multi-tenant
+launch limitation** (ADR-0021 §2), and the workaround is the documented procedure, not a defect to
+work around differently:
+
+- **Provision each tenant in single-tenant form**: `TENANT_ID`/`TENANT_SLUG` for that tenant, with
+  that tenant's database, as §6 step 5 describes.
+- Onboarding a tenant is therefore: create its database, add its catalogue entry, migrate (§12),
+  restart the API (the catalogue is read once at start-up), then provision.
 
 ## 2. Target production architecture
 
@@ -228,7 +246,7 @@ with a placeholder. **Secrets come from the secret store. Never put a real value
 | `STORAGE_DRIVER` | Object store | **yes in production** | `S3`, `R2` or `LOCAL` | no | `NONE` refused. `AZURE_BLOB`/`GCS` have no adapter — do not use. `CLOUD` refuses `LOCAL` |
 | `STORAGE_BUCKET` | Bucket, or root directory | yes for S3/R2 | name | no | **[PRODUCTION-SPECIFIC]** |
 | `STORAGE_REGION` / `STORAGE_ENDPOINT` | Region, custom endpoint | as the provider needs | region; URL | no | **[PRODUCTION-SPECIFIC]** |
-| `STORAGE_ACCESS_KEY_ID` + `STORAGE_SECRET_ACCESS_KEY` (+ `STORAGE_SESSION_TOKEN`) | Store credentials | both or neither (neither = instance role) | — | **yes** | Half a pair is refused |
+| `STORAGE_ACCESS_KEY_ID` + `STORAGE_SECRET_ACCESS_KEY` (+ `STORAGE_SESSION_TOKEN`) | Store credentials | both or neither — but see §7: **only a key pair works with the current adapter** | — | **yes** | Half a pair is refused |
 | `STORAGE_FORCE_PATH_STYLE` | Path-style addressing (MinIO and most S3-compatibles) | no (`false`) | `true`/`false` | no | — |
 | `STORAGE_LOCAL_ROOT` | `LOCAL` driver only: the directory | with `LOCAL` | path | no | `LOCAL` needs a mounted volume |
 | `STORAGE_PUBLIC_URL` | The public origin at which browsers reach the API. It is the base of the **preview stream URLs** handed to browsers under **every** storage driver, and of `LOCAL`'s transfer URLs | **yes in production, with every driver** | URL, e.g. `https://docs.example.com` | no | Unset, it defaults to `http://localhost:<PORT>` and every preview is broken for every user (staging finding STG-3). Set it to the origin the browser uses for `/api` **[PRODUCTION-SPECIFIC]** |
@@ -270,7 +288,7 @@ browser signs in from the web server's address and shares one rate-limit allowan
 
 | Variable | Used by | Notes |
 | --- | --- | --- |
-| `DATABASE_MIGRATION_URL`, `TENANT_CATALOGUE` / `TENANT_CATALOGUE_PATH` | `scripts/migrate-tenants.mjs` | The same catalogue the API reads |
+| `DATABASE_MIGRATION_URL`, `TENANT_CATALOGUE` / `TENANT_CATALOGUE_PATH` | `scripts/migrate-tenants.mjs` | The same tenants and catalogue format as the API's, but a separate **operator catalogue** that carries each tenant's owner (migration) URL. The running API's catalogue carries no owner credentials ([ADR-0021](../architecture/adr/0021-multi-tenant-hosted-launch.md) §3). The script's own header comment still says it reads "the same tenant catalogue the API reads"; that is the format and tenant list, not the same document |
 | `TENANT_SLUG`, `TENANT_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` (+ the API's database variables) | `node dist/provision.js`, from `apps/api` (a new tenant's first administrator) | From the environment, never from arguments. `ADMIN_PASSWORD` is **secret** |
 | `REDIS_URL` | `scripts/dr-verify-chain.mjs`, `scripts/run-schedule.mjs` | Enqueue a schedule now |
 | `STORAGE_*` | `scripts/storage-backup.mjs` | Backup, verify, restore |
@@ -312,8 +330,9 @@ Once per cluster, then once per tenant database. Order from `infra/sql/README.md
 5. **A new tenant's first administrator:** from `apps/api` of the release,
    `TENANT_SLUG=… TENANT_NAME=… ADMIN_EMAIL=… ADMIN_PASSWORD=… ADMIN_NAME=… node dist/provision.js`,
    with the API's database variables in the environment. For multi-tenant (catalogue) installs, see
-   known finding **D-1**: provision each tenant in single-tenant form (`TENANT_ID`/`TENANT_SLUG` for that
-   tenant), because the script cannot run beside a catalogue.
+   known finding **D-1**, a multi-tenant launch limitation (§1a): provision each tenant in
+   single-tenant form (`TENANT_ID`/`TENANT_SLUG` for that tenant), because the script cannot run
+   beside a catalogue.
 
 **Never** run `prisma db push` or `prisma migrate dev` (`pnpm prisma:migrate`) against production.
 Several constraints are hand-written SQL, such as partial indexes and triggers, and those commands
@@ -325,7 +344,7 @@ would "repair" them away (RC report §7). The only production migration command 
 | Requirement | Detail |
 | --- | --- |
 | Connectivity | The API reaches the store server-side. **Browsers reach it too**: uploads are presigned PUTs straight to the store, and downloads are presigned GETs |
-| Credentials | A key pair (`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY`) or an instance role (both unset). Scope it to the bucket **[PRODUCTION-SPECIFIC]** |
+| Credentials | A key pair (`STORAGE_ACCESS_KEY_ID`/`STORAGE_SECRET_ACCESS_KEY`), scoped to the bucket **[PRODUCTION-SPECIFIC]**. **An instance role or IRSA does not work with the current adapter**: it signs only with the configured keys, never fetches role credentials, and with both unset signs with empty credentials, which the store rejects. The comment above `signingCredentials` in `apps/api/src/infrastructure/infrastructure.module.ts` calls an instance role or IRSA a legitimate configuration; the code does not support it. One key pair serves every tenant ([ADR-0021](../architecture/adr/0021-multi-tenant-hosted-launch.md) §6) |
 | Bucket | One bucket (`STORAGE_BUCKET`); each tenant writes under its catalogue prefix. `STORAGE_FORCE_PATH_STYLE=true` for MinIO and most S3-compatibles |
 | CORS | The bucket must accept cross-origin `PUT` and `GET` from the web origin, carrying the headers the presigned target specifies. **The repository documents no CORS policy.** Write it for your provider **[PRODUCTION-SPECIFIC]** and prove it with the smoke test's upload (§16). Validation used MinIO, which does not require one |
 | Versioning | On (backup-and-restore.md §1) |
@@ -533,7 +552,7 @@ the runtime images carry neither pnpm nor the Prisma CLI (deployment.md §1).
 5. **Run the tenant migrations**, with the owner role and the production catalogue:
    ```bash
    export DATABASE_MIGRATION_URL='<edms_owner URL>'            # single-tenant installs
-   export TENANT_CATALOGUE_PATH=/path/to/production-catalogue.json   # multi-tenant installs
+   export TENANT_CATALOGUE_PATH=/path/to/operator-catalogue.json     # multi-tenant: the operator catalogue (§5.3)
    node scripts/migrate-tenants.mjs          # equivalently: pnpm prisma:deploy
    ```
    It visits every tenant sequentially and applies `infra/sql/database`, `prisma migrate deploy`, then
@@ -753,12 +772,16 @@ configuration **[PRODUCTION-SPECIFIC]**.
 
 | Asset | Mechanism | Retention |
 | --- | --- | --- |
-| Each tenant database | Continuous **WAL archiving (PITR)** + nightly base backup | 35 days PITR, monthly for 12 months |
+| The PostgreSQL cluster (every tenant database) | Continuous **WAL archiving** + nightly base backup: **point-in-time recovery, cluster-level** | 35 days PITR, monthly for 12 months |
+| Each tenant database | Logical dump (`pg_dump -Fc` as `edms_backup`, §19.2): restorable per tenant, to the dump's time | Per your policy **[PRODUCTION-SPECIFIC]** |
 | Object storage | **Versioning + cross-region replication** | The tenant's retention policy |
 | Redis, search index | none (rebuilt) | — |
 | Audit checkpoints | A store the database cannot reach | 7 years |
 
-The tooling (WAL archiver, backup product, replication) is **[PRODUCTION-SPECIFIC]**.
+The tooling (WAL archiver, backup product, replication) is **[PRODUCTION-SPECIFIC]**. Point-in-time
+recovery operates on the **whole cluster**: restoring one tenant to a point in time means recovering
+the cluster into a separate recovery environment and extracting that tenant's database
+(backup-and-restore.md §2.2). Nothing recovers a single tenant database to a point in time in place.
 
 ### 19.2 The pre-deployment backup (immediately before §12)
 
@@ -779,7 +802,8 @@ The tooling (WAL archiver, backup product, replication) is **[PRODUCTION-SPECIFI
 4. **Retention:** keep the pre-deployment backup at least until the release is accepted, and within
    your policy **[PRODUCTION-SPECIFIC]**.
 5. **Restoration location:** into a **new** database beside the live one, never over it
-   (backup-and-restore.md §2, disaster-recovery.md §0).
+   (backup-and-restore.md §2, disaster-recovery.md §0). A point-in-time recovery goes into a
+   separate recovery environment first, because it recovers the whole cluster (§19.1).
 6. **Confirmation:** a named person confirms the backup and verification in the change record
    **[PRODUCTION-SPECIFIC]**. A deployment without that confirmation is **NO-GO**.
 
@@ -822,7 +846,7 @@ gains nothing.
 | Web | Redeploy the previous permitted `munaxa-docs-web` image by digest, with the matching API |
 | Worker | Nothing to roll back (§11) |
 | Scanner | Keep it running. It does no harm to an earlier build, and every permitted target needs it |
-| Database | **Never reverse migrations, and never restore over the live database.** If the migrated database itself must be abandoned, **restore** the pre-deployment backup (or PITR) **into a new database**, verify it (backup-and-restore.md §2 and §3: row counts, RLS posture, audit chain), then repoint the catalogue to it. This **discards every write since the backup** and needs its own recorded decision by the change approver. The original database is kept untouched until the incident is closed |
+| Database | **Never reverse migrations, and never restore over the live database.** If the migrated database itself must be abandoned, **restore** the pre-deployment backup **into a new database** — or, for a point in time, recover the cluster into a separate recovery environment and extract the tenant databases from it (backup-and-restore.md §2.2) — verify it (backup-and-restore.md §2 and §3: row counts, RLS posture, audit chain), then repoint the catalogue to it. This **discards every write since the backup** and needs its own recorded decision by the change approver. The original database is kept untouched until the incident is closed |
 | Object storage | Objects written by the new release stay. Earlier builds ignore what they do not reference, and versioning keeps the previous state addressable. Never delete objects as part of a rollback |
 | Traffic | Restore traffic only after §14 items 1–7 pass on the rolled-back build **and** `probe.mjs` passes from the API's network |
 
@@ -1018,7 +1042,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 | PITR / WAL archiving and the recovery procedure in place (`edms_backup`, scheduled backups, backup alerts) | yes | | archiver status, backup job, alert | |
 | Production capacity/load requirements established and met where required | yes | | load baseline on production-sized infrastructure | |
 | Change window approved | yes | | change record | |
-| Accepted launch limitations WF-1 and KEY-1 (§1a) acknowledged by the release owner; **no API-key integration offered on a multi-tenant deployment** | yes | | change record | |
+| Launch limitations WF-1, KEY-1 and D-1 (§1a) **formally signed off** for the multi-tenant launch, with the signer named; **no API-key integration offered on a multi-tenant deployment**; tenants provisioned by the D-1 procedure | yes | | change record | |
 | Backup taken **and verified** immediately before migration, confirmed by a named person | yes | | backup IDs, `pg_restore --list`, storage verify | |
 | Traffic drained (this release) | yes | | proxy state, `outbox.pending` ≈ 0 | |
 | All required secrets present (API started under `NODE_ENV=production`) | yes | | API start log | |
@@ -1062,6 +1086,7 @@ Fill in during go-live. **Required** items are all NO-GO if they fail.
 - SMTP is missing or unverified where notifications are required;
 - object-storage protection (versioning, replication, CORS) or its independent monitoring is missing;
 - PITR or the recovery requirements are not satisfied;
+- WF-1, KEY-1 and D-1 have not been formally signed off;
 - immutable release images are not available by digest;
 - production load or capacity requirements have not been established where they are required.
 
