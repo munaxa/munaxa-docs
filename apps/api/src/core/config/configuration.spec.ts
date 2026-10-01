@@ -251,6 +251,18 @@ describe('loadConfig', () => {
   });
 });
 
+describe('the tenant connection pool', () => {
+  it('defaults DATABASE_POOL_SIZE to 10 per tenant and DATABASE_MAX_TENANT_CLIENTS to 25', () => {
+    const config = loadConfig(baseEnv);
+    expect(config.database.poolSize).toBe(10);
+    expect(config.database.maxTenantClients).toBe(25);
+  });
+
+  it('respects an explicitly configured DATABASE_POOL_SIZE', () => {
+    expect(loadConfig({ ...baseEnv, DATABASE_POOL_SIZE: '4' }).database.poolSize).toBe(4);
+  });
+});
+
 /**
  * Which tenants a process serves is the first thing it has to know, so these are boot failures
  * rather than errors at the first request. Every one of them describes a configuration that would

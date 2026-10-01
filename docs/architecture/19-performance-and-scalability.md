@@ -151,8 +151,14 @@ names its own connection string, so moving one is an edit and a restore.
 
 Stage 3 is not built. Stage 4's per-tenant database is, and it brought its own limit with it: each
 tenant client owns a connection pool, so a process holds at most `DATABASE_MAX_TENANT_CLIENTS × DATABASE_POOL_SIZE`
-connections and evicts the least recently used beyond that. A deployment with hundreds of tenants needs
-a connection pooler in front of PostgreSQL before it needs anything else on this list.
+connections and evicts the least recently used beyond that. The two settings are different limits:
+`DATABASE_MAX_TENANT_CLIENTS` bounds how many tenant clients a process keeps (default 25), and
+`DATABASE_POOL_SIZE` bounds each client's pool (default 10). The pool size is applied as Prisma's
+`connection_limit` on every tenant's connection string, and it replaces any `connection_limit` a
+catalogue URL carries, so the ceiling is the configured one. Every API process has its own clients, so
+a deployment's total is that ceiling times the number of API processes, plus whatever operators
+connect. A deployment with hundreds of tenants needs a connection pooler in front of PostgreSQL before
+it needs anything else on this list.
 
 ## 7. Known limits and their first symptom
 

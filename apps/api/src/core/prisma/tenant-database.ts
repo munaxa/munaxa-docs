@@ -145,7 +145,11 @@ export class TenantDatabase implements OnModuleDestroy {
 
     await this.evictIfFull();
 
-    const client = new PrismaClient({ datasources: { db: { url: placement.database.url } } });
+    const client = new PrismaClient({
+      datasources: {
+        db: { url: withPoolSize(placement.database.url, this.config.database.poolSize) },
+      },
+    });
     await client.$connect();
     this.clients.set(tenantId, client);
     this.logger.info('Tenant database connected', {
@@ -186,6 +190,24 @@ export class TenantDatabase implements OnModuleDestroy {
       });
     }
   }
+}
+
+/**
+ * A tenant's connection string with its pool bounded by `DATABASE_POOL_SIZE`.
+ *
+ * Prisma reads its pool size from the `connection_limit` parameter of the URL and from nowhere else,
+ * so this is where the configured value has to arrive — without it every tenant client gets Prisma's
+ * own default, which follows the host's CPU count, and the `DATABASE_MAX_TENANT_CLIENTS ×
+ * DATABASE_POOL_SIZE` ceiling the rest of the documentation budgets against is not the one in force.
+ *
+ * The configured value wins over one already in the catalogue URL: the ceiling is a deployment-wide
+ * budget, and a per-tenant override would quietly break it. Nothing else in the URL is touched — the
+ * credentials, host and every other parameter pass through unchanged.
+ */
+export function withPoolSize(url: string, poolSize: number): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set('connection_limit', String(poolSize));
+  return parsed.toString();
 }
 
 /**
