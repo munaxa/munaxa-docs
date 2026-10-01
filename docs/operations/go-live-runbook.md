@@ -74,7 +74,10 @@ The prerequisites still to be satisfied are listed in
 **In scope:** the API, the web application, the malware scanner, tenant databases, object storage and
 Redis for a new production deployment, or an upgrade of an existing one to release `4e8e1ca`.
 **Out of scope:** choosing an infrastructure provider, an orchestrator or a monitoring product. The
-repository mandates none of them.
+repository mandates none of them. The **Munaxa-hosted** service has chosen one — AWS, with Amazon ECS
+on AWS Fargate ([ADR-0022](../architecture/adr/0022-hosted-platform-aws-ecs-fargate.md)) — but this
+runbook stays provider-neutral, and its **[PRODUCTION-SPECIFIC]** steps are not yet written out for
+AWS.
 
 ### 1a. Launch limitations (subject to formal sign-off)
 
@@ -125,7 +128,8 @@ work around differently:
 ## 2. Target production architecture
 
 Deployment-agnostic: the repository ships container images and does not prescribe AWS, Azure,
-Kubernetes or any other platform.
+Kubernetes or any other platform. The hosted service's platform choice is recorded separately, in
+[ADR-0022](../architecture/adr/0022-hosted-platform-aws-ecs-fargate.md).
 
 ```text
                          Browsers

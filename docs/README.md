@@ -107,6 +107,7 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0019](./architecture/adr/0019-webhooks-are-not-notifications.md) | A webhook is its own delivery path; `NotificationChannel.WEBHOOK` is a value nothing uses |
 | [0020](./architecture/adr/0020-key-management-and-rotation.md) | The deployment's secret store *is* the key management service; what the product owes is one key per purpose and a rotation each sealed value can survive |
 | [0021](./architecture/adr/0021-multi-tenant-hosted-launch.md) | The hosted service launches multi-tenant: one deployment serves many customers, each in its own database; KEY-1 and D-1 are launch limitations; single-tenant deployments remain a future model |
+| [0022](./architecture/adr/0022-hosted-platform-aws-ecs-fargate.md) | The hosted service runs on AWS, with Amazon ECS on AWS Fargate; Redis flavour, region, accounts and sizing remain open, and production remains NOT READY |
 
 ## 2. Reports
 
