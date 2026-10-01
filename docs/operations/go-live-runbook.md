@@ -52,7 +52,7 @@ images were built from. Never use a later documentation commit's SHA as the rele
 | Functional staging baseline | `416ca946f6afaee8bcea7fcf94c9705af800c5a8` (`416ca94`) | Passed the full staging gate (CI run 548). Not deployable: its web image lacks the brand artwork (STG-12) |
 | Previous production baseline (historical) | `f5d5bb28146c57ab7937eff90cebd7621a28c9f2` (`f5d5bb2`) | `416ca94` plus STG-12, CI run 550 ([production-release-package-f5d5bb2.md](../reports/production-release-package-f5d5bb2.md)). **Superseded — do not deploy**: a blank organisation field is resolved from the hostname (a sign-in at `docs.munaxa.com` could reach a tenant slugged `docs`), and TOTP enrolment answers 500 |
 | Superseded release candidate | `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`) | `f5d5bb2` plus `6f135e5` and `14311c2`, CI run 552, staging smoke 27/27 ([production-release-package-c87519e.md](../reports/production-release-package-c87519e.md)). **Superseded — do not deploy**: web sign-out does not revoke the session at the API (WEB-1), and colliding numbering rules answer 500 (NUM-1) |
-| Approved application release | `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke 29/29, browser 8/8 ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)). Its application code is deployed as `4e8e1ca`; no image was ever published from `27a8daa` itself |
+| Approved application release | `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke 29/29, browser 8/8 ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)). Its application code is published as `4e8e1ca`; no image was ever published from `27a8daa` itself |
 | Superseded image line | `8cb4c14454e2e0e3b4508ef4e6eba76d3e1b0051` (`8cb4c14`) | Published by run `36722457128`. **Superseded — do not deploy**: its antivirus image (`sha256:02298beca666…`) is the old **root-starting** scanner |
 | **Production release** | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) | `27a8daa`'s application code plus the non-root antivirus image. Published by run `36819091004`. **Deploy this, by the digests above** ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
 
@@ -78,7 +78,7 @@ repository mandates none of them.
 
 ### 1a. Accepted launch limitations
 
-Two known behaviours of this release (`27a8daa`'s application code, deployed as `4e8e1ca`) are **accepted for launch** by the release owner. They are not
+Two known behaviours of this release (`27a8daa`'s application code, published as `4e8e1ca`) are **accepted for launch** by the release owner. They are not
 defects to work around in production, and neither is changed by this release. Confirm both in the
 change record (§25).
 
