@@ -75,7 +75,8 @@ The prerequisites still to be satisfied are listed in
 Redis for a new production deployment, or an upgrade of an existing one to release `4e8e1ca`.
 **Out of scope:** choosing an infrastructure provider, an orchestrator or a monitoring product. The
 repository mandates none of them. The **Munaxa-hosted** service has chosen one — AWS, with Amazon ECS
-on AWS Fargate ([ADR-0022](../architecture/adr/0022-hosted-platform-aws-ecs-fargate.md)) — but this
+on AWS Fargate ([ADR-0022](../architecture/adr/0022-hosted-platform-aws-ecs-fargate.md)), initially in
+`eu-central-1` ([ADR-0023](../architecture/adr/0023-initial-aws-region-eu-central-1.md)) — but this
 runbook stays provider-neutral, and its **[PRODUCTION-SPECIFIC]** steps are not yet written out for
 AWS.
 
