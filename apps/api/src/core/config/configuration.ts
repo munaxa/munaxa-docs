@@ -166,14 +166,27 @@ export const configSchema = z
     /**
      * The object store's credentials.
      *
-     * Optional in the schema and required by the driver, which is not the same as optional: an S3
-     * deployment on an instance role legitimately supplies neither, and one on a static key pair
-     * supplies both. Supplying exactly one is the misconfiguration worth catching, and it is
-     * caught below rather than at the first upload.
+     * Under `STORAGE_CREDENTIALS_SOURCE=STATIC` (the default) the S3 and R2 drivers sign with this
+     * key pair, so both halves are needed. Supplying exactly one is the misconfiguration worth
+     * catching, and it is caught below rather than at the first upload. Supplying neither is not
+     * refused at boot, but nothing signs with empty credentials: the first request that needs a
+     * signature fails, naming the missing configuration. An instance role is not read under
+     * `STATIC`; `ECS_TASK_ROLE` is the role-based source, and it refuses a key pair.
      */
     STORAGE_ACCESS_KEY_ID: z.string().optional(),
     STORAGE_SECRET_ACCESS_KEY: z.string().optional(),
     STORAGE_SESSION_TOKEN: z.string().optional(),
+    /**
+     * Where the S3 driver's signing credentials come from.
+     *
+     * `STATIC` is the key pair above, and the default, so every existing installation keeps the
+     * configuration it has. `ECS_TASK_ROLE` reads the temporary credentials of the ECS task's IAM
+     * role from the endpoint ECS names in `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, and refreshes
+     * them before they expire — no long-lived key in the environment at all.
+     */
+    STORAGE_CREDENTIALS_SOURCE: z.enum(['STATIC', 'ECS_TASK_ROLE']).default('STATIC'),
+    /** Set by ECS on every task that has a task role. Read only under `ECS_TASK_ROLE`. */
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: z.string().optional(),
     /**
      * Whether the bucket is addressed as a path segment rather than as a subdomain.
      *
@@ -700,8 +713,9 @@ export const configSchema = z
         });
       }
       // One half of a key pair is never a working configuration, and it is the shape a partly
-      // filled `.env` takes. Neither is legitimate — an instance role supplies its own — so it is
-      // the mismatch that is refused, not the absence.
+      // filled `.env` takes, so the mismatch is refused here. Neither half is not refused at boot:
+      // under `STATIC` the first signed request then fails naming the configuration, and under
+      // `ECS_TASK_ROLE` the key pair must be absent (below).
       const keyId = config.STORAGE_ACCESS_KEY_ID !== undefined;
       const secret = config.STORAGE_SECRET_ACCESS_KEY !== undefined;
       if (keyId !== secret) {
@@ -709,6 +723,49 @@ export const configSchema = z
           code: z.ZodIssueCode.custom,
           path: [keyId ? 'STORAGE_SECRET_ACCESS_KEY' : 'STORAGE_ACCESS_KEY_ID'],
           message: 'Give both halves of the storage key pair, or neither.',
+        });
+      }
+    }
+
+    // The ECS task role is an AWS mechanism for the S3 driver, and it replaces the key pair rather
+    // than sitting beside it: two sources of credentials is a deployment nobody can reason about.
+    if (config.STORAGE_CREDENTIALS_SOURCE === 'ECS_TASK_ROLE') {
+      if (config.STORAGE_DRIVER !== 'S3') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['STORAGE_CREDENTIALS_SOURCE'],
+          message:
+            config.STORAGE_DRIVER === 'R2'
+              ? 'STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE is an AWS IAM credential and cannot sign for Cloudflare R2; use STATIC with an R2 key pair.'
+              : 'STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE requires STORAGE_DRIVER=S3.',
+        });
+      }
+      for (const key of [
+        'STORAGE_ACCESS_KEY_ID',
+        'STORAGE_SECRET_ACCESS_KEY',
+        'STORAGE_SESSION_TOKEN',
+      ] as const) {
+        if (config[key] !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${key} cannot be combined with STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE; the task role supplies the credentials.`,
+          });
+        }
+      }
+      const uri = config.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+      if (uri === undefined || uri.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'],
+          message:
+            'STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE requires AWS_CONTAINER_CREDENTIALS_RELATIVE_URI, which ECS sets on a task with a task role.',
+        });
+      } else if (!uri.startsWith('/') || uri.startsWith('//')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'],
+          message: 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI must be a path beginning with "/".',
         });
       }
     }
@@ -995,7 +1052,13 @@ export interface AppConfig {
     readonly endpoint: string | null;
     readonly signedUrlTtlSeconds: number;
     readonly maxUploadBytes: number;
-    /** Null when the deployment supplies credentials some other way — an instance role. */
+    /**
+     * Where the S3 driver's credentials come from. Under `ECS_TASK_ROLE`, `credentials` is null and
+     * `ecsCredentialsRelativeUri` names the task's credential endpoint.
+     */
+    readonly credentialsSource: RawConfig['STORAGE_CREDENTIALS_SOURCE'];
+    readonly ecsCredentialsRelativeUri: string | null;
+    /** The static key pair, or null when none is configured. */
     readonly credentials: {
       readonly accessKeyId: string;
       readonly secretAccessKey: string;
@@ -1220,6 +1283,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
               sessionToken: raw.STORAGE_SESSION_TOKEN ?? null,
             }
           : null,
+      credentialsSource: raw.STORAGE_CREDENTIALS_SOURCE,
+      ecsCredentialsRelativeUri: raw.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ?? null,
       forcePathStyle: raw.STORAGE_FORCE_PATH_STYLE,
       localRoot: raw.STORAGE_LOCAL_ROOT,
       publicUrl: raw.STORAGE_PUBLIC_URL ?? null,

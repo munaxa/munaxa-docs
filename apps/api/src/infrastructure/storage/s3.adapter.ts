@@ -13,6 +13,7 @@ import type {
   UploadTarget,
   UploadTargetInput,
 } from '../../ports/storage.port';
+import type { SigningCredentialProvider } from './ecs-task-credentials';
 import {
   EMPTY_PAYLOAD_HASH,
   type SigningCredentials,
@@ -47,7 +48,13 @@ export interface S3AdapterOptions {
   /** Absolute, no trailing slash. AWS's own endpoint when the deployment names none. */
   readonly endpoint: string;
   readonly forcePathStyle: boolean;
-  readonly credentials: SigningCredentials;
+  /**
+   * A fixed key pair, or a provider of temporary credentials (the ECS task role).
+   *
+   * Resolved at every operation that signs, so a provider's rotated credentials are picked up
+   * without restarting anything.
+   */
+  readonly credentials: SigningCredentials | SigningCredentialProvider;
   readonly now: () => Date;
   /** Injected so a test can assert what was sent without standing up a server. */
   readonly fetch?: typeof globalThis.fetch;
@@ -121,6 +128,9 @@ export class S3StorageAdapter implements StoragePort {
       }),
     };
 
+    // Valid for at least as long as the URLs signed with them, so none outlives its credentials.
+    const credentials = await this.credentials(input.expiresInSeconds);
+
     if (input.multipart === true) {
       const uploadId = await this.beginMultipart(input.key, input.contentType);
       const partCount = Math.max(1, Math.ceil(input.sizeBytes / MULTIPART_PART_SIZE_BYTES));
@@ -129,13 +139,20 @@ export class S3StorageAdapter implements StoragePort {
         // The completion is the API's call, not the browser's, so the target's own URL is the
         // first part's. A client that only ever PUTs to the part URLs never has to know that a
         // multipart upload has a shape at all.
-        url: this.partUrl(input.key, uploadId, 1, at, input.expiresInSeconds),
+        url: this.partUrl(credentials, input.key, uploadId, 1, at, input.expiresInSeconds),
         method: 'PUT',
         headers: { 'Content-Type': input.contentType },
         expiresAt,
         parts: Array.from({ length: partCount }, (_unused, index) => ({
           partNumber: index + 1,
-          url: this.partUrl(input.key, uploadId, index + 1, at, input.expiresInSeconds),
+          url: this.partUrl(
+            credentials,
+            input.key,
+            uploadId,
+            index + 1,
+            at,
+            input.expiresInSeconds,
+          ),
           // Carried back at completion; see `completeUpload`.
           uploadId,
         })),
@@ -143,7 +160,7 @@ export class S3StorageAdapter implements StoragePort {
     }
 
     const query = presignedQueryString({
-      credentials: this.options.credentials,
+      credentials,
       region: this.options.region,
       service: 's3',
       at,
@@ -192,7 +209,8 @@ export class S3StorageAdapter implements StoragePort {
     return metadata;
   }
 
-  createDownloadUrl(key: StorageKey, options: DownloadOptions): Promise<SignedUrl> {
+  async createDownloadUrl(key: StorageKey, options: DownloadOptions): Promise<SignedUrl> {
+    const credentials = await this.credentials(options.expiresInSeconds);
     const at = this.options.now();
     const query: Record<string, string> = {};
     if (options.filename !== undefined) {
@@ -203,7 +221,7 @@ export class S3StorageAdapter implements StoragePort {
         `${options.inline === true ? 'inline' : 'attachment'}; filename="${options.filename}"`;
     }
     const signed = presignedQueryString({
-      credentials: this.options.credentials,
+      credentials,
       region: this.options.region,
       service: 's3',
       at,
@@ -213,10 +231,10 @@ export class S3StorageAdapter implements StoragePort {
       query,
       expiresInSeconds: options.expiresInSeconds,
     });
-    return Promise.resolve({
+    return {
       url: `${this.origin}${this.pathFor(key)}?${signed}`,
       expiresAt: new Date(at.getTime() + options.expiresInSeconds * 1000),
-    });
+    };
   }
 
   async head(key: StorageKey): Promise<BlobMetadata | null> {
@@ -385,7 +403,19 @@ export class S3StorageAdapter implements StoragePort {
       : encodePath(key);
   }
 
+  /**
+   * The credentials to sign with, valid for at least `validForSeconds`.
+   *
+   * A fixed key pair has no expiry. A provider is asked each time, so it can hand back cached
+   * credentials or fetch rotated ones — and refuse, rather than sign, when it cannot.
+   */
+  private credentials(validForSeconds: number): Promise<SigningCredentials> {
+    const source = this.options.credentials;
+    return 'resolve' in source ? source.resolve(validForSeconds) : Promise.resolve(source);
+  }
+
   private partUrl(
+    credentials: SigningCredentials,
     key: StorageKey,
     uploadId: string,
     partNumber: number,
@@ -393,7 +423,7 @@ export class S3StorageAdapter implements StoragePort {
     expiresInSeconds: number,
   ): string {
     const query = presignedQueryString({
-      credentials: this.options.credentials,
+      credentials,
       region: this.options.region,
       service: 's3',
       at,
@@ -499,8 +529,10 @@ export class S3StorageAdapter implements StoragePort {
     const payloadHash =
       body === undefined ? EMPTY_PAYLOAD_HASH : createHash('sha256').update(body).digest('hex');
     const path = this.pathFor(key);
+    // A signed header is checked when the request arrives, moments from now.
+    const credentials = await this.credentials(0);
     const headers = signRequest({
-      credentials: this.options.credentials,
+      credentials,
       region: this.options.region,
       service: 's3',
       at: this.options.now(),
@@ -537,8 +569,9 @@ export class S3StorageAdapter implements StoragePort {
    */
   private async sendToBucket(query: Readonly<Record<string, string>>): Promise<Response> {
     const path = this.options.forcePathStyle ? `/${this.options.bucket}` : '/';
+    const credentials = await this.credentials(0);
     const headers = signRequest({
-      credentials: this.options.credentials,
+      credentials,
       region: this.options.region,
       service: 's3',
       at: this.options.now(),

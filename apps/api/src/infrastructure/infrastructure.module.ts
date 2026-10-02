@@ -3,6 +3,7 @@ import { Global, Module } from '@nestjs/common';
 import { API_PREFIX } from '@edms/contracts';
 
 import { APP_CONFIG, type AppConfig } from '../core/config';
+import { StorageUnavailableError } from '../core/errors/application-errors';
 import { LOGGER, type Logger } from '../core/observability/logger';
 import { METRICS, type Metrics } from '../core/observability/metrics';
 import { METRICS_REGISTRY, type MetricsRegistry } from '../core/observability/metrics-registry';
@@ -37,8 +38,8 @@ import { PostgresSearchAdapter } from './search/postgres-search.adapter';
 import { LocalTransferController } from './storage/local-transfer.controller';
 import { LOCAL_TRANSFER_PATH } from './storage/local-transfer-token';
 import { LocalStorageAdapter } from './storage/local.adapter';
-import { S3StorageAdapter } from './storage/s3.adapter';
-import type { SigningCredentials } from './storage/sigv4';
+import { EcsTaskCredentialProvider } from './storage/ecs-task-credentials';
+import { type S3AdapterOptions, S3StorageAdapter } from './storage/s3.adapter';
 import { LOCAL_STORAGE_ADAPTER } from './storage/storage.tokens';
 import { PLACED_SEARCH_PORT, TenantScopedSearch } from './tenancy/tenant-scoped-search';
 import { TenantScopedStorage } from './tenancy/tenant-scoped-storage';
@@ -98,7 +99,7 @@ function storageAdapterFor(config: AppConfig, clock: ClockPort): StoragePort {
         endpoint:
           config.storage.endpoint ?? defaultS3Endpoint(config.storage.region ?? 'us-east-1'),
         forcePathStyle: config.storage.forcePathStyle,
-        credentials: signingCredentials(config),
+        credentials: signingCredentials(config, clock),
         now: () => clock.now(),
       });
     // AZURE_BLOB and GCS each get their adapter in the phase that needs one; until then the
@@ -142,21 +143,43 @@ function localTransferUrl(config: AppConfig): string {
 }
 
 /**
- * The credentials the S3 adapter signs with.
+ * Where the S3 adapter's signing credentials come from — `STORAGE_CREDENTIALS_SOURCE`.
  *
- * Empty strings when the deployment supplies none, which is a legitimate configuration — an EC2
- * instance role or an IRSA-annotated service account issues them out of band. Signing with empty
- * material produces a signature the store rejects, which is the right failure: it names the request
- * that failed rather than crashing the process at boot for a deployment shape that works.
+ * - `STATIC` (the default): the configured key pair, with its session token if one is given.
+ * - `ECS_TASK_ROLE`: the ECS task role's temporary credentials, read from the task's own credential
+ *   endpoint and refreshed before they expire (`ecs-task-credentials.ts`).
  *
- * Reading an instance metadata endpoint to discover them is deliberately not done here. That is a
- * network call this product never intended to make, and it is what the SDK would have brought with
- * it — see `sigv4.ts`.
+ * Nothing here ever signs with empty credentials. Under `STATIC` with no key pair configured — which
+ * boot validation still allows, so a deployment that never stores anything keeps starting — the
+ * first request that needs a signature fails with a 503 naming the missing configuration, rather
+ * than sending an empty signature for the store to reject.
+ *
+ * No instance metadata endpoint, IRSA token or other provider chain is consulted: an EC2 instance
+ * role is **not** read under either source. The ECS task endpoint is the one role-based source, and
+ * only when it is asked for by name — see `sigv4.ts` for why the SDK's chain was not taken.
  */
-function signingCredentials(config: AppConfig): SigningCredentials {
+function signingCredentials(config: AppConfig, clock: ClockPort): S3AdapterOptions['credentials'] {
+  if (config.storage.credentialsSource === 'ECS_TASK_ROLE') {
+    const relativeUri = config.storage.ecsCredentialsRelativeUri;
+    if (relativeUri === null) {
+      // Boot validation already refuses this; the check keeps the type honest.
+      throw new StorageUnavailableError(
+        'STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE requires AWS_CONTAINER_CREDENTIALS_RELATIVE_URI.',
+      );
+    }
+    return new EcsTaskCredentialProvider({ relativeUri, now: () => clock.now() });
+  }
+
   const credentials = config.storage.credentials;
   if (credentials === null) {
-    return { accessKeyId: '', secretAccessKey: '' };
+    return {
+      resolve: () =>
+        Promise.reject(
+          new StorageUnavailableError(
+            'No object-storage credentials are configured: set STORAGE_ACCESS_KEY_ID and STORAGE_SECRET_ACCESS_KEY, or STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE on ECS.',
+          ),
+        ),
+    };
   }
   return {
     accessKeyId: credentials.accessKeyId,

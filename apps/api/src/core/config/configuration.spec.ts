@@ -264,6 +264,86 @@ describe('the tenant connection pool', () => {
 });
 
 /**
+ * `STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE` signs S3 requests with the ECS task role instead of a
+ * key pair. Every way of half-configuring it is a boot failure, so a deployment cannot start up
+ * believing it uses the role while signing with something else.
+ */
+describe('the object-storage credential source', () => {
+  const ecsEnv = {
+    ...productionEnv,
+    STORAGE_CREDENTIALS_SOURCE: 'ECS_TASK_ROLE',
+    STORAGE_REGION: 'me-central-1',
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials/task-id',
+  } satisfies NodeJS.ProcessEnv;
+
+  it('defaults to STATIC, with the configured key pair', () => {
+    const config = loadConfig({
+      ...productionEnv,
+      STORAGE_ACCESS_KEY_ID: 'AKIA-STATIC',
+      STORAGE_SECRET_ACCESS_KEY: 'static-secret',
+    });
+    expect(config.storage.credentialsSource).toBe('STATIC');
+    expect(config.storage.credentials).toMatchObject({ accessKeyId: 'AKIA-STATIC' });
+    expect(config.storage.ecsCredentialsRelativeUri).toBeNull();
+  });
+
+  it('accepts ECS_TASK_ROLE with S3 and the relative URI ECS sets', () => {
+    const config = loadConfig(ecsEnv);
+    expect(config.storage.credentialsSource).toBe('ECS_TASK_ROLE');
+    expect(config.storage.ecsCredentialsRelativeUri).toBe('/v2/credentials/task-id');
+    expect(config.storage.credentials).toBeNull();
+  });
+
+  it.each(['STORAGE_ACCESS_KEY_ID', 'STORAGE_SECRET_ACCESS_KEY', 'STORAGE_SESSION_TOKEN'])(
+    'refuses %s alongside ECS_TASK_ROLE',
+    (key) => {
+      expect(() => loadConfig({ ...ecsEnv, [key]: 'configured' })).toThrowError(
+        new RegExp(`${key} cannot be combined`),
+      );
+    },
+  );
+
+  it('refuses ECS_TASK_ROLE with R2', () => {
+    expect(() =>
+      loadConfig({
+        ...ecsEnv,
+        STORAGE_DRIVER: 'R2',
+        STORAGE_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
+      }),
+    ).toThrowError(/cannot sign for Cloudflare R2/);
+  });
+
+  it('refuses ECS_TASK_ROLE with local storage', () => {
+    expect(() => loadConfig({ ...ecsEnv, STORAGE_DRIVER: 'LOCAL' })).toThrowError(
+      /STORAGE_CREDENTIALS_SOURCE/,
+    );
+  });
+
+  it('refuses ECS_TASK_ROLE without AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', () => {
+    expect(() =>
+      loadConfig({ ...ecsEnv, AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: undefined }),
+    ).toThrowError(/AWS_CONTAINER_CREDENTIALS_RELATIVE_URI/);
+    expect(() =>
+      loadConfig({ ...ecsEnv, AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '' }),
+    ).toThrowError(/AWS_CONTAINER_CREDENTIALS_RELATIVE_URI/);
+  });
+
+  it('refuses a relative URI that is not a path', () => {
+    for (const uri of ['v2/credentials', '//attacker.example/creds']) {
+      expect(() =>
+        loadConfig({ ...ecsEnv, AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: uri }),
+      ).toThrowError(/AWS_CONTAINER_CREDENTIALS_RELATIVE_URI/);
+    }
+  });
+
+  it('refuses a source it does not know', () => {
+    expect(() =>
+      loadConfig({ ...productionEnv, STORAGE_CREDENTIALS_SOURCE: 'INSTANCE_ROLE' }),
+    ).toThrowError(/STORAGE_CREDENTIALS_SOURCE/);
+  });
+});
+
+/**
  * Which tenants a process serves is the first thing it has to know, so these are boot failures
  * rather than errors at the first request. Every one of them describes a configuration that would
  * otherwise look like a working installation.
