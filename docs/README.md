@@ -110,6 +110,7 @@ Immutable. Supersede, never edit. [`architecture/adr/`](./architecture/adr/).
 | [0022](./architecture/adr/0022-hosted-platform-aws-ecs-fargate.md) | The hosted service runs on AWS, with Amazon ECS on AWS Fargate; Redis flavour, region, accounts and sizing remain open, and production remains NOT READY |
 | [0023](./architecture/adr/0023-initial-aws-region-eu-central-1.md) | The initial hosted AWS region is `eu-central-1` (non-production in `1a`/`1b`), after `me-central-1` could not host the validation environment; nothing is provisioned there yet, the DR region stays open, and production remains NOT READY |
 | [0024](./architecture/adr/0024-minimum-cost-first-customer-launch.md) | The first paying customers run on the minimum-cost launch architecture (about $102/month, estimated): separate Web, API and Spot scanner tasks with public IPs and no NAT, one ALB routing only `/api/v1/preview/stream*` to the API, Redis on the API task's loopback, Single-AZ `db.t4g.micro`; amends ADR-0022 for the launch; each component upgrades on its own trigger; production remains NOT READY |
+| [0025](./architecture/adr/0025-production-email-amazon-ses-smtp.md) | Production email is Amazon SES through SMTP (STARTTLS on 587) in `eu-central-1`, permanently, with no code change: one send-only IAM user is the intentional long-lived-credential exception, only the derived SMTP password is stored, in the application secret; resolves ADR-0024 §2.9 without changing its architecture; production remains NOT READY |
 
 ## 2. Reports
 
