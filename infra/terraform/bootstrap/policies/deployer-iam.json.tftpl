@@ -1,0 +1,85 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateWorkloadRolesOnlyWithWorkloadBoundary",
+      "Effect": "Allow",
+      "Action": "iam:CreateRole",
+      "Resource": "arn:aws:iam::${account_id}:role/munaxa-docs/eu-prod/${prefix}-*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "${workload_boundary_arn}"
+        }
+      }
+    },
+    {
+      "Sid": "ManageWorkloadRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteRole",
+        "iam:UpdateRole",
+        "iam:UpdateRoleDescription",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": "arn:aws:iam::${account_id}:role/munaxa-docs/eu-prod/${prefix}-*"
+    },
+    {
+      "Sid": "AttachOnlyProductionOrBackupServicePolicies",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::${account_id}:role/munaxa-docs/eu-prod/${prefix}-*",
+      "Condition": {
+        "ArnLike": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::${account_id}:policy/munaxa-docs/eu-prod/*",
+            "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup",
+            "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ProductionManagedPolicies",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:TagPolicy",
+        "iam:UntagPolicy"
+      ],
+      "Resource": "arn:aws:iam::${account_id}:policy/munaxa-docs/eu-prod/*"
+    },
+    {
+      "Sid": "PassWorkloadRolesToWorkloadServicesOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::${account_id}:role/munaxa-docs/eu-prod/${prefix}-*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": ${pass_role_services_json}
+        }
+      }
+    },
+    {
+      "Sid": "ServiceLinkedRolesForUsedServices",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::${account_id}:role/aws-service-role/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": ${service_linked_role_json}
+        }
+      }
+    }
+  ]
+}

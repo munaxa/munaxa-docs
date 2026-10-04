@@ -1,0 +1,8 @@
+# Partial backend configuration for Claude agent sessions.
+#   terraform init -backend-config=../claude.s3.tfbackend
+# Break-glass: copy this file and set session_name and source_identity to admin.tamer values.
+assume_role = {
+  role_arn        = "arn:aws:iam::800728620253:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer"
+  session_name    = "claude-terraform-state"
+  source_identity = "claude-munaxa-docs"
+}

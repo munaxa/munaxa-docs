@@ -92,6 +92,7 @@ munaxa-docs/
 │   └── utils/        @edms/utils     pure helpers
 ├── prisma/           schema.prisma — tenant, audit, outbox, idempotency
 ├── infra/            compose stack, database roles, RLS, audit immutability
+│   └── terraform/    Production infrastructure-as-code (AWS, eu-central-1)
 └── docs/             the design set
 ```
 
