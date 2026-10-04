@@ -6,7 +6,7 @@
 - **Builds on:** [ADR-0021](./0021-multi-tenant-hosted-launch.md),
   [ADR-0022](./0022-hosted-platform-aws-ecs-fargate.md) and
   [ADR-0023](./0023-initial-aws-region-eu-central-1.md). It **amends ADR-0022** where the table in
-  §8 says so, and supersedes nothing else. The application, the tenancy model, the platform (AWS ECS on
+  [What this amends, and what it leaves alone](#what-this-amends-and-what-it-leaves-alone) says so, and supersedes nothing else. The application, the tenancy model, the platform (AWS ECS on
   Fargate) and the region (`eu-central-1`) are unchanged
 
 ## Context
