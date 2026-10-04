@@ -18,7 +18,7 @@ region `eu-central-1`, as decided in ADR-0022, ADR-0023, ADR-0024 and ADR-0025.
 | Root | Contents | Status |
 | --- | --- | --- |
 | `bootstrap/` | State bucket and key, deployer role, boundaries and policies, CloudTrail, budget | **Applied 2026-10-04** at `6dac383` ([evidence](../../docs/reports/production-bootstrap-apply-evidence.md)) |
-| `eu-prod/core/` | Production workload IAM roles (`/munaxa-docs/eu-prod/`) | Written, **not applied** |
+| `eu-prod/core/` | Production workload IAM roles (`/munaxa-docs/eu-prod/`): web, API, scanner and three operator-task execution roles; API and tunnel task roles; Scheduler role. Every role carries the workload boundary | Written and planned (18 to add), **not applied** |
 | `eu-prod/data/` | RDS, document bucket, AWS Backup | Backend and conventions only |
 | `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | Backend, conventions and release inputs only |
 | `modules/ecs-service/` | Input contract for the three ECS services | Variables only |

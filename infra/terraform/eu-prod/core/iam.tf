@@ -1,44 +1,96 @@
 # Production workload IAM roles, under /munaxa-docs/eu-prod/. Every role carries the workload
-# permissions boundary; the deployer cannot create a role without it.
+# permissions boundary created by bootstrap; the deployer cannot create a role without it.
 #
-# Roles only: the task definitions, services, schedules and backup plans that use them are added
-# by later changes.
+# Roles only. The task definitions, services and schedules that use them belong to the service
+# root and are added by later changes. Each role below exists because the application or an
+# accepted ADR requires it (ADR-0024 §2.1, §2.7, §2.8, §2.10):
+#
+# | Role                       | Used by                                   | Why                                    |
+# | -------------------------- | ----------------------------------------- | -------------------------------------- |
+# | web-execution              | Web service                               | GHCR pull, web logs                    |
+# | api-execution              | API service (API + Redis containers)      | GHCR pull, app secret, API/Redis logs  |
+# | scanner-execution          | Scanner service                           | GHCR pull, scanner logs                |
+# | api-task                   | API service; tenant provisioning task     | The document bucket (S3 adapter)       |
+# | ops-dbadmin-execution      | Short-lived database-administration task  | RDS master and operator secrets, logs  |
+# | ops-provision-execution    | Short-lived tenant provisioning task      | GHCR pull, app and provisioning secret |
+# | ops-tunnel-execution       | Short-lived migration tunnel task         | Logs only                              |
+# | ops-tunnel-task            | Short-lived migration tunnel task         | ECS Exec channels (SSM port forward)   |
+# | scheduler                  | EventBridge Scheduler                     | Daily scanner replacement              |
+#
+# Web, scanner and the database-administration task have no task role: they call no AWS API.
+#
+# Not here, deliberately: an AWS Backup role. ADR-0024 §2.12 requires a monthly snapshot kept 12
+# months but not the mechanism; the role is added with the data root's backup plan, where its
+# trust conditions can be proven.
 
 locals {
-  ecs_task_trust_condition_arn = "arn:aws:ecs:${var.region}:${var.account_id}:*"
+  # ECS supplies aws:SourceAccount and aws:SourceArn when it assumes a task or execution role.
+  # This is AWS's documented trust for ECS task roles (ArnLike arn:aws:ecs:<region>:<account>:*
+  # plus aws:SourceAccount); the ECS developer guide states that scoping aws:SourceArn to a
+  # specific cluster "is not currently supported". The same conditions are on the
+  # Non-Production roles, which ECS assumed on Fargate in this account for both the RunTask role
+  # check and the running task.
+  ecs_source_arn_pattern = "arn:aws:ecs:${var.region}:${var.account_id}:*"
 
-  # Execution roles: what ECS itself needs to start a task (pull the image with the GHCR
-  # credential, inject secrets, write logs).
+  log_group_arns = {
+    for group in ["web", "api", "redis", "scanner", "ops"] : group => [
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:${local.log_group_prefix}/${group}",
+      "arn:aws:logs:${var.region}:${var.account_id}:log-group:${local.log_group_prefix}/${group}:*",
+    ]
+  }
+
+  # Execution roles: what the ECS agent needs to start a task. Their credentials are never given
+  # to the containers.
   execution_roles = {
     web = {
-      description = "Starts Production web tasks: GHCR pull, web logs. No application secrets."
+      description = "Starts Production web tasks: GHCR pull credential and web logs. No application secrets."
       secrets     = [local.secret_arns.ghcr_pull]
-      log_groups  = ["web"]
       rds_secret  = false
+      log_groups  = ["web"]
     }
     api = {
-      description = "Starts Production API tasks: GHCR pull, application secret, API and Redis logs."
+      description = "Starts Production API tasks: GHCR pull credential, application secret, API and Redis logs."
       secrets     = [local.secret_arns.ghcr_pull, local.secret_arns.app]
-      log_groups  = ["api", "redis"]
       rds_secret  = false
+      log_groups  = ["api", "redis"]
     }
     scanner = {
-      description = "Starts Production scanner tasks: GHCR pull, scanner logs. No application secrets."
+      description = "Starts Production scanner tasks: GHCR pull credential and scanner logs. No application secrets."
       secrets     = [local.secret_arns.ghcr_pull]
-      log_groups  = ["scanner"]
       rds_secret  = false
+      log_groups  = ["scanner"]
     }
-    ops = {
-      description = "Starts short-lived Production operator tasks: GHCR pull, application, operator and provisioning secrets, RDS master secret, ops logs."
-      secrets     = [local.secret_arns.ghcr_pull, local.secret_arns.app, local.secret_arns.operator, local.secret_arns.provision]
-      log_groups  = ["ops"]
+    ops-dbadmin = {
+      description = "Starts the short-lived Production database-administration task: RDS master and operator secrets, ops logs. Never the API secret."
+      secrets     = [local.secret_arns.operator]
       rds_secret  = true
+      log_groups  = ["ops"]
+    }
+    ops-provision = {
+      description = "Starts the short-lived Production tenant-provisioning task: GHCR pull credential, application and provisioning secrets, ops logs."
+      secrets     = [local.secret_arns.ghcr_pull, local.secret_arns.app, local.secret_arns.provision]
+      rds_secret  = false
+      log_groups  = ["ops"]
+    }
+    ops-tunnel = {
+      description = "Starts the short-lived Production migration tunnel task: ops logs only."
+      secrets     = []
+      rds_secret  = false
+      log_groups  = ["ops"]
     }
   }
 }
 
+# The Terraform state key, owned by bootstrap. Looked up read-only (never managed here) so every
+# execution policy can deny it by ARN: it carries Environment=Production like workload keys, and
+# a tag condition alone cannot be proven to exclude it.
+data "aws_kms_alias" "terraform_state" {
+  name = "alias/${local.prefix}-tfstate"
+}
+
 data "aws_iam_policy_document" "ecs_tasks_trust" {
   statement {
+    sid     = "EcsTasksInThisAccountAndRegion"
     actions = ["sts:AssumeRole"]
 
     principals {
@@ -55,7 +107,7 @@ data "aws_iam_policy_document" "ecs_tasks_trust" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = [local.ecs_task_trust_condition_arn]
+      values   = [local.ecs_source_arn_pattern]
     }
   }
 }
@@ -77,10 +129,14 @@ resource "aws_iam_role" "execution" {
 data "aws_iam_policy_document" "execution" {
   for_each = local.execution_roles
 
-  statement {
-    sid       = "ReadProductionSecrets"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = each.value.secrets
+  dynamic "statement" {
+    for_each = length(each.value.secrets) > 0 ? [1] : []
+
+    content {
+      sid       = "ReadProductionSecrets"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = each.value.secrets
+    }
   }
 
   dynamic "statement" {
@@ -99,33 +155,47 @@ data "aws_iam_policy_document" "execution" {
     }
   }
 
-  statement {
-    sid       = "DecryptProductionSecrets"
-    actions   = ["kms:Decrypt"]
-    resources = ["arn:aws:kms:${var.region}:${var.account_id}:key/*"]
+  # Secrets encrypted with a Production customer-managed key; only through Secrets Manager, and
+  # never a bootstrap key (the Terraform state key is also tagged Environment=Production).
+  dynamic "statement" {
+    for_each = length(each.value.secrets) > 0 || each.value.rds_secret ? [1] : []
 
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["secretsmanager.${var.region}.amazonaws.com"]
-    }
+    content {
+      sid       = "DecryptProductionSecrets"
+      actions   = ["kms:Decrypt"]
+      resources = ["arn:aws:kms:${var.region}:${var.account_id}:key/*"]
 
-    condition {
-      test     = "StringEquals"
-      variable = "aws:ResourceTag/Environment"
-      values   = ["Production"]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["secretsmanager.${var.region}.amazonaws.com"]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:ResourceTag/Environment"
+        values   = ["Production"]
+      }
+
+      condition {
+        test     = "StringNotEquals"
+        variable = "aws:ResourceTag/Stack"
+        values   = ["bootstrap"]
+      }
     }
   }
 
   statement {
-    sid     = "WriteProductionLogs"
-    actions = ["logs:CreateLogStream", "logs:PutLogEvents"]
-    resources = flatten([
-      for group in each.value.log_groups : [
-        "arn:aws:logs:${var.region}:${var.account_id}:log-group:${local.log_group_prefix}/${group}",
-        "arn:aws:logs:${var.region}:${var.account_id}:log-group:${local.log_group_prefix}/${group}:*",
-      ]
-    ])
+    sid       = "NeverTheTerraformStateKey"
+    effect    = "Deny"
+    actions   = ["kms:*"]
+    resources = [data.aws_kms_alias.terraform_state.target_key_arn]
+  }
+
+  statement {
+    sid       = "WriteProductionLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = flatten([for group in each.value.log_groups : local.log_group_arns[group]])
   }
 }
 
@@ -138,14 +208,18 @@ resource "aws_iam_role_policy" "execution" {
 }
 
 # ---------------------------------------------------------------------------------------------
-# Task roles. Web and scanner have none.
+# Task roles
 # ---------------------------------------------------------------------------------------------
 
-# API: the document bucket only. Tenant isolation inside it is enforced by the application.
+# API (and the tenant-provisioning task, which boots the same application): the document bucket.
+# These are exactly the operations apps/api/src/infrastructure/storage/s3.adapter.ts issues:
+# GET/HEAD and copy source (GetObject); PUT, multipart create/upload/complete and copy target
+# (PutObject); DELETE (DeleteObject); multipart abort (AbortMultipartUpload); ListObjectsV2
+# (ListBucket). Tenant isolation inside the bucket is enforced by the application.
 resource "aws_iam_role" "api_task" {
   name                 = "${local.prefix}-api-task"
   path                 = local.workload_path
-  description          = "Production API tasks: read and write the Production document bucket only."
+  description          = "Production API and tenant-provisioning tasks: read and write the Production document bucket only."
   assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_trust.json
   permissions_boundary = local.workload_boundary_arn
 }
@@ -170,11 +244,11 @@ resource "aws_iam_role_policy" "api_task" {
   policy = data.aws_iam_policy_document.api_task.json
 }
 
-# Operator tunnel task: ECS Exec channels for an SSM port-forwarding session, nothing else.
+# Migration tunnel task: ECS Exec channels for an SSM port-forwarding session, nothing else.
 resource "aws_iam_role" "ops_tunnel_task" {
   name                 = "${local.prefix}-ops-tunnel-task"
   path                 = local.workload_path
-  description          = "Short-lived Production tunnel task: ECS Exec session channels only."
+  description          = "Short-lived Production migration tunnel task: ECS Exec session channels only."
   assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_trust.json
   permissions_boundary = local.workload_boundary_arn
 }
@@ -188,6 +262,7 @@ data "aws_iam_policy_document" "ops_tunnel_task" {
       "ssmmessages:OpenControlChannel",
       "ssmmessages:OpenDataChannel",
     ]
+    # ssmmessages has no resource-level permissions.
     resources = ["*"]
   }
 }
@@ -199,12 +274,13 @@ resource "aws_iam_role_policy" "ops_tunnel_task" {
 }
 
 # ---------------------------------------------------------------------------------------------
-# Service roles
+# EventBridge Scheduler: replaces the scanner task daily so it downloads fresh signatures
+# (ADR-0024 §2.7).
 # ---------------------------------------------------------------------------------------------
 
-# EventBridge Scheduler: replaces the scanner task daily to refresh its signatures.
 data "aws_iam_policy_document" "scheduler_trust" {
   statement {
+    sid     = "SchedulerProductionGroupOnly"
     actions = ["sts:AssumeRole"]
 
     principals {
@@ -217,13 +293,21 @@ data "aws_iam_policy_document" "scheduler_trust" {
       variable = "aws:SourceAccount"
       values   = [var.account_id]
     }
+
+    # EventBridge Scheduler sets aws:SourceArn to the schedule group's ARN (its documented
+    # confused-deputy guidance: scope to a schedule group, never to a schedule).
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceArn"
+      values   = [local.schedule_group_arn]
+    }
   }
 }
 
 resource "aws_iam_role" "scheduler" {
   name                 = "${local.prefix}-scheduler"
   path                 = local.workload_path
-  description          = "EventBridge Scheduler: force a new deployment of the Production scanner service."
+  description          = "EventBridge Scheduler (Production schedule group): force a new deployment of the Production scanner service."
   assume_role_policy   = data.aws_iam_policy_document.scheduler_trust.json
   permissions_boundary = local.workload_boundary_arn
 }
@@ -240,35 +324,4 @@ resource "aws_iam_role_policy" "scheduler" {
   name   = "${local.prefix}-scheduler-scanner-refresh"
   role   = aws_iam_role.scheduler.id
   policy = data.aws_iam_policy_document.scheduler.json
-}
-
-# AWS Backup: the monthly Production database snapshot plan.
-data "aws_iam_policy_document" "backup_trust" {
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["backup.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:SourceAccount"
-      values   = [var.account_id]
-    }
-  }
-}
-
-resource "aws_iam_role" "backup" {
-  name                 = "${local.prefix}-backup"
-  path                 = local.workload_path
-  description          = "AWS Backup: snapshot the Production database. Bounded to Production resources."
-  assume_role_policy   = data.aws_iam_policy_document.backup_trust.json
-  permissions_boundary = local.workload_boundary_arn
-}
-
-resource "aws_iam_role_policy_attachment" "backup" {
-  role       = aws_iam_role.backup.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
 }
