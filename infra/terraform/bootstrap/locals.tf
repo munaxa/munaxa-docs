@@ -45,17 +45,16 @@ locals {
 
   # "Anything named *nonprod*", one ARN pattern per service. IAM rejects a wildcard in an ARN's
   # service field, so the services are listed: every service the deployer or a workload role can
-  # reach under its boundary, plus S3 (no account or region in its ARNs) and IAM (no region).
+  # reach under its boundary, plus S3 (no account or region in its ARNs) and IAM (no region, and
+  # the resource part must start with its type).
   non_production_name_services = [
     "ec2", "ecs", "elasticloadbalancing", "acm", "logs", "servicediscovery", "rds", "kms",
     "secretsmanager", "backup", "cloudwatch", "sns", "events", "scheduler", "ssm",
   ]
   non_production_name_arns = concat(
     [for svc in local.non_production_name_services : "arn:aws:${svc}:*:${var.account_id}:*nonprod*"],
-    [
-      "arn:aws:iam::${var.account_id}:*nonprod*",
-      "arn:aws:s3:::*nonprod*",
-    ],
+    [for kind in ["role", "policy", "user", "group", "instance-profile"] : "arn:aws:iam::${var.account_id}:${kind}/*nonprod*"],
+    ["arn:aws:s3:::*nonprod*"],
   )
 
   # Every action that adds, changes or removes a tag on the services the deployer uses.
