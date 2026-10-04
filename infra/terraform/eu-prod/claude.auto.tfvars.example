@@ -1,0 +1,3 @@
+# Copy into a root as claude.auto.tfvars (not committed) for Claude agent sessions.
+deployer_source_identity = "claude-munaxa-docs"
+deployer_session_name    = "claude-terraform"

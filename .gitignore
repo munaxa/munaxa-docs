@@ -94,3 +94,12 @@ apps/web/src/test/__e2e_screenshots__/
 # Generated, never authored: committing a snapshot is how a product keeps serving last
 # quarter's logo after the approved one changed upstream.
 apps/*/public/branding/
+
+# Terraform
+.terraform/
+*.tfstate*
+crash.log
+*.tfplan
+# Local inputs (budget emails, deployer identity); the *.example files are committed.
+terraform.tfvars
+claude.auto.tfvars

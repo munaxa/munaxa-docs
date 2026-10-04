@@ -1,0 +1,173 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyEuCentral1",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*",
+        "sts:*",
+        "route53:*",
+        "s3:ListAllMyBuckets"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": "${region}"
+        }
+      }
+    },
+    {
+      "Sid": "NeverTouchNonProductionTagged",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*",
+      "Condition": {
+        "StringEqualsIgnoreCase": {
+          "aws:ResourceTag/Environment": ${non_production_tag_values}
+        }
+      }
+    },
+    {
+      "Sid": "NeverTouchNonProductionByName",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": [
+        "arn:aws:*:*:${account_id}:*nonprod*",
+        "arn:aws:s3:::*nonprod*"
+      ]
+    },
+    {
+      "Sid": "NeverChangeProtectedVpcs",
+      "Effect": "Deny",
+      "Action": ${ec2_mutating_actions_json},
+      "Resource": "*",
+      "Condition": {
+        "ArnEquals": {
+          "ec2:Vpc": ${protected_vpc_arns_json}
+        }
+      }
+    },
+    {
+      "Sid": "NeverChangeProtectedVpcResources",
+      "Effect": "Deny",
+      "Action": ${ec2_mutating_actions_json},
+      "Resource": ${protected_vpc_arns_json}
+    },
+    {
+      "Sid": "NoPrivateZonesOnProtectedVpcs",
+      "Effect": "Deny",
+      "Action": [
+        "route53:CreateHostedZone",
+        "route53:AssociateVPCWithHostedZone",
+        "route53:DisassociateVPCFromHostedZone"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "route53:VPCs": ${protected_vpc_ids_json}
+        }
+      }
+    },
+    {
+      "Sid": "NoTagChangesOnOtherEnvironments",
+      "Effect": "Deny",
+      "Action": ${tag_change_actions_json},
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:ResourceTag/Environment": "Production"
+        },
+        "Null": {
+          "aws:ResourceTag/Environment": "false"
+        }
+      }
+    },
+    {
+      "Sid": "NoChangesToDefaultRdsGroups",
+      "Effect": "Deny",
+      "Action": [
+        "rds:Modify*",
+        "rds:Delete*",
+        "rds:Reset*",
+        "rds:AddTagsToResource",
+        "rds:RemoveTagsFromResource"
+      ],
+      "Resource": [
+        "arn:aws:rds:*:${account_id}:pg:default.*",
+        "arn:aws:rds:*:${account_id}:og:default:*",
+        "arn:aws:rds:*:${account_id}:subgrp:default*"
+      ]
+    },
+    {
+      "Sid": "ProtectBootstrapIdentityStateAndAudit",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": [
+        "arn:aws:iam::${account_id}:role/munaxa-docs/bootstrap/*",
+        "arn:aws:iam::${account_id}:policy/munaxa-docs/bootstrap/*",
+        "arn:aws:s3:::${state_bucket}/bootstrap/*",
+        "arn:aws:s3:::${cloudtrail_bucket}",
+        "arn:aws:s3:::${cloudtrail_bucket}/*",
+        "arn:aws:kms:${region}:${account_id}:alias/${prefix}-tfstate"
+      ]
+    },
+    {
+      "Sid": "ProtectStateBucketConfiguration",
+      "Effect": "Deny",
+      "NotAction": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::${state_bucket}"
+    },
+    {
+      "Sid": "ProtectStateKeyByArn",
+      "Effect": "Deny",
+      "NotAction": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "${state_key_arn}"
+    },
+    {
+      "Sid": "ProtectEverythingTaggedBootstrap",
+      "Effect": "Deny",
+      "NotAction": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Stack": "bootstrap"
+        }
+      }
+    },
+    {
+      "Sid": "NoProductionDocumentObjectAccess",
+      "Effect": "Deny",
+      "Action": [
+        "s3:GetObject*",
+        "s3:PutObject*",
+        "s3:DeleteObject*",
+        "s3:RestoreObject",
+        "s3:ReplicateObject"
+      ],
+      "Resource": "arn:aws:s3:::${prefix}-*/*"
+    },
+    {
+      "Sid": "NeverReadSecretValues",
+      "Effect": "Deny",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:BatchGetSecretValue"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
