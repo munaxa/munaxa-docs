@@ -21,15 +21,18 @@ resource "aws_db_subnet_group" "main" {
 }
 
 # A custom group, so later parameter changes never need a group swap. rds.force_ssl=1: every
-# connection must use TLS (sslmode=require, ADR-0024 §2.5).
+# connection must use TLS (sslmode=require, ADR-0024 §2.5). 1 is also the PostgreSQL 16 default,
+# which RDS reports back with apply method pending-reboot; declaring the same keeps the plan
+# clean. The value takes effect either way.
 resource "aws_db_parameter_group" "main" {
   name        = local.db_param_group
   family      = "postgres16"
   description = "Munaxa Docs Production PostgreSQL 16"
 
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 }
 
