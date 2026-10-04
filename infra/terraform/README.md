@@ -17,13 +17,13 @@ region `eu-central-1`, as decided in ADR-0022, ADR-0023, ADR-0024 and ADR-0025.
 
 | Root | Contents | Status |
 | --- | --- | --- |
-| `bootstrap/` | State bucket and key, deployer role, boundaries and policies, CloudTrail, budget | **Applied 2026-10-04** at `6dac383` ([evidence](../../docs/reports/production-bootstrap-apply-evidence.md)) |
-| `eu-prod/core/` | Production workload IAM roles (`/munaxa-docs/eu-prod/`): web, API, scanner and three operator-task execution roles; API and tunnel task roles; Scheduler role. Every role carries the workload boundary | **Applied 2026-10-04** at `4e728bb` ([evidence](../../docs/reports/production-core-apply-evidence.md)) |
-| `eu-prod/data/` | RDS, document bucket, AWS Backup | Backend and conventions only |
+| `bootstrap/` | State bucket and key, deployer role, boundaries and policies, CloudTrail, budget | **Applied 2026-10-04** at `6dac383` ([evidence](../../docs/reports/production-bootstrap-apply-evidence.md)); `deployer-network` corrected at `37ffec5` ([evidence](../../docs/reports/production-bootstrap-network-fix-evidence.md)) |
+| `eu-prod/core/` | Production workload IAM roles (`/munaxa-docs/eu-prod/`): web, API, scanner and three operator-task execution roles; API and tunnel task roles; Scheduler role. Every role carries the workload boundary. The network: VPC `10.121.0.0/16`, public and isolated DB subnets, IGW, route tables, S3 gateway endpoint, one security group per tier | **Applied 2026-10-04**: roles at `4e728bb` ([evidence](../../docs/reports/production-core-apply-evidence.md)), network at `2b214e9` ([evidence](../../docs/reports/production-core-network-evidence.md)) |
+| `eu-prod/data/` | Production data KMS key, RDS PostgreSQL 16, document bucket, AWS Backup (monthly, 12 months) and its service role | **Applied 2026-10-04** at `8a8c240` ([evidence](../../docs/reports/production-data-apply-evidence.md)) |
 | `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | Backend, conventions and release inputs only |
 | `modules/ecs-service/` | Input contract for the three ECS services | Variables only |
 
-`bootstrap/` and `eu-prod/core/` have been applied. Production remains **NOT READY**.
+`bootstrap/`, `eu-prod/core/` and `eu-prod/data/` have been applied; `eu-prod/service/` has not been started. Production remains **NOT READY**.
 
 ## Layout and state
 
