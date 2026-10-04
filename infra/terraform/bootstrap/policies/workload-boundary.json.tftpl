@@ -130,10 +130,7 @@
       "Sid": "NeverTouchNonProductionByName",
       "Effect": "Deny",
       "Action": "*",
-      "Resource": [
-        "arn:aws:*:*:${account_id}:*nonprod*",
-        "arn:aws:s3:::*nonprod*"
-      ]
+      "Resource": ${non_production_name_arns_json}
     },
     {
       "Sid": "NoIdentityOrOrganizationsActions",

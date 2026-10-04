@@ -22,25 +22,41 @@ locals {
 
   # Variables available to every policy template. Lists are passed pre-encoded as JSON.
   policy_vars = {
-    account_id                  = var.account_id
-    region                      = var.region
-    prefix                      = local.prefix
-    state_bucket                = local.state_bucket
-    state_key_arn               = aws_kms_key.state.arn
-    cloudtrail_bucket           = local.cloudtrail_bucket
-    cloudmap_namespace          = local.cloudmap_namespace
-    workload_boundary_arn       = local.workload_boundary_arn
-    protected_vpc_ids_json      = jsonencode(var.protected_vpc_ids)
-    protected_vpc_arns_json     = jsonencode([for id in var.protected_vpc_ids : "arn:aws:ec2:${var.region}:${var.account_id}:vpc/${id}"])
-    pass_role_services_json     = jsonencode(local.workload_pass_role_services)
-    service_linked_role_json    = jsonencode(local.service_linked_role_names)
-    non_production_tag_values   = jsonencode(["NonProduction", "nonprod", "non-production"])
-    tag_change_actions_json     = jsonencode(local.tag_change_actions)
-    ec2_mutating_actions_json   = jsonencode(local.ec2_mutating_actions)
-    iam_write_actions_json      = jsonencode(local.iam_write_actions)
-    identity_escalation_json    = jsonencode(local.identity_escalation_actions)
-    account_level_controls_json = jsonencode(local.account_level_control_actions)
+    account_id                    = var.account_id
+    region                        = var.region
+    prefix                        = local.prefix
+    state_bucket                  = local.state_bucket
+    state_key_arn                 = aws_kms_key.state.arn
+    cloudtrail_bucket             = local.cloudtrail_bucket
+    cloudmap_namespace            = local.cloudmap_namespace
+    workload_boundary_arn         = local.workload_boundary_arn
+    protected_vpc_ids_json        = jsonencode(var.protected_vpc_ids)
+    protected_vpc_arns_json       = jsonencode([for id in var.protected_vpc_ids : "arn:aws:ec2:${var.region}:${var.account_id}:vpc/${id}"])
+    pass_role_services_json       = jsonencode(local.workload_pass_role_services)
+    service_linked_role_json      = jsonencode(local.service_linked_role_names)
+    non_production_tag_values     = jsonencode(["NonProduction", "nonprod", "non-production"])
+    non_production_name_arns_json = jsonencode(local.non_production_name_arns)
+    tag_change_actions_json       = jsonencode(local.tag_change_actions)
+    ec2_mutating_actions_json     = jsonencode(local.ec2_mutating_actions)
+    iam_write_actions_json        = jsonencode(local.iam_write_actions)
+    identity_escalation_json      = jsonencode(local.identity_escalation_actions)
+    account_level_controls_json   = jsonencode(local.account_level_control_actions)
   }
+
+  # "Anything named *nonprod*", one ARN pattern per service. IAM rejects a wildcard in an ARN's
+  # service field, so the services are listed: every service the deployer or a workload role can
+  # reach under its boundary, plus S3 (no account or region in its ARNs) and IAM (no region).
+  non_production_name_services = [
+    "ec2", "ecs", "elasticloadbalancing", "acm", "logs", "servicediscovery", "rds", "kms",
+    "secretsmanager", "backup", "cloudwatch", "sns", "events", "scheduler", "ssm",
+  ]
+  non_production_name_arns = concat(
+    [for svc in local.non_production_name_services : "arn:aws:${svc}:*:${var.account_id}:*nonprod*"],
+    [
+      "arn:aws:iam::${var.account_id}:*nonprod*",
+      "arn:aws:s3:::*nonprod*",
+    ],
+  )
 
   # Every action that adds, changes or removes a tag on the services the deployer uses.
   tag_change_actions = [
