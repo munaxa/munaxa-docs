@@ -85,6 +85,33 @@
           "aws:ResourceTag/Environment": "Production"
         }
       }
+    },
+    {
+      "Sid": "CreateInsideProductionTaggedVpc",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSubnet",
+        "ec2:CreateRouteTable",
+        "ec2:CreateSecurityGroup",
+        "ec2:CreateVpcEndpoint"
+      ],
+      "Resource": "arn:aws:ec2:${region}:${account_id}:vpc/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "Production"
+        }
+      }
+    },
+    {
+      "Sid": "GatewayEndpointOnProductionTaggedRouteTables",
+      "Effect": "Allow",
+      "Action": "ec2:CreateVpcEndpoint",
+      "Resource": "arn:aws:ec2:${region}:${account_id}:route-table/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "Production"
+        }
+      }
     }
   ]
 }
