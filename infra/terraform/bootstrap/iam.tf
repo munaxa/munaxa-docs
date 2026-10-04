@@ -8,9 +8,14 @@
 data "aws_iam_policy_document" "deployer_trust" {
   # The Claude agent: only with its own source identity and a claude-* session name, so every
   # Production change in CloudTrail is attributable.
+  #
+  # IAM authorises sts:SetSourceIdentity separately from sts:AssumeRole, and sts:RoleSessionName
+  # is evaluated only for AssumeRole. The two actions are therefore separate statements: the
+  # session-name condition stays on AssumeRole, and SetSourceIdentity is allowed only for the
+  # claude-munaxa-docs value (it grants nothing on its own).
   statement {
     sid     = "ClaudeAgentSessions"
-    actions = ["sts:AssumeRole", "sts:SetSourceIdentity"]
+    actions = ["sts:AssumeRole"]
 
     principals {
       type        = "AWS"
@@ -27,6 +32,22 @@ data "aws_iam_policy_document" "deployer_trust" {
       test     = "StringLike"
       variable = "sts:RoleSessionName"
       values   = ["claude-*"]
+    }
+  }
+
+  statement {
+    sid     = "ClaudeAgentSourceIdentity"
+    actions = ["sts:SetSourceIdentity"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [var.claude_principal_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "sts:SourceIdentity"
+      values   = ["claude-munaxa-docs"]
     }
   }
 
