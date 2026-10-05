@@ -29,7 +29,7 @@ resource "aws_acm_certificate_validation" "web" {
 }
 
 resource "aws_lb" "main" {
-  name                       = local.prefix
+  name                       = "${local.prefix}-alb"
   internal                   = false
   load_balancer_type         = "application"
   security_groups            = [data.aws_security_group.tier["alb"].id]
