@@ -129,3 +129,44 @@ variable "enable_services" {
   type        = bool
   default     = false
 }
+
+# ---------------------------------------------------------------------------------------------
+# Operator tasks (ops.tf) and the first, internal tenant. Set in launch.auto.tfvars.
+# ---------------------------------------------------------------------------------------------
+
+variable "postgres_image" {
+  description = "PostgreSQL 16 client for the db-admin task, by digest: public.ecr.aws/docker/library/postgres@sha256:<64 hex>."
+  type        = string
+
+  validation {
+    condition     = can(regex("^public\\.ecr\\.aws/docker/library/postgres@sha256:[0-9a-f]{64}$", var.postgres_image))
+    error_message = "postgres_image must be public.ecr.aws/docker/library/postgres@sha256:<digest>; tags are not accepted."
+  }
+}
+
+variable "tunnel_image" {
+  description = "Base image for the ECS Exec tunnel task, by digest: public.ecr.aws/amazonlinux/amazonlinux@sha256:<64 hex>."
+  type        = string
+
+  validation {
+    condition     = can(regex("^public\\.ecr\\.aws/amazonlinux/amazonlinux@sha256:[0-9a-f]{64}$", var.tunnel_image))
+    error_message = "tunnel_image must be public.ecr.aws/amazonlinux/amazonlinux@sha256:<digest>; tags are not accepted."
+  }
+}
+
+variable "bootstrap_tenant" {
+  description = "The first tenant the db-admin and provisioning tasks prepare. Its UUID is generated at bootstrap and never configured here."
+  type = object({
+    slug     = string
+    name     = string
+    database = string
+  })
+
+  validation {
+    condition = (
+      can(regex("^[a-z][a-z0-9-]{1,47}$", var.bootstrap_tenant.slug)) &&
+      var.bootstrap_tenant.database == "edms_${replace(var.bootstrap_tenant.slug, "-", "_")}"
+    )
+    error_message = "slug is a tenant slug (lower case, digits, hyphens) and database is edms_<slug with _ for ->."
+  }
+}
