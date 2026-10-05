@@ -17,3 +17,7 @@ bootstrap_tenant = {
   name     = "Munaxa Internal"
   database = "edms_munaxa_internal"
 }
+
+# The application bundle every API and provisioning task is pinned to (ADR-0022 consequence 8;
+# production-service-inputs.md §3). A version id only, never a value.
+app_secret_version_id = "1dfefc89-2bf0-47d7-a244-c5f00b9e0b21"
