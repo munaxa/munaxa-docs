@@ -64,7 +64,7 @@ locals {
     "-- PostgreSQL 16: the master needs SET on edms_owner before CREATE DATABASE ... OWNER (ADR-0024 probe).",
     "GRANT edms_owner TO CURRENT_USER WITH SET TRUE;",
     "SELECT format('CREATE DATABASE %I OWNER edms_owner', :'tenant_db') WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'tenant_db') \\gexec",
-    "SELECT current_setting('server_version') AS server_version, current_setting('max_connections') AS max_connections, current_setting('rds.force_ssl') AS force_ssl;",
+    "SELECT current_setting('server_version') AS server_version, current_setting('max_connections') AS max_connections, current_setting('rds.force_ssl', true) AS force_ssl;",
     "SELECT rolname, rolcanlogin, rolbypassrls FROM pg_roles WHERE rolname LIKE 'edms_%' ORDER BY rolname;",
     "SELECT datname, pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = :'tenant_db';",
   ])
