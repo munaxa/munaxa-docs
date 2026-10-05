@@ -117,8 +117,13 @@ resource "aws_service_discovery_service" "internal" {
 
 # --- Task definitions -------------------------------------------------------------------------
 
+# Every task definition sets skip_destroy: a replacement registers a new revision and leaves the
+# old one ACTIVE (a rollback target). The deployer has no ecs:DeregisterTaskDefinition, which AWS
+# evaluates on "*" and so could not be kept away from Non-Prod.
+
 resource "aws_ecs_task_definition" "web" {
   family                   = "${local.prefix}-web"
+  skip_destroy             = true
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = 256
@@ -149,6 +154,7 @@ resource "aws_ecs_task_definition" "web" {
 
 resource "aws_ecs_task_definition" "api" {
   family                   = "${local.prefix}-api"
+  skip_destroy             = true
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = 512
@@ -210,6 +216,7 @@ resource "aws_ecs_task_definition" "api" {
 
 resource "aws_ecs_task_definition" "scanner" {
   family                   = "${local.prefix}-scanner"
+  skip_destroy             = true
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = 256

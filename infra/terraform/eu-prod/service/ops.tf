@@ -72,6 +72,7 @@ locals {
 
 resource "aws_ecs_task_definition" "ops_dbadmin" {
   family                   = "${local.prefix}-ops-dbadmin"
+  skip_destroy             = true
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = 256
@@ -112,6 +113,7 @@ resource "aws_ecs_task_definition" "ops_dbadmin" {
 
 resource "aws_ecs_task_definition" "ops_tunnel" {
   family                   = "${local.prefix}-ops-tunnel"
+  skip_destroy             = true
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = 256
@@ -138,6 +140,7 @@ resource "aws_ecs_task_definition" "ops_tunnel" {
 
 resource "aws_ecs_task_definition" "ops_provision" {
   family                   = "${local.prefix}-ops-provision"
+  skip_destroy             = true
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = 512
