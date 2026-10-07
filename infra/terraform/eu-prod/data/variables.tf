@@ -16,12 +16,12 @@ variable "region" {
 }
 
 variable "deployer_source_identity" {
-  description = "Source identity stamped on the deployer session: claude-munaxa-docs (Claude) or admin.tamer (break-glass)."
+  description = "Source identity stamped on the deployer session: munaxa-org-operator (Claude engineering role), claude-munaxa-docs (Claude IAM user, fallback) or admin.tamer (break-glass)."
   type        = string
 
   validation {
-    condition     = contains(["claude-munaxa-docs", "admin.tamer"], var.deployer_source_identity)
-    error_message = "Use claude-munaxa-docs or admin.tamer; the deployer trust policy accepts no other."
+    condition     = contains(["claude-munaxa-docs", "admin.tamer", "munaxa-org-operator"], var.deployer_source_identity)
+    error_message = "Use munaxa-org-operator, claude-munaxa-docs or admin.tamer; the deployer trust policy accepts no other."
   }
 }
 
