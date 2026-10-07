@@ -1,0 +1,9 @@
+# Partial backend configuration for Claude sessions on the permanent engineering role
+# (Identity Center permission set MunaxaAWSEngineeringAdmin, user munaxa-org-operator).
+#   terraform init -backend-config=../engineering.s3.tfbackend
+# Same deployer role and session name as claude.s3.tfbackend; only the source identity differs.
+assume_role = {
+  role_arn        = "arn:aws:iam::800728620253:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer"
+  session_name    = "claude-terraform-state"
+  source_identity = "munaxa-org-operator"
+}

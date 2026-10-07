@@ -27,6 +27,12 @@ variable "break_glass_principal_arn" {
   default     = "arn:aws:iam::800728620253:user/admin.tamer"
 }
 
+variable "engineering_principal_arn" {
+  description = "Claude's Identity Center engineering role. It may assume the deployer only with source identity munaxa-org-operator and a claude-* session name."
+  type        = string
+  default     = "arn:aws:iam::800728620253:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_MunaxaAWSEngineeringAdmin_94ab1f7586187adb"
+}
+
 variable "protected_vpc_ids" {
   description = <<-EOT
     VPCs the deployer must never change: the Non-Production VPC and the account's default VPC in

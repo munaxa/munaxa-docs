@@ -68,6 +68,47 @@ data "aws_iam_policy_document" "deployer_trust" {
       values   = ["admin.tamer"]
     }
   }
+
+  # Claude's permanent engineering role (Identity Center permission set MunaxaAWSEngineeringAdmin,
+  # user munaxa-org-operator). Same shape as the Claude agent statements: the exact role ARN, its
+  # own source identity, and a claude-* session name on AssumeRole.
+  statement {
+    sid     = "EngineeringRoleSessions"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [var.engineering_principal_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "sts:SourceIdentity"
+      values   = ["munaxa-org-operator"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "sts:RoleSessionName"
+      values   = ["claude-*"]
+    }
+  }
+
+  statement {
+    sid     = "EngineeringRoleSourceIdentity"
+    actions = ["sts:SetSourceIdentity"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [var.engineering_principal_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "sts:SourceIdentity"
+      values   = ["munaxa-org-operator"]
+    }
+  }
 }
 
 resource "aws_iam_policy" "deployer_boundary" {

@@ -1,0 +1,4 @@
+# Copy into a root as engineering.auto.tfvars (not committed) for Claude sessions on the
+# permanent engineering role (MunaxaAWSEngineeringAdmin / munaxa-org-operator).
+deployer_source_identity = "munaxa-org-operator"
+deployer_session_name    = "claude-terraform"

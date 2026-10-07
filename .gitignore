@@ -103,3 +103,4 @@ crash.log
 # Local inputs (budget emails, deployer identity); the *.example files are committed.
 terraform.tfvars
 claude.auto.tfvars
+engineering.auto.tfvars
