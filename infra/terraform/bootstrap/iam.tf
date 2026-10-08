@@ -109,6 +109,47 @@ data "aws_iam_policy_document" "deployer_trust" {
       values   = ["munaxa-org-operator"]
     }
   }
+
+  # GitHub Actions, through the CI role (github_oidc.tf). Same shape again: the exact role ARN,
+  # source identity github-actions, and a gha-run-* session name on AssumeRole (six characters
+  # before the wildcard, as IAM Access Analyzer requires).
+  statement {
+    sid     = "GitHubActionsSessions"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.ci.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "sts:SourceIdentity"
+      values   = ["github-actions"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "sts:RoleSessionName"
+      values   = ["gha-run-*"]
+    }
+  }
+
+  statement {
+    sid     = "GitHubActionsSourceIdentity"
+    actions = ["sts:SetSourceIdentity"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.ci.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "sts:SourceIdentity"
+      values   = ["github-actions"]
+    }
+  }
 }
 
 resource "aws_iam_policy" "deployer_boundary" {

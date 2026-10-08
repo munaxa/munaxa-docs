@@ -33,6 +33,39 @@ variable "engineering_principal_arn" {
   default     = "arn:aws:iam::800728620253:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_MunaxaAWSEngineeringAdmin_94ab1f7586187adb"
 }
 
+variable "github_repository" {
+  description = "The GitHub repository (owner/name) whose production environment may assume the CI role."
+  type        = string
+  default     = "munaxa/munaxa-docs"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", var.github_repository))
+    error_message = "Use owner/name, with no wildcard."
+  }
+}
+
+variable "github_environment" {
+  description = "The protected GitHub environment whose jobs may assume the CI role."
+  type        = string
+  default     = "production"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+$", var.github_environment))
+    error_message = "Use a single environment name, with no wildcard."
+  }
+}
+
+variable "github_ref" {
+  description = "The only Git ref whose runs may assume the CI role."
+  type        = string
+  default     = "refs/heads/main"
+
+  validation {
+    condition     = can(regex("^refs/heads/[A-Za-z0-9._/-]+$", var.github_ref)) && !strcontains(var.github_ref, "*")
+    error_message = "Use one exact branch ref (refs/heads/<name>), with no wildcard."
+  }
+}
+
 variable "protected_vpc_ids" {
   description = <<-EOT
     VPCs the deployer must never change: the Non-Production VPC and the account's default VPC in

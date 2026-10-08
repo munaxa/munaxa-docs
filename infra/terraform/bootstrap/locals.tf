@@ -9,6 +9,8 @@ locals {
   deployer_role_name          = "${local.prefix}-deployer"
   deployer_role_arn           = "arn:aws:iam::${var.account_id}:role${local.bootstrap_path}${local.deployer_role_name}"
   deployer_boundary_name      = "${local.prefix}-deployer-boundary"
+  ci_role_name                = "${local.prefix}-ci"
+  ci_boundary_name            = "${local.prefix}-ci-boundary"
   workload_boundary_name      = "${local.prefix}-workload-boundary"
   workload_boundary_arn       = "arn:aws:iam::${var.account_id}:policy${local.bootstrap_path}${local.workload_boundary_name}"
   state_bucket                = "munaxa-docs-tfstate-eu-prod-${var.account_id}"
