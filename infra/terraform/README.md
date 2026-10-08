@@ -37,9 +37,15 @@ infra/terraform/
 ├── modules/
 │   ├── deployer-policies/  the deployer policies and boundaries, rendered per environment
 │   ├── github-oidc-ci/     GitHub OIDC provider + one CI role (environment, main only)
+│   ├── app-service/        the application stack (secrets, ALB, ECS, operator tasks); TEST uses it
 │   └── ecs-service/
 ├── eu-test/
-│   └── ci.s3.tfbackend   TEST CI backend; eu-test/{core,data,service} are not written yet
+│   ├── ci.s3.tfbackend   TEST CI backend (Testing CI role → TEST deployer)
+│   ├── foundation/       persistent, ≈ $2.50–3/month idle: network (no NAT), cluster, DNS zone,
+│   │                     certificate, data key, document bucket, workload roles
+│   │                     (terraform-infra.yml testing/foundation)
+│   └── session/          ephemeral: database, load balancer, services; created and destroyed by
+│                         test-session.yml, never by hand
 ├── eu-prod/
 │   ├── ci.s3.tfbackend       partial backend config: assume the deployer from the GitHub
 │   │                         Actions CI role (source identity github-actions)
@@ -164,7 +170,7 @@ from fixed parts, creation order is explicit, and postconditions check the creat
 | Path | Used for | Identity chain |
 | --- | --- | --- |
 | **GitHub Actions `production`** (`release.yml` → `deploy-release.yml`, `terraform-infra.yml`) | Approved releases and approved infrastructure changes in PRODUCTION | GitHub OIDC (`environment:production`, `refs/heads/main`) → `munaxa-docs-eu-prod-ci` → Production deployer (source identity `github-actions`, session `gha-run-*`) |
-| **GitHub Actions `testing`** (same workflows) | Automatic releases and infrastructure changes in TEST | GitHub OIDC (`environment:testing`, `refs/heads/main`) → `munaxa-docs-eu-test-ci` → TEST deployer (same source identity and session pattern) |
+| **GitHub Actions `testing`** (`release.yml` / `test-environment.yml` → `test-session.yml`; `terraform-infra.yml` testing/foundation) | TEST sessions (create, release, extend, destroy, hourly expiry) and the TEST foundation | GitHub OIDC (`environment:testing`, `refs/heads/main`) → `munaxa-docs-eu-test-ci` → TEST deployer (same source identity and session pattern) |
 | **Claude engineering role** (`MunaxaAWSEngineeringAdmin`, user `munaxa-org-operator`) | Interactive work: reading, inspecting, operator checks; may assume the Production deployer | Identity Center → engineering role → deployer (source identity `munaxa-org-operator`, session `claude-*`) |
 | **`admin.tamer`** in AWS CloudShell | `bootstrap/` plans and applies, and break-glass | IAM user console session; no access keys copied anywhere |
 | **An administrator in 657878534449** | `bootstrap-eu-test/` | Identity Center role in `munaxa-nonprod` |

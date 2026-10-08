@@ -1,0 +1,119 @@
+name: TEST environment
+
+# The TEST environment's buttons, for anyone with write access to the repository: no AWS console,
+# no Terraform, no command line. Actions tab → "TEST environment" → Run workflow → pick an action.
+#
+#   status   is TEST running, which release, until when, and its address (see the run summary)
+#   start    start TEST with a release from main (empty = the newest commit on main), or move a
+#            running TEST onto it
+#   extend   keep TEST running for the chosen number of hours from now
+#   stop     destroy TEST now
+#
+# Every release starts TEST by itself (release.yml) and stops it once PRODUCTION has the release.
+# Whatever happens in between, the hourly run below destroys TEST once its time is up: by default
+# 24 hours after it was last deployed or extended, never more than 72 hours ahead.
+#
+# All four actions run in the GitHub `testing` environment through test-session.yml and can only
+# reach the TEST account (657878534449). Nothing here can touch PRODUCTION.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do with TEST
+        type: choice
+        required: true
+        default: status
+        options:
+          - status
+          - start
+          - extend
+          - stop
+      hours:
+        description: start / extend — keep TEST running for this many hours
+        type: choice
+        default: '24'
+        options:
+          - '4'
+          - '8'
+          - '24'
+          - '48'
+          - '72'
+      release_commit:
+        description: start only — commit on main to run (leave empty for the newest)
+        type: string
+        default: ''
+  schedule:
+    # Hourly expiry check (minute 23, away from the top-of-the-hour rush).
+    - cron: '23 * * * *'
+
+permissions: {}
+
+jobs:
+  # start: find the three images the release pipeline built from that commit. Nothing is built
+  # here; a commit without published images cannot be started.
+  release:
+    name: Find the release's images
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'start'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      release_commit: ${{ steps.find.outputs.release_commit }}
+      api_image: ${{ steps.find.outputs.api_image }}
+      web_image: ${{ steps.find.outputs.web_image }}
+      antivirus_image: ${{ steps.find.outputs.antivirus_image }}
+    steps:
+      - name: Check out (full history, for the ancestry check)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Authenticate to GHCR (read only)
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the release
+        id: find
+        env:
+          REQUESTED: ${{ inputs.release_commit }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::TEST starts only from main (this run is on $REF)."; exit 1; }
+          commit="${REQUESTED:-$GITHUB_SHA}"
+          printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::release_commit must be a full 40-character commit SHA."; exit 1; }
+          git merge-base --is-ancestor "$commit" "$GITHUB_SHA" || { echo "::error::$commit is not on main."; exit 1; }
+          echo "release_commit=$commit" >> "$GITHUB_OUTPUT"
+          for image in api web antivirus; do
+            tag="ghcr.io/munaxa/munaxa-docs-$image:sha-$commit"
+            digest=$(docker buildx imagetools inspect "$tag" --format '{{ .Manifest.Digest }}') \
+              || { echo "::error::No $image image was published for $commit (the release pipeline builds one for every merge to main)."; exit 1; }
+            ref="ghcr.io/munaxa/munaxa-docs-$image@$digest"
+            revision=$(docker buildx imagetools inspect "$ref" --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}')
+            [ "$revision" = "$commit" ] || { echo "::error::$ref has revision $revision, not $commit."; exit 1; }
+            echo "$image → $ref"
+            echo "${image}_image=$ref" >> "$GITHUB_OUTPUT"
+          done
+
+  test:
+    name: TEST
+    needs: release
+    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
+    uses: ./.github/workflows/test-session.yml
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    with:
+      action: ${{ github.event_name == 'schedule' && 'expire' || (inputs.action == 'start' && 'up' || (inputs.action == 'stop' && 'down' || inputs.action)) }}
+      hours: ${{ fromJSON(inputs.hours || '24') }}
+      release_commit: ${{ needs.release.outputs.release_commit }}
+      api_image: ${{ needs.release.outputs.api_image }}
+      web_image: ${{ needs.release.outputs.web_image }}
+      antivirus_image: ${{ needs.release.outputs.antivirus_image }}

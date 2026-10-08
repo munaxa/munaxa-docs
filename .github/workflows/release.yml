@@ -2,25 +2,36 @@ name: Release
 
 # Every merge to main becomes one release and walks one path:
 #
-#   build once (publish-images.yml: three images from this commit, probed, pushed, pinned by digest,
-#               pulled back with the production pull identity)
-#     → TEST        deploy-release.yml, environment `testing`: automatic, then health-verified
-#     → approval    environment `production`: its required reviewers approve this run
-#     → PRODUCTION  deploy-release.yml, environment `production`: the SAME three digests, no rebuild
+#   build once   publish-images.yml: three images from this commit, probed, pushed, pinned by
+#                digest, pulled back with the production pull identity
+#     → TEST     test-session.yml `up`, environment `testing`: automatic. Creates the TEST session
+#                (or rolls the running one), migrates its database, verifies health, and shows
+#                https://test.docs.munaxa.com on this run's page
+#     → QA       people test; TEST stays up until it is no longer needed (below)
+#     → approval environment `production`: its required reviewers approve this run
+#     → PROD     deploy-release.yml, environment `production`: the SAME three digests, no rebuild
+#     → TEST off test-session.yml `down`: once PRODUCTION has the release, TEST is destroyed
+#                (unless a newer release is already under test there)
+#
+# If nobody approves, TEST still stops by itself at its ExpiresAt (24 hours after the deployment,
+# extendable to 72 from the "TEST environment" workflow), and the approval can still be given
+# later: PRODUCTION never needs TEST to be running, only to have passed.
 #
 # Production is never deployed by a merge alone: its job needs TEST to have succeeded and the
 # production environment's reviewers to approve. Only pushes to main start this workflow, the
 # production environment admits only main, and the Production CI role trusts only
 # repo:munaxa/munaxa-docs:environment:production on refs/heads/main, so a branch or pull request
-# can never obtain production credentials.
+# can never obtain production credentials. TEST jobs run as the Testing CI role, which cannot
+# reach the Production account at all.
 #
-# Infrastructure is not deployed here. A release may only replace task definitions and update the
-# three services (scripts/ci/plan-guard.sh release); every other change goes through
-# terraform-infra.yml (plan, review, apply) or, for bootstrap, the administrator.
+# Infrastructure is not deployed here. A PRODUCTION release may only replace task definitions and
+# update the three services (scripts/ci/plan-guard.sh release); a TEST session may only change the
+# session's own resources (plan-guard session). Everything else goes through terraform-infra.yml
+# (plan, review, apply) or, for bootstrap, the administrator.
 #
 # The pipeline stays off until TEST exists: set the repository variable
 # RELEASE_PIPELINE_ENABLED=true once the testing environment, the TEST bootstrap and the TEST
-# service root are in place (infra/terraform/README.md).
+# foundation are in place (docs/operations/ci-cd-two-environments.md).
 
 on:
   push:
@@ -54,13 +65,14 @@ jobs:
   testing:
     name: TEST
     needs: build
-    uses: ./.github/workflows/deploy-release.yml
+    uses: ./.github/workflows/test-session.yml
     permissions:
       id-token: write
       contents: read
       packages: read
     with:
-      environment: testing
+      action: up
+      hours: 24
       release_commit: ${{ needs.build.outputs.release_commit }}
       api_image: ${{ needs.build.outputs.api_image }}
       web_image: ${{ needs.build.outputs.web_image }}
@@ -75,8 +87,19 @@ jobs:
       contents: read
       packages: read
     with:
-      environment: production
       release_commit: ${{ needs.build.outputs.release_commit }}
       api_image: ${{ needs.build.outputs.api_image }}
       web_image: ${{ needs.build.outputs.web_image }}
       antivirus_image: ${{ needs.build.outputs.antivirus_image }}
+
+  testing-off:
+    name: TEST off
+    needs: [build, production]
+    uses: ./.github/workflows/test-session.yml
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    with:
+      action: down
+      only_if_release: ${{ needs.build.outputs.release_commit }}

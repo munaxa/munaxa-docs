@@ -1,22 +1,21 @@
 name: Deploy release
 
-# Deploys one tested, immutable release (three image digests built from one commit) to one
-# environment, and verifies it. Nothing is built here: the images are pulled by digest and their
+# Promotes one tested, immutable release (three image digests built from one commit) to
+# PRODUCTION, and verifies it. Nothing is built here: the images are pulled by digest and their
 # revision label must name the release commit, so PRODUCTION runs exactly the artifact TEST ran.
+# (TEST is deployed by test-session.yml, which builds and destroys whole TEST sessions.)
 #
-# Called by release.yml (main → testing → production). Also dispatchable by hand from main, for one
-# case only: re-promoting a release that changes the database schema after an operator has
-# migrated every tenant database (docs/operations/deployment.md), with schema_migrated: true.
+# Called by release.yml (main → TEST → approval → PRODUCTION). Also dispatchable by hand from
+# main, for one case only: re-promoting a release that changes the database schema after an
+# operator has migrated every tenant database (docs/operations/deployment.md), with
+# schema_migrated: true. Production migrations are never automatic.
 #
 # Identity chain (no stored AWS credentials):
-#   GitHub OIDC token for THIS job's environment (repo:munaxa/munaxa-docs:environment:<env>, main)
-#     → <env> CI role  (can only assume its own environment's deployer)
-#     → <env> deployer (Terraform's assume_role: source identity github-actions, session gha-run-*)
-# testing  = account 657878534449, munaxa-docs-eu-test-*, infra/terraform/eu-test/service
-# production = account 800728620253, munaxa-docs-eu-prod-*, infra/terraform/eu-prod/service
-# The environment → role mapping below is fixed, and AWS enforces it independently: each CI role
-# trusts only its own GitHub environment's token, so a testing job cannot obtain production
-# credentials even if this file were changed.
+#   GitHub OIDC token for the `production` environment (its required reviewers approve first)
+#     → Production CI role (800728620253; can only assume the Production deployer)
+#     → Production deployer (Terraform's assume_role: source identity github-actions, gha-run-*)
+# Account, role and directory are fixed below; the Production CI role trusts only the production
+# environment's token on main, so no other job can obtain these credentials.
 #
 # What a release may change is enforced on the plan (scripts/ci/plan-guard.sh release): only the
 # four task definitions and the three services. Order follows the runbook: scanner, then API (and
@@ -25,10 +24,6 @@ name: Deploy release
 on:
   workflow_call:
     inputs:
-      environment:
-        description: testing or production
-        type: string
-        required: true
       release_commit:
         type: string
         required: true
@@ -47,13 +42,6 @@ on:
         default: false
   workflow_dispatch:
     inputs:
-      environment:
-        description: Environment (production waits for its required reviewers)
-        type: choice
-        required: true
-        options:
-          - testing
-          - production
       release_commit:
         description: Full commit SHA the images were built from (must be on main)
         type: string
@@ -83,7 +71,7 @@ env:
 
 jobs:
   # No permissions, no environment, no credentials: rejects bad input before any job can request
-  # an OIDC token, and fixes every environment-specific value from a closed list.
+  # an OIDC token, and fixes every Production value.
   preflight:
     name: Preflight
     runs-on: ubuntu-latest
@@ -96,10 +84,9 @@ jobs:
       prefix: ${{ steps.map.outputs.prefix }}
       directory: ${{ steps.map.outputs.directory }}
     steps:
-      - name: Check environment, branch and release references
+      - name: Check branch and release references
         id: map
         env:
-          ENVIRONMENT: ${{ inputs.environment }}
           REF: ${{ github.ref }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
           API_IMAGE: ${{ inputs.api_image }}
@@ -107,20 +94,14 @@ jobs:
           ANTIVIRUS_IMAGE: ${{ inputs.antivirus_image }}
         run: |
           set -euo pipefail
-          case "$ENVIRONMENT" in
-            testing)
-              account=657878534449; prefix=munaxa-docs-eu-test; directory=infra/terraform/eu-test/service ;;
-            production)
-              account=800728620253; prefix=munaxa-docs-eu-prod; directory=infra/terraform/eu-prod/service ;;
-            *) echo "::error::Unknown environment. Only testing and production exist."; exit 1 ;;
-          esac
+          environment=production; account=800728620253; prefix=munaxa-docs-eu-prod; directory=infra/terraform/eu-prod/service
           [ "$REF" = "refs/heads/main" ] || { echo "::error::Releases deploy only from main (this run is on $REF)."; exit 1; }
           printf '%s' "$RELEASE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::release_commit must be a full commit SHA."; exit 1; }
           printf '%s' "$API_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-api@sha256:[0-9a-f]{64}$' || { echo "::error::api_image must be pinned by digest."; exit 1; }
           printf '%s' "$WEB_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-web@sha256:[0-9a-f]{64}$' || { echo "::error::web_image must be pinned by digest."; exit 1; }
           printf '%s' "$ANTIVIRUS_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-antivirus@sha256:[0-9a-f]{64}$' || { echo "::error::antivirus_image must be pinned by digest."; exit 1; }
           {
-            echo "environment=$ENVIRONMENT"
+            echo "environment=$environment"
             echo "account=$account"
             echo "prefix=$prefix"
             echo "directory=$directory"
@@ -132,8 +113,8 @@ jobs:
     name: deploy ${{ needs.preflight.outputs.environment }}
     needs: preflight
     runs-on: ubuntu-latest
-    # testing: deploys at once. production: waits for the environment's required reviewers, and
-    # only then is an OIDC token for the production environment issued.
+    # Waits for the production environment's required reviewers; only then is an OIDC token for
+    # the production environment issued.
     environment: ${{ needs.preflight.outputs.environment }}
     # One deployment per environment at a time; never cancel one that may hold the state lock.
     concurrency:

@@ -7,3 +7,6 @@ state_admin_principal_arns = [
 
 # Optional: Claude's engineering role in 657878534449 (see README).
 # engineering_principal_arn = "arn:aws:iam::657878534449:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_MunaxaAWSEngineeringAdmin_<suffix>"
+
+# Who receives the TEST budget alerts (50 % / 100 % actual, 100 % forecast of monthly_budget_usd).
+budget_alert_emails = ["ops@example.com"]

@@ -73,3 +73,14 @@ variable "protected_vpc_ids" {
     error_message = "Provide at least one vpc-… ID; IAM rejects an empty resource list."
   }
 }
+
+variable "test_hostname" {
+  description = "Testing only: the public TEST hostname whose DNS records the deployer may change. Ignored for Production."
+  type        = string
+  default     = "test.docs.munaxa.com"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.test_hostname))
+    error_message = "test_hostname must be a plain DNS name."
+  }
+}

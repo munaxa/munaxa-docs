@@ -21,6 +21,7 @@ module "deployer_policies" {
   cloudtrail_bucket  = local.cloudtrail_bucket
   cloudmap_namespace = local.cloudmap_namespace
   protected_vpc_ids  = local.protected_vpc_ids
+  test_hostname      = var.test_hostname
 }
 
 # GitHub Actions OIDC provider (one per account) and the Testing CI role (testing environment, main).

@@ -74,3 +74,25 @@ variable "github_ref" {
   type        = string
   default     = "refs/heads/main"
 }
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget for the whole munaxa-nonprod account (TEST). Alerts at 50 % and 100 % actual, 100 % forecast."
+  type        = number
+  default     = 15
+}
+
+variable "budget_alert_emails" {
+  description = "Addresses that receive TEST budget alerts. Supplied in terraform.tfvars (not committed)."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.budget_alert_emails) > 0 && alltrue([for e in var.budget_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))])
+    error_message = "Provide at least one valid email address."
+  }
+}
+
+variable "test_hostname" {
+  description = "The public TEST hostname. The TEST deployer may change DNS records for this name (and below it) only."
+  type        = string
+  default     = "test.docs.munaxa.com"
+}

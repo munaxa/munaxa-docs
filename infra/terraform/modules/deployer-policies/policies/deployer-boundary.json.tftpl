@@ -1,6 +1,19 @@
 {
   "Version": "2012-10-17",
   "Statement": [
+%{ if environment == "Testing" ~}
+    {
+      "Sid": "CeilingTestingSessionTunnel",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession",
+        "ssm:TerminateSession",
+        "ssm:ResumeSession",
+        "ssm:DescribeSessions"
+      ],
+      "Resource": "*"
+    },
+%{ endif ~}
     {
       "Sid": "Ceiling${environment}ServicesOnly",
       "Effect": "Allow",

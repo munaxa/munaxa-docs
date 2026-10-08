@@ -9,7 +9,7 @@
 | --- | --- | --- | --- |
 | Local | Development | Seeded fixtures | Anyone, via compose |
 | CI | Verification per pull request | Ephemeral, per run | The pipeline |
-| Testing (TEST) | Pre-production verification, account `munaxa-nonprod` | Anonymised sample, never production data | Automatic on merge to `main` |
+| Testing (TEST) | Pre-production verification, account `munaxa-nonprod`; runs only while a release is under test (cheap foundation + ephemeral session) | Empty per session (one test tenant), never production data | Automatic on merge to `main`; stops after promotion or at its expiry |
 | Production | Live | Real | Promotion of the exact images TEST verified, after reviewer approval |
 
 The TEST → PRODUCTION pipeline, its identities and the manual GitHub settings are in

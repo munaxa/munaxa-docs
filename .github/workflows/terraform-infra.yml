@@ -1,12 +1,13 @@
 name: Terraform infrastructure
 
-# Plans or applies one infrastructure root (core, data or service) in one environment. This is the
-# controlled infrastructure path: run `plan`, review the summary, then dispatch `apply`, which
-# re-plans and applies that saved plan in the same job. Application releases do not come through
-# here (see release.yml), and bootstrap never does (administrator only).
+# Plans or applies one persistent infrastructure root in one environment. This is the controlled
+# infrastructure path: run `plan`, review the summary, then dispatch `apply`, which re-plans and
+# applies that saved plan in the same job. Application releases do not come through here (see
+# release.yml), TEST sessions do not (test-session.yml), and bootstrap never does (administrator
+# only).
 #
-#   testing    → account 657878534449, infra/terraform/eu-test/<root>
-#   production → account 800728620253, infra/terraform/eu-prod/<root>
+#   testing    → account 657878534449, infra/terraform/eu-test/foundation   (root: foundation)
+#   production → account 800728620253, infra/terraform/eu-prod/<root>       (root: core, data, service)
 #
 # Identity chain, with no stored AWS credentials:
 #   GitHub OIDC token (job in the chosen environment, on refs/heads/main)
@@ -36,10 +37,11 @@ on:
           - testing
           - production
       root:
-        description: Infrastructure root (bootstrap is never run by CI)
+        description: Infrastructure root — testing foundation; production core, data or service (bootstrap is never run by CI)
         type: choice
         required: true
         options:
+          - foundation
           - core
           - data
           - service
@@ -84,14 +86,12 @@ jobs:
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          case "$ENVIRONMENT" in
-            testing)    account=657878534449; prefix=munaxa-docs-eu-test; base=infra/terraform/eu-test ;;
-            production) account=800728620253; prefix=munaxa-docs-eu-prod; base=infra/terraform/eu-prod ;;
-            *) echo "::error::Unknown environment."; exit 1 ;;
-          esac
-          case "$ROOT" in
-            core|data|service) ;;
-            *) echo "::error::Unknown root. Only core, data and service run here."; exit 1 ;;
+          case "$ENVIRONMENT/$ROOT" in
+            testing/foundation)
+              account=657878534449; prefix=munaxa-docs-eu-test; base=infra/terraform/eu-test ;;
+            production/core|production/data|production/service)
+              account=800728620253; prefix=munaxa-docs-eu-prod; base=infra/terraform/eu-prod ;;
+            *) echo "::error::$ENVIRONMENT has no '$ROOT' root here. testing: foundation. production: core, data, service."; exit 1 ;;
           esac
           case "$ACTION" in plan|apply) ;; *) echo "::error::Unknown action."; exit 1 ;; esac
           [ "$REF" = "refs/heads/main" ] || { echo "::error::$ACTION runs only from main (this run is on $REF)."; exit 1; }

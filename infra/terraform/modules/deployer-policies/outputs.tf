@@ -5,11 +5,11 @@ output "documents" {
 
 output "deployer_policy_names" {
   description = "The policies attached to the deployer (everything except the two boundaries)."
-  value = [
+  value = concat([
     "deployer-read", "deployer-state", "deployer-network", "deployer-compute", "deployer-data",
     "deployer-observability", "deployer-iam", "deployer-guardrails-environment",
     "deployer-guardrails-identity",
-  ]
+  ], local.testing_only_documents)
 }
 
 output "workload_boundary_arn" {

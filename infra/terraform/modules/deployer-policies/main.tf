@@ -33,6 +33,7 @@ locals {
     iam_write_actions_json        = jsonencode(local.iam_write_actions)
     identity_escalation_json      = jsonencode(local.identity_escalation_actions)
     account_level_controls_json   = jsonencode(local.account_level_control_actions)
+    test_hostname                 = var.test_hostname
   }
 
   # "Anything named *nonprod*", one ARN pattern per service. IAM rejects a wildcard in an ARN's
@@ -102,11 +103,16 @@ locals {
     "ecs:PutAccountSetting*", "ecs:DeleteAccountSetting", "rds:ModifyCertificates", "ses:PutAccount*",
   ]
 
+  # Production renders exactly the eleven shared documents. Testing adds one: the short-lived
+  # session tunnel and the TEST hostname records its on-demand environment needs (see
+  # policies/deployer-testing-session.json.tftpl); the boundary admits SSM sessions for Testing only.
+  testing_only_documents = var.environment == "Testing" ? ["deployer-testing-session"] : []
+
   documents = {
-    for name in [
+    for name in concat([
       "deployer-read", "deployer-state", "deployer-network", "deployer-compute", "deployer-data",
       "deployer-observability", "deployer-iam", "deployer-guardrails-environment",
       "deployer-guardrails-identity", "deployer-boundary", "workload-boundary",
-    ] : name => jsonencode(jsondecode(templatefile("${path.module}/policies/${name}.json.tftpl", local.policy_vars)))
+    ], local.testing_only_documents) : name => jsonencode(jsondecode(templatefile("${path.module}/policies/${name}.json.tftpl", local.policy_vars)))
   }
 }

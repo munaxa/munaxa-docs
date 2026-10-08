@@ -66,3 +66,9 @@ jobs:
           expect refuse infra release-bad
           expect pass none empty
           expect refuse none release-ok
+          expect pass session session-ok
+          expect refuse session session-bad
+          expect refuse session release-ok
+          expect pass session-destroy session-destroy-ok
+          expect refuse session-destroy session-ok
+          expect refuse session-destroy session-bad
