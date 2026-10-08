@@ -24,8 +24,8 @@ variable "state_admin_principal_arns" {
   description = <<-EOT
     Exact IAM role ARNs (in 657878534449) of the administrators who apply this bootstrap. With the
     Testing deployer and the account root, they are the only principals the Testing state bucket
-    admits. Supplied in terraform.tfvars (not committed); typically the Identity Center role the
-    administrator signs in with in munaxa-nonprod.
+    admits. Supplied in terraform.tfvars (not committed): the administrator's role,
+    arn:aws:iam::657878534449:role/OrganizationAccountAccessRole (reached by admin.tamer).
   EOT
   type        = list(string)
 

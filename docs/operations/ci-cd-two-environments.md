@@ -365,16 +365,16 @@ workflows.
 | # | Step | Who | AWS write? |
 | --- | --- | --- | --- |
 | 1 | Create the `testing` and `production` environments and the four TEST secrets (above) | you, GitHub | no |
-| 2 | Production bootstrap **plan** ([runbook](bootstrap-plan-runbooks.md) §2): expect 4 add, 1 change, PASS | `admin.tamer`, CloudShell | no |
-| 3 | TEST bootstrap **plans** ([runbook](bootstrap-plan-runbooks.md) §3): expect PASS twice | you, `munaxa-nonprod` CloudShell | no |
-| 4 | Approve and apply the Production bootstrap (same plan, `apply bootstrap.tfplan`) | `admin.tamer` | **yes** (A) |
-| 5 | Approve and apply the TEST bootstrap in two steps (key, then the rest; then `-migrate-state`) | you | **yes** (B) |
+| 2 | Production bootstrap **plan**: `scripts/bootstrap/plan-production.sh` ([runbook](bootstrap-plan-runbooks.md) §1). Expect 4 add, 1 change, PASS | `admin.tamer`, CloudShell (management account) | no |
+| 3 | TEST bootstrap **plans**: `scripts/bootstrap/plan-testing.sh` ([runbook](bootstrap-plan-runbooks.md) §2). Expect `OVERALL: PASS` | `admin.tamer` → `OrganizationAccountAccessRole` in 657878534449, same CloudShell | no |
+| 4 | After approval: re-plan the Production bootstrap with the lock on, check it again (PASS), apply that saved plan | `admin.tamer` | **yes** (A) |
+| 5 | After approval: apply the TEST bootstrap in two steps (key; then the rest, checked again with every document visible; then `-migrate-state`), [README §4](../../infra/terraform/README.md) | `admin.tamer` → `OrganizationAccountAccessRole` | **yes** (B) |
 | 6 | Merge #134 | you | no |
 | 7 | `terraform-infra.yml`: `production`/`core` and `production`/`data`, `plan`. Both should show no changes (proves the Production CI chain) | GitHub Actions | no |
 | 8 | `terraform-infra.yml`: `testing`/`foundation`, `plan`, then `apply` | GitHub Actions | **yes** (C) |
 | 9 | Cloudflare, once: four `NS` records for `test` in `munaxa.com` (from `delegation_name_servers`), proxy off; DMARC unchanged. Then set `TEST_ENVIRONMENT_ENABLED=true` | you | no (Cloudflare) |
 | 10 | **TEST environment → start**, check the URL, sign in, then **stop** | GitHub Actions | **yes** (D) |
-| 11 | #131 merged and PRODUCTION running a release from `eu-prod/service` (operator procedure; separate approval) | you / operator | **yes** (E) |
+| 11 | Reconcile #131 with `main` (§12) and merge it once its `eu-prod/service` plan shows **no changes** against the services already running | you / Claude, reviewed | no (a no-change plan) |
 | 12 | Set `RELEASE_PIPELINE_ENABLED=true` | you | no |
 
 ## 11. AWS write gate
@@ -424,11 +424,31 @@ Nothing below has been run. Each group needs your explicit approval.
 
 - **#131 (Production service root)** must be merged before PRODUCTION can take a pipeline
   release. Until then `deploy-release.yml` stops at "The environment exists": `eu-prod/service`
-  has no `ecs.tf` on `main`. After it merges, its `release.auto.tfvars` becomes the initial and
-  fallback release only, because pipeline releases pass the digests as `-var`. Its task
-  definition and service addresses are what the release guard expects:
-  - `aws_ecs_task_definition.{web,api,scanner,ops_provision}`;
-  - `aws_ecs_service.{web,api,scanner}`.
+  has no `ecs.tf` on `main`. Production already runs what #131 describes:
+  - web, API and scanner services;
+  - HTTPS and HTTP listeners;
+  - the scanner refresh schedule;
+  - release `041e827`, which is on `main`, with no migration change since.
+
+  Reconciling it after #134 merges:
+  1. **Merge `main` into its branch.** Six files conflict, all because #131 still carries older
+     copies of what `main` already has: `bootstrap/iam.tf` and `bootstrap/variables.tf` (the
+     GitHub trust and variables), `eu-prod/{core,data,service}/variables.tf` (the
+     `github-actions` source identity) and `infra/terraform/README.md`. Take `main`'s side in each;
+     #131's own additions are elsewhere.
+  2. **Commit the live stage.** `enable_https = true` and `enable_services = true` (for example in
+     `stage.auto.tfvars`). With today's defaults (`false`), any plan of the root would destroy the
+     running services. plan-guard refuses such a plan, so nothing would break, but no release or
+     infrastructure plan could pass.
+  3. **Prove it.** An `eu-prod/service` plan must show **no changes**, using the running images,
+     which `terraform-infra.yml production/service plan` passes automatically.
+  4. **What already fits.**
+     - Variable names `api_image`, `web_image`, `antivirus_image` and `release_commit`.
+     - Container names `web`, `api` and `scanner`, and service names `munaxa-docs-eu-prod-{web,api,scanner}`.
+     - Addresses `aws_ecs_task_definition.{web,api,scanner,ops_provision}` and
+       `aws_ecs_service.{web,api,scanner}[0]`, both accepted by `plan-guard.sh release`.
+     - `skip_destroy` task definitions, and a scanner schedule that targets the service name only.
+     - `release_commit` is not used in any tag, so a release changes nothing else.
 - **Moving Production onto `modules/app-service`: deferred, not needed.** The two-environment
   design works with Production on its own #131 root. The module exists so that TEST builds the same
   application stack. A later move would use `moved` blocks and is accepted only with a no-change
@@ -445,19 +465,51 @@ Nothing below has been run. Each group needs your explicit approval.
   - It changes a Production audit resource, so it is a separate bootstrap change with its own
     plan and approval.
 - **Production budget alerts go to `alerts@example.com`** (the example value). Nobody receives
-  them. Changing the address is a one-line Production bootstrap change; keep it separate from
-  step 4 so the bootstrap plan stays exactly 4 + 1.
-- **The legacy `munaxa-docs-nonprod` stack in 800728620253 is still running and is not TEST.**
-  It consists of:
-  - VPC `vpc-0b749fc532d67e1cb` (10.120.0.0/16) with a NAT gateway and its Elastic IP;
-  - RDS `munaxa-docs-eu-nonprod-pg` (db.t4g.small, Multi-AZ, deletion protection off);
-  - an empty ECS cluster `munaxa-docs-eu-nonprod`;
-  - bucket `munaxa-docs-eu-nonprod-val-7d2e5a19`;
-  - four `*nonprod*` IAM roles.
+  them. Change it separately, after step 4, so the bootstrap plan stays exactly 4 + 1:
+  1. plan `bootstrap` with the real recipients;
+  2. `scripts/ci/bootstrap-plan-check.sh production-budget` must pass (only the alert recipients
+     change);
+  3. apply after approval.
 
-  It costs roughly $100 a month, mostly the NAT gateway and the Multi-AZ database. The new design
-  neither uses nor touches it: both deployers are denied anything named or tagged non-production.
-  Retiring it is a separate owner decision.
+  See [bootstrap-plan-runbooks.md](bootstrap-plan-runbooks.md) §5.
+- **The legacy `munaxa-docs-nonprod` stack in 800728620253 is still running and is not TEST.**
+  It was inventoried read-only on 2026-10-08. Nothing is changed here; retiring it is a separate
+  cleanup task once TEST is proven.
+
+  | Resource | Detail | Approx. USD / month |
+  | --- | --- | --- |
+  | NAT gateway `nat-0e79336712276f5cf` + Elastic IP `munaxa-docs-nonprod-nat-eip-1a` | eu-central-1a | 38 + 3.65 |
+  | RDS `munaxa-docs-eu-nonprod-pg` | db.t4g.small, **Multi-AZ**, 20 GB gp3, 7-day backups, deletion protection off; DB subnet group `munaxa-docs-eu-nonprod-db` | 54 + 5.50 storage |
+  | VPC `vpc-0b749fc532d67e1cb` (10.120.0.0/16) | 6 subnets, internet gateway, 4 route tables, S3 gateway endpoint, 6 security groups | 0 |
+  | ECS cluster `munaxa-docs-eu-nonprod` | no services, no tasks; one old task definition | 0 |
+  | Bucket `munaxa-docs-eu-nonprod-val-7d2e5a19` | empty | 0 |
+  | Secrets `munaxa-docs-eu-nonprod/ghcr-pull`, the RDS master secret | | 0.80 |
+  | Log group `/munaxa-docs/nonprod/api`; IAM roles `munaxa-docs-eu-nonprod-ecs-{execution,task}-role` (last used 2026-10-04), `munaxa-docs-nonprod-ecs-{execution,task}-role` (never used) | | 0 |
+  | **Total** | | **≈ 100–105** |
+
+  - **Nothing depends on it.** The database has had **zero connections** since it was created on
+    2026-10-03. The NAT gateway passed about 1.4 MB once, on 2026-10-03, and nothing since.
+    There is no VPC peering and no other network interface.
+  - **One reference in the repository.** Besides docs and reports, it is the
+    `protected_vpc_ids` deny entry in `infra/terraform/bootstrap/variables.tf`, which keeps the
+    Production deployer away from it. Removing that entry after retirement is a Production
+    bootstrap change.
+  - **Not used by the new design.** Both deployers are denied anything named or tagged
+    non-production.
+  - **An older leftover:** an empty VPC `munaxa-docs-nonprod` (`vpc-03e7c5de453ea1b72`) remains
+    in **me-central-1** from the earlier region validation. It has no NAT gateway, database,
+    load balancer or address, so it costs nothing.
+- **The engineering permission set can reach member accounts as administrator.**
+  `MunaxaAWSEngineeringAdmin` is the identity Claude's AWS connector uses.
+  - It is `AdministratorAccess` in 657878534449.
+  - In the management account it can assume `OrganizationAccountAccessRole` in member accounts.
+  - Its guardrails protect only 800728620253.
+  - This is why TEST bootstrap is run by `admin.tamer`
+    ([bootstrap-plan-runbooks.md](bootstrap-plan-runbooks.md)).
+  - Closing the gap is a separate Identity Center change, each with its own approval:
+    - deny `sts:AssumeRole` on `arn:aws:iam::*:role/OrganizationAccountAccessRole` in its inline
+      policy;
+    - narrow or remove its assignment in 657878534449. CI never needs it there.
 - **`claude-munaxa-docs` retirement (Stage 2):** remove the `ClaudeAgent*` trust and its state
   access, deactivate the key, then delete it after an observation period.
 - **The migration runner passes its database URL to `prisma` as a command-line argument**

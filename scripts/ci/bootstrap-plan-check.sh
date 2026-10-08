@@ -9,6 +9,9 @@
 #         update  aws_iam_role.deployer, its trust policy only, keeping every existing statement
 #                 and adding GitHubActionsSessions and GitHubActionsSourceIdentity
 #       Nothing else may change: no policy, boundary, bucket, key, trail or budget.
+#   bootstrap-plan-check.sh production-budget <plan.json>
+#       infra/terraform/bootstrap, a later, separate change: only the alert recipients of the
+#       Production budget (aws_budgets_budget.production, notification blocks) may change.
 #   bootstrap-plan-check.sh testing-key <plan.json>
 #       infra/terraform/bootstrap-eu-test, first step: the state key and its alias only.
 #   bootstrap-plan-check.sh testing <plan.json>
@@ -81,8 +84,22 @@ case "$mode" in
         || stop "the new deployer trust has no $sid statement"
     done
     ;;
+  production-budget)
+    expected_set "update aws_budgets_budget.production"
+    other=$(jq -r '
+      .resource_changes[]? | select(.address == "aws_budgets_budget.production")
+      | (.change.before // {}) as $b | (.change.after // {}) as $a
+      | [$b | keys[] | select(. != "notification" and . != "tags_all" and . != "tags") | select($b[.] != $a[.])] | join(",")' "$plan")
+    [ -z "$other" ] || stop "the budget would change more than its alert recipients: $other"
+    ;;
   testing-key)
     expected_set "create aws_kms_key.state" "create aws_kms_alias.state"
+    # Step A grants nothing new: the key policy is known in full and names the account root only
+    # (IAM in this account decides who may use the key), and no IAM resource is in the plan.
+    jq -e '.resource_changes[]? | select(.address == "aws_kms_key.state")
+      | (.change.after_unknown.policy // false) == false
+        and ((.change.after.policy // "{}") | fromjson | [.Statement[].Principal.AWS] | unique == ["arn:aws:iam::657878534449:root"])' \
+      "$plan" >/dev/null || stop "the state key policy is not exactly 'account 657878534449 root' or is not known at plan time"
     ;;
   testing)
     want=(
@@ -107,8 +124,14 @@ case "$mode" in
     # The key and alias are already created by the first step, or are part of this plan.
     if grep -qx 'create aws_kms_key.state' <<<"$changes"; then
       want+=("create aws_kms_key.state" "create aws_kms_alias.state")
-      echo "note: the state key is not created yet, so the policies that name it show as known after apply."
-      echo "      Run the testing-key step first for a plan in which every policy is visible."
+      echo "note: preview only. The state key does not exist yet, so the documents that name it"
+      echo "      (deployer-state, deployer-guardrails-environment, deployer-boundary) are known after apply."
+      echo "      After step A is applied, this plan must show every document in full."
+    else
+      # Step B for real: the key exists, so every policy document must be fully visible now.
+      hidden=$(jq -r '.resource_changes[]? | select(.type == "aws_iam_policy" or .type == "aws_iam_role_policy")
+        | select(.change.after_unknown.policy == true) | .address' "$plan")
+      [ -z "$hidden" ] || stop "policy documents still known only after apply: $(echo "$hidden" | tr '\n' ' ')"
     fi
     if grep -qx 'create aws_budgets_budget.testing\[0\]' <<<"$changes"; then
       want+=("create aws_budgets_budget.testing[0]")
@@ -120,7 +143,7 @@ case "$mode" in
     known_trust aws_iam_role.deployer
     ;;
   *)
-    echo "usage: $0 production|testing-key|testing <plan.json>" >&2
+    echo "usage: $0 production|production-budget|testing-key|testing <plan.json>" >&2
     exit 2
     ;;
 esac

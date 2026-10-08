@@ -3,7 +3,14 @@
     {
       "address": "aws_kms_key.state",
       "type": "aws_kms_key",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"AccountAdministrationThroughIam\", \"Effect\": \"Allow\", \"Principal\": {\"AWS\": \"arn:aws:iam::657878534449:root\"}, \"Action\": \"kms:*\", \"Resource\": \"*\"}]}"
+        },
+        "after_unknown": {}
+      }
     },
     {
       "address": "aws_kms_alias.state",

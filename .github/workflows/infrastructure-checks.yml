@@ -11,6 +11,7 @@ on:
       - 'infra/terraform/**'
       - '.github/workflows/**'
       - 'scripts/ci/**'
+      - 'scripts/bootstrap/**'
 
 permissions:
   contents: read
@@ -54,7 +55,7 @@ jobs:
       - name: CI scripts
         run: |
           set -euo pipefail
-          shellcheck -S warning scripts/ci/*.sh
+          shellcheck -S warning scripts/ci/*.sh scripts/bootstrap/*.sh
           expect() { # <pass|refuse> <mode> <fixture>
             if scripts/ci/plan-guard.sh "$2" "scripts/ci/testdata/$3.json" >/dev/null; then got=pass; else got=refuse; fi
             [ "$got" = "$1" ] || { echo "::error::plan-guard $2 on $3: expected $1, got $got"; exit 1; }
@@ -84,3 +85,6 @@ jobs:
           bootstrap refuse testing-key bootstrap-testing-ok
           bootstrap pass testing bootstrap-testing-ok
           bootstrap refuse testing bootstrap-testing-bad
+          bootstrap refuse testing bootstrap-testing-hidden
+          bootstrap pass production-budget bootstrap-budget-ok
+          bootstrap refuse production-budget bootstrap-budget-bad

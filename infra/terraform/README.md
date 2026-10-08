@@ -148,29 +148,48 @@ bootstrap. Its deployer sessions are role chaining and last at most one hour.
 For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and set the
 `admin.tamer` values. No MFA condition is applied, by owner decision.
 
-### 4. TEST bootstrap (once, administrator in 657878534449)
+### 4. TEST bootstrap (once, admin.tamer through OrganizationAccountAccessRole)
 
-Run it in the `munaxa-nonprod` account: AWS access portal → `MunaxaAWSEngineeringAdmin` →
-CloudShell. `terraform.tfvars` (not committed) names that role in `state_admin_principal_arns`;
-see `terraform.tfvars.example`.
+The TEST bootstrap is administrator-controlled like Production's. It is run by `admin.tamer` in
+AWS CloudShell of the management account, through
+`arn:aws:iam::657878534449:role/OrganizationAccountAccessRole`:
+- that role was created with the account;
+- the `MunaxaNonProductionBaseline` SCP stops anyone in 657878534449 from changing it;
+- it is also the state bucket's administrator (`state_admin_principal_arns`).
 
-**Plan first, without any AWS write:** follow
-[bootstrap-plan-runbooks.md](../../docs/operations/bootstrap-plan-runbooks.md) §3.
-`scripts/ci/bootstrap-plan-check.sh` must print PASS for both plans.
+The engineering permission set (`MunaxaAWSEngineeringAdmin`) is not used: it is the identity
+Claude works with. Why, in full:
+[bootstrap-plan-runbooks.md](../../docs/operations/bootstrap-plan-runbooks.md).
 
-**The first apply has two steps**, so that every policy is reviewable before it is created. The
-deployer's state, guardrail and boundary documents name the state key's ARN, which exists only
-once the key does.
+**Plan first, without any AWS write:** `bash scripts/bootstrap/plan-testing.sh`
+(runbook §2). The checker must print `OVERALL: PASS`.
+
+**The first apply has two steps**, so that every policy is reviewed in full before it exists
+(runbook §3). The deployer's state, guardrail and boundary documents name the state key's ARN,
+which exists only once the key does. Run it with approval, with the same temporary profile the
+plan script uses:
 
 ```bash
 cd infra/terraform/bootstrap-eu-test
+cat > /tmp/test-bootstrap.config <<'EOF'
+[profile test-bootstrap]
+role_arn = arn:aws:iam::657878534449:role/OrganizationAccountAccessRole
+credential_source = EcsContainer
+role_session_name = admin.tamer-bootstrap-eu-test
+duration_seconds = 3600
+region = eu-central-1
+EOF
+export AWS_CONFIG_FILE=/tmp/test-bootstrap.config AWS_PROFILE=test-bootstrap
+aws sts get-caller-identity          # assumed-role/OrganizationAccountAccessRole/admin.tamer-bootstrap-eu-test
+cp terraform.tfvars.example terraform.tfvars     # edit: create_budget, budget_alert_emails (not committed)
 mv backend.tf backend.tf.off && terraform init
 terraform plan -target=aws_kms_key.state -target=aws_kms_alias.state -out=key.tfplan   # 2 to add
 terraform apply key.tfplan
-terraform plan -out=bootstrap.tfplan          # everything else, every document visible in full
+terraform plan -out=bootstrap.tfplan          # everything else; every document visible in full
+terraform show -json bootstrap.tfplan > plan.json && ../../../scripts/ci/bootstrap-plan-check.sh testing plan.json
 terraform apply bootstrap.tfplan
 mv backend.tf.off backend.tf && terraform init -migrate-state
-rm -f terraform.tfstate terraform.tfstate.backup key.tfplan bootstrap.tfplan
+rm -f terraform.tfstate terraform.tfstate.backup key.tfplan bootstrap.tfplan plan.json /tmp/test-bootstrap.config
 ```
 
 Every trust policy is visible in full in both plans. The CI role and deployer ARNs are constructed
@@ -184,7 +203,7 @@ from fixed parts, creation order is explicit, and postconditions check the creat
 | **GitHub Actions `testing`** (`release.yml` / `test-environment.yml` → `test-session.yml`; `terraform-infra.yml` testing/foundation) | TEST sessions (create, release, extend, destroy, hourly expiry) and the TEST foundation | GitHub OIDC (`environment:testing`, `refs/heads/main`) → `munaxa-docs-eu-test-ci` → TEST deployer (same source identity and session pattern) |
 | **Claude engineering role** (`MunaxaAWSEngineeringAdmin`, user `munaxa-org-operator`) | Interactive work: reading, inspecting, operator checks; may assume the Production deployer | Identity Center → engineering role → deployer (source identity `munaxa-org-operator`, session `claude-*`) |
 | **`admin.tamer`** in AWS CloudShell | `bootstrap/` plans and applies, and break-glass | IAM user console session; no access keys copied anywhere |
-| **An administrator in 657878534449** | `bootstrap-eu-test/` | Identity Center role in `munaxa-nonprod` |
+| **`admin.tamer` → `OrganizationAccountAccessRole`** in 657878534449 | `bootstrap-eu-test/` plans and applies | IAM user console session in the management account's CloudShell → role created with the account and protected by the `MunaxaNonProductionBaseline` SCP |
 | **`claude-munaxa-docs`** | **Still active; migration pending.** Its trust statements and state access are unchanged until the CI path has been proven | IAM user access key → deployer (source identity `claude-munaxa-docs`) |
 
 **The CI roles** (`modules/github-oidc-ci`):
