@@ -3,6 +3,11 @@ output "deployer_role_arn" {
   value       = aws_iam_role.deployer.arn
 }
 
+output "ci_role_arn" {
+  description = "The role GitHub Actions (production environment) assumes through OIDC."
+  value       = aws_iam_role.ci.arn
+}
+
 output "workload_boundary_arn" {
   description = "The boundary every Production workload role must carry."
   value       = aws_iam_policy.workload_boundary.arn

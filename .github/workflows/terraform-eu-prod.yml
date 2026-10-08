@@ -1,0 +1,177 @@
+name: Terraform eu-prod
+
+# Plans or applies one Production Terraform root (eu-prod/core, eu-prod/data or eu-prod/service).
+#
+# Identity chain, with no stored AWS credentials anywhere:
+#   GitHub OIDC token (job in the `production` environment of munaxa/munaxa-docs)
+#     -> munaxa-docs-eu-prod-ci       (configure-aws-credentials; can only assume the deployer)
+#     -> munaxa-docs-eu-prod-deployer (Terraform provider and backend assume_role, with source
+#                                      identity github-actions and a gha-* session name)
+#
+# configure-aws-credentials has no source-identity input, so the second hop is Terraform's own
+# assume_role, which sets the source identity the deployer trust policy requires.
+#
+# Bootstrap is never run here: it is applied only by an administrator (see
+# infra/terraform/README.md). The root is chosen from a fixed list, never from a free path.
+#
+# Authorisation: every job that can obtain AWS credentials runs in the `production` environment,
+# whose required reviewers approve it before it starts, and whose deployment branch rule should
+# allow only `main`. Apply is additionally refused here unless the run is on `main`. An apply
+# applies the saved plan produced in the same job, so it never needs -auto-approve: the
+# environment approval is the authorisation. Run `plan` first and review it before approving an
+# `apply` run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      root:
+        description: Production root to run (bootstrap is never run by CI)
+        type: choice
+        required: true
+        options:
+          - core
+          - data
+          - service
+      action:
+        description: plan, or apply (apply only from main, after environment approval)
+        type: choice
+        required: true
+        default: plan
+        options:
+          - plan
+          - apply
+
+# Nothing by default; the Terraform job asks for exactly what it needs.
+permissions: {}
+
+# One run per root at a time; never cancel a run that may be holding the state lock.
+concurrency:
+  group: terraform-eu-prod-${{ inputs.root }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  AWS_ACCOUNT_ID: '800728620253'
+  CI_ROLE_ARN: arn:aws:iam::800728620253:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-ci
+  TERRAFORM_VERSION: 1.16.5
+
+jobs:
+  # No permissions, no environment, no credentials: rejects bad input before anything can
+  # request an OIDC token.
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      directory: ${{ steps.check.outputs.directory }}
+    steps:
+      - name: Check root, action and branch
+        id: check
+        env:
+          ROOT: ${{ inputs.root }}
+          ACTION: ${{ inputs.action }}
+          REF: ${{ github.ref }}
+        run: |
+          case "$ROOT" in
+            core)    directory=infra/terraform/eu-prod/core ;;
+            data)    directory=infra/terraform/eu-prod/data ;;
+            service) directory=infra/terraform/eu-prod/service ;;
+            *) echo "::error::Unknown root. Only core, data and service can run here."; exit 1 ;;
+          esac
+          case "$ACTION" in
+            plan) ;;
+            apply)
+              if [ "$REF" != "refs/heads/main" ]; then
+                echo "::error::apply runs only from main (this run is on $REF)."
+                exit 1
+              fi
+              ;;
+            *) echo "::error::Unknown action. Use plan or apply."; exit 1 ;;
+          esac
+          echo "directory=$directory" >> "$GITHUB_OUTPUT"
+
+  terraform:
+    name: ${{ inputs.action }} eu-prod/${{ inputs.root }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ needs.preflight.outputs.directory }}
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      # Provider assume_role into the deployer (the backend uses ../ci.s3.tfbackend).
+      TF_VAR_deployer_source_identity: github-actions
+      TF_VAR_deployer_session_name: gha-${{ github.run_id }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume the CI role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.CI_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+
+      - name: terraform init
+        run: terraform init -lockfile=readonly -backend-config=../ci.s3.tfbackend
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -lock-timeout=5m -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          # 0 = no changes, 2 = changes present, anything else = failure.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then exit "$code"; fi
+          echo "changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # Addresses and actions only: no attribute values reach the summary.
+      - name: Plan summary
+        env:
+          ROOT: ${{ inputs.root }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          terraform show -json tfplan > plan.json
+          {
+            echo "## eu-prod/$ROOT: $ACTION"
+            echo
+            echo "Commit \`$GITHUB_SHA\` on \`$GITHUB_REF_NAME\`, deployer session \`$TF_VAR_deployer_session_name\` (source identity \`$TF_VAR_deployer_source_identity\`)."
+            echo
+            jq -r '
+              [.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] as $c
+              | "**Plan:** \([$c[] | select(.change.actions | index("create"))] | length) to add, \([$c[] | select(.change.actions == ["update"])] | length) to change, \([$c[] | select(.change.actions | index("delete"))] | length) to destroy.",
+                "",
+                (if ($c | length) == 0 then "No changes." else
+                  "| Action | Address |", "| --- | --- |",
+                  ($c[] | "| \(.change.actions | join(", ")) | `\(.address)` |")
+                end)
+            ' plan.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f plan.json
+
+      - name: terraform apply (saved plan)
+        if: inputs.action == 'apply' && github.ref == 'refs/heads/main' && steps.plan.outputs.changes == 'true'
+        run: terraform apply -lock-timeout=5m tfplan
+
+      - name: Remove the plan file
+        if: always()
+        run: rm -f tfplan plan.json

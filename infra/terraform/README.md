@@ -29,8 +29,10 @@ region `eu-central-1`, as decided in ADR-0022, ADR-0023, ADR-0024 and ADR-0025.
 
 ```
 infra/terraform/
-├── bootstrap/            applied once by an administrator identity
+├── bootstrap/            applied once by an administrator identity; never by CI
 ├── eu-prod/
+│   ├── ci.s3.tfbackend       partial backend config: assume the deployer from the GitHub
+│   │                         Actions CI role (source identity github-actions)
 │   ├── engineering.s3.tfbackend   partial backend config: assume the deployer as Claude's
 │   │                              engineering role (source identity munaxa-org-operator)
 │   ├── claude.s3.tfbackend   partial backend config: assume the deployer as the Claude IAM
@@ -43,7 +45,7 @@ infra/terraform/
 
 | Root | State object (bucket `munaxa-docs-tfstate-eu-prod-800728620253`) | Applied by |
 | --- | --- | --- |
-| `bootstrap` | `bootstrap/terraform.tfstate` | An administrator (`admin.tamer`, or `claude-munaxa-docs` until it is retired), **never the deployer and never the engineering role** |
+| `bootstrap` | `bootstrap/terraform.tfstate` | An administrator (`admin.tamer`, or `claude-munaxa-docs` until it is retired), **never the deployer, the engineering role or CI** |
 | `eu-prod/core` | `eu-prod/core/terraform.tfstate` | Deployer role |
 | `eu-prod/data` | `eu-prod/data/terraform.tfstate` | Deployer role |
 | `eu-prod/service` | `eu-prod/service/terraform.tfstate` | Deployer role |
@@ -125,6 +127,58 @@ bootstrap. Its deployer sessions are role chaining and last at most one hour.
 
 For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and set the
 `admin.tamer` values. No MFA condition is applied, by owner decision.
+
+### 4. Who runs what (migration away from the `claude-munaxa-docs` IAM user)
+
+| Path | Used for | Identity chain |
+| --- | --- | --- |
+| **GitHub Actions** (`.github/workflows/terraform-eu-prod.yml`) | Terraform `plan` and `apply` of `eu-prod/core`, `eu-prod/data` and `eu-prod/service`: the Production execution path | GitHub OIDC → `munaxa-docs-eu-prod-ci` → deployer (source identity `github-actions`, session `gha-*`) |
+| **Claude engineering role** (`MunaxaAWSEngineeringAdmin`, user `munaxa-org-operator`) | Interactive work: reading, inspecting, operator checks; may assume the deployer | Identity Center → engineering role → deployer (source identity `munaxa-org-operator`, session `claude-*`) |
+| **`admin.tamer`** in AWS CloudShell | `bootstrap/` plans and applies, and break-glass | IAM user console session; no access keys copied anywhere |
+| **`claude-munaxa-docs`** | **Temporary fallback during the migration only.** It stays active, with its trust statements and state access, until the CI path has been proven; it is removed in a later stage | IAM user access key → deployer (source identity `claude-munaxa-docs`) |
+
+**The CI role** (`bootstrap/github_oidc.tf`):
+
+- **Trust:** GitHub's OIDC provider, with `aud = sts.amazonaws.com` and
+  `sub = repo:munaxa/munaxa-docs:environment:production` exactly. Only jobs in the protected
+  `production` environment of this repository can use it. No other repository, branch,
+  pull-request or wildcard subject can.
+- **Permissions:** `sts:AssumeRole` and `sts:SetSourceIdentity` on the deployer, nothing else.
+  The same document is its permissions boundary.
+- **No direct access:** none to Terraform state, the state key, any service or bootstrap.
+- **Protected:** it lives under `/munaxa-docs/bootstrap/`, so the deployer is denied every
+  action on it, as it is on the OIDC provider.
+- **Sessions:** last at most one hour. The deployer session Terraform opens from it is role
+  chaining, so it also lasts at most one hour.
+
+**The workflow:**
+
+- **How it starts:** it is dispatched by hand, with a root from a fixed list (`core`, `data`,
+  `service`) and `plan` or `apply`.
+- **Credentials:** `configure-aws-credentials` assumes the CI role through OIDC (no stored AWS
+  credentials). Terraform's own `assume_role` (provider and `ci.s3.tfbackend`) then opens the
+  deployer session with source identity `github-actions`, because the action cannot set a source
+  identity.
+- **Approval:** every job that can obtain credentials runs in the `production` environment and
+  waits for its required reviewers.
+- **Apply:** refused unless the run is on `main`, and applies the saved plan from the same job.
+  Run `plan` first and review it before approving an `apply`.
+- **Summary:** the job summary lists the planned actions and resource addresses only, never
+  attribute values.
+- **Never** runs `bootstrap/`.
+
+GitHub settings the workflow relies on (not stored in this repository):
+
+- the `production` environment;
+- required reviewers on it;
+- its deployment branches limited to `main`.
+
+The role ARN is not a secret and is written in the workflow. No AWS secret is stored in GitHub.
+
+The `bootstrap/` changes that create the OIDC provider and the CI role, and add the
+`GitHubActionsSessions` and `GitHubActionsSourceIdentity` statements to the deployer trust, are
+applied by `admin.tamer` like any other bootstrap change. Until then the workflow cannot obtain
+credentials.
 
 ## The deployer's permission model
 

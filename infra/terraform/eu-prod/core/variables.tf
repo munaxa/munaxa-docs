@@ -16,17 +16,17 @@ variable "region" {
 }
 
 variable "deployer_source_identity" {
-  description = "Source identity stamped on the deployer session: munaxa-org-operator (Claude engineering role), claude-munaxa-docs (Claude IAM user, fallback) or admin.tamer (break-glass)."
+  description = "Source identity stamped on the deployer session: github-actions (CI), munaxa-org-operator (Claude engineering role), claude-munaxa-docs (Claude IAM user, fallback) or admin.tamer (break-glass)."
   type        = string
 
   validation {
-    condition     = contains(["claude-munaxa-docs", "admin.tamer", "munaxa-org-operator"], var.deployer_source_identity)
-    error_message = "Use munaxa-org-operator, claude-munaxa-docs or admin.tamer; the deployer trust policy accepts no other."
+    condition     = contains(["claude-munaxa-docs", "admin.tamer", "munaxa-org-operator", "github-actions"], var.deployer_source_identity)
+    error_message = "Use github-actions, munaxa-org-operator, claude-munaxa-docs or admin.tamer; the deployer trust policy accepts no other."
   }
 }
 
 variable "deployer_session_name" {
-  description = "Session name for the deployer role. Claude sessions must start with claude-."
+  description = "Session name for the deployer role. Claude sessions must start with claude-, GitHub Actions sessions with gha-."
   type        = string
 
   validation {
