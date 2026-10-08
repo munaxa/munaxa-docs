@@ -2,7 +2,7 @@
 #
 # The workflow .github/workflows/terraform-eu-prod.yml exchanges its GitHub OIDC token for a
 # session on the CI role. The CI role can do exactly one thing: assume the Production deployer
-# with source identity github-actions and a gha-* session name. Terraform performs that second
+# with source identity github-actions and a gha-run-* session name. Terraform performs that second
 # hop itself (provider and backend assume_role), so every Production change still runs as the
 # deployer, under its boundary and guardrails, and is attributable in CloudTrail.
 #
@@ -39,6 +39,14 @@ data "aws_iam_policy_document" "ci_trust" {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
       values   = ["repo:${var.github_repository}:environment:${var.github_environment}"]
+    }
+
+    # The environment subject does not carry the branch, so it is pinned here as well: AWS refuses
+    # any run that is not on the main branch, whatever the GitHub environment settings say.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:ref"
+      values   = [var.github_ref]
     }
   }
 }

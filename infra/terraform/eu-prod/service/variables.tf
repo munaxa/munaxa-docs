@@ -26,7 +26,7 @@ variable "deployer_source_identity" {
 }
 
 variable "deployer_session_name" {
-  description = "Session name for the deployer role. Claude sessions must start with claude-, GitHub Actions sessions with gha-."
+  description = "Session name for the deployer role. Claude sessions must start with claude-, GitHub Actions sessions with gha-run-."
   type        = string
 
   validation {

@@ -55,6 +55,17 @@ variable "github_environment" {
   }
 }
 
+variable "github_ref" {
+  description = "The only Git ref whose runs may assume the CI role."
+  type        = string
+  default     = "refs/heads/main"
+
+  validation {
+    condition     = can(regex("^refs/heads/[A-Za-z0-9._/-]+$", var.github_ref)) && !strcontains(var.github_ref, "*")
+    error_message = "Use one exact branch ref (refs/heads/<name>), with no wildcard."
+  }
+}
+
 variable "protected_vpc_ids" {
   description = <<-EOT
     VPCs the deployer must never change: the Non-Production VPC and the account's default VPC in

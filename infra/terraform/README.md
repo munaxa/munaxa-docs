@@ -132,17 +132,17 @@ For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and
 
 | Path | Used for | Identity chain |
 | --- | --- | --- |
-| **GitHub Actions** (`.github/workflows/terraform-eu-prod.yml`) | Terraform `plan` and `apply` of `eu-prod/core`, `eu-prod/data` and `eu-prod/service`: the Production execution path | GitHub OIDC → `munaxa-docs-eu-prod-ci` → deployer (source identity `github-actions`, session `gha-*`) |
+| **GitHub Actions** (`.github/workflows/terraform-eu-prod.yml`) | Terraform `plan` and `apply` of `eu-prod/core`, `eu-prod/data` and `eu-prod/service`: the Production execution path | GitHub OIDC → `munaxa-docs-eu-prod-ci` → deployer (source identity `github-actions`, session `gha-run-*`) |
 | **Claude engineering role** (`MunaxaAWSEngineeringAdmin`, user `munaxa-org-operator`) | Interactive work: reading, inspecting, operator checks; may assume the deployer | Identity Center → engineering role → deployer (source identity `munaxa-org-operator`, session `claude-*`) |
 | **`admin.tamer`** in AWS CloudShell | `bootstrap/` plans and applies, and break-glass | IAM user console session; no access keys copied anywhere |
 | **`claude-munaxa-docs`** | **Temporary fallback during the migration only.** It stays active, with its trust statements and state access, until the CI path has been proven; it is removed in a later stage | IAM user access key → deployer (source identity `claude-munaxa-docs`) |
 
 **The CI role** (`bootstrap/github_oidc.tf`):
 
-- **Trust:** GitHub's OIDC provider, with `aud = sts.amazonaws.com` and
-  `sub = repo:munaxa/munaxa-docs:environment:production` exactly. Only jobs in the protected
-  `production` environment of this repository can use it. No other repository, branch,
-  pull-request or wildcard subject can.
+- **Trust:** GitHub's OIDC provider, with `aud = sts.amazonaws.com`,
+  `sub = repo:munaxa/munaxa-docs:environment:production` and `ref = refs/heads/main`, all exact.
+  Only jobs in the protected `production` environment of this repository, running on `main`, can
+  use it. No other repository, branch, pull-request or wildcard subject can.
 - **Permissions:** `sts:AssumeRole` and `sts:SetSourceIdentity` on the deployer, nothing else.
   The same document is its permissions boundary.
 - **No direct access:** none to Terraform state, the state key, any service or bootstrap.
@@ -161,7 +161,9 @@ For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and
   identity.
 - **Approval:** every job that can obtain credentials runs in the `production` environment and
   waits for its required reviewers.
-- **Apply:** refused unless the run is on `main`, and applies the saved plan from the same job.
+- **Branch:** `plan` and `apply` run only from `main`. The workflow refuses other branches
+  before approval, and the CI role's trust refuses them in AWS.
+- **Apply:** applies the saved plan from the same job.
   Run `plan` first and review it before approving an `apply`.
 - **Summary:** the job summary lists the planned actions and resource addresses only, never
   attribute values.

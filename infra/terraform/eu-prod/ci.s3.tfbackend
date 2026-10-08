@@ -5,6 +5,6 @@
 # the state bucket or its key.
 assume_role = {
   role_arn        = "arn:aws:iam::800728620253:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer"
-  session_name    = "gha-terraform-state"
+  session_name    = "gha-run-terraform-state"
   source_identity = "github-actions"
 }
