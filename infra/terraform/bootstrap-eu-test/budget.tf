@@ -1,11 +1,19 @@
 # Cost guard for the whole munaxa-nonprod account (TEST is its only workload). Account-wide, so no
 # cost-allocation tag has to be active for it to see every dollar, including anything left running
-# by mistake. Budgets are free; the deployer and CI can never change them (budgets:* is denied).
+# by mistake. The first two budgets of an account are free; the deployer and CI can never change
+# them (budgets:* is denied).
 #
-# Idle TEST is expected to cost about USD 2–3 a month (two KMS keys, one hosted zone, storage);
-# every hour a TEST session runs adds roughly USD 0.12 (ALB, Fargate, db.t4g.micro, public IPv4).
+# Idle TEST is expected to cost about USD 2.50–3 a month (two KMS keys, one hosted zone, storage);
+# every hour a TEST session runs adds roughly USD 0.14 (ALB, Fargate, db.t4g.micro, public IPv4).
+#
+# munaxa-nonprod was created with "IAM user and role access to billing" denied, which can make the
+# Budgets API refuse roles inside the account. The bootstrap runbook checks this read-only before
+# planning; if it is refused, set create_budget = false and create the same budget from the
+# management account instead (docs/operations/bootstrap-plan-runbooks.md).
 
 resource "aws_budgets_budget" "testing" {
+  count = var.create_budget ? 1 : 0
+
   name         = "${local.prefix}-account-monthly"
   budget_type  = "COST"
   limit_amount = format("%.2f", var.monthly_budget_usd)

@@ -81,13 +81,20 @@ variable "monthly_budget_usd" {
   default     = 15
 }
 
+variable "create_budget" {
+  description = "Create the account budget here. false when the account refuses the Budgets API to its roles (billing access denied); the budget is then created from the management account."
+  type        = bool
+  default     = true
+}
+
 variable "budget_alert_emails" {
-  description = "Addresses that receive TEST budget alerts. Supplied in terraform.tfvars (not committed)."
+  description = "Addresses that receive TEST budget alerts. Supplied in terraform.tfvars (not committed). Required when create_budget is true."
   type        = list(string)
+  default     = []
 
   validation {
-    condition     = length(var.budget_alert_emails) > 0 && alltrue([for e in var.budget_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))])
-    error_message = "Provide at least one valid email address."
+    condition     = !var.create_budget || (length(var.budget_alert_emails) > 0 && alltrue([for e in var.budget_alert_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))]))
+    error_message = "With create_budget = true, provide at least one valid email address."
   }
 }
 

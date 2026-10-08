@@ -6,7 +6,8 @@
 #                                                 administration task, migrate through the tunnel,
 #                                                 and (fresh only) provision the TEST tenant
 #   test-session.sh describe                     print "<ExpiresAt> <ReleaseCommit>" of the running
-#                                                 session ("None" for a missing tag), or "none"
+#                                                 session ("None" for a missing tag, or for
+#                                                 leftovers of a failed first apply), or "none"
 #                                                 when no session resource exists at all
 #   test-session.sh cleanup-leftovers            delete a provisioning secret left by a failed run
 #
@@ -200,7 +201,16 @@ case "${1:-}" in
     db=$(aws rds describe-db-instances --db-instance-identifier "$PREFIX-pg" --query 'DBInstances[0].DBInstanceArn' --output text 2>/dev/null || true)
     [ "$alb" = None ] && alb=""
     [ "$db" = None ] && db=""
-    if [ -z "$alb" ] && [ -z "$db" ]; then echo none; exit 0; fi
+    if [ -z "$alb" ] && [ -z "$db" ]; then
+      # Neither hourly cost exists. Leftovers of a failed first apply (secret containers, the
+      # Cloud Map namespace) still count, as a session without ExpiresAt, so expiry removes them.
+      if aws secretsmanager describe-secret --secret-id "$PREFIX/app" >/dev/null 2>&1; then
+        echo "None None"
+      else
+        echo none
+      fi
+      exit 0
+    fi
     expires=None; commit=None
     if [ -n "$alb" ]; then
       expires=$(aws elbv2 describe-tags --resource-arns "$alb" --query 'TagDescriptions[0].Tags[?Key==`ExpiresAt`].Value | [0]' --output text)

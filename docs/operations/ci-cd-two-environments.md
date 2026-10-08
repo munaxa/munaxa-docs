@@ -172,18 +172,37 @@ the log, never echoed, and written only to a private temporary directory that is
 - `release.yml` stops TEST once PRODUCTION has the release, unless a newer release is already
   under test there (the `ReleaseCommit` tag differs).
 - **Hourly** (`TEST environment`, schedule): if a session exists and its `ExpiresAt` has passed,
-  or it has none, it is destroyed. A session is found by its load balancer **or** its database,
-  so a half-destroyed session is cleaned up too.
+  or it has none, it is destroyed. A session is found by its load balancer, its database **or**
+  its application secret. So a half-built or half-destroyed session is cleaned up too.
+- `extend` accepts 4–72 hours from now; it can be repeated, but `ExpiresAt` is never more than 72
+  hours ahead.
 - Teardown is idempotent: a destroy with nothing left does nothing. A leftover provisioning
   secret is deleted, and the run fails if any session resource remains.
 - Teardown cannot reach PRODUCTION. It runs as the Testing CI role and the TEST deployer in
   657878534449, and its plan may only delete the session's own resources.
-- Concurrency: deployments to TEST run one at a time; a newer waiting release supersedes an older
-  waiting one. Teardowns queue separately and wait for the Terraform state lock.
+- **One queue.** Everything that changes TEST (deploy, extend, stop, expiry teardown) runs one at
+  a time, so a teardown can never run in the middle of a deployment. Each run decides only when it
+  reaches the head of the queue, from what AWS shows at that moment.
+  - The hourly check looks first, outside the queue, and joins the queue only if something has
+    expired.
+  - GitHub keeps one waiting run per queue, so a newer waiting run replaces an older waiting one.
+    A release replaced this way is not tested and not promoted. Use **TEST environment → start**
+    with its commit to test it again.
+  - `status` only reads and never queues.
 
 **Budget:** `bootstrap-eu-test` creates an AWS Budget for the whole 657878534449 account,
 `$15`/month by default. It emails at 50 % and 100 % of actual spend, and at 100 % of forecast.
-Fifteen dollars covers the foundation and about three full days of sessions.
+
+What $15 covers:
+- the foundation (about $3) plus about 85 session-hours;
+- for example 20 releases a month, each tested for about 4 hours.
+
+If TEST routinely stays up until its 24-hour expiry, raise it to $30. The first two budgets of an
+account are free.
+
+The account was created with IAM access to billing denied. Its roles may therefore be refused the
+Budgets API. The TEST bootstrap runbook checks this first. If they are refused, the same budget is
+created from the management account, filtered to the linked account (`create_budget = false`).
 
 ## 7. Identity chains
 
@@ -296,63 +315,152 @@ explicit, and postconditions check the created ARNs.
 
 ## 10. Before the pipeline is turned on
 
-### GitHub settings (by hand, before the AWS bootstrap)
+### GitHub settings (by hand)
 
-Settings → Environments:
+**Settings → Environments → New environment `testing`:**
 
-| Environment | Deployment branches | Required reviewers | Secrets / variables |
-| --- | --- | --- | --- |
-| `testing` | Selected branches: `main` only | none | secrets `TEST_PULL_USER`, `TEST_PULL_TOKEN` (read-only GHCR pull identity), `TEST_ADMIN_EMAIL`, `TEST_ADMIN_PASSWORD` (the TEST administrator) |
-| `production` | Selected branches: `main` only | at least one named person; "prevent self-review" recommended | variable `BASE_URL` = `https://docs.munaxa.com` |
+| Setting | Value |
+| --- | --- |
+| Deployment branches and tags | **Selected branches and tags** → add rule `main` (only) |
+| Required reviewers | none (TEST deploys automatically) |
+| Wait timer | none |
+| Secret `TEST_PULL_USER` | GitHub user of a **read-only** GHCR pull identity for `ghcr.io/munaxa/munaxa-docs-*` |
+| Secret `TEST_PULL_TOKEN` | its token: classic PAT with `read:packages` only, or a fine-grained token with packages read; expiry noted in your calendar |
+| Secret `TEST_ADMIN_EMAIL` | the e-mail you sign in to TEST with (any mailbox: TEST sends no mail) |
+| Secret `TEST_ADMIN_PASSWORD` | a long random password used only for TEST |
+| Variables | none required |
 
-**Create both environments before the AWS bootstrap.** If a workflow references an environment
-that doesn't exist, GitHub creates it with no protection. Its tokens would still carry that
-environment's subject.
+**Settings → Environments → New environment `production`:**
 
-No AWS secret is stored in GitHub. The role ARNs are written in the workflows. The existing
-`DOCS_PRODUCTION_PULL_USER` and `DOCS_PRODUCTION_PULL_TOKEN` (GHCR pull) stay as they are.
+| Setting | Value |
+| --- | --- |
+| Deployment branches and tags | **Selected branches and tags** → add rule `main` (only) |
+| Required reviewers | at least one named person (you); tick **Prevent self-review** if a second reviewer exists |
+| Allow administrators to bypass | **off** |
+| Wait timer | optional |
+| Variable `BASE_URL` | `https://docs.munaxa.com` |
+| Secrets | none: the GHCR pull identity stays the existing repository secrets `DOCS_PRODUCTION_PULL_USER` / `DOCS_PRODUCTION_PULL_TOKEN` |
+
+**Settings → Secrets and variables → Actions → Variables (repository):**
+- `TEST_ENVIRONMENT_ENABLED` = `true`, set once TEST exists (step 9 below). Until then the TEST
+  buttons and the hourly expiry do nothing.
+- `RELEASE_PIPELINE_ENABLED` = `true`, set **last** (step 12).
+
+Until `RELEASE_PIPELINE_ENABLED` is set, every merge to `main` builds and deploys nothing. Set it
+any earlier and the next merge would do the following:
+- build and push images;
+- try to create TEST before it can exist, or promote to a PRODUCTION whose service root (#131)
+  is not on `main`;
+- fail halfway.
+
+Set it last, and the first automatic release finds every piece in place.
+
+**Create both environments before any AWS bootstrap.** If a workflow references an environment
+that doesn't exist, GitHub creates it with no protection, and its tokens would still carry that
+environment's subject. No AWS secret is ever stored in GitHub; the role ARNs are written in the
+workflows.
 
 ### Order
 
-1. **GitHub:** both environments as above.
-2. **Production bootstrap:** `admin.tamer` plans and then applies `infra/terraform/bootstrap`.
-   Expected changes:
-   - add the OIDC provider, the CI role, the CI role's inline policy and its boundary;
-   - update the deployer trust in place, adding `GitHubActionsSessions` and
-     `GitHubActionsSourceIdentity`.
+| # | Step | Who | AWS write? |
+| --- | --- | --- | --- |
+| 1 | Create the `testing` and `production` environments and the four TEST secrets (above) | you, GitHub | no |
+| 2 | Production bootstrap **plan** ([runbook](bootstrap-plan-runbooks.md) §2): expect 4 add, 1 change, PASS | `admin.tamer`, CloudShell | no |
+| 3 | TEST bootstrap **plans** ([runbook](bootstrap-plan-runbooks.md) §3): expect PASS twice | you, `munaxa-nonprod` CloudShell | no |
+| 4 | Approve and apply the Production bootstrap (same plan, `apply bootstrap.tfplan`) | `admin.tamer` | **yes** (A) |
+| 5 | Approve and apply the TEST bootstrap in two steps (key, then the rest; then `-migrate-state`) | you | **yes** (B) |
+| 6 | Merge #134 | you | no |
+| 7 | `terraform-infra.yml`: `production`/`core` and `production`/`data`, `plan`. Both should show no changes (proves the Production CI chain) | GitHub Actions | no |
+| 8 | `terraform-infra.yml`: `testing`/`foundation`, `plan`, then `apply` | GitHub Actions | **yes** (C) |
+| 9 | Cloudflare, once: four `NS` records for `test` in `munaxa.com` (from `delegation_name_servers`), proxy off; DMARC unchanged. Then set `TEST_ENVIRONMENT_ENABLED=true` | you | no (Cloudflare) |
+| 10 | **TEST environment → start**, check the URL, sign in, then **stop** | GitHub Actions | **yes** (D) |
+| 11 | #131 merged and PRODUCTION running a release from `eu-prod/service` (operator procedure; separate approval) | you / operator | **yes** (E) |
+| 12 | Set `RELEASE_PIPELINE_ENABLED=true` | you | no |
 
-   No other change is expected. Then dispatch `terraform-infra.yml` with `production`/`core` and
-   `production`/`data`, `plan` only. Both should report no changes.
-3. **TEST bootstrap:** an administrator in 657878534449 applies
-   `infra/terraform/bootstrap-eu-test`, with `budget_alert_emails` in `terraform.tfvars`: state
-   bucket and key, TEST deployer and boundaries, OIDC provider, Testing CI role, budget. The
-   procedure is the same two-step first apply as Production.
-4. **TEST foundation:** dispatch `terraform-infra.yml` with `testing`/`foundation`, `plan`, then
-   `apply`.
-5. **DNS delegation (once, by hand in Cloudflare):** in the `munaxa.com` zone, add the four `NS`
-   records for `test` that the foundation's `delegation_name_servers` output lists (shown in the
-   apply log). Proxy off. Nothing else in Cloudflare changes, and DMARC stays `p=quarantine`.
-   The certificate then validates by itself; a second `testing`/`foundation` apply should show
-   no changes and `certificate_status = ISSUED`.
-6. **First TEST session:** **TEST environment** → `start`. Check the URL, then `stop`.
-7. Then set the repository variable `RELEASE_PIPELINE_ENABLED=true`.
+## 11. AWS write gate
 
-## 11. Follow-ups and open decisions
+Nothing below has been run. Each group needs your explicit approval.
 
-- **#131 (Production service root):** after it merges, its `release.auto.tfvars` becomes the
-  initial and fallback release only, because pipeline releases pass the digests as `-var`. Its
-  task definition and service addresses are what the release guard expects:
+**A. Production bootstrap** (800728620253, `admin.tamer`): **4 creates, 1 update.**
+- create: the GitHub OIDC provider `token.actions.githubusercontent.com`;
+- create: the role `munaxa-docs-eu-prod-ci`, its inline policy and its boundary;
+- update: the trust of `munaxa-docs-eu-prod-deployer`, adding `GitHubActionsSessions` and
+  `GitHubActionsSourceIdentity`. Nothing else.
+
+**B. TEST bootstrap** (657878534449): 37 creates (36 without the budget).
+- the state key and alias;
+- the state bucket and its six settings;
+- the OIDC provider, the Testing CI role, its policy and its boundary;
+- the TEST deployer, its boundary, the workload boundary, and ten deployer policies with their
+  attachments;
+- the budget (or, if refused, one budget in the management account).
+
+**C. TEST foundation** (657878534449, GitHub Actions as the TEST deployer):
+- network: VPC, 2 public and 2 database subnets, internet gateway, 2 route tables and their
+  associations, the S3 gateway endpoint, 6 security groups and their rules;
+- ECS cluster with capacity providers, and 5 log groups;
+- Route 53 zone `test.docs.munaxa.com` and the certificate validation record;
+- ACM certificate;
+- data key and its alias;
+- the document bucket and its six settings;
+- DB subnet group and parameter group;
+- 6 execution roles and 2 task roles, with their policies.
+
+**D. TEST session**, every time TEST starts. Destroyed again by stop, promotion or expiry:
+- database, load balancer, two target groups, two listeners and a listener rule;
+- DNS alias record;
+- Cloud Map namespace and two services;
+- three secret containers and their values;
+- six task definitions and three services;
+- per run: operator tasks, one SSM session and one temporary provisioning secret.
+
+**E. Production application** (800728620253):
+- #131's service root, first applied by the operator procedure;
+- then each approved release. A release only replaces task definitions and updates the three
+  services (`plan-guard.sh release`).
+- Production schema migrations stay an operator action.
+
+## 12. Follow-ups and open decisions
+
+- **#131 (Production service root)** must be merged before PRODUCTION can take a pipeline
+  release. Until then `deploy-release.yml` stops at "The environment exists": `eu-prod/service`
+  has no `ecs.tf` on `main`. After it merges, its `release.auto.tfvars` becomes the initial and
+  fallback release only, because pipeline releases pass the digests as `-var`. Its task
+  definition and service addresses are what the release guard expects:
   - `aws_ecs_task_definition.{web,api,scanner,ops_provision}`;
   - `aws_ecs_service.{web,api,scanner}`.
+- **Moving Production onto `modules/app-service`: deferred, not needed.** The two-environment
+  design works with Production on its own #131 root. The module exists so that TEST builds the same
+  application stack. A later move would use `moved` blocks and is accepted only with a no-change
+  Production plan.
+- **CloudTrail for 657878534449: decision needed.** No organisation trail exists. The only trail is
+  `munaxa-docs-account-trail` in 800728620253: single-account, multi-region. The CloudTrail
+  console's 90-day event history still covers the TEST account without a trail.
+  - **Recommended:** make that trail an organisation trail later. That means enabling CloudTrail
+    trusted access in Organizations, setting `is_organization_trail`, and adding the
+    `AWSLogs/o-qzf8irwaya/*` prefix to its bucket policy.
+  - Every member account's management events then land in the management account's bucket, where
+    no member-account administrator can delete them.
+  - The first copy of management events is free.
+  - It changes a Production audit resource, so it is a separate bootstrap change with its own
+    plan and approval.
+- **Production budget alerts go to `alerts@example.com`** (the example value). Nobody receives
+  them. Changing the address is a one-line Production bootstrap change; keep it separate from
+  step 4 so the bootstrap plan stays exactly 4 + 1.
+- **The legacy `munaxa-docs-nonprod` stack in 800728620253 is still running and is not TEST.**
+  It consists of:
+  - VPC `vpc-0b749fc532d67e1cb` (10.120.0.0/16) with a NAT gateway and its Elastic IP;
+  - RDS `munaxa-docs-eu-nonprod-pg` (db.t4g.small, Multi-AZ, deletion protection off);
+  - an empty ECS cluster `munaxa-docs-eu-nonprod`;
+  - bucket `munaxa-docs-eu-nonprod-val-7d2e5a19`;
+  - four `*nonprod*` IAM roles.
 
-  `infra/terraform/modules/app-service` is that root's application stack as a module; TEST uses
-  it today. Moving Production onto it (`moved` blocks; accepted only with a no-change plan) is
-  optional and separate. The release guard already accepts the module's addresses.
-- **CloudTrail in 657878534449:** the Production trail is single-account. TEST needs its own
-  trail or an organisation trail. The first management-event trail is free.
+  It costs roughly $100 a month, mostly the NAT gateway and the Multi-AZ database. The new design
+  neither uses nor touches it: both deployers are denied anything named or tagged non-production.
+  Retiring it is a separate owner decision.
 - **`claude-munaxa-docs` retirement (Stage 2):** remove the `ClaudeAgent*` trust and its state
   access, deactivate the key, then delete it after an observation period.
 - **The migration runner passes its database URL to `prisma` as a command-line argument**
   (`scripts/migrate-tenants.mjs`, unchanged here). On a TEST runner this is a single-use, per-run
-  password on an ephemeral VM. Changing the runner to pass it through the environment is a
-  separate application change.
+  password on an ephemeral, single-tenant VM, and the password is masked in the log. Changing the
+  runner to pass it through the environment is a separate application change.

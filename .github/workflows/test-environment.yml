@@ -15,6 +15,10 @@ name: TEST environment
 #
 # All four actions run in the GitHub `testing` environment through test-session.yml and can only
 # reach the TEST account (657878534449). Nothing here can touch PRODUCTION.
+#
+# Off until TEST exists: set the repository variable TEST_ENVIRONMENT_ENABLED=true once the TEST
+# bootstrap and foundation are applied and Cloudflare delegates test.docs.munaxa.com
+# (docs/operations/ci-cd-two-environments.md §10). Until then the hourly run does nothing.
 
 on:
   workflow_dispatch:
@@ -50,11 +54,19 @@ on:
 permissions: {}
 
 jobs:
+  disabled:
+    name: TEST environment disabled
+    if: vars.TEST_ENVIRONMENT_ENABLED != 'true' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: echo "::notice::TEST_ENVIRONMENT_ENABLED is not 'true' (TEST is not set up yet); nothing was done."
+
   # start: find the three images the release pipeline built from that commit. Nothing is built
   # here; a commit without published images cannot be started.
   release:
     name: Find the release's images
-    if: github.event_name == 'workflow_dispatch' && inputs.action == 'start'
+    if: vars.TEST_ENVIRONMENT_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.action == 'start'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,7 +116,7 @@ jobs:
   test:
     name: TEST
     needs: release
-    if: ${{ !cancelled() && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
+    if: ${{ !cancelled() && vars.TEST_ENVIRONMENT_ENABLED == 'true' && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
     uses: ./.github/workflows/test-session.yml
     permissions:
       id-token: write

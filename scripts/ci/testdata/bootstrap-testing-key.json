@@ -1,0 +1,14 @@
+{
+  "resource_changes": [
+    {
+      "address": "aws_kms_key.state",
+      "type": "aws_kms_key",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_kms_alias.state",
+      "type": "aws_kms_alias",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    }
+  ]
+}

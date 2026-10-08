@@ -29,9 +29,10 @@ name: Release
 # session's own resources (plan-guard session). Everything else goes through terraform-infra.yml
 # (plan, review, apply) or, for bootstrap, the administrator.
 #
-# The pipeline stays off until TEST exists: set the repository variable
-# RELEASE_PIPELINE_ENABLED=true once the testing environment, the TEST bootstrap and the TEST
-# foundation are in place (docs/operations/ci-cd-two-environments.md).
+# The pipeline stays off until both environments can take a release: set the repository variable
+# RELEASE_PIPELINE_ENABLED=true last, once TEST works end to end (TEST_ENVIRONMENT_ENABLED, a
+# successful start and stop) and PRODUCTION runs a release from its service root (#131)
+# (docs/operations/ci-cd-two-environments.md §10).
 
 on:
   push:
@@ -103,3 +104,53 @@ jobs:
     with:
       action: down
       only_if_release: ${{ needs.build.outputs.release_commit }}
+
+  # One plain-language overview at the top of the run: what was built, where it runs, what is next.
+  # No credentials, no environment; reads only the other jobs' results and outputs.
+  summary:
+    name: Release summary
+    needs: [build, testing, production, testing-off]
+    if: always() && vars.RELEASE_PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Summary
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+          API_IMAGE: ${{ needs.build.outputs.api_image }}
+          WEB_IMAGE: ${{ needs.build.outputs.web_image }}
+          ANTIVIRUS_IMAGE: ${{ needs.build.outputs.antivirus_image }}
+          TEST_URL: ${{ needs.testing.outputs.test_url }}
+          BUILD: ${{ needs.build.result }}
+          TESTING: ${{ needs.testing.result }}
+          PRODUCTION: ${{ needs.production.result }}
+          TESTING_OFF: ${{ needs.testing-off.result }}
+        run: |
+          word() { # <result> <done> <failed>
+            case "$1" in
+              success) echo "✅ $2" ;;
+              failure) echo "❌ $3" ;;
+              cancelled) echo "⏹️ cancelled" ;;
+              *) echo "⏸️ not reached" ;;
+            esac
+          }
+          {
+            echo "## Release \`${RELEASE_COMMIT:0:12}\`"
+            echo
+            echo "| Step | Status |"
+            echo "| --- | --- |"
+            echo "| 1. Build the three images once | $(word "$BUILD" built 'build failed') |"
+            echo "| 2. TEST | $(word "$TESTING" "running at ${TEST_URL:-https://test.docs.munaxa.com}" 'failed: see the TEST job') |"
+            echo "| 3. Approval and PRODUCTION | $(word "$PRODUCTION" 'deployed to https://docs.munaxa.com' 'not deployed: rejected or failed, see the PRODUCTION job') |"
+            echo "| 4. TEST switched off | $(word "$TESTING_OFF" 'yes (or left for a newer release under test)' 'teardown failed: the hourly check retries') |"
+            echo
+            if [ -n "$RELEASE_COMMIT" ]; then
+              echo "The same three images go to TEST and PRODUCTION; nothing is rebuilt in between:"
+              echo
+              echo "- release commit: [\`$RELEASE_COMMIT\`](https://github.com/$REPOSITORY/commit/$RELEASE_COMMIT)"
+              echo "- api: \`$API_IMAGE\`"
+              echo "- web: \`$WEB_IMAGE\`"
+              echo "- scanner: \`$ANTIVIRUS_IMAGE\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -150,19 +150,30 @@ For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and
 
 ### 4. TEST bootstrap (once, administrator in 657878534449)
 
-Same two-step first apply as Production, in the `munaxa-nonprod` account (CloudShell there, as an
-administrator role). `terraform.tfvars` (not committed) names that administrator role in
-`state_admin_principal_arns`; see `terraform.tfvars.example`.
+Run it in the `munaxa-nonprod` account: AWS access portal → `MunaxaAWSEngineeringAdmin` →
+CloudShell. `terraform.tfvars` (not committed) names that role in `state_admin_principal_arns`;
+see `terraform.tfvars.example`.
+
+**Plan first, without any AWS write:** follow
+[bootstrap-plan-runbooks.md](../../docs/operations/bootstrap-plan-runbooks.md) §3.
+`scripts/ci/bootstrap-plan-check.sh` must print PASS for both plans.
+
+**The first apply has two steps**, so that every policy is reviewable before it is created. The
+deployer's state, guardrail and boundary documents name the state key's ARN, which exists only
+once the key does.
 
 ```bash
 cd infra/terraform/bootstrap-eu-test
-mv backend.tf backend.tf.off && terraform init && terraform plan -out=bootstrap.tfplan
-#   review: state bucket and key, TEST deployer, boundaries, policies, OIDC provider, CI role
+mv backend.tf backend.tf.off && terraform init
+terraform plan -target=aws_kms_key.state -target=aws_kms_alias.state -out=key.tfplan   # 2 to add
+terraform apply key.tfplan
+terraform plan -out=bootstrap.tfplan          # everything else, every document visible in full
 terraform apply bootstrap.tfplan
 mv backend.tf.off backend.tf && terraform init -migrate-state
+rm -f terraform.tfstate terraform.tfstate.backup key.tfplan bootstrap.tfplan
 ```
 
-Every trust policy is visible in full in the plan: the CI role and deployer ARNs are constructed
+Every trust policy is visible in full in both plans. The CI role and deployer ARNs are constructed
 from fixed parts, creation order is explicit, and postconditions check the created ARNs.
 
 ### 5. Who runs what

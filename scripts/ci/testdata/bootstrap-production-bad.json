@@ -1,0 +1,54 @@
+{
+  "resource_changes": [
+    {
+      "address": "module.production_ci.aws_iam_openid_connect_provider.github",
+      "type": "aws_iam_openid_connect_provider",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "module.production_ci.aws_iam_policy.boundary",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "module.production_ci.aws_iam_role.ci",
+      "type": "aws_iam_role",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": {
+          "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"GitHubActionsEnvironmentOnBranch\", \"Effect\": \"Allow\"}]}"
+        },
+        "after_unknown": {}
+      }
+    },
+    {
+      "address": "module.production_ci.aws_iam_role_policy.ci",
+      "type": "aws_iam_role_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_role.deployer",
+      "type": "aws_iam_role",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"ClaudeAgentSessions\", \"Effect\": \"Allow\"}, {\"Sid\": \"ClaudeAgentSourceIdentity\", \"Effect\": \"Allow\"}, {\"Sid\": \"HumanBreakGlass\", \"Effect\": \"Allow\"}, {\"Sid\": \"EngineeringRoleSessions\", \"Effect\": \"Allow\"}, {\"Sid\": \"EngineeringRoleSourceIdentity\", \"Effect\": \"Allow\"}]}",
+          "name": "munaxa-docs-eu-prod-deployer",
+          "max_session_duration": 3600
+        },
+        "after": {
+          "assume_role_policy": "{\"Version\": \"2012-10-17\", \"Statement\": [{\"Sid\": \"ClaudeAgentSourceIdentity\", \"Effect\": \"Allow\"}, {\"Sid\": \"HumanBreakGlass\", \"Effect\": \"Allow\"}, {\"Sid\": \"EngineeringRoleSessions\", \"Effect\": \"Allow\"}, {\"Sid\": \"EngineeringRoleSourceIdentity\", \"Effect\": \"Allow\"}, {\"Sid\": \"GitHubActionsSessions\", \"Effect\": \"Allow\"}, {\"Sid\": \"GitHubActionsSourceIdentity\", \"Effect\": \"Allow\"}]}",
+          "name": "munaxa-docs-eu-prod-deployer",
+          "max_session_duration": 43200
+        },
+        "after_unknown": {}
+      }
+    },
+    {
+      "address": "aws_iam_policy.deployer[\"deployer-read\"]",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["update"], "before": null, "after": {}, "after_unknown": {} }
+    }
+  ]
+}

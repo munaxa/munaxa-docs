@@ -72,3 +72,15 @@ jobs:
           expect pass session-destroy session-destroy-ok
           expect refuse session-destroy session-ok
           expect refuse session-destroy session-bad
+          bootstrap() { # <pass|refuse> <mode> <fixture>
+            if scripts/ci/bootstrap-plan-check.sh "$2" "scripts/ci/testdata/$3.json" >/dev/null; then got=pass; else got=refuse; fi
+            [ "$got" = "$1" ] || { echo "::error::bootstrap-plan-check $2 on $3: expected $1, got $got"; exit 1; }
+            echo "bootstrap-plan-check $2 on $3: $got (expected)"
+          }
+          bootstrap pass production bootstrap-production-ok
+          bootstrap refuse production bootstrap-production-bad
+          bootstrap refuse production bootstrap-testing-ok
+          bootstrap pass testing-key bootstrap-testing-key
+          bootstrap refuse testing-key bootstrap-testing-ok
+          bootstrap pass testing bootstrap-testing-ok
+          bootstrap refuse testing bootstrap-testing-bad
