@@ -1,0 +1,227 @@
+name: Terraform infrastructure
+
+# Plans or applies one infrastructure root (core, data or service) in one environment. This is the
+# controlled infrastructure path: run `plan`, review the summary, then dispatch `apply`, which
+# re-plans and applies that saved plan in the same job. Application releases do not come through
+# here (see release.yml), and bootstrap never does (administrator only).
+#
+#   testing    → account 657878534449, infra/terraform/eu-test/<root>
+#   production → account 800728620253, infra/terraform/eu-prod/<root>
+#
+# Identity chain, with no stored AWS credentials:
+#   GitHub OIDC token (job in the chosen environment, on refs/heads/main)
+#     → that environment's CI role (configure-aws-credentials; may only assume its deployer)
+#     → that environment's deployer (Terraform provider and backend assume_role, source identity
+#        github-actions, session gha-run-*)
+# Each CI role trusts only its own environment's token, so the mapping below is also enforced by
+# AWS: a testing job cannot obtain production credentials.
+#
+# Safety rails:
+# - main only; the root and the environment come from fixed lists, never from a free path.
+# - production jobs wait for the production environment's required reviewers.
+# - `service` keeps the images the environment runs now (read from ECS), so an infrastructure
+#   change can never deploy or roll back the application.
+# - plan-guard (infra) refuses to delete or replace a database, bucket, key, network, load
+#   balancer, cluster, service, secret, backup vault or IAM role from CI.
+# - apply applies the saved plan from the same job; the environment approval is the authorisation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment (production waits for its required reviewers)
+        type: choice
+        required: true
+        options:
+          - testing
+          - production
+      root:
+        description: Infrastructure root (bootstrap is never run by CI)
+        type: choice
+        required: true
+        options:
+          - core
+          - data
+          - service
+      action:
+        description: plan, or apply (main only)
+        type: choice
+        required: true
+        default: plan
+        options:
+          - plan
+          - apply
+
+permissions: {}
+
+concurrency:
+  group: terraform-${{ inputs.environment }}-${{ inputs.root }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  TERRAFORM_VERSION: 1.16.5
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      environment: ${{ steps.map.outputs.environment }}
+      account: ${{ steps.map.outputs.account }}
+      prefix: ${{ steps.map.outputs.prefix }}
+      directory: ${{ steps.map.outputs.directory }}
+      ci_role_arn: ${{ steps.map.outputs.ci_role_arn }}
+      deployer_role_arn: ${{ steps.map.outputs.deployer_role_arn }}
+    steps:
+      - name: Check environment, root, action and branch
+        id: map
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ROOT: ${{ inputs.root }}
+          ACTION: ${{ inputs.action }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            testing)    account=657878534449; prefix=munaxa-docs-eu-test; base=infra/terraform/eu-test ;;
+            production) account=800728620253; prefix=munaxa-docs-eu-prod; base=infra/terraform/eu-prod ;;
+            *) echo "::error::Unknown environment."; exit 1 ;;
+          esac
+          case "$ROOT" in
+            core|data|service) ;;
+            *) echo "::error::Unknown root. Only core, data and service run here."; exit 1 ;;
+          esac
+          case "$ACTION" in plan|apply) ;; *) echo "::error::Unknown action."; exit 1 ;; esac
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::$ACTION runs only from main (this run is on $REF)."; exit 1; }
+          {
+            echo "environment=$ENVIRONMENT"
+            echo "account=$account"
+            echo "prefix=$prefix"
+            echo "directory=$base/$ROOT"
+            echo "ci_role_arn=arn:aws:iam::$account:role/munaxa-docs/bootstrap/$prefix-ci"
+            echo "deployer_role_arn=arn:aws:iam::$account:role/munaxa-docs/bootstrap/$prefix-deployer"
+          } >> "$GITHUB_OUTPUT"
+
+  terraform:
+    name: ${{ inputs.action }} ${{ inputs.environment }}/${{ inputs.root }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: ${{ needs.preflight.outputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ needs.preflight.outputs.directory }}
+    env:
+      ENVIRONMENT: ${{ needs.preflight.outputs.environment }}
+      ROOT: ${{ inputs.root }}
+      ACTION: ${{ inputs.action }}
+      PREFIX: ${{ needs.preflight.outputs.prefix }}
+      DEPLOYER_ROLE_ARN: ${{ needs.preflight.outputs.deployer_role_arn }}
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      TF_VAR_deployer_source_identity: github-actions
+      TF_VAR_deployer_session_name: gha-run-${{ github.run_id }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # A root that does not exist on this commit, or a service root without its resources, would
+      # plan the destruction of what runs today.
+      - name: The root is complete on this commit
+        working-directory: .
+        env:
+          DIRECTORY: ${{ needs.preflight.outputs.directory }}
+        run: |
+          set -euo pipefail
+          [ -f "$DIRECTORY/backend.tf" ] || { echo "::error::$DIRECTORY does not exist on this commit."; exit 1; }
+          if [ "$ROOT" = service ] && [ ! -f "$DIRECTORY/ecs.tf" ]; then
+            echo "::error::$DIRECTORY has no ecs.tf on this commit; planning it would destroy the running services."
+            exit 1
+          fi
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume the ${{ needs.preflight.outputs.environment }} CI role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ needs.preflight.outputs.ci_role_arn }}
+          role-session-name: gha-run-${{ github.run_id }}
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ needs.preflight.outputs.account }}
+
+      # Infrastructure never changes the application: the service root plans with the image
+      # references the environment runs now. Before the first release, the committed release
+      # inputs apply.
+      - name: Keep the running images (service only)
+        id: images
+        working-directory: .
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/image-vars"
+          [ "$ROOT" = service ] || exit 0
+          if live=$(scripts/ci/ecs-release.sh live); then
+            printf '%s\n' "$live" | sed 's/^/-var=/' > "$RUNNER_TEMP/image-vars"
+            echo "planning with the running images:"; printf '%s\n' "$live"
+          else
+            code=$?
+            [ "$code" = 3 ] || exit "$code"
+            echo "::notice::No service runs yet; the committed release inputs apply."
+          fi
+
+      - name: terraform init
+        run: terraform init -lockfile=readonly -backend-config=../ci.s3.tfbackend
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set -euo pipefail
+          mapfile -t image_vars < "$RUNNER_TEMP/image-vars"
+          set +e
+          terraform plan -lock-timeout=5m -detailed-exitcode -out=tfplan "${image_vars[@]}"
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then exit "$code"; fi
+          echo "changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          terraform show -json tfplan > plan.json
+
+      - name: Plan summary and guard
+        run: |
+          set -euo pipefail
+          {
+            echo "## $ENVIRONMENT/$ROOT: $ACTION"
+            echo
+            echo "Commit \`$GITHUB_SHA\`, deployer session \`$TF_VAR_deployer_session_name\` (source identity \`$TF_VAR_deployer_source_identity\`)."
+            echo
+            jq -r '
+              [.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] as $c
+              | "**Plan:** \([$c[] | select(.change.actions | index("create"))] | length) to add, \([$c[] | select(.change.actions == ["update"])] | length) to change, \([$c[] | select(.change.actions | index("delete"))] | length) to destroy.",
+                "",
+                (if ($c | length) == 0 then "No changes." else
+                  "| Action | Address |", "| --- | --- |",
+                  ($c[] | "| \(.change.actions | join(", ")) | `\(.address)` |")
+                end)
+            ' plan.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          "$GITHUB_WORKSPACE/scripts/ci/plan-guard.sh" infra plan.json
+
+      - name: terraform apply (saved plan)
+        if: inputs.action == 'apply' && github.ref == 'refs/heads/main' && steps.plan.outputs.changes == 'true'
+        run: terraform apply -lock-timeout=5m tfplan
+
+      - name: Remove the plan files
+        if: always()
+        run: rm -f tfplan plan.json

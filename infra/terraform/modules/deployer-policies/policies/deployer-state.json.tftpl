@@ -8,14 +8,14 @@
       "Resource": "arn:aws:s3:::${state_bucket}"
     },
     {
-      "Sid": "ReadWriteProductionRootState",
+      "Sid": "ReadWrite${environment}RootState",
       "Effect": "Allow",
       "Action": [
         "s3:GetObject",
         "s3:PutObject",
         "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::${state_bucket}/eu-prod/*"
+      "Resource": "arn:aws:s3:::${state_bucket}/${env_path}/*"
     },
     {
       "Sid": "UseStateKey",

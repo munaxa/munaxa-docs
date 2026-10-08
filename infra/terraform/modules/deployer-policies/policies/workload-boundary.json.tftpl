@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ProductionDocumentStorage",
+      "Sid": "${environment}DocumentStorage",
       "Effect": "Allow",
       "Action": [
         "s3:GetObject",
@@ -14,24 +14,24 @@
       "Resource": "arn:aws:s3:::${prefix}-*"
     },
     {
-      "Sid": "ProductionSecretsByName",
+      "Sid": "${environment}SecretsByName",
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
       "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:${prefix}/*"
     },
     {
-      "Sid": "ProductionRdsManagedSecret",
+      "Sid": "${environment}RdsManagedSecret",
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
       "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:rds!*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "ProductionTaggedKeys",
+      "Sid": "${environment}TaggedKeys",
       "Effect": "Allow",
       "Action": [
         "kms:Decrypt",
@@ -43,20 +43,20 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "ProductionLogStreams",
+      "Sid": "${environment}LogStreams",
       "Effect": "Allow",
       "Action": [
         "logs:CreateLogStream",
         "logs:PutLogEvents"
       ],
       "Resource": [
-        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/eu-prod/*",
-        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/eu-prod/*:*"
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*",
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*:*"
       ]
     },
     {
@@ -71,13 +71,13 @@
       "Resource": "*"
     },
     {
-      "Sid": "ReplaceProductionServiceTasks",
+      "Sid": "Replace${environment}ServiceTasks",
       "Effect": "Allow",
       "Action": "ecs:UpdateService",
       "Resource": "arn:aws:ecs:${region}:${account_id}:service/${prefix}/*"
     },
     {
-      "Sid": "BackupProductionDatabaseSnapshots",
+      "Sid": "Backup${environment}DatabaseSnapshots",
       "Effect": "Allow",
       "Action": [
         "rds:AddTagsToResource",

@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "CeilingProductionServicesOnly",
+      "Sid": "Ceiling${environment}ServicesOnly",
       "Effect": "Allow",
       "Action": [
         "ec2:*",
@@ -51,7 +51,7 @@
       "Sid": "CeilingPassRoleToWorkloadServices",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::${account_id}:role/munaxa-docs/eu-prod/*",
+      "Resource": "arn:aws:iam::${account_id}:role/munaxa-docs/${env_path}/*",
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": ${pass_role_services_json}
@@ -173,7 +173,7 @@
       "Resource": "*"
     },
     {
-      "Sid": "IamWritesOnlyInsideProductionWorkloadPath",
+      "Sid": "IamWritesOnlyInside${environment}WorkloadPath",
       "Effect": "Deny",
       "Action": [
         "iam:Create*",
@@ -192,8 +192,8 @@
         "iam:Enable*"
       ],
       "NotResource": [
-        "arn:aws:iam::${account_id}:role/munaxa-docs/eu-prod/*",
-        "arn:aws:iam::${account_id}:policy/munaxa-docs/eu-prod/*",
+        "arn:aws:iam::${account_id}:role/munaxa-docs/${env_path}/*",
+        "arn:aws:iam::${account_id}:policy/munaxa-docs/${env_path}/*",
         "arn:aws:iam::${account_id}:role/aws-service-role/*"
       ]
     },

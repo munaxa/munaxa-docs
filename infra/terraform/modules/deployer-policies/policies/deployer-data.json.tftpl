@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ProductionDatabase",
+      "Sid": "${environment}Database",
       "Effect": "Allow",
       "Action": [
         "rds:CreateDBInstance",
@@ -61,7 +61,7 @@
       "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:rds!*"
     },
     {
-      "Sid": "RdsManagedMasterSecretManageProductionTagged",
+      "Sid": "RdsManagedMasterSecretManage${environment}Tagged",
       "Effect": "Allow",
       "Action": [
         "secretsmanager:DeleteSecret",
@@ -72,12 +72,12 @@
       "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:rds!*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "ProductionSecretContainersWriteOnly",
+      "Sid": "${environment}SecretContainersWriteOnly",
       "Effect": "Allow",
       "Action": [
         "secretsmanager:CreateSecret",
@@ -97,13 +97,13 @@
       "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:${prefix}/*"
     },
     {
-      "Sid": "ProductionBucketsConfigurationOnly",
+      "Sid": "${environment}BucketsConfigurationOnly",
       "Effect": "Allow",
       "Action": "s3:*",
       "Resource": "arn:aws:s3:::${prefix}-*"
     },
     {
-      "Sid": "KmsCreateTaggedProduction",
+      "Sid": "KmsCreateTagged${environment}",
       "Effect": "Allow",
       "Action": [
         "kms:CreateKey",
@@ -112,12 +112,12 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production"
+          "aws:RequestTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "KmsManageProductionTaggedKeys",
+      "Sid": "KmsManage${environment}TaggedKeys",
       "Effect": "Allow",
       "Action": [
         "kms:EnableKeyRotation",
@@ -143,12 +143,12 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "KmsProductionAliases",
+      "Sid": "Kms${environment}Aliases",
       "Effect": "Allow",
       "Action": [
         "kms:CreateAlias",
@@ -158,7 +158,7 @@
       "Resource": "arn:aws:kms:${region}:${account_id}:alias/${prefix}*"
     },
     {
-      "Sid": "KmsAliasTargetsProductionTaggedKeys",
+      "Sid": "KmsAliasTargets${environment}TaggedKeys",
       "Effect": "Allow",
       "Action": [
         "kms:CreateAlias",
@@ -168,12 +168,12 @@
       "Resource": "arn:aws:kms:${region}:${account_id}:key/*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "BackupProductionVault",
+      "Sid": "Backup${environment}Vault",
       "Effect": "Allow",
       "Action": [
         "backup:CreateBackupVault",
@@ -188,7 +188,7 @@
       "Resource": "arn:aws:backup:${region}:${account_id}:backup-vault:${prefix}*"
     },
     {
-      "Sid": "BackupPlansCreateTaggedProduction",
+      "Sid": "BackupPlansCreateTagged${environment}",
       "Effect": "Allow",
       "Action": [
         "backup:CreateBackupPlan",
@@ -197,12 +197,12 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production"
+          "aws:RequestTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "BackupPlansManageProductionTagged",
+      "Sid": "BackupPlansManage${environment}Tagged",
       "Effect": "Allow",
       "Action": [
         "backup:UpdateBackupPlan",
@@ -215,7 +215,7 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },

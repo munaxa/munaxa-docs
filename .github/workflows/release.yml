@@ -1,0 +1,82 @@
+name: Release
+
+# Every merge to main becomes one release and walks one path:
+#
+#   build once (publish-images.yml: three images from this commit, probed, pushed, pinned by digest,
+#               pulled back with the production pull identity)
+#     → TEST        deploy-release.yml, environment `testing`: automatic, then health-verified
+#     → approval    environment `production`: its required reviewers approve this run
+#     → PRODUCTION  deploy-release.yml, environment `production`: the SAME three digests, no rebuild
+#
+# Production is never deployed by a merge alone: its job needs TEST to have succeeded and the
+# production environment's reviewers to approve. Only pushes to main start this workflow, the
+# production environment admits only main, and the Production CI role trusts only
+# repo:munaxa/munaxa-docs:environment:production on refs/heads/main, so a branch or pull request
+# can never obtain production credentials.
+#
+# Infrastructure is not deployed here. A release may only replace task definitions and update the
+# three services (scripts/ci/plan-guard.sh release); every other change goes through
+# terraform-infra.yml (plan, review, apply) or, for bootstrap, the administrator.
+#
+# The pipeline stays off until TEST exists: set the repository variable
+# RELEASE_PIPELINE_ENABLED=true once the testing environment, the TEST bootstrap and the TEST
+# service root are in place (infra/terraform/README.md).
+
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  disabled:
+    name: Release pipeline disabled
+    if: vars.RELEASE_PIPELINE_ENABLED != 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: echo "::notice::RELEASE_PIPELINE_ENABLED is not 'true'; nothing was built or deployed."
+
+  build:
+    name: Build once
+    if: vars.RELEASE_PIPELINE_ENABLED == 'true'
+    uses: ./.github/workflows/publish-images.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      sha: ${{ github.sha }}
+    secrets:
+      DOCS_PRODUCTION_PULL_USER: ${{ secrets.DOCS_PRODUCTION_PULL_USER }}
+      DOCS_PRODUCTION_PULL_TOKEN: ${{ secrets.DOCS_PRODUCTION_PULL_TOKEN }}
+
+  testing:
+    name: TEST
+    needs: build
+    uses: ./.github/workflows/deploy-release.yml
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    with:
+      environment: testing
+      release_commit: ${{ needs.build.outputs.release_commit }}
+      api_image: ${{ needs.build.outputs.api_image }}
+      web_image: ${{ needs.build.outputs.web_image }}
+      antivirus_image: ${{ needs.build.outputs.antivirus_image }}
+
+  production:
+    name: PRODUCTION
+    needs: [build, testing]
+    uses: ./.github/workflows/deploy-release.yml
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    with:
+      environment: production
+      release_commit: ${{ needs.build.outputs.release_commit }}
+      api_image: ${{ needs.build.outputs.api_image }}
+      web_image: ${{ needs.build.outputs.web_image }}
+      antivirus_image: ${{ needs.build.outputs.antivirus_image }}

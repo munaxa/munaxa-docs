@@ -1,9 +1,39 @@
 # The Production deployer role, its permissions boundary, its seven scoped allow policies and two
 # guardrail deny policies, and the workload boundary every Production workload role must carry.
+# The policy documents are rendered by ../modules/deployer-policies; the GitHub Actions CI role
+# that may assume the deployer is ../modules/github-oidc-ci.
 #
 # Everything here lives under /munaxa-docs/bootstrap/. The deployer manages only
 # /munaxa-docs/eu-prod/ and is denied every action on this path, so it can never change itself,
 # its boundary, its policies or the workload boundary.
+
+module "deployer_policies" {
+  source = "../modules/deployer-policies"
+
+  account_id         = var.account_id
+  region             = var.region
+  environment        = "Production"
+  env_path           = "eu-prod"
+  prefix             = local.prefix
+  bootstrap_path     = local.bootstrap_path
+  state_bucket       = local.state_bucket
+  state_key_arn      = aws_kms_key.state.arn
+  cloudtrail_bucket  = local.cloudtrail_bucket
+  cloudmap_namespace = local.cloudmap_namespace
+  protected_vpc_ids  = var.protected_vpc_ids
+}
+
+# GitHub Actions OIDC provider and the Production CI role (production environment, main only).
+module "production_ci" {
+  source = "../modules/github-oidc-ci"
+
+  account_id         = var.account_id
+  role_name          = "${local.prefix}-ci"
+  github_repository  = var.github_repository
+  github_environment = var.github_environment
+  github_ref         = var.github_ref
+  deployer_role_arn  = local.deployer_role_arn
+}
 
 data "aws_iam_policy_document" "deployer_trust" {
   # The Claude agent: only with its own source identity and a claude-* session name, so every
@@ -110,16 +140,18 @@ data "aws_iam_policy_document" "deployer_trust" {
     }
   }
 
-  # GitHub Actions, through the CI role (github_oidc.tf). Same shape again: the exact role ARN,
-  # source identity github-actions, and a gha-run-* session name on AssumeRole (six characters
-  # before the wildcard, as IAM Access Analyzer requires).
+  # GitHub Actions, through the Production CI role (module.production_ci). Same shape again: the
+  # exact role ARN, source identity github-actions, and a gha-run-* session name on AssumeRole (six
+  # characters before the wildcard, as IAM Access Analyzer requires). The ARN is constructed, so
+  # this whole trust policy is visible in the plan; aws_iam_role.deployer depends on the module so
+  # the role exists before IAM is asked to trust it.
   statement {
     sid     = "GitHubActionsSessions"
     actions = ["sts:AssumeRole"]
 
     principals {
       type        = "AWS"
-      identifiers = [aws_iam_role.ci.arn]
+      identifiers = [module.production_ci.role_arn]
     }
 
     condition {
@@ -141,7 +173,7 @@ data "aws_iam_policy_document" "deployer_trust" {
 
     principals {
       type        = "AWS"
-      identifiers = [aws_iam_role.ci.arn]
+      identifiers = [module.production_ci.role_arn]
     }
 
     condition {
@@ -203,6 +235,9 @@ resource "aws_iam_role" "deployer" {
   assume_role_policy   = data.aws_iam_policy_document.deployer_trust.json
   permissions_boundary = aws_iam_policy.deployer_boundary.arn
   max_session_duration = 3600
+
+  # The trust names the CI role by its constructed ARN; IAM refuses a principal that does not exist.
+  depends_on = [module.production_ci]
 }
 
 resource "aws_iam_role_policy_attachment" "deployer" {

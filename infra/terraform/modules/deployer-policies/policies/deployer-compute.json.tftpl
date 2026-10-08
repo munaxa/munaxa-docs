@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "EcsProductionCluster",
+      "Sid": "Ecs${environment}Cluster",
       "Effect": "Allow",
       "Action": [
         "ecs:CreateCluster",
@@ -16,7 +16,7 @@
       "Resource": "arn:aws:ecs:${region}:${account_id}:cluster/${prefix}"
     },
     {
-      "Sid": "EcsProductionServices",
+      "Sid": "Ecs${environment}Services",
       "Effect": "Allow",
       "Action": [
         "ecs:CreateService",
@@ -28,13 +28,13 @@
       "Resource": "arn:aws:ecs:${region}:${account_id}:service/${prefix}/*"
     },
     {
-      "Sid": "EcsRegisterTaskDefinitionsTaggedProduction",
+      "Sid": "EcsRegisterTaskDefinitionsTagged${environment}",
       "Effect": "Allow",
       "Action": "ecs:RegisterTaskDefinition",
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production"
+          "aws:RequestTag/Environment": "${environment}"
         }
       }
     },
@@ -45,7 +45,7 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production",
+          "aws:RequestTag/Environment": "${environment}",
           "ecs:CreateAction": [
             "CreateCluster",
             "CreateService",
@@ -56,7 +56,7 @@
       }
     },
     {
-      "Sid": "EcsProductionTaskDefinitions",
+      "Sid": "Ecs${environment}TaskDefinitions",
       "Effect": "Allow",
       "Action": [
         "ecs:DeregisterTaskDefinition",
@@ -67,7 +67,7 @@
       "Resource": "arn:aws:ecs:${region}:${account_id}:task-definition/${prefix}-*:*"
     },
     {
-      "Sid": "EcsOperatorTasksOnProductionCluster",
+      "Sid": "EcsOperatorTasksOn${environment}Cluster",
       "Effect": "Allow",
       "Action": [
         "ecs:RunTask",
@@ -85,7 +85,7 @@
       }
     },
     {
-      "Sid": "CloudMapCreateTaggedProduction",
+      "Sid": "CloudMapCreateTagged${environment}",
       "Effect": "Allow",
       "Action": [
         "servicediscovery:CreatePrivateDnsNamespace",
@@ -95,12 +95,12 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production"
+          "aws:RequestTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "CloudMapManageProductionTagged",
+      "Sid": "CloudMapManage${environment}Tagged",
       "Effect": "Allow",
       "Action": [
         "servicediscovery:DeleteNamespace",
@@ -114,7 +114,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
@@ -132,7 +132,7 @@
       "Resource": "*"
     },
     {
-      "Sid": "Route53RecordsOnlyInProductionNamespace",
+      "Sid": "Route53RecordsOnlyIn${environment}Namespace",
       "Effect": "Allow",
       "Action": "route53:ChangeResourceRecordSets",
       "Resource": "arn:aws:route53:::hostedzone/*",
@@ -146,7 +146,7 @@
       }
     },
     {
-      "Sid": "ProductionLoadBalancer",
+      "Sid": "${environment}LoadBalancer",
       "Effect": "Allow",
       "Action": [
         "elasticloadbalancing:CreateLoadBalancer",
@@ -182,7 +182,7 @@
       ]
     },
     {
-      "Sid": "CertificatesRequestTaggedProduction",
+      "Sid": "CertificatesRequestTagged${environment}",
       "Effect": "Allow",
       "Action": [
         "acm:RequestCertificate",
@@ -191,12 +191,12 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production"
+          "aws:RequestTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "CertificatesManageProductionTagged",
+      "Sid": "CertificatesManage${environment}Tagged",
       "Effect": "Allow",
       "Action": [
         "acm:DeleteCertificate",
@@ -208,12 +208,12 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "ProductionLogGroups",
+      "Sid": "${environment}LogGroups",
       "Effect": "Allow",
       "Action": [
         "logs:CreateLogGroup",
@@ -232,8 +232,8 @@
         "logs:FilterLogEvents"
       ],
       "Resource": [
-        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/eu-prod/*",
-        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/eu-prod/*:*",
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*",
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*:*",
         "arn:aws:logs:${region}:${account_id}:log-group:/aws/rds/instance/${prefix}-*"
       ]
     }

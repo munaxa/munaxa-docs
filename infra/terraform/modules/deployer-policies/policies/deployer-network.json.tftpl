@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "CreateNetworkResourcesTaggedProduction",
+      "Sid": "CreateNetworkResourcesTagged${environment}",
       "Effect": "Allow",
       "Action": [
         "ec2:CreateVpc",
@@ -20,7 +20,7 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production"
+          "aws:RequestTag/Environment": "${environment}"
         }
       }
     },
@@ -31,7 +31,7 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestTag/Environment": "Production"
+          "aws:RequestTag/Environment": "${environment}"
         },
         "Null": {
           "ec2:CreateAction": "false"
@@ -39,7 +39,7 @@
       }
     },
     {
-      "Sid": "ManageProductionTaggedNetwork",
+      "Sid": "Manage${environment}TaggedNetwork",
       "Effect": "Allow",
       "Action": [
         "ec2:CreateTags",
@@ -82,12 +82,12 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "CreateInsideProductionTaggedVpc",
+      "Sid": "CreateInside${environment}TaggedVpc",
       "Effect": "Allow",
       "Action": [
         "ec2:CreateSubnet",
@@ -98,18 +98,18 @@
       "Resource": "arn:aws:ec2:${region}:${account_id}:vpc/*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     },
     {
-      "Sid": "GatewayEndpointOnProductionTaggedRouteTables",
+      "Sid": "GatewayEndpointOn${environment}TaggedRouteTables",
       "Effect": "Allow",
       "Action": "ec2:CreateVpcEndpoint",
       "Resource": "arn:aws:ec2:${region}:${account_id}:route-table/*",
       "Condition": {
         "StringEquals": {
-          "aws:ResourceTag/Environment": "Production"
+          "aws:ResourceTag/Environment": "${environment}"
         }
       }
     }

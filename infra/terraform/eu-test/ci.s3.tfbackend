@@ -1,0 +1,10 @@
+# Partial backend configuration for GitHub Actions in the testing environment.
+#   terraform init -backend-config=../ci.s3.tfbackend
+# The job's own credentials are the Testing CI role (GitHub OIDC, account 657878534449). The
+# backend assumes the Testing deployer from there; the CI role itself has no access to the state
+# bucket or its key. Production state (800728620253) is unreachable from this chain.
+assume_role = {
+  role_arn        = "arn:aws:iam::657878534449:role/munaxa-docs/bootstrap/munaxa-docs-eu-test-deployer"
+  session_name    = "gha-run-terraform-state"
+  source_identity = "github-actions"
+}

@@ -1,4 +1,5 @@
-# Partial backend configuration for GitHub Actions (.github/workflows/terraform-eu-prod.yml).
+# Partial backend configuration for GitHub Actions in the production environment
+# (.github/workflows/terraform-infra.yml and deploy-release.yml).
 #   terraform init -backend-config=../ci.s3.tfbackend
 # The job's own credentials are the CI role (GitHub OIDC). The backend assumes the Production
 # deployer from there, exactly like engineering.s3.tfbackend; the CI role itself has no access to

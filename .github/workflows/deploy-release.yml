@@ -1,0 +1,311 @@
+name: Deploy release
+
+# Deploys one tested, immutable release (three image digests built from one commit) to one
+# environment, and verifies it. Nothing is built here: the images are pulled by digest and their
+# revision label must name the release commit, so PRODUCTION runs exactly the artifact TEST ran.
+#
+# Called by release.yml (main → testing → production). Also dispatchable by hand from main, for one
+# case only: re-promoting a release that changes the database schema after an operator has
+# migrated every tenant database (docs/operations/deployment.md), with schema_migrated: true.
+#
+# Identity chain (no stored AWS credentials):
+#   GitHub OIDC token for THIS job's environment (repo:munaxa/munaxa-docs:environment:<env>, main)
+#     → <env> CI role  (can only assume its own environment's deployer)
+#     → <env> deployer (Terraform's assume_role: source identity github-actions, session gha-run-*)
+# testing  = account 657878534449, munaxa-docs-eu-test-*, infra/terraform/eu-test/service
+# production = account 800728620253, munaxa-docs-eu-prod-*, infra/terraform/eu-prod/service
+# The environment → role mapping below is fixed, and AWS enforces it independently: each CI role
+# trusts only its own GitHub environment's token, so a testing job cannot obtain production
+# credentials even if this file were changed.
+#
+# What a release may change is enforced on the plan (scripts/ci/plan-guard.sh release): only the
+# four task definitions and the three services. Order follows the runbook: scanner, then API (and
+# the provisioning task, which runs the API image), then web; each waits for its service to settle.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: testing or production
+        type: string
+        required: true
+      release_commit:
+        type: string
+        required: true
+      api_image:
+        type: string
+        required: true
+      web_image:
+        type: string
+        required: true
+      antivirus_image:
+        type: string
+        required: true
+      schema_migrated:
+        description: The operator has migrated every tenant database for this release
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment (production waits for its required reviewers)
+        type: choice
+        required: true
+        options:
+          - testing
+          - production
+      release_commit:
+        description: Full commit SHA the images were built from (must be on main)
+        type: string
+        required: true
+      api_image:
+        description: ghcr.io/munaxa/munaxa-docs-api@sha256:…
+        type: string
+        required: true
+      web_image:
+        description: ghcr.io/munaxa/munaxa-docs-web@sha256:…
+        type: string
+        required: true
+      antivirus_image:
+        description: ghcr.io/munaxa/munaxa-docs-antivirus@sha256:…
+        type: string
+        required: true
+      schema_migrated:
+        description: Every tenant database has been migrated for this release
+        type: boolean
+        default: false
+
+permissions: {}
+
+env:
+  AWS_REGION: eu-central-1
+  TERRAFORM_VERSION: 1.16.5
+
+jobs:
+  # No permissions, no environment, no credentials: rejects bad input before any job can request
+  # an OIDC token, and fixes every environment-specific value from a closed list.
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      environment: ${{ steps.map.outputs.environment }}
+      account: ${{ steps.map.outputs.account }}
+      ci_role_arn: ${{ steps.map.outputs.ci_role_arn }}
+      deployer_role_arn: ${{ steps.map.outputs.deployer_role_arn }}
+      prefix: ${{ steps.map.outputs.prefix }}
+      directory: ${{ steps.map.outputs.directory }}
+    steps:
+      - name: Check environment, branch and release references
+        id: map
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          REF: ${{ github.ref }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          API_IMAGE: ${{ inputs.api_image }}
+          WEB_IMAGE: ${{ inputs.web_image }}
+          ANTIVIRUS_IMAGE: ${{ inputs.antivirus_image }}
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            testing)
+              account=657878534449; prefix=munaxa-docs-eu-test; directory=infra/terraform/eu-test/service ;;
+            production)
+              account=800728620253; prefix=munaxa-docs-eu-prod; directory=infra/terraform/eu-prod/service ;;
+            *) echo "::error::Unknown environment. Only testing and production exist."; exit 1 ;;
+          esac
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::Releases deploy only from main (this run is on $REF)."; exit 1; }
+          printf '%s' "$RELEASE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::release_commit must be a full commit SHA."; exit 1; }
+          printf '%s' "$API_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-api@sha256:[0-9a-f]{64}$' || { echo "::error::api_image must be pinned by digest."; exit 1; }
+          printf '%s' "$WEB_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-web@sha256:[0-9a-f]{64}$' || { echo "::error::web_image must be pinned by digest."; exit 1; }
+          printf '%s' "$ANTIVIRUS_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-antivirus@sha256:[0-9a-f]{64}$' || { echo "::error::antivirus_image must be pinned by digest."; exit 1; }
+          {
+            echo "environment=$ENVIRONMENT"
+            echo "account=$account"
+            echo "prefix=$prefix"
+            echo "directory=$directory"
+            echo "ci_role_arn=arn:aws:iam::$account:role/munaxa-docs/bootstrap/$prefix-ci"
+            echo "deployer_role_arn=arn:aws:iam::$account:role/munaxa-docs/bootstrap/$prefix-deployer"
+          } >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: deploy ${{ needs.preflight.outputs.environment }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    # testing: deploys at once. production: waits for the environment's required reviewers, and
+    # only then is an OIDC token for the production environment issued.
+    environment: ${{ needs.preflight.outputs.environment }}
+    # One deployment per environment at a time; never cancel one that may hold the state lock.
+    concurrency:
+      group: deploy-${{ needs.preflight.outputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      ENVIRONMENT: ${{ needs.preflight.outputs.environment }}
+      ACCOUNT: ${{ needs.preflight.outputs.account }}
+      PREFIX: ${{ needs.preflight.outputs.prefix }}
+      DIRECTORY: ${{ needs.preflight.outputs.directory }}
+      DEPLOYER_ROLE_ARN: ${{ needs.preflight.outputs.deployer_role_arn }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      API_IMAGE: ${{ inputs.api_image }}
+      WEB_IMAGE: ${{ inputs.web_image }}
+      ANTIVIRUS_IMAGE: ${{ inputs.antivirus_image }}
+      SCHEMA_MIGRATED: ${{ inputs.schema_migrated }}
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      TF_VAR_deployer_source_identity: github-actions
+      TF_VAR_deployer_session_name: gha-run-${{ github.run_id }}
+    steps:
+      - name: Check out (full history, for the release ancestry and schema checks)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The environment exists and the release is on main
+        run: |
+          set -euo pipefail
+          if [ ! -f "$DIRECTORY/ecs.tf" ]; then
+            echo "::error::$DIRECTORY is not provisioned on this commit (no ecs.tf). The $ENVIRONMENT service root must exist before a release can deploy to it; see infra/terraform/README.md."
+            exit 1
+          fi
+          git merge-base --is-ancestor "$RELEASE_COMMIT" "$GITHUB_SHA" \
+            || { echo "::error::release_commit $RELEASE_COMMIT is not on main at $GITHUB_SHA."; exit 1; }
+
+      - name: Authenticate to GHCR (read only)
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Promotion, not rebuild: each digest must exist in the registry and carry the release commit
+      # as its revision label (set by publish-images.yml when it built and verified it).
+      - name: The three digests are the release's images
+        run: |
+          set -euo pipefail
+          for ref in "$API_IMAGE" "$WEB_IMAGE" "$ANTIVIRUS_IMAGE"; do
+            revision=$(docker buildx imagetools inspect "$ref" --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}')
+            [ "$revision" = "$RELEASE_COMMIT" ] || { echo "::error::$ref has revision $revision, not $RELEASE_COMMIT."; exit 1; }
+            echo "$ref → $revision"
+          done
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume the ${{ needs.preflight.outputs.environment }} CI role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ needs.preflight.outputs.ci_role_arn }}
+          role-session-name: gha-run-${{ github.run_id }}
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ needs.preflight.outputs.account }}
+
+      # A release never changes the schema behind the operator's back. If prisma/migrations changed
+      # since the release the environment runs now, the tenant databases must be migrated first
+      # (deployment.md), and the deployment is re-run by hand with schema_migrated: true.
+      - name: Schema gate
+        run: |
+          set -euo pipefail
+          if live=$(scripts/ci/ecs-release.sh live); then
+            current_api=$(printf '%s\n' "$live" | sed -n 's/^api_image=//p')
+            current_commit=$(docker buildx imagetools inspect "$current_api" --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}')
+            echo "running now: $current_commit"
+            if git cat-file -e "$current_commit^{commit}" 2>/dev/null \
+               && git diff --quiet "$current_commit" "$RELEASE_COMMIT" -- prisma/migrations; then
+              echo "no schema change since the running release"
+            elif [ "$SCHEMA_MIGRATED" = "true" ]; then
+              echo "::warning::schema change (or unknown running release) accepted: operator confirmed migration"
+            else
+              echo "::error::This release changes prisma/migrations (or the running release is unknown). Migrate every tenant database first (docs/operations/deployment.md), then run 'Deploy release' from main with schema_migrated: true."
+              exit 1
+            fi
+          else
+            code=$?
+            [ "$code" = 3 ] || exit "$code"
+            [ "$SCHEMA_MIGRATED" = "true" ] || { echo "::error::No release is running in $ENVIRONMENT yet. The first deployment is an operator task (databases created and migrated); then run 'Deploy release' with schema_migrated: true."; exit 1; }
+          fi
+
+      - name: terraform init
+        working-directory: ${{ needs.preflight.outputs.directory }}
+        run: terraform init -lockfile=readonly -backend-config=../ci.s3.tfbackend
+
+      # Scanner first (the API must not take traffic before its scanner answers), then the API and
+      # the provisioning task that runs the API image, then web. Each step is a saved, guarded plan.
+      - name: Deploy scanner, then API, then web
+        working-directory: ${{ needs.preflight.outputs.directory }}
+        run: |
+          set -euo pipefail
+          release_vars=(
+            "-var=release_commit=$RELEASE_COMMIT"
+            "-var=api_image=$API_IMAGE"
+            "-var=web_image=$WEB_IMAGE"
+            "-var=antivirus_image=$ANTIVIRUS_IMAGE"
+          )
+          deploy() { # <service> <target>…
+            local service="$1"; shift
+            local targets=()
+            for t in "$@"; do targets+=("-target=$t"); done
+            terraform plan -lock-timeout=5m -out="$service.tfplan" "${release_vars[@]}" "${targets[@]}" >/dev/null
+            terraform show -json "$service.tfplan" > "$service.json"
+            echo "== $service"
+            "$GITHUB_WORKSPACE/scripts/ci/plan-guard.sh" release "$service.json"
+            terraform apply -lock-timeout=5m "$service.tfplan"
+            rm -f "$service.tfplan" "$service.json"
+            (cd "$GITHUB_WORKSPACE" && scripts/ci/ecs-release.sh wait "$service")
+          }
+          deploy scanner aws_ecs_service.scanner
+          deploy api aws_ecs_service.api aws_ecs_task_definition.ops_provision
+          deploy web aws_ecs_service.web
+
+          # Nothing else may be pending: an untargeted plan with the same release must be empty.
+          terraform plan -lock-timeout=5m -out=final.tfplan "${release_vars[@]}" >/dev/null
+          terraform show -json final.tfplan > final.json
+          "$GITHUB_WORKSPACE/scripts/ci/plan-guard.sh" none final.json
+          rm -f final.tfplan final.json
+
+      - name: Verify health
+        env:
+          BASE_URL: ${{ vars.BASE_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "$BASE_URL" ] || { echo "::error::The $ENVIRONMENT environment has no BASE_URL variable; nothing was verified."; exit 1; }
+          check() { # <path> — 200 within five minutes
+            for _ in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE_URL$1" || true)
+              [ "$code" = 200 ] && { echo "$1 → 200"; return 0; }
+              sleep 10
+            done
+            echo "::error::$BASE_URL$1 did not answer 200 (last: $code)"; return 1
+          }
+          check /api/health/ready
+          check /login
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Release → $ENVIRONMENT"
+            echo
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| release commit | \`$RELEASE_COMMIT\` |"
+            echo "| api | \`$API_IMAGE\` |"
+            echo "| web | \`$WEB_IMAGE\` |"
+            echo "| antivirus | \`$ANTIVIRUS_IMAGE\` |"
+            echo "| account | \`$ACCOUNT\` |"
+            echo "| deployer session | \`$TF_VAR_deployer_session_name\` (source identity \`github-actions\`) |"
+            echo "| result | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ProductionAlarms",
+      "Sid": "${environment}Alarms",
       "Effect": "Allow",
       "Action": [
         "cloudwatch:PutMetricAlarm",
@@ -17,7 +17,7 @@
       "Resource": "arn:aws:cloudwatch:${region}:${account_id}:alarm:${prefix}-*"
     },
     {
-      "Sid": "ProductionTopics",
+      "Sid": "${environment}Topics",
       "Effect": "Allow",
       "Action": [
         "sns:CreateTopic",
@@ -33,7 +33,7 @@
       "Resource": "arn:aws:sns:${region}:${account_id}:${prefix}-*"
     },
     {
-      "Sid": "ProductionEventRules",
+      "Sid": "${environment}EventRules",
       "Effect": "Allow",
       "Action": [
         "events:PutRule",
@@ -48,7 +48,7 @@
       "Resource": "arn:aws:events:${region}:${account_id}:rule/${prefix}-*"
     },
     {
-      "Sid": "ProductionSchedules",
+      "Sid": "${environment}Schedules",
       "Effect": "Allow",
       "Action": [
         "scheduler:CreateScheduleGroup",
