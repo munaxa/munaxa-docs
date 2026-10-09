@@ -8,13 +8,15 @@
 # Neither set (also: pull requests from forks, Dependabot): everything pulls anonymously, exactly as
 # before. Only one set: this action fails the job with a message saying which one is missing.
 #
-# Where the pulls happen, and why this action is not enough on its own:
-#   - Service containers (`services:`) are pulled by the runner BEFORE the first step, so no step can
-#     log in for them. Each service therefore carries `credentials:` with the same two secrets; the
-#     runner logs in with a temporary Docker config just for that pull (and skips the login when either
-#     value is empty). In those jobs this action only reports and checks the configuration.
-#   - Dockerfile base images (`FROM node:…`, `FROM ubuntu:…`) are pulled by buildx during a build step.
-#     There, `login: 'true'` logs in to Docker Hub before the build.
+# Where the pulls happen. Log in with `login: 'true'` before any of them:
+#   - PostgreSQL and Redis (ci.yml integration and end-to-end) are started as steps by
+#     service-container.sh, not as `services:`. The runner pulls service images before the first
+#     step, which only the service's own `credentials:` could authenticate, and GitHub rejects a
+#     job whose `credentials` username or password is empty ("Unexpected value ''"), so optional
+#     credentials are impossible there.
+#   - docker/setup-buildx-action boots its builder by pulling moby/buildkit from Docker Hub, and
+#     buildx then pulls the Dockerfile base images (node:…, ubuntu:…). The login step must come
+#     before setup-buildx.
 #
 # The token is never printed: it goes to `docker login` on stdin (docker/login-action), and GitHub
 # masks secret values in logs.
