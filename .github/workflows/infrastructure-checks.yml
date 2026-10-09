@@ -56,6 +56,8 @@ jobs:
         run: |
           set -euo pipefail
           shellcheck -S warning scripts/ci/*.sh scripts/bootstrap/*.sh
+          jq -e '.cases | length > 0 and all(.[]; (.expect == "allow" or .expect == "deny") and (.action | test("^[a-z0-9-]+:[A-Za-z0-9*]+$")))' \
+            scripts/bootstrap/testdata/testing-deployer-cases.json >/dev/null
           expect() { # <pass|refuse> <mode> <fixture>
             if scripts/ci/plan-guard.sh "$2" "scripts/ci/testdata/$3.json" >/dev/null; then got=pass; else got=refuse; fi
             [ "$got" = "$1" ] || { echo "::error::plan-guard $2 on $3: expected $1, got $got"; exit 1; }
@@ -73,6 +75,10 @@ jobs:
           expect pass session-destroy session-destroy-ok
           expect refuse session-destroy session-ok
           expect refuse session-destroy session-bad
+          expect pass foundation foundation-ok
+          expect refuse foundation foundation-bad
+          expect refuse foundation release-ok
+          expect refuse foundation session-destroy-ok
           bootstrap() { # <pass|refuse> <mode> <fixture>
             if scripts/ci/bootstrap-plan-check.sh "$2" "scripts/ci/testdata/$3.json" >/dev/null; then got=pass; else got=refuse; fi
             [ "$got" = "$1" ] || { echo "::error::bootstrap-plan-check $2 on $3: expected $1, got $got"; exit 1; }

@@ -418,7 +418,7 @@ jobs:
 
           resources=$(terraform state list)
           # A session counts as running only once its services exist. Anything less (a database
-          # without services, or secrets and a namespace without a database) is a half-built
+          # without services, or secret containers without a database) is a half-built
           # session from an earlier failure: it is destroyed and built again from scratch.
           if [ -n "$resources" ] && ! grep -qx 'module.app.aws_ecs_service.api\[0\]' <<<"$resources"; then
             echo "::warning::A half-built session was found; it is rebuilt from scratch."

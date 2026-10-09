@@ -10,6 +10,11 @@
 #                                      database, bucket, key, network, load balancer, cluster,
 #                                      service, secret, backup vault or IAM role from CI. Those go
 #                                      to the administrator path.
+#   plan-guard.sh foundation <plan.json>
+#                                      the persistent TEST foundation (infra/terraform/eu-test/
+#                                      foundation, administrator-applied): everything in it is
+#                                      persistent, so nothing may be deleted or replaced at all;
+#                                      creates and in-place updates only.
 #   plan-guard.sh session <plan.json>  a TEST session apply (infra/terraform/eu-test/session): only
 #                                      the session's own resources (the database, the DNS record,
 #                                      module.app.*) may change, and the database and the secret
@@ -43,6 +48,11 @@ case "$mode" in
     violations=$(jq -r '
       .resource_changes[]? | select(.change.actions | index("delete"))
       | select(.type | test("^aws_(db_instance|db_subnet_group|rds_cluster|s3_bucket|kms_key|vpc|subnet|internet_gateway|lb|ecs_cluster|ecs_service|secretsmanager_secret|backup_vault|iam_role|service_discovery_private_dns_namespace|acm_certificate|route53_zone)$"))
+      | "\(.change.actions | join(",")) \(.address)"' "$plan")
+    ;;
+  foundation)
+    violations=$(jq -r '
+      .resource_changes[]? | select(.change.actions | index("delete"))
       | "\(.change.actions | join(",")) \(.address)"' "$plan")
     ;;
   session)

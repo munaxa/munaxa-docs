@@ -318,7 +318,9 @@ How it works:
 - `plan-guard.sh infra` refuses to delete or replace a database, bucket, key, network, load
   balancer, cluster, service, secret, backup vault, IAM role or hosted zone from CI.
 
-The TEST session is not here. It belongs to `test-session.yml`.
+The TEST session is not here. It belongs to `test-session.yml`. The TEST foundation is not here
+either: its administrator plan (`scripts/bootstrap/plan-test-foundation.sh`) is checked with
+`plan-guard.sh foundation`, which refuses any delete or replace at all.
 
 **Bootstrap is never run by CI.** `bootstrap/` (Production) and `bootstrap-eu-test/` (TEST) are
 applied by an administrator in that account, for example in AWS CloudShell. Their plans show
@@ -380,7 +382,7 @@ workflows.
 | 2 | Production bootstrap **plan**: `scripts/bootstrap/plan-production.sh` ([runbook](bootstrap-plan-runbooks.md) §1). Expect 4 add, 1 change, PASS | `admin.tamer`, CloudShell (management account) | no |
 | 3 | TEST bootstrap **plans**: `scripts/bootstrap/plan-testing.sh` ([runbook](bootstrap-plan-runbooks.md) §2). Expect `OVERALL: PASS` | `admin.tamer` → `OrganizationAccountAccessRole` in 657878534449, same CloudShell | no |
 | 4 | After approval: re-plan the Production bootstrap with the lock on, check it again (PASS), apply that saved plan | `admin.tamer` | **yes** (A) |
-| 4a | AWS-native policy validation of the TEST documents (Access Analyzer, IAM policy simulator), read only ([runbook](bootstrap-plan-runbooks.md) §7, gate 3) | an authorized AWS identity | no |
+| 4a | AWS-native policy validation (Access Analyzer, IAM policy simulator), read only: `scripts/bootstrap/validate-policies.sh` ([runbook](bootstrap-plan-runbooks.md) §7–§8, gate 3) | an authorized AWS identity | no |
 | 5 | After approval: apply the TEST bootstrap in two steps (key; then the rest, checked again with every document visible; then `-migrate-state`), [README §4](../../infra/terraform/README.md) | `admin.tamer` → `OrganizationAccountAccessRole` | **yes** (B) |
 | 6 | Merge #134 | you | no |
 | 7 | `terraform-infra.yml`: `production`/`core` and `production`/`data`, `plan`. Both should show no changes (proves the Production CI chain) | GitHub Actions | no |

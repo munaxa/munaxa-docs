@@ -40,8 +40,10 @@ summarize() {
            policy: (if .change.after_unknown.policy == true then "known after apply" else doc(.change.after.policy) end),
            trust:  (if .change.after_unknown.assume_role_policy == true then "known after apply" else doc(.change.after.assume_role_policy) end)}
         | with_entries(select(.value != null))],
-      checker: ($verdict | split("\n") | map(select(test("^(STOP|RESULT|OVERALL|note|  missing|  unexpected)")))),
-      status: (if ($verdict | test("RESULT: PASS")) then "PASS" elif ($verdict | test("STOP")) then "STOP" else "NOT CHECKED" end)
+      checker: ($verdict | split("\n") | map(select(test("^(STOP|RESULT|OVERALL|note|  missing|  unexpected|plan-guard|::error::)")))),
+      status: (if ($verdict | test("STOP|::error::")) then "STOP"
+               elif ($verdict | test("RESULT: PASS|plan-guard \\([a-z-]+\\): OK")) then "PASS"
+               else "NOT CHECKED" end)
     }' "$plan"
 }
 

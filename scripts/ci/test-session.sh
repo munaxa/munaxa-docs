@@ -202,8 +202,8 @@ case "${1:-}" in
     [ "$alb" = None ] && alb=""
     [ "$db" = None ] && db=""
     if [ -z "$alb" ] && [ -z "$db" ]; then
-      # Neither hourly cost exists. Leftovers of a failed first apply (secret containers, the
-      # Cloud Map namespace) still count, as a session without ExpiresAt, so expiry removes them.
+      # Neither hourly cost exists. Leftovers of a failed first apply (secret containers) still
+      # count, as a session without ExpiresAt, so expiry removes them.
       if aws secretsmanager describe-secret --secret-id "$PREFIX/app" >/dev/null 2>&1; then
         echo "None None"
       else

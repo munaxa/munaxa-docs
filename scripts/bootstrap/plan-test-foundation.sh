@@ -53,5 +53,5 @@ terraform show -no-color "$work/plan" > "$HOME/test-foundation-plan.txt"
 terraform show -json "$work/plan" > "$HOME/test-foundation-plan.json"
 cd "$repo"
 
-# Nothing persistent may ever be deleted or replaced by a foundation plan; plan-guard infra refuses it.
-scripts/ci/plan-guard.sh infra "$HOME/test-foundation-plan.json" | tee "$HOME/test-foundation-check.txt"
+# Everything in the foundation is persistent: plan-guard foundation refuses any delete or replace.
+scripts/ci/plan-guard.sh foundation "$HOME/test-foundation-plan.json" 2>&1 | tee "$HOME/test-foundation-check.txt"

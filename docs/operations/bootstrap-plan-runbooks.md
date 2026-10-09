@@ -183,8 +183,8 @@ The script:
   `munaxa-docs-tfstate-eu-test-657878534449`. Only the administrator may read it: the bucket policy
   admits the TEST deployer to `eu-test/session/*` only;
 - plans with `-lock=false` (nothing is written to AWS, not even a lock) and never applies;
-- checks the plan with `plan-guard.sh infra`, which refuses any delete or replace of a persistent
-  resource, and writes `~/test-foundation-plan.txt`, `.json` and `~/test-foundation-check.txt`.
+- checks the plan with `plan-guard.sh foundation`, which refuses any delete or replace at all
+  (everything in the foundation is persistent), and writes `~/test-foundation-plan.txt`, `.json` and `~/test-foundation-check.txt`.
 
 The first foundation plan is creates only. The Cloud Map namespace `test.munaxa-docs.internal` and
 its `api` and `scanner` services are part of it (approved: about $0.50 a month, idle TEST total
@@ -260,7 +260,7 @@ starts until the gates before it pass.
 | --- | --- | --- | --- | --- |
 | 1. Offline validation | `fmt`/`validate` of every root, actionlint, ShellCheck, Prettier, the checker fixtures (`infrastructure-checks.yml`), an offline plan with fake credentials, a local IAM evaluator | CI, Claude | The code is consistent; the rendered documents have the intended shape; the checkers accept the agreed sets and refuse the bad ones | Anything about the real accounts. An offline plan is not a plan |
 | 2. Real Terraform plans | §1, §2, §2a, then §6 | `admin.tamer` (CloudShell) | The real accounts hold what we think; the change sets are exactly the agreed ones; every document in full | That AWS accepts and evaluates the documents as intended |
-| 3. AWS-native policy validation | IAM Access Analyzer `ValidatePolicy` on every rendered document (identity policies, boundaries, trusts, the state bucket policy, the key policy) with no error or security warning; `SimulateCustomPolicy` with each document set (identity policies plus boundary) on the agreed allow and deny cases | an authorized AWS identity, read only | AWS's own parser and evaluator agree with the design | That a TEST session really works end to end |
+| 3. AWS-native policy validation | `scripts/bootstrap/validate-policies.sh`: IAM Access Analyzer `ValidatePolicy` on every document in the review file (identity policies, boundaries, trusts, the state bucket policy, the key policy) with no error or security warning; `SimulateCustomPolicy` on the TEST deployer (nine policies under its boundary) with the agreed cases in `scripts/bootstrap/testdata/testing-deployer-cases.json` | `admin.tamer`, read only | AWS's own parser and evaluator agree with the design | That a TEST session really works end to end |
 | 4. First real TEST session | after the TEST bootstrap and foundation are applied: **TEST environment → start**, URL check, **stop** | GitHub Actions, approved | The session-only deployer is enough: the load balancer, database and Fargate tasks get their network interfaces through the ECS, Elastic Load Balancing and RDS service-linked roles, with no EC2 write in the deployer. The foundation guard denies nothing the session needs | — |
 
 A local evaluator result is gate 1, never gate 3. A gate is PASS only with its own evidence.
@@ -270,4 +270,35 @@ that name the state key (§3) are validated with the real key ARN once step A ex
 B is applied. Gate 4 can only run after the bootstrap and the foundation are applied. Its single known
 risk is the service-linked roles: if a session fails to create a network interface, the fix is a
 reviewed, narrow deployer change, never EC2 write on `*` and never a NAT or Elastic IP permission.
+
+## 8. Recovery checklist (when AWS access is available again)
+
+Plan-only and read-only until step 7; each apply after that needs its own approval. Stop at the
+first STOP and send the files for review.
+
+1. **Identity.** In AWS CloudShell of the management account, eu-central-1:
+   `aws sts get-caller-identity --query Arn --output text` prints exactly
+   `arn:aws:iam::800728620253:user/admin.tamer`. No other identity, no access keys.
+2. **Code.** §0: check out `claude/two-environment-cicd`; `git rev-parse HEAD` equals the PR
+   head; `install-terraform.sh` prints PASS; `export PATH="$HOME/tf:$PATH"`.
+3. **Production plan.** `bash scripts/bootstrap/plan-production.sh`: account 800728620253,
+   eu-central-1, `-lock=false`; expect 4 to add, 1 to change, 0 to destroy, `RESULT: PASS`.
+4. **TEST plans A and B.** `ALERT_EMAIL=<address> bash scripts/bootstrap/plan-testing.sh`:
+   `OrganizationAccountAccessRole` session `admin.tamer-bootstrap-eu-test` in 657878534449,
+   eu-central-1, local scratch state, `-lock=false`; expect plan A 2 creates, plan B 35 creates
+   (34 without the budget), 0 updates, 0 deletes, `OVERALL: PASS`.
+5. **Review file.** `bash scripts/bootstrap/export-plan-review.sh` writes
+   `~/bootstrap-plan-review.json` (gate 2 evidence). The foundation is `NOT RUN` at this point.
+6. **AWS-native validation.** `bash scripts/bootstrap/validate-policies.sh` writes
+   `~/policy-validation.json` and `.txt`. Before step A it ends `PARTIAL`: Access Analyzer on every
+   known document; the three key-naming documents and the simulator wait for step A.
+7. **Send for review:** `~/bootstrap-plan-review.json`, `~/policy-validation.json`,
+   `~/production-bootstrap-check.txt`, `~/test-bootstrap-check.txt`,
+   `~/test-bootstrap-inventory.txt`. The security review stays BLOCKED until they are reviewed.
+8. **After approval only:** apply Production; apply TEST step A; re-plan TEST step B (every
+   document visible), re-run steps 5 and 6 (now `OVERALL: PASS` expected, simulator included),
+   review, then apply step B ([README §4](../../infra/terraform/README.md)).
+9. **TEST foundation:** `bash scripts/bootstrap/plan-test-foundation.sh` (`plan-guard
+   foundation`: creates and updates only), re-run step 5, review, then an approved apply.
+10. **Gate 4:** the first real TEST session (start, check, stop) after the Cloudflare delegation.
 
