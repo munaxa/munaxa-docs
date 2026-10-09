@@ -1,0 +1,156 @@
+name: Release
+
+# Every merge to main becomes one release and walks one path:
+#
+#   build once   publish-images.yml: three images from this commit, probed, pushed, pinned by
+#                digest, pulled back with the production pull identity
+#     → TEST     test-session.yml `up`, environment `testing`: automatic. Creates the TEST session
+#                (or rolls the running one), migrates its database, verifies health, and shows
+#                https://test.docs.munaxa.com on this run's page
+#     → QA       people test; TEST stays up until it is no longer needed (below)
+#     → approval environment `production`: its required reviewers approve this run
+#     → PROD     deploy-release.yml, environment `production`: the SAME three digests, no rebuild
+#     → TEST off test-session.yml `down`: once PRODUCTION has the release, TEST is destroyed
+#                (unless a newer release is already under test there)
+#
+# If nobody approves, TEST still stops by itself at its ExpiresAt (24 hours after the deployment,
+# extendable to 72 from the "TEST environment" workflow), and the approval can still be given
+# later: PRODUCTION never needs TEST to be running, only to have passed.
+#
+# Production is never deployed by a merge alone: its job needs TEST to have succeeded and the
+# production environment's reviewers to approve. Only pushes to main start this workflow, the
+# production environment admits only main, and the Production CI role trusts only
+# repo:munaxa/munaxa-docs:environment:production on refs/heads/main, so a branch or pull request
+# can never obtain production credentials. TEST jobs run as the Testing CI role, which cannot
+# reach the Production account at all.
+#
+# Infrastructure is not deployed here. A PRODUCTION release may only replace task definitions and
+# update the three services (scripts/ci/plan-guard.sh release); a TEST session may only change the
+# session's own resources (plan-guard session). Everything else goes through terraform-infra.yml
+# (plan, review, apply) or, for bootstrap, the administrator.
+#
+# The pipeline stays off until both environments can take a release: set the repository variable
+# RELEASE_PIPELINE_ENABLED=true last, once TEST works end to end (TEST_ENVIRONMENT_ENABLED, a
+# successful start and stop) and PRODUCTION runs a release from its service root (#131)
+# (docs/operations/ci-cd-two-environments.md §10).
+
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  disabled:
+    name: Release pipeline disabled
+    if: vars.RELEASE_PIPELINE_ENABLED != 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: echo "::notice::RELEASE_PIPELINE_ENABLED is not 'true'; nothing was built or deployed."
+
+  build:
+    name: Build once
+    if: vars.RELEASE_PIPELINE_ENABLED == 'true'
+    uses: ./.github/workflows/publish-images.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      sha: ${{ github.sha }}
+    secrets:
+      DOCS_PRODUCTION_PULL_USER: ${{ secrets.DOCS_PRODUCTION_PULL_USER }}
+      DOCS_PRODUCTION_PULL_TOKEN: ${{ secrets.DOCS_PRODUCTION_PULL_TOKEN }}
+
+  testing:
+    name: TEST
+    needs: build
+    uses: ./.github/workflows/test-session.yml
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    with:
+      action: up
+      hours: 24
+      release_commit: ${{ needs.build.outputs.release_commit }}
+      api_image: ${{ needs.build.outputs.api_image }}
+      web_image: ${{ needs.build.outputs.web_image }}
+      antivirus_image: ${{ needs.build.outputs.antivirus_image }}
+
+  production:
+    name: PRODUCTION
+    needs: [build, testing]
+    uses: ./.github/workflows/deploy-release.yml
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    with:
+      release_commit: ${{ needs.build.outputs.release_commit }}
+      api_image: ${{ needs.build.outputs.api_image }}
+      web_image: ${{ needs.build.outputs.web_image }}
+      antivirus_image: ${{ needs.build.outputs.antivirus_image }}
+
+  testing-off:
+    name: TEST off
+    needs: [build, production]
+    uses: ./.github/workflows/test-session.yml
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    with:
+      action: down
+      only_if_release: ${{ needs.build.outputs.release_commit }}
+
+  # One plain-language overview at the top of the run: what was built, where it runs, what is next.
+  # No credentials, no environment; reads only the other jobs' results and outputs.
+  summary:
+    name: Release summary
+    needs: [build, testing, production, testing-off]
+    if: always() && vars.RELEASE_PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Summary
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+          API_IMAGE: ${{ needs.build.outputs.api_image }}
+          WEB_IMAGE: ${{ needs.build.outputs.web_image }}
+          ANTIVIRUS_IMAGE: ${{ needs.build.outputs.antivirus_image }}
+          TEST_URL: ${{ needs.testing.outputs.test_url }}
+          BUILD: ${{ needs.build.result }}
+          TESTING: ${{ needs.testing.result }}
+          PRODUCTION: ${{ needs.production.result }}
+          TESTING_OFF: ${{ needs.testing-off.result }}
+        run: |
+          word() { # <result> <done> <failed>
+            case "$1" in
+              success) echo "✅ $2" ;;
+              failure) echo "❌ $3" ;;
+              cancelled) echo "⏹️ cancelled" ;;
+              *) echo "⏸️ not reached" ;;
+            esac
+          }
+          {
+            echo "## Release \`${RELEASE_COMMIT:0:12}\`"
+            echo
+            echo "| Step | Status |"
+            echo "| --- | --- |"
+            echo "| 1. Build the three images once | $(word "$BUILD" built 'build failed') |"
+            echo "| 2. TEST | $(word "$TESTING" "running at ${TEST_URL:-https://test.docs.munaxa.com}" 'failed: see the TEST job') |"
+            echo "| 3. Approval and PRODUCTION | $(word "$PRODUCTION" 'deployed to https://docs.munaxa.com' 'not deployed: rejected or failed, see the PRODUCTION job') |"
+            echo "| 4. TEST switched off | $(word "$TESTING_OFF" 'yes (or left for a newer release under test)' 'teardown failed: the hourly check retries') |"
+            echo
+            if [ -n "$RELEASE_COMMIT" ]; then
+              echo "The same three images go to TEST and PRODUCTION; nothing is rebuilt in between:"
+              echo
+              echo "- release commit: [\`$RELEASE_COMMIT\`](https://github.com/$REPOSITORY/commit/$RELEASE_COMMIT)"
+              echo "- api: \`$API_IMAGE\`"
+              echo "- web: \`$WEB_IMAGE\`"
+              echo "- scanner: \`$ANTIVIRUS_IMAGE\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -33,6 +33,33 @@ on:
   push:
     tags:
       - 'image/**'
+  # The release pipeline (.github/workflows/release.yml) builds every merge to main through this
+  # same workflow, so the artifact TEST verifies and PRODUCTION runs is built, probed and verified
+  # exactly once, here. The caller passes the commit; the outputs are the three digest references.
+  workflow_call:
+    inputs:
+      sha:
+        description: Full 40-character commit SHA to build (the caller's own commit)
+        type: string
+        required: true
+    secrets:
+      DOCS_PRODUCTION_PULL_USER:
+        required: true
+      DOCS_PRODUCTION_PULL_TOKEN:
+        required: true
+    outputs:
+      release_commit:
+        description: The commit the images were built from
+        value: ${{ jobs.pull-identity.outputs.release_commit }}
+      api_image:
+        description: ghcr.io/munaxa/munaxa-docs-api@sha256:…
+        value: ${{ jobs.pull-identity.outputs.api_image }}
+      web_image:
+        description: ghcr.io/munaxa/munaxa-docs-web@sha256:…
+        value: ${{ jobs.pull-identity.outputs.web_image }}
+      antivirus_image:
+        description: ghcr.io/munaxa/munaxa-docs-antivirus@sha256:…
+        value: ${{ jobs.pull-identity.outputs.antivirus_image }}
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -59,9 +86,11 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
           OWNER: ${{ github.repository_owner }}
+          # Set only when the release pipeline calls this workflow.
+          INPUT_SHA: ${{ inputs.sha }}
         run: |
           set -euo pipefail
-          sha="${REF_NAME#image/}"
+          if [ -n "${INPUT_SHA:-}" ]; then sha="$INPUT_SHA"; else sha="${REF_NAME#image/}"; fi
           # A full SHA only: a short one is ambiguous in principle, and a branch name is mutable —
           # either would make "what was published" a question with more than one answer.
           if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
@@ -72,7 +101,7 @@ jobs:
           # GHCR repository names must be lower case.
           echo "owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ steps.resolve.outputs.sha }}
 
@@ -102,12 +131,11 @@ jobs:
       SHORT: ${{ needs.source.outputs.short }}
       REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.source.outputs.sha }}
 
-      - uses: docker/setup-buildx-action@v3
-
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
       # argument is recorded in the image's history. The same construction the CI images job uses.
       - name: Write the package-registry credential for the build secret
@@ -119,7 +147,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Authenticate to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -128,7 +156,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ${{ matrix.target }}
@@ -241,7 +269,7 @@ jobs:
             echo "| run | ${{ github.run_id }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digest-${{ matrix.target }}
           path: digests/${{ matrix.target }}
@@ -260,19 +288,18 @@ jobs:
       SHORT: ${{ needs.source.outputs.short }}
       REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/munaxa-docs-antivirus
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.source.outputs.sha }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
 
-      - uses: docker/setup-buildx-action@v3
-
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       # Built and loaded first, and only pushed once it has proved it scans.
       - name: Build the scanner (not yet pushed)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: infra/antivirus
           push: false
@@ -329,7 +356,7 @@ jobs:
           docker rm -f av-candidate >/dev/null
 
       - name: Authenticate to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -391,7 +418,7 @@ jobs:
           printf 'clamd --version: %s\nc-icap -V: %s\n' "$CLAMAV" "$CICAP" > digests/antivirus-versions
           printf '%s\n' "$PACKAGES" >> digests/antivirus-versions
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digest-antivirus
           path: digests/
@@ -403,8 +430,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      release_commit: ${{ steps.refs.outputs.release_commit }}
+      api_image: ${{ steps.refs.outputs.api_image }}
+      web_image: ${{ steps.refs.outputs.web_image }}
+      antivirus_image: ${{ steps.refs.outputs.antivirus_image }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: digest-*
           merge-multiple: true
@@ -441,3 +473,21 @@ jobs:
           for ref in $(cat digests/api digests/web digests/antivirus); do docker pull "$ref"; done
           docker logout ghcr.io
           echo "| production pull identity | pulled all three digests as \`$PULL_USER\` |" >> "$GITHUB_STEP_SUMMARY"
+      # The release pipeline's handle on this run: the commit and the three digest references,
+      # each re-checked against the exact form the service roots accept (digest only, never a tag).
+      - name: Emit the release references
+        id: refs
+        env:
+          SHA: ${{ needs.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          api=$(cat digests/api); web=$(cat digests/web); av=$(cat digests/antivirus)
+          printf '%s' "$api" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-api@sha256:[0-9a-f]{64}$' || { echo "::error::bad api reference"; exit 1; }
+          printf '%s' "$web" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-web@sha256:[0-9a-f]{64}$' || { echo "::error::bad web reference"; exit 1; }
+          printf '%s' "$av" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-antivirus@sha256:[0-9a-f]{64}$' || { echo "::error::bad antivirus reference"; exit 1; }
+          {
+            echo "release_commit=$SHA"
+            echo "api_image=$api"
+            echo "web_image=$web"
+            echo "antivirus_image=$av"
+          } >> "$GITHUB_OUTPUT"

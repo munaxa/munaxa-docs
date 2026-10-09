@@ -1,0 +1,518 @@
+name: TEST session
+
+# Creates, updates, extends and destroys the one TEST session (infra/terraform/eu-test/session) in
+# the munaxa-nonprod account. Reusable only: release.yml calls it for every release, and
+# test-environment.yml is the button panel (status, start, extend, stop) plus the hourly expiry.
+#
+#   up       deploy a release to TEST. No session yet: create one (database, load balancer, DNS
+#            record, services), bootstrap the database (roles, migrations, first administrator)
+#            and start the services. A session already running: migrate its database and roll
+#            the services onto the new images. Either way the session expires `hours` from now.
+#   extend   move ExpiresAt to `hours` from now, keeping the release that runs.
+#   down     destroy the session. With only_if_release, only when that release is still the one
+#            TEST runs (a newer release under test is left alone).
+#   expire   destroy the session if its ExpiresAt has passed (or it has none).
+#   status   report what runs, until when, and where.
+#
+# What a session costs exists only between `up` and `down`/`expire`: the database, the load
+# balancer, the tasks. The persistent foundation (network, cluster, DNS zone, certificate, keys,
+# Cloud Map, roles; infra/terraform/eu-test/foundation; administrator-applied) costs about $3–3.50 a
+# month and is never touched here: plan-guard (session, session-destroy) refuses any plan that changes anything but the
+# session's own resources.
+#
+# Identity chain (no stored AWS credentials), TEST only:
+#   GitHub OIDC token for the `testing` environment on main
+#     → Testing CI role (657878534449; can only assume the TEST deployer)
+#     → TEST deployer (Terraform and scripts/ci/test-session.sh; source identity github-actions)
+# The role ARN and account are fixed below; nothing here can name the Production account, and the
+# Testing CI role could not reach it anyway.
+
+on:
+  workflow_call:
+    inputs:
+      action:
+        description: up, extend, down, expire or status
+        type: string
+        required: true
+      hours:
+        description: up and extend — the session expires this many hours from now (1–72)
+        type: number
+        default: 24
+      release_commit:
+        description: up — the commit the three images were built from
+        type: string
+        default: ''
+      api_image:
+        type: string
+        default: ''
+      web_image:
+        type: string
+        default: ''
+      antivirus_image:
+        type: string
+        default: ''
+      only_if_release:
+        description: down — destroy only while TEST still runs this release commit
+        type: string
+        default: ''
+    outputs:
+      test_url:
+        description: The TEST address, once the session is healthy
+        value: ${{ jobs.session.outputs.test_url }}
+
+permissions: {}
+
+env:
+  AWS_REGION: eu-central-1
+  TERRAFORM_VERSION: 1.16.5
+  NODE_VERSION: '22'
+  TEST_URL: https://test.docs.munaxa.com
+
+jobs:
+  # No permissions, no environment, no credentials: rejects bad input before any job can request
+  # an OIDC token.
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      expires_at: ${{ steps.check.outputs.expires_at }}
+    steps:
+      - name: Check action, branch and inputs
+        id: check
+        env:
+          ACTION: ${{ inputs.action }}
+          HOURS: ${{ inputs.hours }}
+          REF: ${{ github.ref }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          API_IMAGE: ${{ inputs.api_image }}
+          WEB_IMAGE: ${{ inputs.web_image }}
+          ANTIVIRUS_IMAGE: ${{ inputs.antivirus_image }}
+          ONLY_IF_RELEASE: ${{ inputs.only_if_release }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in up|extend|down|expire|status) ;; *) echo "::error::Unknown action."; exit 1 ;; esac
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::TEST is driven only from main (this run is on $REF)."; exit 1; }
+          if [ "$ACTION" = up ]; then
+            printf '%s' "$RELEASE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::release_commit must be a full commit SHA."; exit 1; }
+            printf '%s' "$API_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-api@sha256:[0-9a-f]{64}$' || { echo "::error::api_image must be pinned by digest."; exit 1; }
+            printf '%s' "$WEB_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-web@sha256:[0-9a-f]{64}$' || { echo "::error::web_image must be pinned by digest."; exit 1; }
+            printf '%s' "$ANTIVIRUS_IMAGE" | grep -Eq '^ghcr\.io/munaxa/munaxa-docs-antivirus@sha256:[0-9a-f]{64}$' || { echo "::error::antivirus_image must be pinned by digest."; exit 1; }
+          fi
+          [ -z "$ONLY_IF_RELEASE" ] || printf '%s' "$ONLY_IF_RELEASE" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::only_if_release must be a full commit SHA."; exit 1; }
+          printf '%s' "$HOURS" | grep -Eq '^[0-9]+$' && [ "$HOURS" -ge 1 ] && [ "$HOURS" -le 72 ] \
+            || { echo "::error::hours must be a whole number from 1 to 72."; exit 1; }
+          echo "expires_at=$(date -u -d "+$HOURS hours" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  # expire only: a cheap look at the running session, outside the queue below, so the hourly check
+  # never waits behind (or displaces) a deployment unless there really is something to destroy.
+  expiry-check:
+    name: Is TEST past its expiry?
+    needs: preflight
+    if: inputs.action == 'expire'
+    runs-on: ubuntu-latest
+    environment: testing
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      expired: ${{ steps.check.outputs.expired }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Assume the Testing CI role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::657878534449:role/munaxa-docs/bootstrap/munaxa-docs-eu-test-ci
+          role-session-name: gha-run-${{ github.run_id }}
+          role-duration-seconds: 900
+          role-skip-session-tagging: true
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: '657878534449'
+
+      - name: Look at the running session
+        id: check
+        run: |
+          set -euo pipefail
+          state=$(scripts/ci/test-session.sh describe)
+          expired=false
+          if [ "$state" != none ]; then
+            read -r expires _ <<<"$state"
+            if [ "$expires" = None ] || [ "$(date -u +%s)" -ge "$(date -u -d "$expires" +%s)" ]; then expired=true; fi
+          fi
+          echo "TEST: $state → expired=$expired"
+          echo "expired=$expired" >> "$GITHUB_OUTPUT"
+
+  session:
+    name: TEST ${{ inputs.action }}
+    needs: [preflight, expiry-check]
+    if: >-
+      !cancelled() && needs.preflight.result == 'success'
+      && (inputs.action != 'expire' || needs.expiry-check.outputs.expired == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: testing
+      url: ${{ steps.done.outputs.url }}
+    # One queue for everything that changes TEST (deploy, extend, stop, expiry teardown), so a
+    # teardown can never run in the middle of a deployment. Each run decides what to do only once it
+    # is at the head of the queue, from what AWS shows at that moment. GitHub keeps one waiting run
+    # per queue: a newer waiting run replaces an older waiting one (a newer release supersedes an
+    # older one still waiting for TEST; that older release then needs "start" to be tested again).
+    # status only reads, so it never queues.
+    concurrency:
+      group: ${{ inputs.action == 'status' && format('test-status-{0}', github.run_id) || 'test-session' }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      test_url: ${{ steps.done.outputs.url }}
+    env:
+      ACTION: ${{ inputs.action }}
+      EXPIRES_AT: ${{ needs.preflight.outputs.expires_at }}
+      RELEASE_COMMIT: ${{ inputs.release_commit }}
+      API_IMAGE: ${{ inputs.api_image }}
+      WEB_IMAGE: ${{ inputs.web_image }}
+      ANTIVIRUS_IMAGE: ${{ inputs.antivirus_image }}
+      ONLY_IF_RELEASE: ${{ inputs.only_if_release }}
+      PREFIX: munaxa-docs-eu-test
+      DEPLOYER_ROLE_ARN: arn:aws:iam::657878534449:role/munaxa-docs/bootstrap/munaxa-docs-eu-test-deployer
+      SESSION_DIR: infra/terraform/eu-test/session
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      TF_VAR_deployer_source_identity: github-actions
+      TF_VAR_deployer_session_name: gha-run-${{ github.run_id }}
+    steps:
+      - name: Check out (full history, for the release ancestry check)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Fails in plain words, before anything is created, if the testing environment is missing a
+      # secret (Settings → Environments → testing). Only presence is checked; values are never shown.
+      - name: The testing environment has its secrets
+        if: inputs.action == 'up'
+        env:
+          HAS_PULL_USER: ${{ secrets.TEST_PULL_USER != '' }}
+          HAS_PULL_TOKEN: ${{ secrets.TEST_PULL_TOKEN != '' }}
+          HAS_ADMIN_EMAIL: ${{ secrets.TEST_ADMIN_EMAIL != '' }}
+          HAS_ADMIN_PASSWORD: ${{ secrets.TEST_ADMIN_PASSWORD != '' }}
+        run: |
+          missing=""
+          [ "$HAS_PULL_USER" = true ] || missing="$missing TEST_PULL_USER"
+          [ "$HAS_PULL_TOKEN" = true ] || missing="$missing TEST_PULL_TOKEN"
+          [ "$HAS_ADMIN_EMAIL" = true ] || missing="$missing TEST_ADMIN_EMAIL"
+          [ "$HAS_ADMIN_PASSWORD" = true ] || missing="$missing TEST_ADMIN_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::The testing environment is missing these secrets:$missing (Settings → Environments → testing). Nothing was created."
+            exit 1
+          fi
+
+      - name: Authenticate to GHCR (read only)
+        if: inputs.action == 'up'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same check Production makes: each digest exists and was built from the release commit,
+      # and that commit is on main. TEST tests exactly what PRODUCTION will run.
+      - name: The release is on main and the digests are its images
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$RELEASE_COMMIT" "$GITHUB_SHA" \
+            || { echo "::error::release_commit $RELEASE_COMMIT is not on main at $GITHUB_SHA."; exit 1; }
+          for ref in "$API_IMAGE" "$WEB_IMAGE" "$ANTIVIRUS_IMAGE"; do
+            revision=$(docker buildx imagetools inspect "$ref" --format '{{ index .Image.Config.Labels "org.opencontainers.image.revision" }}')
+            [ "$revision" = "$RELEASE_COMMIT" ] || { echo "::error::$ref has revision $revision, not $RELEASE_COMMIT."; exit 1; }
+            echo "$ref → $revision"
+          done
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume the Testing CI role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::657878534449:role/munaxa-docs/bootstrap/munaxa-docs-eu-test-ci
+          role-session-name: gha-run-${{ github.run_id }}
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: '657878534449'
+
+      # What runs now, read from AWS rather than from GitHub: the load balancer's ExpiresAt and
+      # ReleaseCommit tags, or "none". Decides what this run does.
+      - name: Look at the running session
+        id: plan
+        run: |
+          set -euo pipefail
+          state=$(scripts/ci/test-session.sh describe)
+          echo "running session: $state"
+          running=false; expires=None; commit=None
+          if [ "$state" != none ]; then
+            running=true
+            read -r expires commit <<<"$state"
+          fi
+          now=$(date -u +%s)
+          destroy=false; deploy=false
+          case "$ACTION" in
+            up) deploy=true ;;
+            extend)
+              [ "$running" = true ] || { echo "::error::TEST is not running. Use 'start' in the TEST environment workflow."; exit 1; }
+              [ "$commit" != None ] || { echo "::error::The session carries no release; stop it and start it again."; exit 1; }
+              deploy=true ;;
+            down)
+              if [ "$running" = true ] && { [ -z "$ONLY_IF_RELEASE" ] || [ "$commit" = None ] || [ "$commit" = "$ONLY_IF_RELEASE" ]; }; then
+                destroy=true
+              elif [ "$running" = true ]; then
+                echo "::notice::TEST now runs $commit, a newer release under test; left running."
+              fi ;;
+            expire)
+              if [ "$running" = true ]; then
+                if [ "$expires" = None ] || [ "$now" -ge "$(date -u -d "$expires" +%s)" ]; then destroy=true
+                else echo "TEST expires at $expires; nothing to do."; fi
+              fi ;;
+            status) ;;
+          esac
+          {
+            echo "running=$running"; echo "expires=$expires"; echo "commit=$commit"
+            echo "destroy=$destroy"; echo "deploy=$deploy"
+          } >> "$GITHUB_OUTPUT"
+
+          # Terraform's inputs. A teardown needs syntactically valid values only; nothing is built.
+          zero=0000000000000000000000000000000000000000000000000000000000000000
+          if [ "$ACTION" = up ]; then
+            commit_var="$RELEASE_COMMIT"; api="$API_IMAGE"; web="$WEB_IMAGE"; av="$ANTIVIRUS_IMAGE"
+          elif [ "$ACTION" = extend ]; then
+            live=$(scripts/ci/ecs-release.sh live)
+            commit_var="$commit"
+            api=$(printf '%s\n' "$live" | sed -n 's/^api_image=//p')
+            web=$(printf '%s\n' "$live" | sed -n 's/^web_image=//p')
+            av=$(printf '%s\n' "$live" | sed -n 's/^antivirus_image=//p')
+          else
+            commit_var=${zero:0:40}
+            api="ghcr.io/munaxa/munaxa-docs-api@sha256:$zero"
+            web="ghcr.io/munaxa/munaxa-docs-web@sha256:$zero"
+            av="ghcr.io/munaxa/munaxa-docs-antivirus@sha256:$zero"
+          fi
+          printf '%s' "$commit_var" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::unexpected release commit tag"; exit 1; }
+          {
+            echo "TF_VAR_expires_at=$EXPIRES_AT"
+            echo "TF_VAR_release_commit=$commit_var"
+            echo "TF_VAR_api_image=$api"
+            echo "TF_VAR_web_image=$web"
+            echo "TF_VAR_antivirus_image=$av"
+          } >> "$GITHUB_ENV"
+
+      - name: terraform init
+        if: steps.plan.outputs.destroy == 'true' || steps.plan.outputs.deploy == 'true'
+        working-directory: ${{ env.SESSION_DIR }}
+        run: terraform init -lockfile=readonly -backend-config=../ci.s3.tfbackend
+
+      - name: Destroy the session
+        if: steps.plan.outputs.destroy == 'true'
+        run: |
+          set -euo pipefail
+          cd "$SESSION_DIR"
+          terraform plan -destroy -lock-timeout=30m -out=destroy.tfplan >/dev/null
+          terraform show -json destroy.tfplan > destroy.json
+          "$GITHUB_WORKSPACE/scripts/ci/plan-guard.sh" session-destroy destroy.json
+          terraform apply -lock-timeout=30m destroy.tfplan
+          rm -f destroy.tfplan destroy.json
+          cd "$GITHUB_WORKSPACE"
+          scripts/ci/test-session.sh cleanup-leftovers
+          [ "$(scripts/ci/test-session.sh describe)" = none ] || { echo "::error::Session resources remain after the teardown."; exit 1; }
+          echo "TEST destroyed; nothing billed by the hour remains."
+
+      # Migrations run from this checkout (the release commit's prisma/migrations), through a
+      # tunnel task in the session, from the runner. Only `up` needs Node and the SSM plugin.
+      - name: Set up pnpm
+        if: inputs.action == 'up'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node
+        if: inputs.action == 'up'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: Install dependencies (for the migration runner)
+        if: inputs.action == 'up'
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the Session Manager plugin 1.2.707.0 (checksum verified)
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          curl -fsSLo "$RUNNER_TEMP/smp.deb" https://s3.amazonaws.com/session-manager-downloads/plugin/1.2.707.0/ubuntu_64bit/session-manager-plugin.deb
+          echo "91cc9a1a8df6f730622d5e11a8610be6e06d5858408e8029b56d0d63aedd0a68  $RUNNER_TEMP/smp.deb" | sha256sum -c -
+          sudo dpkg -i "$RUNNER_TEMP/smp.deb" >/dev/null
+          rm -f "$RUNNER_TEMP/smp.deb"
+
+      # up:     a fresh session is built without services, its database bootstrapped, then the
+      #         services start. A running session is migrated first, then rolled.
+      #         A session whose services never started (an earlier failure) is rebuilt from scratch.
+      # extend: the same release and images; only the ExpiresAt tags change.
+      # Every plan is saved and checked by plan-guard (session) before it is applied.
+      - name: Deploy to TEST
+        if: steps.plan.outputs.deploy == 'true'
+        env:
+          TEST_PULL_USER: ${{ inputs.action == 'up' && secrets.TEST_PULL_USER || '' }}
+          TEST_PULL_TOKEN: ${{ inputs.action == 'up' && secrets.TEST_PULL_TOKEN || '' }}
+          TEST_ADMIN_EMAIL: ${{ inputs.action == 'up' && secrets.TEST_ADMIN_EMAIL || '' }}
+          TEST_ADMIN_PASSWORD: ${{ inputs.action == 'up' && secrets.TEST_ADMIN_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          cd "$SESSION_DIR"
+          plan() { # <enable_services> <guard> <name>
+            terraform plan -lock-timeout=30m -out="$3.tfplan" "-var=enable_services=$1" >/dev/null
+            terraform show -json "$3.tfplan" > "$3.json"
+            "$GITHUB_WORKSPACE/scripts/ci/plan-guard.sh" "$2" "$3.json"
+            rm -f "$3.json"
+          }
+          apply() { terraform apply -lock-timeout=30m "$1.tfplan"; rm -f "$1.tfplan"; }
+          export_outputs() {
+            terraform output -json > "$RUNNER_TEMP/session.json"
+            DB_ADDRESS=$(jq -r .db_address.value "$RUNNER_TEMP/session.json")
+            TENANT_ID=$(jq -r .tenant_id.value "$RUNNER_TEMP/session.json")
+            TENANT_SLUG=$(jq -r .tenant_slug.value "$RUNNER_TEMP/session.json")
+            TENANT_DATABASE=$(jq -r .tenant_database.value "$RUNNER_TEMP/session.json")
+            DOCS_BUCKET=$(jq -r .docs_bucket.value "$RUNNER_TEMP/session.json")
+            OPS_SUBNETS=$(jq -r '.ops_network.value.subnets | join(",")' "$RUNNER_TEMP/session.json")
+            OPS_SECURITY_GROUPS=$(jq -r '.ops_network.value.security_groups | join(",")' "$RUNNER_TEMP/session.json")
+            SECRET_APP_ARN=$(jq -r .secret_arns.value.app "$RUNNER_TEMP/session.json")
+            SECRET_OPERATOR_ARN=$(jq -r .secret_arns.value.operator "$RUNNER_TEMP/session.json")
+            SECRET_GHCR_ARN=$(jq -r .secret_arns.value.ghcr_pull "$RUNNER_TEMP/session.json")
+            rm -f "$RUNNER_TEMP/session.json"
+            export DB_ADDRESS TENANT_ID TENANT_SLUG TENANT_DATABASE DOCS_BUCKET OPS_SUBNETS \
+              OPS_SECURITY_GROUPS SECRET_APP_ARN SECRET_OPERATOR_ARN SECRET_GHCR_ARN
+          }
+          prepare_db() { (cd "$GITHUB_WORKSPACE" && scripts/ci/test-session.sh prepare-db "$1"); }
+
+          if [ "$ACTION" = extend ]; then
+            plan true session extend
+            apply extend
+            exit 0
+          fi
+
+          resources=$(terraform state list)
+          # A session counts as running only once its services exist. Anything less (a database
+          # without services, or secret containers without a database) is a half-built
+          # session from an earlier failure: it is destroyed and built again from scratch.
+          if [ -n "$resources" ] && ! grep -qx 'module.app.aws_ecs_service.api\[0\]' <<<"$resources"; then
+            echo "::warning::A half-built session was found; it is rebuilt from scratch."
+            terraform plan -destroy -lock-timeout=30m -out=rebuild.tfplan >/dev/null
+            terraform show -json rebuild.tfplan > rebuild.json
+            "$GITHUB_WORKSPACE/scripts/ci/plan-guard.sh" session-destroy rebuild.json
+            rm -f rebuild.json
+            apply rebuild
+            resources=""
+          fi
+
+          if [ -z "$resources" ]; then
+            echo "== new session: database, load balancer, DNS record, task definitions (no services yet)"
+            plan false session base
+            apply base
+            export_outputs
+            prepare_db fresh
+            echo "== start the services"
+            plan true session services
+            apply services
+          else
+            echo "== running session: migrate, then roll onto the new images"
+            plan true session release
+            export_outputs
+            prepare_db existing
+            apply release
+          fi
+
+      - name: Wait for the services and verify health
+        if: steps.plan.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          scripts/ci/ecs-release.sh wait scanner api web
+          check() { # <path> — 200 within ten minutes (a new DNS name and load balancer take a moment)
+            for _ in $(seq 1 60); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$TEST_URL$1" || true)
+              [ "$code" = 200 ] && { echo "$1 → 200"; return 0; }
+              sleep 10
+            done
+            echo "::error::$TEST_URL$1 did not answer 200 (last: $code)"; return 1
+          }
+          check /api/health/ready
+          check /login
+
+      - name: Result
+        id: done
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          RUNNING: ${{ steps.plan.outputs.running }}
+          DESTROYED: ${{ steps.plan.outputs.destroy }}
+          DEPLOYED: ${{ steps.plan.outputs.deploy }}
+          LIVE_EXPIRES: ${{ steps.plan.outputs.expires }}
+          LIVE_COMMIT: ${{ steps.plan.outputs.commit }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          link() { printf '[`%s`](https://github.com/%s/commit/%s)' "${1:0:12}" "$REPOSITORY" "$1"; }
+          {
+            echo "## TEST environment"
+            echo
+            if [ "$DEPLOYED" = true ] && [ "$JOB_STATUS" = success ]; then
+              echo "url=$TEST_URL" >> "$GITHUB_OUTPUT"
+              echo "✅ **TEST is running:** $TEST_URL"
+              echo
+              echo "| | |"
+              echo "| --- | --- |"
+              echo "| Release | $(link "$TF_VAR_release_commit") |"
+              echo "| Stops automatically at | **$EXPIRES_AT** (UTC) |"
+              echo "| API image | \`$TF_VAR_api_image\` |"
+              echo "| Web image | \`$TF_VAR_web_image\` |"
+              echo "| Scanner image | \`$TF_VAR_antivirus_image\` |"
+              echo
+              echo "Sign in with the TEST administrator account (the \`TEST_ADMIN_EMAIL\` secret). TEST starts with an empty database; anything entered there is deleted when TEST stops."
+              echo
+              echo "**Next, for a release:** test here, then on the **Release** run choose **Review deployments → production → Approve**. PRODUCTION receives exactly these three images, and TEST then switches itself off."
+            elif [ "$DESTROYED" = true ] && [ "$JOB_STATUS" = success ]; then
+              echo "⏹️ **TEST is stopped.** Nothing billed by the hour remains (database, load balancer and tasks are deleted)."
+            elif [ "$JOB_STATUS" = success ] && [ "$RUNNING" = true ]; then
+              echo "url=$TEST_URL" >> "$GITHUB_OUTPUT"
+              echo "✅ **TEST is running:** $TEST_URL — release $(link "$LIVE_COMMIT"), stops automatically at **$LIVE_EXPIRES** (UTC)."
+            elif [ "$JOB_STATUS" = success ] && [ "$RUNNING" = false ]; then
+              echo "⏹️ **TEST is not running.** It costs only its always-on foundation (about \$3–3.50 a month)."
+            else
+              echo "❌ **This TEST run failed** ($ACTION). Open the step with the red cross above for details."
+              echo
+              echo "Common causes:"
+              echo "- *missing secrets* → Settings → Environments → testing needs TEST_PULL_USER, TEST_PULL_TOKEN, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD;"
+              echo "- *no certificate / DNS* → the one-time Cloudflare delegation of test.docs.munaxa.com is missing or not yet active;"
+              echo "- *migration failed* → the release's database migrations failed on an empty database: a code problem, not an environment one;"
+              echo "- *health check failed* → the application did not start; see the API logs in the run above."
+              echo
+              echo "A half-built TEST is rebuilt from scratch by the next start, and the hourly check removes anything left past its expiry."
+            fi
+            echo
+            echo "_Checked $now (UTC). Start, extend, stop or check TEST: Actions → **TEST environment** → Run workflow._"
+          } >> "$GITHUB_STEP_SUMMARY"

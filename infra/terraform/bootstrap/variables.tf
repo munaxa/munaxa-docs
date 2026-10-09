@@ -34,7 +34,7 @@ variable "engineering_principal_arn" {
 }
 
 variable "github_repository" {
-  description = "The GitHub repository (owner/name) whose production environment may assume the CI role."
+  description = "The GitHub repository (owner/name) whose production environment may assume the Production CI role."
   type        = string
   default     = "munaxa/munaxa-docs"
 
@@ -50,8 +50,8 @@ variable "github_environment" {
   default     = "production"
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9._-]+$", var.github_environment))
-    error_message = "Use a single environment name, with no wildcard."
+    condition     = var.github_environment == "production"
+    error_message = "The Production CI role trusts the production GitHub environment only."
   }
 }
 

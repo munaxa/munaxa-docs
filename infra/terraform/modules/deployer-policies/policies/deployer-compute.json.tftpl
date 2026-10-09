@@ -1,0 +1,241 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Ecs${environment}Cluster",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:CreateCluster",
+        "ecs:DeleteCluster",
+        "ecs:UpdateCluster",
+        "ecs:UpdateClusterSettings",
+        "ecs:PutClusterCapacityProviders",
+        "ecs:TagResource",
+        "ecs:UntagResource"
+      ],
+      "Resource": "arn:aws:ecs:${region}:${account_id}:cluster/${prefix}"
+    },
+    {
+      "Sid": "Ecs${environment}Services",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:CreateService",
+        "ecs:UpdateService",
+        "ecs:DeleteService",
+        "ecs:TagResource",
+        "ecs:UntagResource"
+      ],
+      "Resource": "arn:aws:ecs:${region}:${account_id}:service/${prefix}/*"
+    },
+    {
+      "Sid": "EcsRegisterTaskDefinitionsTagged${environment}",
+      "Effect": "Allow",
+      "Action": "ecs:RegisterTaskDefinition",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "EcsTagOnCreate",
+      "Effect": "Allow",
+      "Action": "ecs:TagResource",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "${environment}",
+          "ecs:CreateAction": [
+            "CreateCluster",
+            "CreateService",
+            "RegisterTaskDefinition",
+            "RunTask"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Ecs${environment}TaskDefinitions",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DeregisterTaskDefinition",
+        "ecs:DeleteTaskDefinitions",
+        "ecs:TagResource",
+        "ecs:UntagResource"
+      ],
+      "Resource": "arn:aws:ecs:${region}:${account_id}:task-definition/${prefix}-*:*"
+    },
+    {
+      "Sid": "EcsOperatorTasksOn${environment}Cluster",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:RunTask",
+        "ecs:StartTask",
+        "ecs:StopTask"
+      ],
+      "Resource": [
+        "arn:aws:ecs:${region}:${account_id}:task-definition/${prefix}-*:*",
+        "arn:aws:ecs:${region}:${account_id}:task/${prefix}/*"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "arn:aws:ecs:${region}:${account_id}:cluster/${prefix}"
+        }
+      }
+    },
+    {
+      "Sid": "CloudMapCreateTagged${environment}",
+      "Effect": "Allow",
+      "Action": [
+        "servicediscovery:CreatePrivateDnsNamespace",
+        "servicediscovery:CreateService",
+        "servicediscovery:TagResource"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "CloudMapManage${environment}Tagged",
+      "Effect": "Allow",
+      "Action": [
+        "servicediscovery:DeleteNamespace",
+        "servicediscovery:UpdatePrivateDnsNamespace",
+        "servicediscovery:DeleteService",
+        "servicediscovery:UpdateService"
+      ],
+      "Resource": [
+        "arn:aws:servicediscovery:${region}:${account_id}:namespace/*",
+        "arn:aws:servicediscovery:${region}:${account_id}:service/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "Route53PrivateZoneForCloudMap",
+      "Effect": "Allow",
+      "Action": [
+        "route53:CreateHostedZone",
+        "route53:DeleteHostedZone",
+        "route53:AssociateVPCWithHostedZone",
+        "route53:DisassociateVPCFromHostedZone",
+        "route53:ChangeTagsForResource",
+        "route53:UpdateHostedZoneComment"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53RecordsOnlyIn${environment}Namespace",
+      "Effect": "Allow",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/*",
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "${cloudmap_namespace}",
+            "*.${cloudmap_namespace}"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "${environment}LoadBalancer",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:ModifyLoadBalancerAttributes",
+        "elasticloadbalancing:SetSecurityGroups",
+        "elasticloadbalancing:SetSubnets",
+        "elasticloadbalancing:SetIpAddressType",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:ModifyListener",
+        "elasticloadbalancing:ModifyListenerAttributes",
+        "elasticloadbalancing:AddListenerCertificates",
+        "elasticloadbalancing:RemoveListenerCertificates",
+        "elasticloadbalancing:CreateRule",
+        "elasticloadbalancing:DeleteRule",
+        "elasticloadbalancing:ModifyRule",
+        "elasticloadbalancing:SetRulePriorities",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:DeregisterTargets",
+        "elasticloadbalancing:AddTags",
+        "elasticloadbalancing:RemoveTags"
+      ],
+      "Resource": [
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:loadbalancer/app/${prefix}-*/*",
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:listener/app/${prefix}-*/*",
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:listener-rule/app/${prefix}-*/*",
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:targetgroup/${prefix}-*/*"
+      ]
+    },
+    {
+      "Sid": "CertificatesRequestTagged${environment}",
+      "Effect": "Allow",
+      "Action": [
+        "acm:RequestCertificate",
+        "acm:AddTagsToCertificate"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "CertificatesManage${environment}Tagged",
+      "Effect": "Allow",
+      "Action": [
+        "acm:DeleteCertificate",
+        "acm:AddTagsToCertificate",
+        "acm:RemoveTagsFromCertificate",
+        "acm:UpdateCertificateOptions",
+        "acm:RenewCertificate"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "${environment}LogGroups",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:DeleteRetentionPolicy",
+        "logs:AssociateKmsKey",
+        "logs:DisassociateKmsKey",
+        "logs:PutMetricFilter",
+        "logs:DeleteMetricFilter",
+        "logs:TagResource",
+        "logs:UntagResource",
+        "logs:TagLogGroup",
+        "logs:UntagLogGroup",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*",
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*:*",
+        "arn:aws:logs:${region}:${account_id}:log-group:/aws/rds/instance/${prefix}-*"
+      ]
+    }
+  ]
+}

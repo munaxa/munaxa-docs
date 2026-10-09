@@ -1,0 +1,779 @@
+{
+  "note": "Agreed allow/deny cases for the TEST deployer (its nine policies under deployer-boundary). Run by scripts/bootstrap/validate-policies.sh with the IAM policy simulator. STATE_KEY_ARN is replaced by the real state key ARN from the plan.",
+  "account": "657878534449",
+  "region": "eu-central-1",
+  "cases": [
+    {
+      "expect": "deny",
+      "action": "ec2:DeleteVpc",
+      "resource": "arn:aws:ec2:eu-central-1:657878534449:vpc/vpc-0123",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:CreateNatGateway",
+      "resource": "*",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:AllocateAddress",
+      "resource": "*",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:ReleaseAddress",
+      "resource": "*",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:AssociateAddress",
+      "resource": "*",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:AuthorizeSecurityGroupIngress",
+      "resource": "arn:aws:ec2:eu-central-1:657878534449:security-group/sg-0123",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:CreateRoute",
+      "resource": "arn:aws:ec2:eu-central-1:657878534449:route-table/rtb-0123",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:DeleteInternetGateway",
+      "resource": "arn:aws:ec2:eu-central-1:657878534449:internet-gateway/igw-0123",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:CreateVpcEndpoint",
+      "resource": "*",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:DeleteSubnet",
+      "resource": "arn:aws:ec2:eu-central-1:657878534449:subnet/subnet-0123",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ecs:DeleteCluster",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:cluster/munaxa-docs-eu-test",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ecs:PutClusterCapacityProviders",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:cluster/munaxa-docs-eu-test",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "route53:DeleteHostedZone",
+      "resource": "arn:aws:route53:::hostedzone/Z123",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "route53:CreateHostedZone",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "route53:ChangeResourceRecordSets",
+      "resource": "arn:aws:route53:::hostedzone/Z123",
+      "context": {
+        "route53:ChangeResourceRecordSetsNormalizedRecordNames": ["_abc.test.docs.munaxa.com"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "acm:DeleteCertificate",
+      "resource": "arn:aws:acm:eu-central-1:657878534449:certificate/abc",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "acm:RequestCertificate",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:DeleteBucket",
+      "resource": "arn:aws:s3:::munaxa-docs-eu-test-docs-657878534449",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:PutBucketPolicy",
+      "resource": "arn:aws:s3:::munaxa-docs-eu-test-docs-657878534449",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:PutLifecycleConfiguration",
+      "resource": "arn:aws:s3:::munaxa-docs-eu-test-docs-657878534449",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:CreateBucket",
+      "resource": "arn:aws:s3:::munaxa-docs-eu-test-anything",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::munaxa-docs-eu-test-docs-657878534449/x",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449/eu-test/foundation/terraform.tfstate",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449/eu-test/foundation/terraform.tfstate",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449/bootstrap/terraform.tfstate",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:PutBucketPolicy",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:DeleteBucket",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:PutBucketVersioning",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "kms:ScheduleKeyDeletion",
+      "resource": "arn:aws:kms:eu-central-1:657878534449:key/data-key",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "kms:PutKeyPolicy",
+      "resource": "arn:aws:kms:eu-central-1:657878534449:key/data-key",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "kms:DisableKey",
+      "resource": "arn:aws:kms:eu-central-1:657878534449:key/data-key",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "kms:CreateKey",
+      "resource": "*",
+      "context": {
+        "aws:RequestTag/Environment": ["Testing"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "kms:CreateGrant",
+      "resource": "arn:aws:kms:eu-central-1:657878534449:key/data-key",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"],
+        "kms:GrantIsForAWSResource": ["false"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "logs:DeleteLogGroup",
+      "resource": "arn:aws:logs:eu-central-1:657878534449:log-group:/munaxa-docs/eu-test/api",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "logs:PutRetentionPolicy",
+      "resource": "arn:aws:logs:eu-central-1:657878534449:log-group:/munaxa-docs/eu-test/api",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "servicediscovery:DeleteNamespace",
+      "resource": "arn:aws:servicediscovery:eu-central-1:657878534449:namespace/ns-123",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "servicediscovery:DeleteService",
+      "resource": "arn:aws:servicediscovery:eu-central-1:657878534449:service/srv-123",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "rds:DeleteDBSubnetGroup",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:subgrp:munaxa-docs-eu-test-db",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "rds:ModifyDBParameterGroup",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:pg:munaxa-docs-eu-test-pg16",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "rds:CreateDBSnapshot",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:db:munaxa-docs-eu-test-pg",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "iam:DeleteRole",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/eu-test/munaxa-docs-eu-test-api-task",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "iam:PutRolePolicy",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/eu-test/munaxa-docs-eu-test-api-task",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "iam:CreateRole",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/eu-test/munaxa-docs-eu-test-x",
+      "context": {
+        "iam:PermissionsBoundary": [
+          "arn:aws:iam::657878534449:policy/munaxa-docs/bootstrap/munaxa-docs-eu-test-workload-boundary"
+        ]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "iam:CreateUser",
+      "resource": "arn:aws:iam::657878534449:user/x",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "iam:CreateAccessKey",
+      "resource": "arn:aws:iam::657878534449:user/x",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "iam:CreateOpenIDConnectProvider",
+      "resource": "arn:aws:iam::657878534449:oidc-provider/x",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "iam:UpdateAssumeRolePolicy",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/bootstrap/munaxa-docs-eu-test-deployer",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "iam:PassRole",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/bootstrap/munaxa-docs-eu-test-deployer",
+      "context": {
+        "iam:PassedToService": ["ecs-tasks.amazonaws.com"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "iam:PassRole",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/eu-test/munaxa-docs-eu-test-api-task",
+      "context": {
+        "iam:PassedToService": ["lambda.amazonaws.com"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "sts:AssumeRole",
+      "resource": "arn:aws:iam::800728620253:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "secretsmanager:GetSecretValue",
+      "resource": "arn:aws:secretsmanager:eu-central-1:657878534449:secret:munaxa-docs-eu-test/app-abc",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "ecs:DeregisterTaskDefinition",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "budgets:ModifyBudget",
+      "resource": "arn:aws:budgets::657878534449:budget/x",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "organizations:LeaveOrganization",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "cloudtrail:StopLogging",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "ecs:UpdateService",
+      "resource": "arn:aws:ecs:eu-central-1:800728620253:service/munaxa-docs-eu-prod/munaxa-docs-eu-prod-api",
+      "context": {
+        "ecs:cluster": ["arn:aws:ecs:eu-central-1:800728620253:cluster/munaxa-docs-eu-prod"]
+      }
+    },
+    {
+      "expect": "deny",
+      "action": "rds:DeleteDBInstance",
+      "resource": "arn:aws:rds:eu-central-1:800728620253:db:munaxa-docs-eu-prod-pg",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "rds:CreateDBInstance",
+      "resource": "arn:aws:rds:us-east-1:657878534449:db:munaxa-docs-eu-test-pg",
+      "context": {
+        "aws:RequestedRegion": ["us-east-1"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "rds:CreateDBInstance",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:db:munaxa-docs-eu-test-pg",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "rds:CreateDBInstance",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:subgrp:munaxa-docs-eu-test-db",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "rds:DeleteDBInstance",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:db:munaxa-docs-eu-test-pg",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "rds:AddTagsToResource",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:db:munaxa-docs-eu-test-pg",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "elasticloadbalancing:CreateLoadBalancer",
+      "resource": "arn:aws:elasticloadbalancing:eu-central-1:657878534449:loadbalancer/app/munaxa-docs-eu-test-alb/abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "elasticloadbalancing:DeleteLoadBalancer",
+      "resource": "arn:aws:elasticloadbalancing:eu-central-1:657878534449:loadbalancer/app/munaxa-docs-eu-test-alb/abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "elasticloadbalancing:CreateTargetGroup",
+      "resource": "arn:aws:elasticloadbalancing:eu-central-1:657878534449:targetgroup/munaxa-docs-eu-test-web/abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "elasticloadbalancing:CreateListener",
+      "resource": "arn:aws:elasticloadbalancing:eu-central-1:657878534449:listener/app/munaxa-docs-eu-test-alb/abc/def",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "ecs:CreateService",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:service/munaxa-docs-eu-test/munaxa-docs-eu-test-api",
+      "context": {
+        "ecs:cluster": ["arn:aws:ecs:eu-central-1:657878534449:cluster/munaxa-docs-eu-test"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "ecs:DeleteService",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:service/munaxa-docs-eu-test/munaxa-docs-eu-test-api",
+      "context": {
+        "ecs:cluster": ["arn:aws:ecs:eu-central-1:657878534449:cluster/munaxa-docs-eu-test"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "ecs:RegisterTaskDefinition",
+      "resource": "*",
+      "context": {
+        "aws:RequestTag/Environment": ["Testing"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "ecs:RunTask",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:task-definition/munaxa-docs-eu-test-ops-dbadmin:1",
+      "context": {
+        "ecs:cluster": ["arn:aws:ecs:eu-central-1:657878534449:cluster/munaxa-docs-eu-test"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "ecs:StopTask",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:task/munaxa-docs-eu-test/abc",
+      "context": {
+        "ecs:cluster": ["arn:aws:ecs:eu-central-1:657878534449:cluster/munaxa-docs-eu-test"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "secretsmanager:CreateSecret",
+      "resource": "arn:aws:secretsmanager:eu-central-1:657878534449:secret:munaxa-docs-eu-test/app-abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "secretsmanager:PutSecretValue",
+      "resource": "arn:aws:secretsmanager:eu-central-1:657878534449:secret:munaxa-docs-eu-test/app-abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "secretsmanager:DeleteSecret",
+      "resource": "arn:aws:secretsmanager:eu-central-1:657878534449:secret:munaxa-docs-eu-test/app-abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "secretsmanager:CreateSecret",
+      "resource": "arn:aws:secretsmanager:eu-central-1:657878534449:secret:rds!db-abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "route53:ChangeResourceRecordSets",
+      "resource": "arn:aws:route53:::hostedzone/Z123",
+      "context": {
+        "route53:ChangeResourceRecordSetsNormalizedRecordNames": ["test.docs.munaxa.com"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "s3:PutObject",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449/eu-test/session/terraform.tfstate",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449/eu-test/session/terraform.tfstate",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "s3:ListBucket",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "kms:Decrypt",
+      "resource": "arn:aws:kms:eu-central-1:657878534449:key/data-key",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "kms:CreateGrant",
+      "resource": "arn:aws:kms:eu-central-1:657878534449:key/data-key",
+      "context": {
+        "aws:ResourceTag/Environment": ["Testing"],
+        "aws:ResourceTag/Stack": ["foundation"],
+        "kms:GrantIsForAWSResource": ["true"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "iam:PassRole",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/eu-test/munaxa-docs-eu-test-api-task",
+      "context": {
+        "iam:PassedToService": ["ecs-tasks.amazonaws.com"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "iam:CreateServiceLinkedRole",
+      "resource": "arn:aws:iam::657878534449:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing",
+      "context": {
+        "iam:AWSServiceName": ["elasticloadbalancing.amazonaws.com"]
+      }
+    },
+    {
+      "expect": "allow",
+      "action": "ssm:StartSession",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:task/munaxa-docs-eu-test/abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "ec2:DescribeVpcs",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "servicediscovery:ListNamespaces",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "servicediscovery:GetNamespace",
+      "resource": "arn:aws:servicediscovery:eu-central-1:657878534449:namespace/ns-123",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "servicediscovery:ListServices",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "servicediscovery:GetService",
+      "resource": "arn:aws:servicediscovery:eu-central-1:657878534449:service/srv-123",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "route53:ListHostedZonesByName",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "route53:ListResourceRecordSets",
+      "resource": "arn:aws:route53:::hostedzone/Z123",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "acm:ListCertificates",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "acm:DescribeCertificate",
+      "resource": "arn:aws:acm:eu-central-1:657878534449:certificate/abc",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "iam:GetRole",
+      "resource": "arn:aws:iam::657878534449:role/munaxa-docs/eu-test/munaxa-docs-eu-test-api-task",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "kms:ListAliases",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "ecs:DescribeClusters",
+      "resource": "arn:aws:ecs:eu-central-1:657878534449:cluster/munaxa-docs-eu-test",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "ec2:DescribeSubnets",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "ec2:DescribeSecurityGroups",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "elasticloadbalancing:DescribeLoadBalancers",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "rds:DescribeDBInstances",
+      "resource": "arn:aws:rds:eu-central-1:657878534449:db:munaxa-docs-eu-test-pg",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:CreateNetworkInterface",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:AllocateAddress",
+      "resource": "*",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "ec2:CreateTags",
+      "resource": "arn:aws:ec2:eu-central-1:657878534449:network-interface/eni-1",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "servicediscovery:RegisterInstance",
+      "resource": "arn:aws:servicediscovery:eu-central-1:657878534449:service/srv-123",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::munaxa-docs-tfstate-eu-test-657878534449/eu-test/foundation/terraform.tfstate",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "kms:GenerateDataKey",
+      "resource": "STATE_KEY_ARN",
+      "context": {}
+    },
+    {
+      "expect": "allow",
+      "action": "kms:Decrypt",
+      "resource": "STATE_KEY_ARN",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "kms:ScheduleKeyDeletion",
+      "resource": "STATE_KEY_ARN",
+      "context": {}
+    },
+    {
+      "expect": "deny",
+      "action": "kms:PutKeyPolicy",
+      "resource": "STATE_KEY_ARN",
+      "context": {}
+    }
+  ]
+}

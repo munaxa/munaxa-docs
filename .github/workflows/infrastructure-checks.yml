@@ -1,0 +1,96 @@
+name: Infrastructure checks
+
+# Pull-request validation for Terraform, workflows and CI scripts. No AWS credentials, no
+# environment, no OIDC: everything here runs offline (terraform init -backend=false).
+# Not a required check today, so the path filter cannot wedge a pull request.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/**'
+      - 'scripts/ci/**'
+      - 'scripts/bootstrap/**'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Terraform · workflows · CI scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+
+      - name: terraform validate (every root, offline)
+        run: |
+          set -euo pipefail
+          for root in $(find infra/terraform -name backend.tf -printf '%h\n' | sort); do
+            echo "== $root"
+            terraform -chdir="$root" init -backend=false -input=false -lockfile=readonly >/dev/null
+            terraform -chdir="$root" validate -no-color
+          done
+
+      - name: actionlint 1.7.7 (checksum verified)
+        run: |
+          set -euo pipefail
+          curl -fsSLo /tmp/actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  /tmp/actionlint.tgz" | sha256sum -c -
+          tar xzf /tmp/actionlint.tgz -C /tmp actionlint
+          # The runner's preinstalled ShellCheck checks every run: block at warning and above,
+          # the same threshold as the scripts below.
+          SHELLCHECK_OPTS='-S warning' /tmp/actionlint -color
+
+      - name: CI scripts
+        run: |
+          set -euo pipefail
+          shellcheck -S warning scripts/ci/*.sh scripts/bootstrap/*.sh
+          jq -e '.cases | length > 0 and all(.[]; (.expect == "allow" or .expect == "deny") and (.action | test("^[a-z0-9-]+:[A-Za-z0-9*]+$")))' \
+            scripts/bootstrap/testdata/testing-deployer-cases.json >/dev/null
+          expect() { # <pass|refuse> <mode> <fixture>
+            if scripts/ci/plan-guard.sh "$2" "scripts/ci/testdata/$3.json" >/dev/null; then got=pass; else got=refuse; fi
+            [ "$got" = "$1" ] || { echo "::error::plan-guard $2 on $3: expected $1, got $got"; exit 1; }
+            echo "plan-guard $2 on $3: $got (expected)"
+          }
+          expect pass release release-ok
+          expect refuse release release-bad
+          expect pass infra release-ok
+          expect refuse infra release-bad
+          expect pass none empty
+          expect refuse none release-ok
+          expect pass session session-ok
+          expect refuse session session-bad
+          expect refuse session release-ok
+          expect pass session-destroy session-destroy-ok
+          expect refuse session-destroy session-ok
+          expect refuse session-destroy session-bad
+          expect pass foundation foundation-ok
+          expect refuse foundation foundation-bad
+          expect refuse foundation release-ok
+          expect refuse foundation session-destroy-ok
+          bootstrap() { # <pass|refuse> <mode> <fixture>
+            if scripts/ci/bootstrap-plan-check.sh "$2" "scripts/ci/testdata/$3.json" >/dev/null; then got=pass; else got=refuse; fi
+            [ "$got" = "$1" ] || { echo "::error::bootstrap-plan-check $2 on $3: expected $1, got $got"; exit 1; }
+            echo "bootstrap-plan-check $2 on $3: $got (expected)"
+          }
+          bootstrap pass production bootstrap-production-ok
+          bootstrap refuse production bootstrap-production-bad
+          bootstrap refuse production bootstrap-testing-ok
+          bootstrap pass testing-key bootstrap-testing-key
+          bootstrap refuse testing-key bootstrap-testing-ok
+          bootstrap pass testing bootstrap-testing-ok
+          bootstrap refuse testing bootstrap-testing-bad
+          bootstrap refuse testing bootstrap-testing-hidden
+          bootstrap pass production-budget bootstrap-budget-ok
+          bootstrap refuse production-budget bootstrap-budget-bad

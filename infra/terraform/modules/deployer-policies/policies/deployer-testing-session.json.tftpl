@@ -1,0 +1,64 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TestHostnameRecordOnly",
+      "Effect": "Allow",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/*",
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "${test_hostname}"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "PublicZoneReads",
+      "Effect": "Allow",
+      "Action": [
+        "route53:GetHostedZone",
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName",
+        "route53:ListResourceRecordSets",
+        "route53:ListTagsForResource",
+        "route53:GetChange"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "MigrationTunnelToTestingTasksOnly",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": [
+        "arn:aws:ecs:${region}:${account_id}:task/${prefix}/*",
+        "arn:aws:ssm:${region}::document/AWS-StartPortForwardingSessionToRemoteHost"
+      ]
+    },
+    {
+      "Sid": "ExecIntoTestingTasksOnly",
+      "Effect": "Allow",
+      "Action": "ecs:ExecuteCommand",
+      "Resource": [
+        "arn:aws:ecs:${region}:${account_id}:cluster/${prefix}",
+        "arn:aws:ecs:${region}:${account_id}:task/${prefix}/*"
+      ]
+    },
+    {
+      "Sid": "OwnTunnelSessionsOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:TerminateSession",
+        "ssm:ResumeSession"
+      ],
+      "Resource": "arn:aws:ssm:${region}:${account_id}:session/gha-run-*"
+    },
+    {
+      "Sid": "ReadTunnelSessions",
+      "Effect": "Allow",
+      "Action": "ssm:DescribeSessions",
+      "Resource": "*"
+    }
+  ]
+}
