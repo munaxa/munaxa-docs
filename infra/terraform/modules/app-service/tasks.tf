@@ -349,7 +349,7 @@ resource "aws_ecs_service" "api" {
   }
 
   service_registries {
-    registry_arn = aws_service_discovery_service.internal["api"].arn
+    registry_arn = local.registry_arns["api"]
   }
 
   depends_on = [aws_lb_listener_rule.preview_stream, aws_ecs_service.scanner]
@@ -385,6 +385,6 @@ resource "aws_ecs_service" "scanner" {
   }
 
   service_registries {
-    registry_arn = aws_service_discovery_service.internal["scanner"].arn
+    registry_arn = local.registry_arns["scanner"]
   }
 }

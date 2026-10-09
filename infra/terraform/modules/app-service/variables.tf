@@ -85,6 +85,17 @@ variable "cloudmap_namespace" {
   type = string
 }
 
+variable "cloudmap_service_arns" {
+  description = "Existing Cloud Map service ARNs for api and scanner (namespace owned elsewhere). null creates the namespace and both services here."
+  type        = map(string)
+  default     = null
+
+  validation {
+    condition     = var.cloudmap_service_arns == null || try(alltrue([for k in ["api", "scanner"] : can(regex("^arn:aws:servicediscovery:", var.cloudmap_service_arns[k]))]), false)
+    error_message = "Give both api and scanner service ARNs, or null."
+  }
+}
+
 variable "docs_bucket" {
   type = string
 }

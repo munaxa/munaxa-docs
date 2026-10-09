@@ -15,7 +15,7 @@
         "s3:PutObject",
         "s3:DeleteObject"
       ],
-      "Resource": "arn:aws:s3:::${state_bucket}/${env_path}/*"
+      "Resource": "arn:aws:s3:::${state_bucket}/${state_key_prefix}/*"
     },
     {
       "Sid": "UseStateKey",

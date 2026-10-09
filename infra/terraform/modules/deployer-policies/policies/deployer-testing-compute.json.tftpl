@@ -1,0 +1,109 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SessionServicesOnTestingCluster",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:CreateService",
+        "ecs:UpdateService",
+        "ecs:DeleteService",
+        "ecs:TagResource",
+        "ecs:UntagResource"
+      ],
+      "Resource": "arn:aws:ecs:${region}:${account_id}:service/${prefix}/*",
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "arn:aws:ecs:${region}:${account_id}:cluster/${prefix}"
+        }
+      }
+    },
+    {
+      "Sid": "RegisterTaskDefinitionsTaggedTesting",
+      "Effect": "Allow",
+      "Action": "ecs:RegisterTaskDefinition",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "TagOnCreateTaggedTesting",
+      "Effect": "Allow",
+      "Action": "ecs:TagResource",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Environment": "${environment}",
+          "ecs:CreateAction": [
+            "CreateService",
+            "RegisterTaskDefinition",
+            "RunTask"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "TagTestingTaskDefinitions",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:TagResource",
+        "ecs:UntagResource"
+      ],
+      "Resource": "arn:aws:ecs:${region}:${account_id}:task-definition/${prefix}-*:*"
+    },
+    {
+      "Sid": "OperatorTasksOnTestingCluster",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:RunTask",
+        "ecs:StopTask"
+      ],
+      "Resource": [
+        "arn:aws:ecs:${region}:${account_id}:task-definition/${prefix}-*:*",
+        "arn:aws:ecs:${region}:${account_id}:task/${prefix}/*"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "ecs:cluster": "arn:aws:ecs:${region}:${account_id}:cluster/${prefix}"
+        }
+      }
+    },
+    {
+      "Sid": "SessionLoadBalancer",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:ModifyLoadBalancerAttributes",
+        "elasticloadbalancing:SetSecurityGroups",
+        "elasticloadbalancing:SetSubnets",
+        "elasticloadbalancing:SetIpAddressType",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:ModifyListener",
+        "elasticloadbalancing:ModifyListenerAttributes",
+        "elasticloadbalancing:CreateRule",
+        "elasticloadbalancing:DeleteRule",
+        "elasticloadbalancing:ModifyRule",
+        "elasticloadbalancing:SetRulePriorities",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:DeregisterTargets",
+        "elasticloadbalancing:AddTags",
+        "elasticloadbalancing:RemoveTags"
+      ],
+      "Resource": [
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:loadbalancer/app/${prefix}-*/*",
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:listener/app/${prefix}-*/*",
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:listener-rule/app/${prefix}-*/*",
+        "arn:aws:elasticloadbalancing:${region}:${account_id}:targetgroup/${prefix}-*/*"
+      ]
+    }
+  ]
+}

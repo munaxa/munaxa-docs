@@ -1,4 +1,5 @@
-# Partial backend configuration for GitHub Actions in the testing environment.
+# Partial backend configuration for GitHub Actions in the testing environment: the TEST session root
+# (eu-test/session) only. The foundation is administrator-applied and its state is closed to the deployer.
 #   terraform init -backend-config=../ci.s3.tfbackend
 # The job's own credentials are the Testing CI role (GitHub OIDC, account 657878534449). The
 # backend assumes the Testing deployer from there; the CI role itself has no access to the state

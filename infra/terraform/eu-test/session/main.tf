@@ -6,8 +6,8 @@
 # | PostgreSQL 16 db.t4g.micro (no backups)        | VPC, subnets, security groups               |
 # | ALB, HTTPS listener, target groups             | ECS cluster, log groups                     |
 # | DNS record test.docs.munaxa.com → ALB          | hosted zone, ACM certificate (ISSUED)       |
-# | Cloud Map namespace                            | workload IAM roles, data key, doc bucket    |
-# | Secret containers (values written by CI)       | DB subnet group, parameter group            |
+# | ECS service registrations (made by ECS)        | workload IAM roles, data key, doc bucket    |
+# | Secret containers (values written by CI)       | DB subnet group, parameter group, Cloud Map |
 # | web, API (+Redis), scanner services            |                                             |
 # | operator task definitions                      |                                             |
 #
@@ -101,6 +101,19 @@ data "aws_ecs_cluster" "main" {
   cluster_name = local.prefix
 }
 
+# The persistent service registries (foundation): sessions register into them, never create them.
+data "aws_service_discovery_dns_namespace" "main" {
+  name = local.cloudmap_namespace
+  type = "DNS_PRIVATE"
+}
+
+data "aws_service_discovery_service" "internal" {
+  for_each = toset(["api", "scanner"])
+
+  name         = each.key
+  namespace_id = data.aws_service_discovery_dns_namespace.main.id
+}
+
 # --- The session's database -------------------------------------------------------------------
 
 resource "aws_db_instance" "main" {
@@ -162,6 +175,7 @@ module "app" {
   secret_recovery_window_days = 0
   log_group_prefix            = local.log_group_prefix
   cloudmap_namespace          = local.cloudmap_namespace
+  cloudmap_service_arns       = { for k, v in data.aws_service_discovery_service.internal : k => v.arn }
   docs_bucket                 = local.docs_bucket
 
   db_address        = aws_db_instance.main.address

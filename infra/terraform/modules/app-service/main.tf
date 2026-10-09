@@ -124,19 +124,31 @@ resource "aws_secretsmanager_secret" "operator" {
 
 # --- Service discovery ------------------------------------------------------------------------
 
+# Created here unless the caller passes existing registries (TEST: the persistent foundation owns
+# the namespace and its two services, so a session never creates or deletes a hosted zone).
+
+locals {
+  create_cloudmap = var.cloudmap_service_arns == null
+  registry_arns = local.create_cloudmap ? {
+    for name, svc in aws_service_discovery_service.internal : name => svc.arn
+  } : var.cloudmap_service_arns
+}
+
 resource "aws_service_discovery_private_dns_namespace" "main" {
+  count = local.create_cloudmap ? 1 : 0
+
   name        = var.cloudmap_namespace
   description = "Munaxa Docs ${var.environment} service discovery"
   vpc         = var.vpc_id
 }
 
 resource "aws_service_discovery_service" "internal" {
-  for_each = toset(["api", "scanner"])
+  for_each = local.create_cloudmap ? toset(["api", "scanner"]) : toset([])
 
   name = each.key
 
   dns_config {
-    namespace_id   = aws_service_discovery_private_dns_namespace.main.id
+    namespace_id   = aws_service_discovery_private_dns_namespace.main[0].id
     routing_policy = "MULTIVALUE"
 
     dns_records {

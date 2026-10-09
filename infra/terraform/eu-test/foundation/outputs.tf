@@ -20,3 +20,8 @@ output "vpc_id" {
 output "docs_bucket" {
   value = aws_s3_bucket.docs.id
 }
+
+output "cloudmap_service_arns" {
+  description = "The api and scanner registries every TEST session's services register into."
+  value       = { for k, v in aws_service_discovery_service.internal : k => v.arn }
+}

@@ -1,21 +1,23 @@
 name: Terraform infrastructure
 
-# Plans or applies one persistent infrastructure root in one environment. This is the controlled
+# Plans or applies one persistent PRODUCTION infrastructure root. This is the controlled
 # infrastructure path: run `plan`, review the summary, then dispatch `apply`, which re-plans and
 # applies that saved plan in the same job. Application releases do not come through here (see
 # release.yml), TEST sessions do not (test-session.yml), and bootstrap never does (administrator
 # only).
 #
-#   testing    → account 657878534449, infra/terraform/eu-test/foundation   (root: foundation)
 #   production → account 800728620253, infra/terraform/eu-prod/<root>       (root: core, data, service)
+#
+# TEST has no CI infrastructure path: its persistent foundation (infra/terraform/eu-test/foundation)
+# is administrator-applied like the bootstrap, and the TEST deployer can only build and destroy TEST
+# sessions (docs/operations/bootstrap-plan-runbooks.md).
 #
 # Identity chain, with no stored AWS credentials:
 #   GitHub OIDC token (job in the chosen environment, on refs/heads/main)
 #     → that environment's CI role (configure-aws-credentials; may only assume its deployer)
 #     → that environment's deployer (Terraform provider and backend assume_role, source identity
 #        github-actions, session gha-run-*)
-# Each CI role trusts only its own environment's token, so the mapping below is also enforced by
-# AWS: a testing job cannot obtain production credentials.
+# The Production CI role trusts only the production environment's token on main.
 #
 # Safety rails:
 # - main only; the root and the environment come from fixed lists, never from a free path.
@@ -30,18 +32,16 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Environment (production waits for its required reviewers)
+        description: Environment (waits for the production environment's required reviewers)
         type: choice
         required: true
         options:
-          - testing
           - production
       root:
-        description: Infrastructure root — testing foundation; production core, data or service (bootstrap is never run by CI)
+        description: Infrastructure root (bootstrap and the TEST foundation are never run by CI)
         type: choice
         required: true
         options:
-          - foundation
           - core
           - data
           - service
@@ -87,11 +87,9 @@ jobs:
         run: |
           set -euo pipefail
           case "$ENVIRONMENT/$ROOT" in
-            testing/foundation)
-              account=657878534449; prefix=munaxa-docs-eu-test; base=infra/terraform/eu-test ;;
             production/core|production/data|production/service)
               account=800728620253; prefix=munaxa-docs-eu-prod; base=infra/terraform/eu-prod ;;
-            *) echo "::error::$ENVIRONMENT has no '$ROOT' root here. testing: foundation. production: core, data, service."; exit 1 ;;
+            *) echo "::error::$ENVIRONMENT has no '$ROOT' root here. Only production core, data and service run here."; exit 1 ;;
           esac
           case "$ACTION" in plan|apply) ;; *) echo "::error::Unknown action."; exit 1 ;; esac
           [ "$REF" = "refs/heads/main" ] || { echo "::error::$ACTION runs only from main (this run is on $REF)."; exit 1; }

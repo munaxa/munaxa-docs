@@ -18,7 +18,7 @@ the **human administrator**, never by CI and never by an identity Claude can use
 | Where | AWS CloudShell, management account, eu-central-1 | the same CloudShell; the script assumes the role in a private temporary profile |
 | State | existing S3 state, read only (`-lock=false`) | none yet: a scratch copy with local state, nothing written to AWS |
 | Script | `scripts/bootstrap/plan-production.sh` | `scripts/bootstrap/plan-testing.sh` |
-| Expected | 4 to add, 1 to change, 0 to destroy | plan A: 2 to add; plan B: 37 to add (36 without the budget) |
+| Expected | 4 to add, 1 to change, 0 to destroy | plan A: 2 to add; plan B: 35 to add (34 without the budget) |
 
 **Why `OrganizationAccountAccessRole`, and not the engineering role, for TEST:**
 
@@ -144,22 +144,51 @@ The script does the following:
 
 Plan A: 2 to add, no IAM resource. The key policy names only `arn:aws:iam::657878534449:root`.
 
-Plan B: 37 to add, 0 to change, 0 to destroy (36 without the budget):
+Plan B: 35 to add, 0 to change, 0 to destroy (34 without the budget):
 
 | Group | Resources (all `create`) |
 | --- | --- |
 | State | `aws_kms_key.state`, `aws_kms_alias.state` (`alias/munaxa-docs-eu-test-tfstate`), `aws_s3_bucket.state` (`munaxa-docs-tfstate-eu-test-657878534449`) with ownership controls, public access block, versioning, SSE-KMS, lifecycle, bucket policy |
 | GitHub OIDC | `module.testing_ci`: OIDC provider, `munaxa-docs-eu-test-ci` role (trusts `repo:munaxa/munaxa-docs:environment:testing` on `refs/heads/main` only), its inline policy, its boundary |
-| TEST deployer | `aws_iam_role.deployer` (`munaxa-docs-eu-test-deployer`, trusts the Testing CI role with source identity `github-actions`, session `gha-run-*`), `aws_iam_policy.deployer_boundary`, `aws_iam_policy.workload_boundary`, ten `aws_iam_policy.deployer[…]` and their attachments (the nine shared documents plus `deployer-testing-session`) |
+| TEST deployer | `aws_iam_role.deployer` (`munaxa-docs-eu-test-deployer`, trusts the Testing CI role with source identity `github-actions`, session `gha-run-*`), `aws_iam_policy.deployer_boundary`, `aws_iam_policy.workload_boundary`, nine `aws_iam_policy.deployer[…]` and their attachments (`deployer-read`, `deployer-state`, `deployer-guardrails-environment`, `deployer-guardrails-identity`, and the TEST-only `deployer-testing-session`, `-compute`, `-data`, `-iam`, `-foundation-guard`) |
 | Budget | `aws_budgets_budget.testing[0]` (`munaxa-docs-eu-test-account-monthly`, USD 15), unless `create_budget = false` |
 
 The checker stops on anything else. Nothing application- or runtime-specific can pass it: no VPC,
 cluster, DNS zone, certificate, database, load balancer, ECS service or TEST session, and nothing
 in Production.
 
-The deployer has ten managed policies attached, exactly the default IAM quota of ten per role.
+The TEST deployer is **session-only**: it can build and destroy TEST sessions (database, load
+balancer, ECS services and tasks, session secrets, the `test.docs.munaxa.com` record) and nothing
+else. `deployer-testing-foundation-guard` denies every change to the persistent foundation, and its
+state access is `eu-test/session/*` only. It has nine managed policies attached (quota: ten).
 
-Send `~/test-bootstrap-check.txt` (and `~/test-bootstrap-inventory.txt`) for review.
+Send `~/test-bootstrap-check.txt` (and `~/test-bootstrap-inventory.txt`) for review, with the
+review file from §6.
+
+## 2a. TEST foundation plan (after the TEST bootstrap is applied)
+
+The persistent foundation (network, cluster, DNS zone, certificate, data key, document bucket,
+Cloud Map, workload roles) is applied by the same administrator path, never by CI:
+
+```bash
+bash scripts/bootstrap/plan-test-foundation.sh
+```
+
+The script:
+- stops unless the caller is `arn:aws:iam::800728620253:user/admin.tamer`, and unless the assumed
+  identity is exactly
+  `arn:aws:sts::657878534449:assumed-role/OrganizationAccountAccessRole/admin.tamer-foundation-eu-test`
+  (one hour, eu-central-1, private temporary AWS config file);
+- uses the real backend, state key `eu-test/foundation/terraform.tfstate` in
+  `munaxa-docs-tfstate-eu-test-657878534449`. Only the administrator may read it: the bucket policy
+  admits the TEST deployer to `eu-test/session/*` only;
+- plans with `-lock=false` (nothing is written to AWS, not even a lock) and never applies;
+- checks the plan with `plan-guard.sh infra`, which refuses any delete or replace of a persistent
+  resource, and writes `~/test-foundation-plan.txt`, `.json` and `~/test-foundation-check.txt`.
+
+The first foundation plan is creates only. The Cloud Map namespace `test.munaxa-docs.internal` and
+its `api` and `scanner` services are part of it (approved: about $0.50 a month, idle TEST total
+about $3–3.50 a month, see [ci-cd-two-environments.md](ci-cd-two-environments.md) §2).
 
 ## 3. The three "known after apply" documents in plan B, and why the apply has two steps
 
@@ -208,3 +237,37 @@ them. The fix is its own small change, after the Production bootstrap:
 2. Check it with `scripts/ci/bootstrap-plan-check.sh production-budget`. It passes only if the
    plan changes the budget's alert recipients and nothing else.
 3. Apply after approval.
+
+## 6. Sending the plans for review
+
+After the plans above, in the same CloudShell:
+
+```bash
+bash scripts/bootstrap/export-plan-review.sh
+```
+
+It reads the saved plan and check files in `$HOME` (read-only; no AWS or Terraform call) and writes
+`~/bootstrap-plan-review.json`. Per plan: account, principal, region, change counts, every changed
+address, every IAM, key and bucket policy document in full (or "known after apply") and the
+checker's verdict. A plan that was not run is listed as `NOT RUN`. Send that one file.
+
+## 7. Validation gates: what each one proves
+
+Four kinds of evidence, never interchangeable. Each gate needs its own evidence, and no later step
+starts until the gates before it pass.
+
+| Gate | Evidence | Run by | Proves | Does not prove |
+| --- | --- | --- | --- | --- |
+| 1. Offline validation | `fmt`/`validate` of every root, actionlint, ShellCheck, Prettier, the checker fixtures (`infrastructure-checks.yml`), an offline plan with fake credentials, a local IAM evaluator | CI, Claude | The code is consistent; the rendered documents have the intended shape; the checkers accept the agreed sets and refuse the bad ones | Anything about the real accounts. An offline plan is not a plan |
+| 2. Real Terraform plans | §1, §2, §2a, then §6 | `admin.tamer` (CloudShell) | The real accounts hold what we think; the change sets are exactly the agreed ones; every document in full | That AWS accepts and evaluates the documents as intended |
+| 3. AWS-native policy validation | IAM Access Analyzer `ValidatePolicy` on every rendered document (identity policies, boundaries, trusts, the state bucket policy, the key policy) with no error or security warning; `SimulateCustomPolicy` with each document set (identity policies plus boundary) on the agreed allow and deny cases | an authorized AWS identity, read only | AWS's own parser and evaluator agree with the design | That a TEST session really works end to end |
+| 4. First real TEST session | after the TEST bootstrap and foundation are applied: **TEST environment → start**, URL check, **stop** | GitHub Actions, approved | The session-only deployer is enough: the load balancer, database and Fargate tasks get their network interfaces through the ECS, Elastic Load Balancing and RDS service-linked roles, with no EC2 write in the deployer. The foundation guard denies nothing the session needs | — |
+
+A local evaluator result is gate 1, never gate 3. A gate is PASS only with its own evidence.
+
+**The TEST bootstrap apply needs gates 1, 2 and 3.** Gate 3 runs on plan B's documents; the three
+that name the state key (§3) are validated with the real key ARN once step A exists, before step
+B is applied. Gate 4 can only run after the bootstrap and the foundation are applied. Its single known
+risk is the service-linked roles: if a session fails to create a network interface, the fix is a
+reviewed, narrow deployer change, never EC2 write on `*` and never a NAT or Elastic IP permission.
+

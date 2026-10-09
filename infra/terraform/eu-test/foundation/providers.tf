@@ -1,14 +1,11 @@
-# Every TEST root runs as the TEST deployer (account 657878534449), never as a user directly. The
-# provider refuses every other account, so nothing here can ever reach Production.
+# The TEST foundation is persistent and administrator-controlled, like the bootstrap: it is planned and
+# applied by admin.tamer through arn:aws:iam::657878534449:role/OrganizationAccountAccessRole
+# (docs/operations/bootstrap-plan-runbooks.md), never by the TEST deployer or by CI. The TEST
+# deployer may only read it; it builds and destroys TEST sessions on top of it
+# (infra/terraform/eu-test/session). The provider refuses every account but 657878534449.
 provider "aws" {
   region              = var.region
   allowed_account_ids = [var.account_id]
-
-  assume_role {
-    role_arn        = "arn:aws:iam::${var.account_id}:role/munaxa-docs/bootstrap/munaxa-docs-eu-test-deployer"
-    session_name    = var.deployer_session_name
-    source_identity = var.deployer_source_identity
-  }
 
   default_tags {
     tags = {
@@ -17,7 +14,7 @@ provider "aws" {
       ManagedBy   = "Terraform"
       Stack       = "foundation"
       Lifecycle   = "persistent"
-      Owner       = "munaxa-docs-ci"
+      Owner       = "munaxa-docs-admin"
     }
   }
 }

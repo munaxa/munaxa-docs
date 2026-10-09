@@ -34,7 +34,12 @@ locals {
     identity_escalation_json      = jsonencode(local.identity_escalation_actions)
     account_level_controls_json   = jsonencode(local.account_level_control_actions)
     test_hostname                 = var.test_hostname
+    state_key_prefix              = local.state_key_prefix
   }
+
+  # The deployer's own state. Production: every eu-prod root. Testing: the session root only; the
+  # persistent foundation (eu-test/foundation) is administrator-applied and its state is closed to it.
+  state_key_prefix = var.environment == "Testing" ? "${var.env_path}/session" : var.env_path
 
   # "Anything named *nonprod*", one ARN pattern per service. IAM rejects a wildcard in an ARN's
   # service field, so the services are listed: every service the deployer or a workload role can
@@ -103,16 +108,27 @@ locals {
     "ecs:PutAccountSetting*", "ecs:DeleteAccountSetting", "rds:ModifyCertificates", "ses:PutAccount*",
   ]
 
-  # Production renders exactly the eleven shared documents. Testing adds one: the short-lived
-  # session tunnel and the TEST hostname records its on-demand environment needs (see
-  # policies/deployer-testing-session.json.tftpl); the boundary admits SSM sessions for Testing only.
-  testing_only_documents = var.environment == "Testing" ? ["deployer-testing-session"] : []
+  # Production renders exactly the eleven shared documents, unchanged.
+  #
+  # Testing gets its own, much narrower deployer: it builds and destroys TEST sessions only. The
+  # persistent TEST foundation (network, cluster, DNS zone, certificate, keys, buckets, Cloud Map,
+  # workload roles) is administrator-applied, so the Testing deployer has no write access to any of
+  # it, and deployer-testing-foundation-guard denies every such change explicitly. It keeps the
+  # shared read, state, guardrail and boundary documents.
+  production_deployer_documents = [
+    "deployer-read", "deployer-state", "deployer-network", "deployer-compute", "deployer-data",
+    "deployer-observability", "deployer-iam", "deployer-guardrails-environment",
+    "deployer-guardrails-identity",
+  ]
+  testing_deployer_documents = [
+    "deployer-read", "deployer-state", "deployer-testing-session", "deployer-testing-compute",
+    "deployer-testing-data", "deployer-testing-iam", "deployer-testing-foundation-guard",
+    "deployer-guardrails-environment", "deployer-guardrails-identity",
+  ]
+  deployer_documents = var.environment == "Testing" ? local.testing_deployer_documents : local.production_deployer_documents
 
   documents = {
-    for name in concat([
-      "deployer-read", "deployer-state", "deployer-network", "deployer-compute", "deployer-data",
-      "deployer-observability", "deployer-iam", "deployer-guardrails-environment",
-      "deployer-guardrails-identity", "deployer-boundary", "workload-boundary",
-    ], local.testing_only_documents) : name => jsonencode(jsondecode(templatefile("${path.module}/policies/${name}.json.tftpl", local.policy_vars)))
+    for name in concat(local.deployer_documents, ["deployer-boundary", "workload-boundary"]) :
+    name => jsonencode(jsondecode(templatefile("${path.module}/policies/${name}.json.tftpl", local.policy_vars)))
   }
 }

@@ -3,9 +3,8 @@
 # - The data key (USD 1 a month): encrypts each session's database, its RDS-managed master secret and
 #   its session secrets, exactly as Production's data key does, so the workload boundary's
 #   "Environment=Testing keys only" rule applies unchanged.
-# - The document bucket: the deployer may configure but never empty a document bucket (its guardrail
-#   denies object access), so it cannot be destroyed per session. Instead every object expires after
-#   7 days; an idle TEST stores nothing.
+# - The document bucket: persistent and administrator-managed (the TEST deployer has no S3 rights
+#   beyond its own session state). Every object expires after 7 days; an idle TEST stores nothing.
 
 resource "aws_kms_key" "data" {
   description             = "Munaxa Docs TEST data (RDS, session secrets)"

@@ -38,7 +38,8 @@ PRODUCTION needs TEST to have **passed**, not to be running.
 TEST is split by what things cost when nobody is testing.
 
 **Persistent foundation** (`infra/terraform/eu-test/foundation`, plus `bootstrap-eu-test`). Free
-or nearly free, created once:
+or nearly free, created once, and **administrator-applied** (`admin.tamer` through
+`OrganizationAccountAccessRole`): the TEST deployer can read it but never change or delete it:
 
 | Resource | Idle cost / month |
 | --- | --- |
@@ -49,11 +50,12 @@ or nearly free, created once:
 | Workload IAM roles and boundary, TEST deployer, Testing CI role, GitHub OIDC provider | $0 |
 | ACM certificate for `test.docs.munaxa.com` | $0 |
 | Route 53 public hosted zone `test.docs.munaxa.com` | $0.50 |
+| Cloud Map namespace `test.munaxa-docs.internal` (a private hosted zone) and its `api` and `scanner` services | $0.50 |
 | KMS keys: Terraform state, TEST data | $2.00 |
 | S3: Terraform state bucket; TEST document bucket (objects expire after 7 days) | ≈ $0.01 |
 | DB subnet group, parameter group (`rds.force_ssl=1`) | $0 |
 | AWS Budget for the account (first two budgets are free) | $0 |
-| **Idle total** | **≈ $2.50–3** |
+| **Idle total** | **≈ $3–3.50** |
 
 **Ephemeral session** (`infra/terraform/eu-test/session`), created by a release and destroyed
 after it. Every resource is tagged `Lifecycle=ephemeral` and `ExpiresAt=<UTC time>`:
@@ -65,7 +67,7 @@ after it. Every resource is tagged `Lifecycle=ephemeral` and `ExpiresAt=<UTC tim
 | Fargate: web 0.25 vCPU/1 GB, API 0.5 vCPU/2 GB (with Redis), scanner 0.25 vCPU/2 GB on **Spot** | ≈ $0.06/h |
 | Public IPv4 addresses (load balancer, tasks) | ≈ $0.025/h |
 | Secrets Manager (application, operator, GHCR pull, RDS master), deleted without a recovery window | ≈ $0.002/h |
-| Cloud Map namespace, DNS record `test.docs.munaxa.com` → load balancer | ≈ $0 |
+| Cloud Map instance registrations (made by ECS), DNS record `test.docs.munaxa.com` → load balancer | ≈ $0 |
 | **Session total** | **≈ $0.14/h, ≈ $3.40 for a 24-hour session** |
 
 Prices are eu-central-1 on-demand list prices; the AWS bill is the authority.
@@ -76,7 +78,7 @@ Prices are eu-central-1 on-demand list prices; the AWS bill is the authority.
 | --- | --- | --- |
 | A. Permanent TEST (everything always on, with NAT) | ≈ $140 | Simplest; pays for nothing most of the month |
 | B. Fully ephemeral (everything, including network, DNS zone, certificate, keys) | ≈ $0 | Every session waits for certificate validation and a new DNS delegation, which needs a manual Cloudflare change each time. Not workable without DNS automation |
-| **C. Hybrid (chosen)** | **≈ $2.50–3** | Stable URL and certificate; a session starts in about 15–20 minutes |
+| **C. Hybrid (chosen)** | **≈ $3–3.50** | Stable URL and certificate; a session starts in about 15–20 minutes |
 
 Not used by TEST: ECR (images come from GHCR), NAT gateways, Multi-AZ, Performance Insights,
 enhanced monitoring, AWS Backup, a CloudTrail trail of its own (§11).
@@ -241,18 +243,27 @@ production job ── OIDC (sub repo:munaxa/munaxa-docs:environment:production, 
   - the AWS trust requires `refs/heads/main` anyway.
 - **No free inputs.** No workflow takes a role ARN, account, directory or path as input. Account,
   roles and directories are fixed in the workflow or chosen from closed lists.
-- **The deployers.** Their permissions are the same templates for both environments
-  (`infra/terraform/modules/deployer-policies`), rendered with `Environment=Production`/`eu-prod`
-  or `Environment=Testing`/`eu-test`. For Production the rendered documents are byte-identical to
-  what was applied before this change. TEST adds, **in TEST only**:
-  - a boundary statement and one document (`deployer-testing-session`) for the session:
-    - DNS records for `test.docs.munaxa.com` and below only;
-    - the SSM port-forwarding session into the TEST cluster's tasks only;
-    - ECS Exec on the TEST cluster;
-    - ending its own `gha-run-*` sessions.
-  - deletes of its own TEST resources, which the shared templates already allow per environment.
-    Task definitions are kept (`skip_destroy`); `ecs:DeregisterTaskDefinition` is effectively
-    not granted.
+- **The deployers.** Both are rendered by `infra/terraform/modules/deployer-policies`, from
+  different document sets.
+  - **Production** keeps its eleven documents. They are byte-identical to the live IAM policies,
+    because the Production deployer also builds Production's long-lived infrastructure.
+  - **The TEST deployer is session-only.** It builds and destroys TEST sessions and can touch
+    nothing persistent. It keeps the shared `deployer-read`, `deployer-state`, guardrail and
+    boundary documents, and has four TEST-only documents instead of Production's network, compute,
+    data, observability and IAM policies:
+
+    | Document | What it allows |
+    | --- | --- |
+    | `deployer-testing-session` | the DNS record `test.docs.munaxa.com` (that one name only), the SSM migration tunnel and ECS Exec into TEST tasks, ending its own `gha-run-*` sessions |
+    | `deployer-testing-compute` | ECS services, task definitions (register and tag only) and operator tasks **on the TEST cluster**; the session ALB, its listeners, rules and target groups (`munaxa-docs-eu-test-*`) |
+    | `deployer-testing-data` | the session database `munaxa-docs-eu-test-*` (it may *use* the foundation's DB subnet and parameter groups when creating it); session secret containers and the RDS master secret; **use** of Testing-tagged KMS keys (no key administration; grants only for AWS services); reading TEST logs |
+    | `deployer-testing-iam` | pass the foundation's workload roles to `ecs-tasks.amazonaws.com` only; create the ECS, ELB and RDS service-linked roles |
+    | `deployer-testing-foundation-guard` | deny only. No EC2 change at all (VPC, subnets, routes, gateways, security groups, NAT, addresses, endpoints). No cluster, capacity-provider or task-definition deregistration changes. No hosted-zone, certificate, key-administration, log-group or Cloud Map change. No RDS subnet/parameter group or snapshot change. No S3 outside its own session state, and no state-bucket configuration. No IAM change beyond `PassRole` and service-linked roles |
+
+  - **State access.** The TEST deployer's state is `eu-test/session/*` only, enforced by both its
+    policy and the bucket policy. It cannot read or write `eu-test/foundation/` or `bootstrap/`.
+  - **No NAT capability.** TEST has no NAT gateway, NAT instance or interface endpoint, and its
+    deployer cannot create, allocate, associate or release any of them.
 - **Two bridges, not one.** `configure-aws-credentials` can't set a source identity. So the job's
   credentials are the CI role, and Terraform's own `assume_role` (provider and
   `ci.s3.tfbackend`) opens the deployer session with source identity `github-actions`. The TEST
@@ -293,7 +304,8 @@ is disposable.
 ## 9. Infrastructure
 
 `terraform-infra.yml` is dispatched by hand. Its inputs are:
-- environment and root: `testing`/`foundation`, or `production`/`core`, `data` or `service`;
+- environment and root: `production`, with `core`, `data` or `service` (TEST has no CI
+  infrastructure path: its foundation is administrator-applied);
 - action: `plan` or `apply`.
 
 How it works:
@@ -368,12 +380,13 @@ workflows.
 | 2 | Production bootstrap **plan**: `scripts/bootstrap/plan-production.sh` ([runbook](bootstrap-plan-runbooks.md) §1). Expect 4 add, 1 change, PASS | `admin.tamer`, CloudShell (management account) | no |
 | 3 | TEST bootstrap **plans**: `scripts/bootstrap/plan-testing.sh` ([runbook](bootstrap-plan-runbooks.md) §2). Expect `OVERALL: PASS` | `admin.tamer` → `OrganizationAccountAccessRole` in 657878534449, same CloudShell | no |
 | 4 | After approval: re-plan the Production bootstrap with the lock on, check it again (PASS), apply that saved plan | `admin.tamer` | **yes** (A) |
+| 4a | AWS-native policy validation of the TEST documents (Access Analyzer, IAM policy simulator), read only ([runbook](bootstrap-plan-runbooks.md) §7, gate 3) | an authorized AWS identity | no |
 | 5 | After approval: apply the TEST bootstrap in two steps (key; then the rest, checked again with every document visible; then `-migrate-state`), [README §4](../../infra/terraform/README.md) | `admin.tamer` → `OrganizationAccountAccessRole` | **yes** (B) |
 | 6 | Merge #134 | you | no |
 | 7 | `terraform-infra.yml`: `production`/`core` and `production`/`data`, `plan`. Both should show no changes (proves the Production CI chain) | GitHub Actions | no |
-| 8 | `terraform-infra.yml`: `testing`/`foundation`, `plan`, then `apply` | GitHub Actions | **yes** (C) |
+| 8 | TEST foundation: `scripts/bootstrap/plan-test-foundation.sh` (plan, no AWS write), then after approval apply the same root with the same identity | `admin.tamer` → `OrganizationAccountAccessRole` | **yes** (C) |
 | 9 | Cloudflare, once: four `NS` records for `test` in `munaxa.com` (from `delegation_name_servers`), proxy off; DMARC unchanged. Then set `TEST_ENVIRONMENT_ENABLED=true` | you | no (Cloudflare) |
-| 10 | **TEST environment → start**, check the URL, sign in, then **stop** | GitHub Actions | **yes** (D) |
+| 10 | **TEST environment → start**, check the URL, sign in, then **stop**. This is the first real TEST session ([runbook](bootstrap-plan-runbooks.md) §7, gate 4): it proves that the service-linked roles create the network interfaces without EC2 write in the deployer | GitHub Actions | **yes** (D) |
 | 11 | Reconcile #131 with `main` (§12) and merge it once its `eu-prod/service` plan shows **no changes** against the services already running | you / Claude, reviewed | no (a no-change plan) |
 | 12 | Set `RELEASE_PIPELINE_ENABLED=true` | you | no |
 
@@ -387,15 +400,15 @@ Nothing below has been run. Each group needs your explicit approval.
 - update: the trust of `munaxa-docs-eu-prod-deployer`, adding `GitHubActionsSessions` and
   `GitHubActionsSourceIdentity`. Nothing else.
 
-**B. TEST bootstrap** (657878534449): 37 creates (36 without the budget).
+**B. TEST bootstrap** (657878534449): 35 creates (34 without the budget).
 - the state key and alias;
 - the state bucket and its six settings;
 - the OIDC provider, the Testing CI role, its policy and its boundary;
-- the TEST deployer, its boundary, the workload boundary, and ten deployer policies with their
+- the session-only TEST deployer, its boundary, the workload boundary, and nine deployer policies with their
   attachments;
 - the budget (or, if refused, one budget in the management account).
 
-**C. TEST foundation** (657878534449, GitHub Actions as the TEST deployer):
+**C. TEST foundation** (657878534449, `admin.tamer` through `OrganizationAccountAccessRole`; never CI):
 - network: VPC, 2 public and 2 database subnets, internet gateway, 2 route tables and their
   associations, the S3 gateway endpoint, 6 security groups and their rules;
 - ECS cluster with capacity providers, and 5 log groups;
@@ -404,12 +417,12 @@ Nothing below has been run. Each group needs your explicit approval.
 - data key and its alias;
 - the document bucket and its six settings;
 - DB subnet group and parameter group;
+- Cloud Map namespace `test.munaxa-docs.internal` and its `api` and `scanner` services;
 - 6 execution roles and 2 task roles, with their policies.
 
 **D. TEST session**, every time TEST starts. Destroyed again by stop, promotion or expiry:
 - database, load balancer, two target groups, two listeners and a listener rule;
 - DNS alias record;
-- Cloud Map namespace and two services;
 - three secret containers and their values;
 - six task definitions and three services;
 - per run: operator tasks, one SSM session and one temporary provisioning secret.

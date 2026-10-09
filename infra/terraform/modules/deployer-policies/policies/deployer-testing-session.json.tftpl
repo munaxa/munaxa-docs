@@ -2,15 +2,14 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "TestHostnameRecordsOnly",
+      "Sid": "TestHostnameRecordOnly",
       "Effect": "Allow",
       "Action": "route53:ChangeResourceRecordSets",
       "Resource": "arn:aws:route53:::hostedzone/*",
       "Condition": {
         "ForAllValues:StringLike": {
           "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
-            "${test_hostname}",
-            "*.${test_hostname}"
+            "${test_hostname}"
           ]
         }
       }

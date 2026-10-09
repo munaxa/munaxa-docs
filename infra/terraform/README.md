@@ -41,9 +41,9 @@ infra/terraform/
 │   └── ecs-service/
 ├── eu-test/
 │   ├── ci.s3.tfbackend   TEST CI backend (Testing CI role → TEST deployer)
-│   ├── foundation/       persistent, ≈ $2.50–3/month idle: network (no NAT), cluster, DNS zone,
+│   ├── foundation/       persistent, ≈ $3–3.50/month idle: network (no NAT), cluster, DNS zone, Cloud Map,
 │   │                     certificate, data key, document bucket, workload roles
-│   │                     (terraform-infra.yml testing/foundation)
+│   │                     (administrator-applied: scripts/bootstrap/plan-test-foundation.sh)
 │   └── session/          ephemeral: database, load balancer, services; created and destroyed by
 │                         test-session.yml, never by hand
 ├── eu-prod/
@@ -67,7 +67,8 @@ infra/terraform/
 
 TEST has its own bucket in its own account, `munaxa-docs-tfstate-eu-test-657878534449`
 (key `alias/munaxa-docs-eu-test-tfstate`), with the same rules: `bootstrap/terraform.tfstate` for
-the administrator only, `eu-test/<root>/terraform.tfstate` for the TEST deployer only. No TEST
+the administrator only, `eu-test/foundation/terraform.tfstate` for the administrator only (the
+persistent foundation), and `eu-test/session/terraform.tfstate` for the TEST deployer only. No TEST
 principal can reach the Production bucket, and no Production principal the TEST bucket.
 
 - **Bucket:** versioned, Block Public Access on, ACLs disabled, HTTPS only, SSE-KMS with the
@@ -200,7 +201,7 @@ from fixed parts, creation order is explicit, and postconditions check the creat
 | Path | Used for | Identity chain |
 | --- | --- | --- |
 | **GitHub Actions `production`** (`release.yml` → `deploy-release.yml`, `terraform-infra.yml`) | Approved releases and approved infrastructure changes in PRODUCTION | GitHub OIDC (`environment:production`, `refs/heads/main`) → `munaxa-docs-eu-prod-ci` → Production deployer (source identity `github-actions`, session `gha-run-*`) |
-| **GitHub Actions `testing`** (`release.yml` / `test-environment.yml` → `test-session.yml`; `terraform-infra.yml` testing/foundation) | TEST sessions (create, release, extend, destroy, hourly expiry) and the TEST foundation | GitHub OIDC (`environment:testing`, `refs/heads/main`) → `munaxa-docs-eu-test-ci` → TEST deployer (same source identity and session pattern) |
+| **GitHub Actions `testing`** (`release.yml` / `test-environment.yml` → `test-session.yml`) | TEST sessions only (create, release, extend, destroy, hourly expiry); the session-only TEST deployer cannot change the foundation | GitHub OIDC (`environment:testing`, `refs/heads/main`) → `munaxa-docs-eu-test-ci` → TEST deployer (source identity `github-actions`, session `gha-run-*`) |
 | **Claude engineering role** (`MunaxaAWSEngineeringAdmin`, user `munaxa-org-operator`) | Interactive work: reading, inspecting, operator checks; may assume the Production deployer | Identity Center → engineering role → deployer (source identity `munaxa-org-operator`, session `claude-*`) |
 | **`admin.tamer`** in AWS CloudShell | `bootstrap/` plans and applies, and break-glass | IAM user console session; no access keys copied anywhere |
 | **`admin.tamer` → `OrganizationAccountAccessRole`** in 657878534449 | `bootstrap-eu-test/` plans and applies | IAM user console session in the management account's CloudShell → role created with the account and protected by the `MunaxaNonProductionBaseline` SCP |

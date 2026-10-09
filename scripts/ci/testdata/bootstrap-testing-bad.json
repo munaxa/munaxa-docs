@@ -81,79 +81,9 @@
       "change": {
         "actions": ["create"],
         "before": null,
-        "after": {},
+        "after": { "assume_role_policy": "{}" },
         "after_unknown": { "assume_role_policy": true }
       }
-    },
-    {
-      "address": "aws_iam_policy.deployer[\"deployer-compute\"]",
-      "type": "aws_iam_policy",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-compute\"]",
-      "type": "aws_iam_role_policy_attachment",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_policy.deployer[\"deployer-data\"]",
-      "type": "aws_iam_policy",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-data\"]",
-      "type": "aws_iam_role_policy_attachment",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_policy.deployer[\"deployer-guardrails-environment\"]",
-      "type": "aws_iam_policy",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-guardrails-environment\"]",
-      "type": "aws_iam_role_policy_attachment",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_policy.deployer[\"deployer-guardrails-identity\"]",
-      "type": "aws_iam_policy",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-guardrails-identity\"]",
-      "type": "aws_iam_role_policy_attachment",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_policy.deployer[\"deployer-iam\"]",
-      "type": "aws_iam_policy",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-iam\"]",
-      "type": "aws_iam_role_policy_attachment",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_policy.deployer[\"deployer-network\"]",
-      "type": "aws_iam_policy",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-network\"]",
-      "type": "aws_iam_role_policy_attachment",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_policy.deployer[\"deployer-observability\"]",
-      "type": "aws_iam_policy",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
-    },
-    {
-      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-observability\"]",
-      "type": "aws_iam_role_policy_attachment",
-      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
     },
     {
       "address": "aws_iam_policy.deployer[\"deployer-read\"]",
@@ -182,6 +112,66 @@
     },
     {
       "address": "aws_iam_role_policy_attachment.deployer[\"deployer-testing-session\"]",
+      "type": "aws_iam_role_policy_attachment",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_policy.deployer[\"deployer-testing-compute\"]",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-testing-compute\"]",
+      "type": "aws_iam_role_policy_attachment",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_policy.deployer[\"deployer-testing-data\"]",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-testing-data\"]",
+      "type": "aws_iam_role_policy_attachment",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_policy.deployer[\"deployer-testing-iam\"]",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-testing-iam\"]",
+      "type": "aws_iam_role_policy_attachment",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_policy.deployer[\"deployer-testing-foundation-guard\"]",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-testing-foundation-guard\"]",
+      "type": "aws_iam_role_policy_attachment",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_policy.deployer[\"deployer-guardrails-environment\"]",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-guardrails-environment\"]",
+      "type": "aws_iam_role_policy_attachment",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_policy.deployer[\"deployer-guardrails-identity\"]",
+      "type": "aws_iam_policy",
+      "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
+    },
+    {
+      "address": "aws_iam_role_policy_attachment.deployer[\"deployer-guardrails-identity\"]",
       "type": "aws_iam_role_policy_attachment",
       "change": { "actions": ["create"], "before": null, "after": {}, "after_unknown": {} }
     },

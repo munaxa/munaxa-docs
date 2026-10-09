@@ -16,8 +16,8 @@ name: TEST session
 #
 # What a session costs exists only between `up` and `down`/`expire`: the database, the load
 # balancer, the tasks. The persistent foundation (network, cluster, DNS zone, certificate, keys,
-# roles; infra/terraform/eu-test/foundation) costs about two dollars a month and is never touched
-# here: plan-guard (session, session-destroy) refuses any plan that changes anything but the
+# Cloud Map, roles; infra/terraform/eu-test/foundation; administrator-applied) costs about $3–3.50 a
+# month and is never touched here: plan-guard (session, session-destroy) refuses any plan that changes anything but the
 # session's own resources.
 #
 # Identity chain (no stored AWS credentials), TEST only:
@@ -501,7 +501,7 @@ jobs:
               echo "url=$TEST_URL" >> "$GITHUB_OUTPUT"
               echo "✅ **TEST is running:** $TEST_URL — release $(link "$LIVE_COMMIT"), stops automatically at **$LIVE_EXPIRES** (UTC)."
             elif [ "$JOB_STATUS" = success ] && [ "$RUNNING" = false ]; then
-              echo "⏹️ **TEST is not running.** It costs only its always-on foundation (about \$2.50–3 a month)."
+              echo "⏹️ **TEST is not running.** It costs only its always-on foundation (about \$3–3.50 a month)."
             else
               echo "❌ **This TEST run failed** ($ACTION). Open the step with the red cross above for details."
               echo

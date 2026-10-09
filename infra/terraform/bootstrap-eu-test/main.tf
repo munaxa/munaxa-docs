@@ -163,16 +163,17 @@ data "aws_iam_policy_document" "state_bucket" {
     }
   }
 
-  # The deployer may use only the Testing root keys.
+  # The deployer may use only the TEST session root's state. The persistent foundation's state
+  # (eu-test/foundation/) is administrator-only, like bootstrap/.
   statement {
-    sid    = "DenyDeployerOutsideTestingRootKeys"
+    sid    = "DenyDeployerOutsideTestingSessionState"
     effect = "Deny"
     actions = [
       "s3:GetObject",
       "s3:PutObject",
       "s3:DeleteObject",
     ]
-    not_resources = ["arn:aws:s3:::${local.state_bucket}/eu-test/*"]
+    not_resources = ["arn:aws:s3:::${local.state_bucket}/eu-test/session/*"]
 
     principals {
       type        = "*"

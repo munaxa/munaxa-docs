@@ -51,9 +51,9 @@ known_trust() {
 }
 
 testing_policies=(
-  deployer-compute deployer-data deployer-guardrails-environment deployer-guardrails-identity
-  deployer-iam deployer-network deployer-observability deployer-read deployer-state
-  deployer-testing-session
+  deployer-read deployer-state deployer-testing-session deployer-testing-compute
+  deployer-testing-data deployer-testing-iam deployer-testing-foundation-guard
+  deployer-guardrails-environment deployer-guardrails-identity
 )
 
 case "$mode" in

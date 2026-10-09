@@ -1,0 +1,111 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SessionDatabase",
+      "Effect": "Allow",
+      "Action": [
+        "rds:CreateDBInstance",
+        "rds:ModifyDBInstance",
+        "rds:DeleteDBInstance",
+        "rds:RebootDBInstance",
+        "rds:AddTagsToResource",
+        "rds:RemoveTagsFromResource"
+      ],
+      "Resource": "arn:aws:rds:${region}:${account_id}:db:${prefix}-*"
+    },
+    {
+      "Sid": "UseFoundationDatabaseGroupsOnCreate",
+      "Effect": "Allow",
+      "Action": "rds:CreateDBInstance",
+      "Resource": [
+        "arn:aws:rds:${region}:${account_id}:subgrp:${prefix}-db",
+        "arn:aws:rds:${region}:${account_id}:pg:${prefix}-pg16",
+        "arn:aws:rds:${region}:${account_id}:og:default:postgres-16"
+      ]
+    },
+    {
+      "Sid": "RdsManagedMasterSecretCreate",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:TagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:rds!*"
+    },
+    {
+      "Sid": "RdsManagedMasterSecretManageTestingTagged",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:RotateSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:UntagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:rds!*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "SessionSecretContainersWriteOnly",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:${prefix}/*"
+    },
+    {
+      "Sid": "UseTestingDataKeysNoAdministration",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:${region}:${account_id}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "GrantsOnlyForAwsServices",
+      "Effect": "Allow",
+      "Action": "kms:CreateGrant",
+      "Resource": "arn:aws:kms:${region}:${account_id}:key/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "${environment}"
+        },
+        "Bool": {
+          "kms:GrantIsForAWSResource": "true"
+        }
+      }
+    },
+    {
+      "Sid": "ReadTestingLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*",
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*:*"
+      ]
+    }
+  ]
+}
