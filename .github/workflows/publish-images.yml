@@ -106,6 +106,15 @@ jobs:
         with:
           ref: ${{ needs.source.outputs.sha }}
 
+      # Optional Docker Hub login, before setup-buildx: booting the builder pulls moby/buildkit from
+      # Docker Hub, and so does the base image (node:22-bookworm-slim). See .github/actions/docker-hub-auth.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
       - uses: docker/setup-buildx-action@v3
 
       # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
@@ -267,6 +276,15 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
+
+      # Optional Docker Hub login, before setup-buildx: booting the builder pulls moby/buildkit from
+      # Docker Hub, and so does the base image (ubuntu:24.04). See .github/actions/docker-hub-auth.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
 
       - uses: docker/setup-buildx-action@v3
 

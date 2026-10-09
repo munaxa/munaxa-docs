@@ -142,45 +142,19 @@ jobs:
     # It ran only on developers' machines until now, which meant every claim about tenant
     # isolation, the audit hash chain, cascade restores and workflow immutability was verified
     # exactly where it is least likely to be verified again.
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: edms_owner
-          POSTGRES_PASSWORD: ci-only-not-a-secret
-          # Trust, because this cluster exists for the length of one job and is reachable only
-          # from it. It also keeps the tenant URLs below password-free, so a failing step cannot
-          # print a credential-shaped string into a public log.
-          POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U edms_owner -d postgres"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      # Object storage, added in Phase 6.12 — and it is a gate rather than a convenience.
-      #
-      # That phase found that **no upload could complete on S3 or R2**: the adapter never signed the
-      # digest into the presigned target and never asked for it back, so `head()` answered null and
-      # every upload was refused. It was invisible for eighteen phases because `LOCAL` hashes bytes
-      # itself, and because nothing in CI had ever spoken to an object store. The regression guard
-      # asserts that the *store* refuses bytes that disagree with their digest, which is a property
-      # only a real store has.
-      #
-      # The object store is NOT a service container — see "Start the object store" below for why.
+    # PostgreSQL and Redis are started as the job's first steps rather than as `services:`, so that
+    # they are pulled after the optional Docker Hub login; see "Start PostgreSQL and Redis" below.
+    #
+    # Object storage, added in Phase 6.12 — and it is a gate rather than a convenience.
+    #
+    # That phase found that **no upload could complete on S3 or R2**: the adapter never signed the
+    # digest into the presigned target and never asked for it back, so `head()` answered null and
+    # every upload was refused. It was invisible for eighteen phases because `LOCAL` hashes bytes
+    # itself, and because nothing in CI had ever spoken to an object store. The regression guard
+    # asserts that the *store* refuses bytes that disagree with their digest, which is a property
+    # only a real store has.
+    #
+    # The object store is NOT a service container — see "Start the object store" below for why.
 
     env:
       NODE_ENV: test
@@ -215,6 +189,32 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before anything is pulled
+      # from Docker Hub. Without the secrets (also forks and Dependabot) pulls stay anonymous.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
+      # Formerly `services:`. Same images, ports, settings and health checks; the database trusts
+      # local connections because this cluster exists for the length of one job and is reachable
+      # only from it, which also keeps the tenant URLs below password-free, so a failing step cannot
+      # print a credential-shaped string into a public log.
+      - name: Start PostgreSQL and Redis
+        run: |
+          set -euo pipefail
+          c=.github/actions/docker-hub-auth/service-container.sh
+          bash "$c" start postgres postgres:16-alpine --publish 5432:5432 \
+            --env POSTGRES_USER=edms_owner --env POSTGRES_PASSWORD=ci-only-not-a-secret \
+            --env POSTGRES_HOST_AUTH_METHOD=trust --env POSTGRES_DB=postgres \
+            --health-cmd "pg_isready -U edms_owner -d postgres" \
+            --health-interval 5s --health-timeout 3s --health-retries 10
+          bash "$c" start redis redis:7-alpine --publish 6379:6379 \
+            --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+          bash "$c" wait postgres redis
 
       - uses: pnpm/action-setup@v6
         with:
@@ -501,49 +501,8 @@ jobs:
           - name: 'session states'
             files: 'src/test/e2e/session-states.e2e.spec.ts src/test/e2e/open-redirect.e2e.spec.ts src/test/e2e/sign-out-revocation.e2e.spec.ts'
 
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: edms_owner
-          POSTGRES_PASSWORD: ci-only-not-a-secret
-          POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U edms_owner -d postgres"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      # The restore rehearsal restores *beside* the source rather than over it, and refuses to run
-      # against a destination that is not empty — so it needs a second cluster, with a superuser,
-      # that nothing else has touched. A second service container is exactly that, and it is
-      # discarded with the job.
-      postgres-dr:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_DB: postgres
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d postgres"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+    # PostgreSQL (twice) and Redis are started as the job's first steps rather than as `services:`,
+    # so that they are pulled after the optional Docker Hub login; see "Start PostgreSQL and Redis".
 
     env:
       NODE_ENV: test
@@ -571,6 +530,37 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before anything is pulled
+      # from Docker Hub. Without the secrets (also forks and Dependabot) pulls stay anonymous.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
+      # Formerly `services:`. Same images, ports, settings and health checks.
+      #
+      # The restore rehearsal restores *beside* the source rather than over it, and refuses to run
+      # against a destination that is not empty — so it needs a second cluster, with a superuser,
+      # that nothing else has touched: `postgres-dr` on 5433, discarded with the job.
+      - name: Start PostgreSQL and Redis
+        run: |
+          set -euo pipefail
+          c=.github/actions/docker-hub-auth/service-container.sh
+          bash "$c" start postgres postgres:16-alpine --publish 5432:5432 \
+            --env POSTGRES_USER=edms_owner --env POSTGRES_PASSWORD=ci-only-not-a-secret \
+            --env POSTGRES_HOST_AUTH_METHOD=trust --env POSTGRES_DB=postgres \
+            --health-cmd "pg_isready -U edms_owner -d postgres" \
+            --health-interval 5s --health-timeout 3s --health-retries 10
+          bash "$c" start postgres-dr postgres:16-alpine --publish 5433:5432 \
+            --env POSTGRES_USER=postgres --env POSTGRES_HOST_AUTH_METHOD=trust --env POSTGRES_DB=postgres \
+            --health-cmd "pg_isready -U postgres -d postgres" \
+            --health-interval 5s --health-timeout 3s --health-retries 10
+          bash "$c" start redis redis:7-alpine --publish 6379:6379 \
+            --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+          bash "$c" wait postgres postgres-dr redis
 
       - uses: pnpm/action-setup@v6
         with:
@@ -661,6 +651,15 @@ jobs:
     # those answers. What it can assert is that the images build from this commit.
     steps:
       - uses: actions/checkout@v6
+
+      # Before setup-buildx: booting the builder pulls moby/buildkit from Docker Hub, and the
+      # Dockerfile's base image (node:22-bookworm-slim) comes from there too.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
 
       - uses: docker/setup-buildx-action@v3
 
