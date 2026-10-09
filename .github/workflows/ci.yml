@@ -145,6 +145,11 @@ jobs:
     services:
       postgres:
         image: postgres:16-alpine
+        # Optional Docker Hub login for this pull (see .github/actions/docker-hub-auth). Empty secrets
+        # (not configured, or a fork) mean the runner skips the login and pulls anonymously.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_USER: edms_owner
           POSTGRES_PASSWORD: ci-only-not-a-secret
@@ -163,6 +168,11 @@ jobs:
 
       redis:
         image: redis:7-alpine
+        # Optional Docker Hub login for this pull (see .github/actions/docker-hub-auth). Empty secrets
+        # (not configured, or a fork) mean the runner skips the login and pulls anonymously.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         ports:
           - 6379:6379
         options: >-
@@ -215,6 +225,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      # The service containers above were pulled before this first step; this reports whether that
+      # pull was authenticated and stops on a half-configured pair of secrets.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: pnpm/action-setup@v6
         with:
@@ -504,6 +522,11 @@ jobs:
     services:
       postgres:
         image: postgres:16-alpine
+        # Optional Docker Hub login for this pull (see .github/actions/docker-hub-auth). Empty secrets
+        # (not configured, or a fork) mean the runner skips the login and pulls anonymously.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_USER: edms_owner
           POSTGRES_PASSWORD: ci-only-not-a-secret
@@ -523,6 +546,11 @@ jobs:
       # discarded with the job.
       postgres-dr:
         image: postgres:16-alpine
+        # Optional Docker Hub login for this pull (see .github/actions/docker-hub-auth). Empty secrets
+        # (not configured, or a fork) mean the runner skips the login and pulls anonymously.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_HOST_AUTH_METHOD: trust
@@ -537,6 +565,11 @@ jobs:
 
       redis:
         image: redis:7-alpine
+        # Optional Docker Hub login for this pull (see .github/actions/docker-hub-auth). Empty secrets
+        # (not configured, or a fork) mean the runner skips the login and pulls anonymously.
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         ports:
           - 6379:6379
         options: >-
@@ -571,6 +604,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      # The service containers above were pulled before this first step; this reports whether that
+      # pull was authenticated and stops on a half-configured pair of secrets.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: pnpm/action-setup@v6
         with:
@@ -663,6 +704,15 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: docker/setup-buildx-action@v3
+
+      # The Dockerfile's base image (node:22-bookworm-slim) comes from Docker Hub: log in before the
+      # builds when the secrets are set, so a shared runner IP's anonymous limit cannot stop them.
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
 
       # The registry credential, as a build *secret* rather than a build argument: an argument is
       # recorded in the image's history and readable by anybody who can `docker history` it.

@@ -1,0 +1,70 @@
+# Optional Docker Hub authentication, so CI is not stopped by Docker Hub's anonymous pull-rate limit
+# (`toomanyrequests` / HTTP 429) on the shared IPs of GitHub-hosted runners.
+#
+# Two repository Actions secrets, both or neither:
+#   DOCKERHUB_USERNAME  the Docker Hub account name
+#   DOCKERHUB_TOKEN     a Docker Hub personal access token with "Public Repo Read-only" access
+#
+# Neither set (also: pull requests from forks, Dependabot): everything pulls anonymously, exactly as
+# before. Only one set: this action fails the job with a message saying which one is missing.
+#
+# Where the pulls happen, and why this action is not enough on its own:
+#   - Service containers (`services:`) are pulled by the runner BEFORE the first step, so no step can
+#     log in for them. Each service therefore carries `credentials:` with the same two secrets; the
+#     runner logs in with a temporary Docker config just for that pull (and skips the login when either
+#     value is empty). In those jobs this action only reports and checks the configuration.
+#   - Dockerfile base images (`FROM node:…`, `FROM ubuntu:…`) are pulled by buildx during a build step.
+#     There, `login: 'true'` logs in to Docker Hub before the build.
+#
+# The token is never printed: it goes to `docker login` on stdin (docker/login-action), and GitHub
+# masks secret values in logs.
+name: Docker Hub authentication
+description: Check the optional Docker Hub credentials and, if asked, log in before image builds.
+inputs:
+  username:
+    description: secrets.DOCKERHUB_USERNAME (may be empty)
+    required: false
+    default: ''
+  token:
+    description: secrets.DOCKERHUB_TOKEN (may be empty)
+    required: false
+    default: ''
+  login:
+    description: "'true' to log in to Docker Hub (for buildx builds); 'false' only checks and reports"
+    required: false
+    default: 'false'
+outputs:
+  mode:
+    description: authenticated or anonymous
+    value: ${{ steps.check.outputs.mode }}
+runs:
+  using: composite
+  steps:
+    - name: Check the Docker Hub credentials
+      id: check
+      shell: bash
+      env:
+        DOCKERHUB_USERNAME: ${{ inputs.username }}
+        DOCKERHUB_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+          echo "Docker Hub pulls: authenticated (repository secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN)."
+          echo "mode=authenticated" >> "$GITHUB_OUTPUT"
+        elif [ -z "$DOCKERHUB_USERNAME" ] && [ -z "$DOCKERHUB_TOKEN" ]; then
+          echo "Docker Hub pulls: anonymous (DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not set or not available to this run)."
+          echo "::notice title=Docker Hub::Anonymous pulls. If this job fails with 'toomanyrequests', set the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets."
+          echo "mode=anonymous" >> "$GITHUB_OUTPUT"
+        else
+          missing=DOCKERHUB_TOKEN
+          [ -z "$DOCKERHUB_USERNAME" ] && missing=DOCKERHUB_USERNAME
+          echo "::error title=Docker Hub::Only one of DOCKERHUB_USERNAME and DOCKERHUB_TOKEN is set; $missing is missing. Set both, or remove both to pull anonymously."
+          exit 1
+        fi
+
+    - name: Log in to Docker Hub
+      if: inputs.login == 'true' && steps.check.outputs.mode == 'authenticated'
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      with:
+        username: ${{ inputs.username }}
+        password: ${{ inputs.token }}

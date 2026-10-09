@@ -108,6 +108,15 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # The base image (node:22-bookworm-slim) comes from Docker Hub: log in before the build when the
+      # optional DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets are set (.github/actions/docker-hub-auth).
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
       # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
       # argument is recorded in the image's history. The same construction the CI images job uses.
       - name: Write the package-registry credential for the build secret
@@ -269,6 +278,15 @@ jobs:
           node-version: '22'
 
       - uses: docker/setup-buildx-action@v3
+
+      # The base image (ubuntu:24.04) comes from Docker Hub: log in before the build when the
+      # optional DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets are set (.github/actions/docker-hub-auth).
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
 
       # Built and loaded first, and only pushed once it has proved it scans.
       - name: Build the scanner (not yet pushed)
