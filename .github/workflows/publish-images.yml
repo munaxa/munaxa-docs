@@ -304,6 +304,18 @@ jobs:
           path: digests/${{ matrix.target }}
           retention-days: 90
 
+      # The Docker Hub authentication step registered a post step (docker/login-action's logout),
+      # and the runner reloads a local action from the workspace when its post step runs. The
+      # checkout of the built commit can have removed the action (a tag can name a commit that
+      # predates it), which would fail the job after the push; put this workflow's copy back.
+      - name: Restore the Docker Hub action for its post step
+        if: always()
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/actions/docker-hub-auth
+          persist-credentials: false
+
   antivirus:
     name: munaxa-docs-antivirus
     needs: source
@@ -475,6 +487,18 @@ jobs:
           name: digest-antivirus
           path: digests/
           retention-days: 90
+
+      # The Docker Hub authentication step registered a post step (docker/login-action's logout),
+      # and the runner reloads a local action from the workspace when its post step runs. The
+      # checkout of the built commit can have removed the action (a tag can name a commit that
+      # predates it), which would fail the job after the push; put this workflow's copy back.
+      - name: Restore the Docker Hub action for its post step
+        if: always()
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/actions/docker-hub-auth
+          persist-credentials: false
 
   pull-identity:
     name: Pull with the production identity
