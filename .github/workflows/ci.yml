@@ -214,6 +214,9 @@ jobs:
             --health-interval 5s --health-timeout 3s --health-retries 10
           bash "$c" start redis redis:7-alpine --publish 6379:6379 \
             --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+          # Every Docker Hub pull of this job is done: drop the login before any dependency or test
+          # code runs, so nothing later in the job can read the token from ~/.docker/config.json.
+          docker logout >/dev/null
           bash "$c" wait postgres redis
 
       - uses: pnpm/action-setup@v6
@@ -560,6 +563,9 @@ jobs:
             --health-interval 5s --health-timeout 3s --health-retries 10
           bash "$c" start redis redis:7-alpine --publish 6379:6379 \
             --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+          # Every Docker Hub pull of this job is done: drop the login before any dependency or test
+          # code runs, so nothing later in the job can read the token from ~/.docker/config.json.
+          docker logout >/dev/null
           bash "$c" wait postgres postgres-dr redis
 
       - uses: pnpm/action-setup@v6

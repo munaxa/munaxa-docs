@@ -19,7 +19,9 @@
 #     before setup-buildx.
 #
 # The token is never printed: it goes to `docker login` on stdin (docker/login-action), and GitHub
-# masks secret values in logs.
+# masks secret values in logs. The login lives in ~/.docker/config.json until docker/login-action's
+# post step logs out; jobs that later run dependency or test code (ci.yml integration and
+# end-to-end) run `docker logout` as soon as their pulls are done.
 name: Docker Hub authentication
 description: Check the optional Docker Hub credentials and, if asked, log in before image builds.
 inputs:
