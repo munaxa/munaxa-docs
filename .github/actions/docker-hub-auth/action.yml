@@ -15,8 +15,10 @@
 #     job whose `credentials` username or password is empty ("Unexpected value ''"), so optional
 #     credentials are impossible there.
 #   - docker/setup-buildx-action boots its builder by pulling moby/buildkit from Docker Hub, and
-#     buildx then pulls the Dockerfile base images (node:…, ubuntu:…). The login step must come
-#     before setup-buildx.
+#     buildx then pulls the Dockerfile's base image (node:22-bookworm-slim) in ci.yml's images job.
+#     The login step must come before setup-buildx. The release workflow (publish-images.yml) is
+#     not covered here; as a reusable workflow it must declare the two secrets and receive them
+#     from its caller before it can use this action.
 #
 # The token is never printed: it goes to `docker login` on stdin (docker/login-action), and GitHub
 # masks secret values in logs. The login lives in ~/.docker/config.json until docker/login-action's
