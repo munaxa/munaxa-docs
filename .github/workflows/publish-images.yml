@@ -47,6 +47,12 @@ on:
         required: true
       DOCS_PRODUCTION_PULL_TOKEN:
         required: true
+      # Optional Docker Hub login for the base-image and BuildKit pulls (see
+      # .github/actions/docker-hub-auth). Without them the pulls stay anonymous.
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
     outputs:
       release_commit:
         description: The commit the images were built from
@@ -131,6 +137,24 @@ jobs:
       SHORT: ${{ needs.source.outputs.short }}
       REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/${{ matrix.image }}
     steps:
+      # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before setup-buildx: booting
+      # the builder pulls moby/buildkit from Docker Hub, and the Dockerfile's base images come from
+      # there too. Without the secrets the pulls stay anonymous. The action is loaded from this
+      # workflow's own commit, not from the commit being built (a tag can name an older commit that
+      # predates it); the checkout of the built commit below replaces this sparse one entirely.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/actions/docker-hub-auth
+          persist-credentials: false
+
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.source.outputs.sha }}
@@ -174,6 +198,11 @@ jobs:
             org.opencontainers.image.revision=${{ env.SHA }}
             org.opencontainers.image.version=${{ env.SHORT }}
             org.opencontainers.image.title=${{ matrix.image }}
+
+      # Every Docker Hub pull of this job is done: drop the login, so no later step can read the
+      # token from ~/.docker/config.json.
+      - name: Drop the Docker Hub login
+        run: docker logout >/dev/null
 
       - name: Fail if no digest was produced
         env:
@@ -288,6 +317,24 @@ jobs:
       SHORT: ${{ needs.source.outputs.short }}
       REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/munaxa-docs-antivirus
     steps:
+      # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before setup-buildx: booting
+      # the builder pulls moby/buildkit from Docker Hub, and the Dockerfile's base images come from
+      # there too. Without the secrets the pulls stay anonymous. The action is loaded from this
+      # workflow's own commit, not from the commit being built (a tag can name an older commit that
+      # predates it); the checkout of the built commit below replaces this sparse one entirely.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/actions/docker-hub-auth
+          persist-credentials: false
+
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.source.outputs.sha }}
@@ -312,6 +359,11 @@ jobs:
             org.opencontainers.image.revision=${{ env.SHA }}
             org.opencontainers.image.version=${{ env.SHORT }}
             org.opencontainers.image.title=munaxa-docs-antivirus
+
+      # Every Docker Hub pull of this job is done: drop the login, so no later step can read the
+      # token from ~/.docker/config.json.
+      - name: Drop the Docker Hub login
+        run: docker logout >/dev/null
 
       - name: Record the scanner versions this build installed
         id: versions

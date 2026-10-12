@@ -62,6 +62,9 @@ jobs:
     secrets:
       DOCS_PRODUCTION_PULL_USER: ${{ secrets.DOCS_PRODUCTION_PULL_USER }}
       DOCS_PRODUCTION_PULL_TOKEN: ${{ secrets.DOCS_PRODUCTION_PULL_TOKEN }}
+      # Optional: without them the build's Docker Hub pulls stay anonymous.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   testing:
     name: TEST
