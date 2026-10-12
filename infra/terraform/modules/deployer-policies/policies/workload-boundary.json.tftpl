@@ -1,0 +1,146 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "${environment}DocumentStorage",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::${prefix}-*"
+    },
+    {
+      "Sid": "${environment}SecretsByName",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:${prefix}/*"
+    },
+    {
+      "Sid": "${environment}RdsManagedSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:${region}:${account_id}:secret:rds!*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "${environment}TaggedKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey",
+        "kms:CreateGrant"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Environment": "${environment}"
+        }
+      }
+    },
+    {
+      "Sid": "${environment}LogStreams",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*",
+        "arn:aws:logs:${region}:${account_id}:log-group:/munaxa-docs/${env_path}/*:*"
+      ]
+    },
+    {
+      "Sid": "EcsExecSessionChannels",
+      "Effect": "Allow",
+      "Action": [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Replace${environment}ServiceTasks",
+      "Effect": "Allow",
+      "Action": "ecs:UpdateService",
+      "Resource": "arn:aws:ecs:${region}:${account_id}:service/${prefix}/*"
+    },
+    {
+      "Sid": "Backup${environment}DatabaseSnapshots",
+      "Effect": "Allow",
+      "Action": [
+        "rds:AddTagsToResource",
+        "rds:ListTagsForResource",
+        "rds:CreateDBSnapshot",
+        "rds:CopyDBSnapshot",
+        "rds:DeleteDBSnapshot",
+        "rds:ModifyDBSnapshotAttribute"
+      ],
+      "Resource": [
+        "arn:aws:rds:${region}:${account_id}:db:${prefix}-*",
+        "arn:aws:rds:${region}:${account_id}:snapshot:awsbackup:*"
+      ]
+    },
+    {
+      "Sid": "BackupServiceReads",
+      "Effect": "Allow",
+      "Action": [
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBSnapshots",
+        "tag:GetResources",
+        "backup:DescribeBackupVault",
+        "backup:CopyIntoBackupVault"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "OnlyEuCentral1",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": "${region}"
+        }
+      }
+    },
+    {
+      "Sid": "NeverTouchNonProductionTagged",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*",
+      "Condition": {
+        "StringEqualsIgnoreCase": {
+          "aws:ResourceTag/Environment": ${non_production_tag_values}
+        }
+      }
+    },
+    {
+      "Sid": "NeverTouchNonProductionByName",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": ${non_production_name_arns_json}
+    },
+    {
+      "Sid": "NoIdentityOrOrganizationsActions",
+      "Effect": "Deny",
+      "Action": [
+        "iam:*",
+        "sts:*",
+        "organizations:*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

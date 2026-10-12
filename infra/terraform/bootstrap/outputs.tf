@@ -4,8 +4,18 @@ output "deployer_role_arn" {
 }
 
 output "ci_role_arn" {
-  description = "The role GitHub Actions (production environment) assumes through OIDC."
-  value       = aws_iam_role.ci.arn
+  description = "The role GitHub Actions (production environment, main) assumes through OIDC."
+  value       = module.production_ci.role_arn
+}
+
+output "ci_trust_policy" {
+  description = "The Production CI role's trust policy, for review."
+  value       = module.production_ci.trust_policy
+}
+
+output "deployer_trust_policy" {
+  description = "The Production deployer's trust policy, for review."
+  value       = data.aws_iam_policy_document.deployer_trust.json
 }
 
 output "workload_boundary_arn" {

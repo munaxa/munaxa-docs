@@ -1,0 +1,19 @@
+{
+  "resource_changes": [
+    {
+      "address": "aws_ecs_service.api",
+      "type": "aws_ecs_service",
+      "change": { "actions": ["delete", "create"] }
+    },
+    {
+      "address": "aws_lb_listener.https",
+      "type": "aws_lb_listener",
+      "change": { "actions": ["update"] }
+    },
+    {
+      "address": "aws_db_instance.main",
+      "type": "aws_db_instance",
+      "change": { "actions": ["delete"] }
+    }
+  ]
+}

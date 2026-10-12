@@ -9,8 +9,11 @@
 | --- | --- | --- | --- |
 | Local | Development | Seeded fixtures | Anyone, via compose |
 | CI | Verification per pull request | Ephemeral, per run | The pipeline |
-| Staging | Pre-production rehearsal | Anonymised sample, never production data | Automatic on merge to `main` |
-| Production | Live | Real | Tagged release, manual approval |
+| Testing (TEST) | Pre-production verification, account `munaxa-nonprod`; runs only while a release is under test (cheap foundation + ephemeral session) | Empty per session (one test tenant), never production data | Automatic on merge to `main`; stops after promotion or at its expiry |
+| Production | Live | Real | Promotion of the exact images TEST verified, after reviewer approval |
+
+The TEST → PRODUCTION pipeline, its identities and the manual GitHub settings are in
+[`docs/operations/ci-cd-two-environments.md`](../operations/ci-cd-two-environments.md).
 
 Local development runs a compose stack: PostgreSQL 16, Redis 7, MinIO or LocalStack for S3, and a
 mail catcher — the same shape as production, so the storage and queue paths are exercised from the

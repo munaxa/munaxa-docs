@@ -1,0 +1,24 @@
+{
+  "resource_changes": [
+    {
+      "address": "aws_service_discovery_service.internal[\"api\"]",
+      "type": "aws_service_discovery_service",
+      "change": { "actions": ["create"] }
+    },
+    {
+      "address": "aws_security_group_rule.db_from_api",
+      "type": "aws_security_group_rule",
+      "change": { "actions": ["delete"] }
+    },
+    {
+      "address": "aws_route_table.public",
+      "type": "aws_route_table",
+      "change": { "actions": ["delete", "create"] }
+    },
+    {
+      "address": "aws_cloudwatch_log_group.service[\"api\"]",
+      "type": "aws_cloudwatch_log_group",
+      "change": { "actions": ["delete"] }
+    }
+  ]
+}

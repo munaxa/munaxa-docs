@@ -1,0 +1,26 @@
+{
+  "resource_changes": [
+    {
+      "address": "aws_db_instance.main",
+      "type": "aws_db_instance",
+      "change": { "actions": ["update"] }
+    },
+    {
+      "address": "module.app.aws_ecs_task_definition.api",
+      "type": "aws_ecs_task_definition",
+      "change": { "actions": ["delete", "create"] }
+    },
+    {
+      "address": "module.app.aws_ecs_service.api[0]",
+      "type": "aws_ecs_service",
+      "change": { "actions": ["create"] }
+    },
+    { "address": "module.app.aws_lb.main", "type": "aws_lb", "change": { "actions": ["update"] } },
+    {
+      "address": "aws_route53_record.web",
+      "type": "aws_route53_record",
+      "change": { "actions": ["create"] }
+    },
+    { "address": "data.aws_vpc.main", "type": "aws_vpc", "change": { "actions": ["read"] } }
+  ]
+}
