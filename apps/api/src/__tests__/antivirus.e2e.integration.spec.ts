@@ -259,6 +259,15 @@ async function scanEvents(tenancy: Tenancy, fileObjectId: string) {
   });
 }
 
+/**
+ * Events published together share one `created_at` — `PrismaOutboxWriter` stamps a batch once — so
+ * the order `scanEvents` returns them in is not observable, and a verdict's `scan-completed` and
+ * `file-quarantined` are one batch. Assertions over such a set compare it sorted by type.
+ */
+function byType(a: { type: string }, b: { type: string }): number {
+  return a.type.localeCompare(b.type);
+}
+
 async function uploadAudit(tenancy: Tenancy, fileObjectId: string) {
   const rows = await tenancy.owner.auditEvent.findMany({
     where: { subjectId: fileObjectId, action: 'FILE_UPLOADED' },
@@ -656,10 +665,12 @@ describe('EICAR, detected by the real scanner', () => {
     expect(row.scanThreat).toMatch(/eicar/i);
     expect(row.scanner).toMatch(/^ICAP C-ICAP/);
 
-    expect(await scanEvents(acme, uploaded.fileObjectId)).toEqual([
-      { type: 'storage.scan-completed', status: 'INFECTED', threat: null },
-      { type: 'storage.file-quarantined', status: null, threat: row.scanThreat },
-    ]);
+    expect((await scanEvents(acme, uploaded.fileObjectId)).sort(byType)).toEqual(
+      [
+        { type: 'storage.scan-completed', status: 'INFECTED', threat: null },
+        { type: 'storage.file-quarantined', status: null, threat: row.scanThreat },
+      ].sort(byType),
+    );
     expect(await uploadAudit(acme, uploaded.fileObjectId)).toEqual([
       expect.objectContaining({ scanStatus: 'INFECTED', threat: row.scanThreat }),
     ]);
@@ -751,11 +762,9 @@ describe('the scanner is down', () => {
     const row = await blobRow(acme, during.fileObjectId);
     expect(row.scanStatus).toBe('INFECTED');
     expect(row.scanThreat).toMatch(/eicar/i);
-    expect((await scanEvents(acme, during.fileObjectId)).map((event) => event.type)).toEqual([
-      'storage.scan-completed',
-      'storage.scan-completed',
-      'storage.file-quarantined',
-    ]);
+    expect((await scanEvents(acme, during.fileObjectId)).map((event) => event.type).sort()).toEqual(
+      ['storage.scan-completed', 'storage.scan-completed', 'storage.file-quarantined'].sort(),
+    );
     expect((await fileDocument(A(), acme, during.fileObjectId, `Back ${uuidv7()}`)).status).toBe(
       409,
     );
@@ -987,10 +996,9 @@ describe('STG-1: the scan is not bound by a database transaction', () => {
     const uploaded = await upload(slow, acme, eicarZip(uuidv7()), 'slow.zip', 'application/zip');
     expect(uploaded.scanStatus).toBe('INFECTED');
     expect((await blobRow(acme, uploaded.fileObjectId)).scanThreat).toMatch(/eicar/i);
-    expect((await scanEvents(acme, uploaded.fileObjectId)).map((event) => event.type)).toEqual([
-      'storage.scan-completed',
-      'storage.file-quarantined',
-    ]);
+    expect(
+      (await scanEvents(acme, uploaded.fileObjectId)).map((event) => event.type).sort(),
+    ).toEqual(['storage.scan-completed', 'storage.file-quarantined'].sort());
     const refused = await fileDocument(slow, acme, uploaded.fileObjectId, `Slow eicar ${uuidv7()}`);
     expect(refused.status).toBe(409);
     expect(refused.body).toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
