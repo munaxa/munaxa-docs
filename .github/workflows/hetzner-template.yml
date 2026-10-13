@@ -1,0 +1,129 @@
+name: Hetzner template
+
+# Runs the Hetzner deployment template (infra/hetzner, ADR-0026) end to end in a disposable stack on
+# the runner: the real api, web and antivirus images built from this commit, PostgreSQL, Redis, the
+# test-only MinIO, then infra/hetzner/testing/run-stack-test.sh. It builds nothing for a registry,
+# pushes nothing, deploys nothing, and contacts no cloud provider.
+#
+# A workflow of its own rather than a job in ci.yml, deliberately. ci.yml's checks are required by
+# the `main` ruleset and carry no path filter, for the reason its header gives. This one is a new,
+# NOT required check, so a path filter is safe here (a skipped run blocks nothing), and an evaluation
+# of a hosting option that has not been accepted does not belong among the merge gates. Promoting it
+# to a required check is a decision for whoever accepts ADR-0026.
+#
+# A pass proves the template against MinIO only. It says nothing about Hetzner Object Storage or
+# Cloudflare R2 (ADR-0026 §10, gate P-1).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/hetzner/**'
+      - 'infra/antivirus/**'
+      - 'infra/sql/**'
+      - 'Dockerfile'
+      - 'apps/**'
+      - 'packages/**'
+      - 'prisma/**'
+      - 'scripts/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/hetzner-template.yml'
+  push:
+    branches-ignore: [main]
+    paths:
+      - 'infra/hetzner/**'
+      - '.github/workflows/hetzner-template.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: hetzner-template-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stack:
+    name: Compose stack · real images, MinIO, production validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The same build secret, written the same way, as ci.yml's `images` job.
+      - name: Write the registry credential for the build secret
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          push: false
+          load: true
+          tags: munaxa-docs-api:stacktest
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+
+      - name: Build the web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          push: false
+          load: true
+          tags: munaxa-docs-web:stacktest
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+
+      - name: Build the antivirus image
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/antivirus
+          push: false
+          load: true
+          tags: munaxa-docs-antivirus:stacktest
+
+      - name: Remove the registry credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/npmrc"
+
+      # One signature download a day, as ci.yml does: ClamAV's mirrors throttle repeat fetches, and a
+      # throttled scanner has nothing to scan with. The stack test seeds the scanner from this
+      # directory and writes the current signatures back for the next run.
+      - name: Date the signature cache
+        id: signatures
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the ClamAV signatures
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/clamav-db
+          key: hetzner-clamav-db-${{ steps.signatures.outputs.day }}
+          restore-keys: hetzner-clamav-db-
+
+      - name: Run the stack test
+        run: infra/hetzner/testing/run-stack-test.sh
+        env:
+          DOCS_API_IMAGE: munaxa-docs-api:stacktest
+          DOCS_WEB_IMAGE: munaxa-docs-web:stacktest
+          DOCS_ANTIVIRUS_IMAGE: munaxa-docs-antivirus:stacktest
+          CLAMAV_SEED_DIR: ${{ runner.temp }}/clamav-db
+          CLAMAV_EXPORT_DIR: ${{ runner.temp }}/clamav-db

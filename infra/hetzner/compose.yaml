@@ -1,0 +1,347 @@
+# Munaxa Docs on one Hetzner Cloud server — the production-shaped Compose template (ADR-0026).
+#
+# STATUS: a template, validated only in a disposable local/CI stack (infra/hetzner/README.md §5).
+# Nothing here has run on Hetzner, and provider compatibility is a separate gate (ADR-0026 §10).
+#
+#   docker compose --env-file deploy.env -f infra/hetzner/compose.yaml up -d
+#
+# ## What runs
+#
+#   proxy      Caddy: the ONLY published port, on 127.0.0.1 by default (Caddyfile)
+#   web        the `web` image (`node server.mjs`)
+#   api        the `api` image: HTTP, and every queue consumer and schedule (QUEUE_CONSUMERS_ENABLED)
+#   antivirus  the `antivirus` image: c-icap + ClamAV, plain ICAP on a private network
+#   postgres   PostgreSQL 16, one database per tenant (ADR-0015)
+#   redis      Redis 7, password, AOF, noeviction
+#
+# The `worker` image is deliberately absent: it starts, logs that consumers run in the API process,
+# and does nothing (`apps/worker/src/main.ts`), and it is not published (`publish-images.yml`).
+# Object storage and mail are external services, configured in config/api.env.
+#
+# `db-admin`, `migrate` and `provision` (profile `ops`) are one-off operator commands, never started
+# by `up`. See README.md §4.
+#
+# ## Networks
+#
+#   edge      proxy, web, api                 has internet egress (the API's object store and mail)
+#   data      api, postgres, redis            internal: no egress, nothing published
+#   scan      api, antivirus                  internal: ICAP is plaintext, so only the API reaches it
+#   scanner-egress  antivirus                 egress for signature downloads, and nothing else on it
+#   ops-egress      migrate (one-off)         egress for Prisma's schema engine download (finding F-1)
+#
+# Fixed subnets and fixed proxy/web addresses, because TRUST_PROXY and WEB_TRUST_PROXY name the hops
+# in front of each service by address (docs/operations/deployment.md §3.1); `true`/`*` are refused.
+#
+# ## Secrets
+#
+# None in this file. Every secret is in a file under ${DOCS_CONFIG_DIR} (mode 0600, outside git),
+# created from config/*.example. Image references are digests in production (deploy.env).
+
+name: ${DOCS_PROJECT_NAME:-munaxa-docs}
+
+# Bounded, so a noisy container cannot fill the disk (ADR-0026 §9).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  proxy:
+    image: ${DOCS_PROXY_IMAGE:-caddy:2.10.2-alpine}
+    restart: unless-stopped
+    <<: *hardening
+    # The official binary carries the file capability cap_net_bind_service, and the kernel refuses
+    # to exec a binary whose file capabilities exceed the bounding set — so with ALL dropped it fails
+    # with "operation not permitted" (found by the stack test). This one capability is the only one
+    # kept; the proxy still listens on unprivileged 8080.
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /data
+      - /config
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      # The only published port. 127.0.0.1 until the TLS decision (ADR-0026 §11) says what connects
+      # to it; never 0.0.0.0 without a firewall that admits only that component.
+      - '${DOCS_HTTP_BIND:-127.0.0.1}:${DOCS_HTTP_PORT:-8080}:8080'
+    networks:
+      edge:
+        ipv4_address: 172.28.10.10
+    depends_on:
+      web:
+        condition: service_started
+      api:
+        condition: service_started
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8081/']
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    mem_limit: 128m
+    logging: *logging
+
+  web:
+    image: ${DOCS_WEB_IMAGE:?set DOCS_WEB_IMAGE (an image@sha256 digest in production)}
+    restart: unless-stopped
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      PORT: '3000'
+      # Read at runtime by the web server, never at build time (go-live-runbook.md §5.2).
+      NEXT_PUBLIC_API_URL: http://api:3001
+      # The one hop in front of the web server: the proxy, by its fixed address.
+      WEB_TRUST_PROXY: 172.28.10.10
+    networks:
+      edge:
+        ipv4_address: 172.28.10.20
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      # `/login` makes no API or database call without a session (ADR-0024 §2.3).
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 768m
+    logging: *logging
+
+  api:
+    image: ${DOCS_API_IMAGE:?set DOCS_API_IMAGE (an image@sha256 digest in production)}
+    restart: unless-stopped
+    <<: *hardening
+    # Supported by the image: nothing writes to its own filesystem except STORAGE_DRIVER=LOCAL,
+    # which this deployment does not use (Dockerfile, runtime stage).
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - ${DOCS_CONFIG_DIR:?set DOCS_CONFIG_DIR}/api.env
+    environment:
+      # Fixed by this topology rather than left to the env file.
+      NODE_ENV: production
+      PORT: '3001'
+      DEPLOYMENT_PROFILE: CLOUD
+      TENANT_CATALOGUE_PATH: /run/munaxa-docs/tenants.json
+      AV_DRIVER: ICAP
+      AV_ICAP_URL: icap://antivirus:1344/avscan
+      QUEUE_CONSUMERS_ENABLED: 'true'
+      OPENAPI_ENABLED: 'false'
+      # The hops that may report a client address: the proxy (preview streams) and the web server
+      # (every other call, server-side).
+      TRUST_PROXY: 172.28.10.10,172.28.10.20
+    volumes:
+      - ${DOCS_CONFIG_DIR}/tenants.json:/run/munaxa-docs/tenants.json:ro
+    networks:
+      - edge
+      - data
+      - scan
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Started, not healthy: uploads fail closed while the scanner is down (go-live-runbook.md §9.5)
+      # and reads continue. Waiting for it would turn a scanner outage into a full outage.
+      antivirus:
+        condition: service_started
+    # The image's own HEALTHCHECK probes /api/health/live, which touches no dependency by design.
+    # /api/health/ready is for operators, from inside the container (README.md §4).
+    stop_grace_period: 30s
+    mem_limit: 1536m
+    logging: *logging
+
+  antivirus:
+    image: ${DOCS_ANTIVIRUS_IMAGE:?set DOCS_ANTIVIRUS_IMAGE (an image@sha256 digest in production)}
+    restart: unless-stopped
+    <<: *hardening
+    volumes:
+      - antivirus-signatures:/var/lib/clamav
+    networks:
+      - scan
+      - scanner-egress
+    healthcheck:
+      # A real scan through the engine, not an ICAP ping: c-icap answers OPTIONS with clamd dead.
+      # The same check as infra/docker-compose.yml.
+      test:
+        [
+          'CMD-SHELL',
+          'c-icap-client -i 127.0.0.1 -p 1344 -s avscan -f /etc/hostname -resp http://probe/ -v 2>&1 | grep -q "ICAP/1.0 204"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    # clamd holds about 1 GB with the official signatures and briefly about twice that during a
+    # reload (go-live-runbook.md §9.7).
+    mem_limit: 2560m
+    logging: *logging
+
+  postgres:
+    image: ${DOCS_POSTGRES_IMAGE:-postgres:16.10-alpine}
+    restart: unless-stopped
+    env_file:
+      - ${DOCS_CONFIG_DIR}/postgres.env
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d postgres']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    stop_grace_period: 60s
+    shm_size: 256m
+    mem_limit: 1536m
+    logging: *logging
+
+  redis:
+    image: ${DOCS_REDIS_IMAGE:-redis:7.4-alpine}
+    restart: unless-stopped
+    <<: *hardening
+    user: redis
+    env_file:
+      - ${DOCS_CONFIG_DIR}/redis.env
+    # The password is written to a config file inside the container rather than passed as an
+    # argument, so it never appears in the process list. AOF so a restart is not a loss of queued
+    # jobs; noeviction so a full instance refuses writes rather than silently dropping jobs
+    # (ADR-0024 §2.6; backup-and-restore.md §1).
+    command:
+      - sh
+      - -c
+      - >-
+        umask 077 &&
+        printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf &&
+        exec redis-server /tmp/redis.conf --appendonly yes --save ''
+        --maxmemory 256mb --maxmemory-policy noeviction
+    tmpfs:
+      - /tmp
+    volumes:
+      - redis-data:/data
+    networks:
+      - data
+    healthcheck:
+      test: ['CMD-SHELL', 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    mem_limit: 384m
+    logging: *logging
+
+  # --- One-off operator commands (profile `ops`; README.md §4) -----------------------------------
+
+  db-admin:
+    profiles: ['ops']
+    image: ${DOCS_POSTGRES_IMAGE:-postgres:16.10-alpine}
+    entrypoint: ['/bin/sh', '/ops/db-admin.sh']
+    env_file:
+      - ${DOCS_CONFIG_DIR}/postgres.env
+      - ${DOCS_CONFIG_DIR}/operator.env
+    volumes:
+      - ./ops/db-admin.sh:/ops/db-admin.sh:ro
+      - ../sql:/sql:ro
+    networks:
+      - data
+    logging: *logging
+
+  migrate:
+    profiles: ['ops']
+    image: ${DOCS_API_IMAGE}
+    # The repository's own runner, from the release image, against the OPERATOR catalogue (owner
+    # credentials), which the running API never holds (ADR-0021 §3). `ops/pnpm` supplies the
+    # `pnpm exec` the runner calls (ADR-0026 §8).
+    entrypoint: ['node', 'scripts/migrate-tenants.mjs']
+    <<: *hardening
+    environment:
+      TENANT_CATALOGUE_PATH: /run/munaxa-docs/operator-tenants.json
+      PATH: /opt/munaxa-ops/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      CHECKPOINT_DISABLE: '1'
+      PRISMA_HIDE_UPDATE_MESSAGE: '1'
+    volumes:
+      - ${DOCS_CONFIG_DIR}/operator-tenants.json:/run/munaxa-docs/operator-tenants.json:ro
+      - ./ops/pnpm:/opt/munaxa-ops/bin/pnpm:ro
+    # `ops-egress` exists for one reason (ADR-0026 §8, finding F-1): the published API image carries
+    # Prisma's schema engine for OpenSSL 1.1 only — its build stage has no OpenSSL to detect — while
+    # its runtime has OpenSSL 3. So `prisma migrate deploy` downloads the matching engine from
+    # binaries.prisma.sh on each run and checks it against Prisma's published SHA-256. The running
+    # API is unaffected: it uses the query engine, which the image carries for OpenSSL 3. Remove this
+    # network once the image carries the right schema engine (a Dockerfile change awaiting approval).
+    networks:
+      - data
+      - ops-egress
+    logging: *logging
+
+  provision:
+    profiles: ['ops']
+    image: ${DOCS_API_IMAGE}
+    # A new tenant's first administrator, by the documented D-1 procedure: single-tenant form for
+    # that one tenant, because `provision.js` cannot run beside a catalogue (go-live-runbook.md §1a).
+    # provision.env is written for the run and deleted after it (README.md §4).
+    entrypoint: ['node', 'apps/api/dist/provision.js']
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+    env_file:
+      - ${DOCS_CONFIG_DIR}/api.env
+      - ${DOCS_CONFIG_DIR}/provision.env
+    environment:
+      NODE_ENV: production
+      DEPLOYMENT_PROFILE: ON_PREMISE
+      AV_DRIVER: ICAP
+      AV_ICAP_URL: icap://antivirus:1344/avscan
+      QUEUE_CONSUMERS_ENABLED: 'false'
+      OPENAPI_ENABLED: 'false'
+    networks:
+      - edge
+      - data
+      - scan
+    logging: *logging
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.28.10.0/24
+  data:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.11.0/24
+  scan:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.12.0/24
+  scanner-egress:
+    ipam:
+      config:
+        - subnet: 172.28.13.0/24
+  ops-egress:
+    ipam:
+      config:
+        - subnet: 172.28.14.0/24
+
+volumes:
+  postgres-data:
+  redis-data:
+  antivirus-signatures:

@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "migrationUrlTemplate": "postgresql://edms_owner:<EDMS_OWNER_PASSWORD>@postgres:5432/edms_{slug}",
+    "storage": {
+      "driver": "<S3 | R2>",
+      "container": "<bucket>",
+      "prefixTemplate": "tenants/{slug}"
+    },
+    "search": { "indexTemplate": "docs-{slug}" }
+  },
+  "tenants": [{ "id": "<the same id as tenants.json>", "slug": "<the same slug>" }]
+}

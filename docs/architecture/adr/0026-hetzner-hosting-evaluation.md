@@ -1,0 +1,382 @@
+# ADR-0026 — Evaluate hosting Munaxa Docs on a Hetzner Cloud server with Docker Compose
+
+- **Status:** **Proposed** — not accepted. Nothing in this record has been purchased, provisioned or
+  deployed, and no provider compatibility has been proven (§10).
+- **Date:** 2026-10-13
+- **Phase:** Hosting migration Phase 2 (foundation)
+- **Builds on:** [ADR-0015](./0015-database-per-tenant.md), [ADR-0021](./0021-multi-tenant-hosted-launch.md),
+  [ADR-0024](./0024-minimum-cost-first-customer-launch.md). If accepted, it would **supersede**
+  [ADR-0022](./0022-hosted-platform-aws-ecs-fargate.md) (platform),
+  [ADR-0023](./0023-initial-aws-region-eu-central-1.md) (region) and
+  [ADR-0025](./0025-production-email-amazon-ses-smtp.md) (email), and replace ADR-0024's AWS
+  topology while keeping every requirement ADR-0024 keeps. Until then those records stand.
+- **Template:** [`infra/hetzner/`](../../../infra/hetzner/README.md)
+
+Every statement below is one of: **[verified]** — checked in this repository or by the test run in
+§10; **[estimate]** or **[assumption]** — stated, not checked; **[verify]** — a provider fact from
+general knowledge that must be checked against the provider's current documentation and prices
+before any decision relies on it.
+
+## 1. Context
+
+- **AWS access remains restricted**, so the AWS production path (ADR-0022/0024, Terraform under
+  `infra/terraform/`, PR #131's service root, PR #134's CI/CD design) cannot be completed or operated.
+- **The application is not tied to AWS.** [verified] It has no AWS SDK dependency. Storage is one
+  S3-compatible adapter for AWS, MinIO and Cloudflare R2
+  (`apps/api/src/infrastructure/storage/s3.adapter.ts`); the only AWS-specific code is the optional
+  `STORAGE_CREDENTIALS_SOURCE=ECS_TASK_ROLE`, and the default is a plain key pair. Email is SMTP or
+  Resend. The database is plain PostgreSQL 16 with no extensions.
+- **AWS production holds no application data**, per the repository's own evidence
+  (`docs/reports/production-data-apply-evidence.md`: no application database; the document bucket
+  is empty). [verified from records; not re-checked in AWS, which this work must not access]
+- **The goal is one maintainable, low-cost standard** that Munaxa Docs adopts first and Munaxa School
+  and Munaxa Work can adopt later, each fully separate (§13).
+
+## 2. Decision (proposed)
+
+> **Evaluate** running each environment of Munaxa Docs as **one Docker Compose stack on one Hetzner
+> Cloud server**, using the published `api`, `web` and `antivirus` images unchanged, PostgreSQL 16 and
+> Redis 7 on the same server, an **external S3-compatible object store** and an **external mail
+> provider**, behind **Cloudflare** for DNS and TLS. Adoption is gated: the provider gate P-1 (§10)
+> and the owner decisions in §11 come first, and production is not created until TEST has passed the
+> go-live checks.
+
+It trades the managed database, managed backups and multi-zone options of AWS for a much lower and
+more predictable cost, and moves operational responsibility to us (§9).
+
+## 3. Server, network, entry point and TLS
+
+**One server per product per environment** [proposal]: x86-64 (the images are built for `linux/amd64`
+only; `publish-images.yml` sets no platform [verified]), in a German Hetzner location (Falkenstein or
+Nuremberg), close to the previously chosen Frankfurt region [verify current locations].
+
+**Containers and networks** (`infra/hetzner/compose.yaml`) [verified by the §10 test run]:
+
+| Service | Image | Port | Networks |
+| --- | --- | --- | --- |
+| `proxy` | Caddy 2.10 | **8080, the only published port**, on `127.0.0.1` by default | `edge` |
+| `web` | `munaxa-docs-web` (`node server.mjs`) | 3000 | `edge` |
+| `api` | `munaxa-docs-api` — HTTP **and** every queue consumer and schedule | 3001 | `edge`, `data`, `scan` |
+| `migrate` (one-off) | `munaxa-docs-api` running `scripts/migrate-tenants.mjs` | — | `data`, `ops-egress` (§8, F-1) |
+| `antivirus` | `munaxa-docs-antivirus` (c-icap + ClamAV) | 1344 | `scan`, `scanner-egress` |
+| `postgres` | PostgreSQL 16 | 5432 | `data` |
+| `redis` | Redis 7.4 | 6379 | `data` |
+
+- `data` and `scan` are **internal** Docker networks: no internet egress and nothing published.
+  ICAP is plaintext and `icaps://` is refused by the API, so the scanner is reachable only by the API
+  (go-live-runbook.md §9.8).
+- The `worker` image is **not** deployed: it starts, logs that consumers run in the API process, and
+  does nothing (`apps/worker/src/main.ts`), and it is not published [verified].
+
+**Routing** — ADR-0024 §2.3's rule, implemented in `infra/hetzner/Caddyfile` [verified, §10]:
+
+| Path | Goes to | Why |
+| --- | --- | --- |
+| `/api/v1/preview/stream*` | API | Browsers load previews from `STORAGE_PUBLIC_URL` + this path |
+| any other `/api/*` | **404 at the proxy** | `/api/health` and `/api/health/ready` name every tenant; `/api/metrics` is operator-only |
+| everything else | web | The web server calls the API server-side |
+
+**TLS and DNS — the decision is open (§11, D-2).** The proxy does not terminate TLS, and its port
+stays on `127.0.0.1` until one of these is chosen:
+
+| Option | How | Trade-off |
+| --- | --- | --- |
+| **A. Cloudflare Tunnel** (recommended) | `cloudflared` on the server connects outward to Cloudflare; **no inbound port** is open at all | Nothing to scan or attack on the server's public IP; one more component; free [verify] |
+| B. Cloudflare proxy + Origin CA certificate | Caddy serves 443 with a Cloudflare origin certificate ("Full (strict)"); the Hetzner firewall admits only Cloudflare's published IP ranges | No extra component; the firewall's IP list must be kept current |
+
+Either way, the **client-address chain** must then be configured and tested: Caddy must trust exactly
+the hop in front of it and take the browser's address from `CF-Connecting-IP`, or every browser
+shares one sign-in rate-limit allowance and audit records the wrong address (gap G-5). Behind Caddy
+the chain is fixed and tested: `WEB_TRUST_PROXY` names the proxy and `TRUST_PROXY` names the proxy
+and the web server, by fixed addresses (`true`/`*` are refused by the API).
+
+**Firewall** [proposal]: a Hetzner Cloud Firewall with no inbound rule except SSH from named
+administrator addresses (option A), or SSH plus 443 from Cloudflare ranges (option B). SSH by key
+only, no root login.
+
+## 4. Service hardening
+
+[verified as configured; behaviour under attack not tested]
+
+- `api`, `web`, `proxy`: read-only root filesystem with a `/tmp` tmpfs (the API image documents this
+  as supported). `api`, `web`, `proxy`, `antivirus`, `redis`: all Linux capabilities dropped and
+  `no-new-privileges`, except that the proxy keeps `NET_BIND_SERVICE`: the official Caddy binary
+  carries that file capability and the kernel will not execute it otherwise (found by the test run).
+  PostgreSQL keeps its defaults (its entrypoint needs them).
+- The two tenant catalogues are bind-mounted files read by the images' unprivileged `node` user
+  (uid 1000), so they are owned by uid 1000 with mode `0400`; every other secret file is root-owned
+  `0600` and read by Compose on the host (found by the test run: root-only catalogues gave `EACCES`).
+- Memory limits: API 1.5 GB, web 768 MB, scanner 2.5 GB (clamd holds about 1 GB and roughly twice
+  that during a signature reload — go-live-runbook.md §9.7), PostgreSQL 1.5 GB, Redis 384 MB, proxy
+  128 MB.
+- Health checks: API `/api/health/live` (image, touches no dependency); web `/login`; scanner a real
+  scan through c-icap; PostgreSQL `pg_isready`; Redis authenticated `PING`; proxy a loopback-only
+  listener. Restart policy `unless-stopped` everywhere.
+- The API waits for PostgreSQL and Redis to be **healthy** but only for the scanner to be
+  **started**: uploads fail closed while the scanner is down and reads continue
+  (go-live-runbook.md §9.5), so waiting would turn a scanner outage into a full outage.
+- Logs: `json-file`, 10 MB × 5 files per container, so no container can fill the disk.
+- **Production validation stays on.** `NODE_ENV=production` is fixed in `compose.yaml`, not left to
+  the env file, and nothing in the template relaxes a production rule (§10 shows eight unsafe settings
+  refused at boot).
+
+## 5. PostgreSQL and Redis
+
+**PostgreSQL 16 in a container** with a named volume [proposal]. Hetzner Cloud offers no managed
+PostgreSQL [verify], so this deployment owns the database: version upgrades, tuning, backups and
+restores. Inside the server the connection is on an internal network without TLS
+[assumption: acceptable because the traffic never leaves one host; ADR-0024 required `sslmode=require`
+only because RDS crossed a network].
+
+Roles follow `infra/sql/` and go-live-runbook.md §6 exactly, through `ops/db-admin.sh` [verified, §10]:
+`01-roles.sql` verbatim; passwords for `edms_owner` and `edms_app` from the operator's secret file;
+`edms_backup` with `BYPASSRLS` and `pg_read_all_data` (STG-2); one database per tenant owned by
+`edms_owner`. The local-stack script `02-app-credentials.sh` is not used, as the runbook requires.
+
+**Redis 7.4** beside the API: password, `appendonly yes`, `maxmemory-policy noeviction`, on the
+internal network only. Unlike ADR-0024's loopback Redis it persists to a volume, so an API restart
+does not empty the queues. The password is written into a config file inside the container rather
+than passed as an argument, so it never appears in a process list.
+
+## 6. Object storage
+
+The CLOUD profile (more than one customer) **refuses local-disk storage** (`configuration.ts`
+[verified]), and browsers upload **directly to the store** over a presigned URL
+(`apps/web/src/features/documents/upload.ts` [verified]). The store must therefore be an S3-compatible
+service reachable over HTTPS by both the API and the browser.
+
+**The hard requirement** [verified in code]: the presigned PUT signs `x-amz-checksum-sha256`, the
+store must reject bytes that do not match it, and must return the checksum on `HEAD` when asked with
+`x-amz-checksum-mode: ENABLED`. If it does not, **every upload is refused** ("Storage could not confirm
+the file's digest", `apps/api/src/modules/storage/application/storage.service.ts`).
+
+| Candidate | Status |
+| --- | --- |
+| MinIO (test stack only) | **Verified in §10** — accepted, refused tampered bytes, returned the digest |
+| AWS S3 | Verified earlier on Fargate (ADR-0024 evidence); not available |
+| **Hetzner Object Storage** | **Not tested.** S3-compatible [verify]; checksum behaviour unknown |
+| **Cloudflare R2** | **Not tested.** Has its own `STORAGE_DRIVER=R2` name in this product; checksum behaviour unknown |
+| Self-hosted MinIO in production | Not recommended: no maintained images any more (`ci.yml` builds it from source), and it would put the documents on the same machine as everything else |
+
+The provider is chosen only after gate **P-1** (§10). Whichever is chosen, the bucket needs
+versioning, CORS limited to the web origin with `PUT`/`GET` and the `content-type` and
+`x-amz-checksum-sha256` headers (as the AWS bucket had), a key pair scoped to that bucket, and a
+nightly copy to a **different** provider (§9).
+
+## 7. Email
+
+SES needs AWS, so ADR-0025's choice cannot be used now. Both alternatives are already built and need
+no code change [verified]: `MAIL_DRIVER=RESEND` (HTTPS API) or `MAIL_DRIVER=SMTP` on **587 with
+STARTTLS**. Hetzner blocks outbound ports 25 and 465 on new cloud servers by default [verify], which
+rules out `MAIL_SMTP_SECURITY=TLS` on 465 unless unblocked. SPF, DKIM and DMARC for the sending domain
+are set in Cloudflare DNS. Delivery has **not** been tested: the test stack names an SMTP relay under
+the reserved `.invalid` domain, which satisfies production validation honestly and sends nothing.
+
+## 8. Deployment, migrations, provisioning and rollback
+
+- **Images:** the existing `publish-images.yml` (tag-triggered, digest-pinned, revision-label checked,
+  scanner probed with EICAR, pulled back with the production pull identity) is reused unchanged. A
+  deployment names images **by digest** only (`deploy.env`).
+- **Migrations:** `scripts/migrate-tenants.mjs`, unmodified, run as the `migrate` service from the
+  **release's own API image** against the operator catalogue (owner credentials), which the running
+  API never holds (ADR-0021 §3). The runner calls `pnpm exec prisma …`, and the image has no `pnpm`
+  but does contain the Prisma 6.19.3 CLI [verified]. `infra/hetzner/ops/pnpm` is a short stand-in
+  that supports only `pnpm exec <bin>` and refuses anything else. **Discrepancy, recorded rather
+  than hidden:** ADR-0024 ran migrations from an engineer's workstation; running them from the image
+  is new to this template. It changes no application behaviour.
+- **Finding F-1 — the image's Prisma schema engine is for the wrong OpenSSL.** [verified] The API
+  image carries Prisma's *query* engine for both OpenSSL 1.1 and 3 (`binaryTargets` in
+  `prisma/schema.prisma`, and CI's "query engine" check), so the running API is unaffected. But the
+  *schema* engine that `migrate deploy` and `db execute` use exists only for OpenSSL 1.1
+  (`schema-engine-debian-openssl-1.1.x`), because the Dockerfile's build stage has no OpenSSL for
+  Prisma to detect ("Defaulting to openssl-1.1.x" in the build log), while the runtime has OpenSSL 3
+  only. Run from the image, Prisma therefore **downloads** the matching engine from
+  `binaries.prisma.sh` on every migration, checked against Prisma's published SHA-256. The template
+  allows exactly that: the one-off `migrate` command, and nothing else, has a dedicated egress
+  network (`ops-egress`). It worked in the test run. The root fix is to install OpenSSL in the build
+  stage so the image carries the right schema engine — a change to the published images, so it is
+  **not** made here (decision D-10).
+- **Provisioning:** the documented D-1 procedure (go-live-runbook.md §1a): the `provision` service runs
+  `provision.js` in single-tenant form for one tenant with a temporary `provision.env` that is deleted
+  afterwards.
+- **Release (proposed, not built):** GitHub Actions → the same digests to TEST automatically → approval
+  in the existing `production` environment → a deploy job that takes a pre-deployment backup, runs
+  `migrate`, then `docker compose up -d` with the new digests, and checks `/api/health/ready` from inside
+  the server and `/login` through the public URL. The flow is the one PR #134 designed; its AWS parts
+  are not used.
+- **Rollback:** redeploy the previous release's digests. **Migrations are forward-only**; a migrated
+  database that must be abandoned is restored from the pre-deployment backup into a new database,
+  never over the live one (go-live-runbook.md §20).
+- **Downtime:** a deploy restarts the API, so a short interruption is expected; the queue-drain step
+  before a planned restart (ADR-0024 §2.6) still applies [assumption: acceptable for 1–2 tenants].
+
+## 9. Operations: who does what, backups, monitoring
+
+**What moves to us** compared with AWS managed services:
+
+| Responsibility | On AWS (planned) | Here |
+| --- | --- | --- |
+| Operating-system security updates | AWS (Fargate) | Us: unattended security upgrades, monthly reboot window |
+| PostgreSQL patching, backups, PITR | AWS RDS | Us (below) |
+| Container base-image updates | Us | Us: monthly rebuilds of the images, digest bumps for third-party images |
+| TLS certificates | ACM | Cloudflare |
+| Server failure | ECS replaces the task | Us: rebuild the server from the template and restore (RTO hours, not minutes) |
+
+**Backups that must exist before the first customer** [proposal]:
+
+1. **PostgreSQL** — nightly logical dump of every tenant database as `edms_backup` plus the role
+   definitions, **and** continuous WAL archiving (pgBackRest or WAL-G) for point-in-time recovery,
+   encrypted, to storage **outside Hetzner** (the repository's targets: RPO 5 minutes, RTO 2 hours —
+   `docs/operations/backup-and-restore.md` §1).
+2. **Documents** (including audit checkpoints) — bucket versioning plus a nightly copy to a second
+   provider; `scripts/storage-backup.mjs` already records a SHA-256 manifest to verify a restore.
+3. **Secrets and configuration** — `DOCS_CONFIG_DIR` in a password manager plus an encrypted offsite
+   copy, **keeping every old version** of `SIGNATURE_WITNESS_SECRET`, `AUDIT_CHECKPOINT_SECRET` and
+   `MFA_TOTP_SEALING_KEY`: losing one makes past signatures, audit checkpoints or authenticators
+   permanently unverifiable.
+4. **Release digests** retained in GHCR (they are the rollback targets).
+5. Hetzner's own server backups/snapshots are a convenience, **not** a backup: same provider, same
+   account.
+
+A restore counts only when `scripts/dr-rehearsal.mjs` passes and the audit hash chain verifies
+(backup-and-restore.md §3), on TEST before go-live and quarterly after.
+
+**Monitoring** [proposal, free tiers]: an external uptime check on `/login`; a dead-man's-switch ping
+from every backup job; disk and memory alerts; optionally `METRICS_DRIVER=PROMETHEUS` scraped
+privately. None of this is built yet.
+
+## 10. What is verified, the gates, and failure scenarios
+
+**Verified on 2026-10-13 by `infra/hetzner/testing/run-stack-test.sh`** in a disposable local
+Docker stack, with the `api`, `web` and `antivirus` images built from `main` at `f838433` and ClamAV's
+official signatures. Final clean run: **all checks passed**.
+
+| Check | Result |
+| --- | --- |
+| Compose configuration valid (production file alone, and with the test overlay) | Pass |
+| `db-admin bootstrap` twice (roles, credentials, backup role; idempotent) | Pass |
+| Two tenant databases created; `migrate` across both; second run a no-op ("No pending migrations") | Pass |
+| First administrator provisioned by the D-1 procedure | Pass |
+| Every service healthy; `/api/health/ready` UP for both tenant databases, Redis and the scanner | Pass |
+| Proxy: `/login` served; `/api/health`, `/api/health/ready`, `/api/health/live`, `/api/metrics` and other `/api/*` refused by the proxy itself; `/api/v1/preview/stream*` answered by the API | Pass |
+| Sign-in with the provisioned administrator | Pass |
+| Upload: target signs `x-amz-checksum-sha256`; PUT accepted; completion confirms the digest; scanned CLEAN | Pass (MinIO) |
+| Same-size tampered bytes refused by the store (HTTP 400) | Pass (MinIO) |
+| EICAR test file scanned INFECTED | Pass |
+| Production validation refuses `AV_DRIVER=NONE`, `MAIL_DRIVER=NONE`, `STORAGE_DRIVER=NONE`, the OpenAPI explorer, unencrypted SMTP, `TRUST_PROXY=true`, local disk under the cloud profile, and a missing audit checkpoint key — each naming the setting | Pass (8 of 8) |
+| None of the generated credentials appears in any container log (576 lines) | Pass |
+| Only the proxy publishes a port, on `127.0.0.1`; `data` and `scan` are internal networks | Pass (static check) |
+
+The test environment needed its own plumbing to reach the internet through the session's egress
+proxy (base images with the proxy's CA, host networking for builds and for `migrate`, signatures
+fetched once and seeded). That plumbing is not in the repository and changes no product setting.
+
+A pass proves the template wires the real images together correctly **against MinIO**. It does not
+prove anything about Hetzner, Cloudflare, R2, real mail, TLS, load, or recovery.
+
+**Observed, not changed:** F-2 — API responses carry `X-Powered-By: Express`. Minor information
+disclosure, pre-existing, independent of hosting; noted for a later application change.
+
+**Gates before adoption:**
+
+| Gate | What must pass | Status |
+| --- | --- | --- |
+| **P-1 Provider storage** | The smoke test's upload checks (signed checksum accepted, tampered bytes refused, digest returned on HEAD, presigned GET) against a **real** Hetzner Object Storage and/or R2 bucket, from a browser origin with CORS | **Open — not tested** |
+| P-2 TLS + client address | The chosen TLS option end to end; sign-in rate limit keyed on the real browser address | Open |
+| P-3 Mail | A real notification delivered with SPF/DKIM/DMARC passing | Open |
+| P-4 Backup + restore | WAL + dump + document copy restored on TEST; audit chain verifies | Open |
+| P-5 Go-live checks | go-live-runbook.md §14–17 on TEST | Open |
+
+**Known gaps (not tested):** G-1 Hetzner/R2 behaviour; G-2 TLS termination; G-3 email delivery;
+G-4 backups and restore; G-5 client-address chain behind Cloudflare; G-6 host hardening (firewall,
+SSH, updates); G-7 behaviour under load and memory pressure on the chosen server size; G-8 the
+deployment workflow itself (not written yet).
+
+**Failure scenarios:**
+
+| Failure | Effect | Recovery |
+| --- | --- | --- |
+| Server lost | Full outage; documents safe in the external store | Rebuild from the template, restore PostgreSQL from offsite backups, restore secrets |
+| PostgreSQL volume corrupted | Full outage | Point-in-time restore (needs §9 item 1 in place) |
+| Scanner down / signatures unavailable | Uploads recorded FAILED and refused; reads continue | Restart; signatures persist in a volume |
+| Redis lost | Queued but unconsumed jobs lost (notifications, previews); schedules and timers rebuilt automatically | None needed beyond restart (backup-and-restore.md §1) |
+| Object store unavailable | Uploads and downloads fail | Provider-dependent; the second-provider copy is the last resort |
+| Secrets lost | Signatures/MFA/checkpoints unverifiable — **irreversible** | Only the offsite secret copy prevents this |
+| Disk full | Writes fail, possible outage | Log limits are set; alerting and image pruning still to build |
+| Bad migration | Release fails | Restore the pre-deployment backup into a new database; redeploy the previous digests |
+
+## 11. Decisions requiring the owner's approval
+
+| # | Decision | Recommendation |
+| --- | --- | --- |
+| D-1 | Accept Hetzner as the hosting direction (this ADR → Accepted) | After P-1 passes |
+| D-2 | TLS option (§3) | A: Cloudflare Tunnel |
+| D-3 | Object storage provider (§6) | Decide after P-1; Hetzner Object Storage or R2, with the backup copy at the other |
+| D-4 | Mail provider (§7) | Resend, or an EU SMTP provider on 587 |
+| D-5 | Offsite backup target (§9) | A provider other than the one holding the live data |
+| D-6 | Spending approval for gate P-1 (a test bucket) and later for TEST | — |
+| D-7 | Server size and location | 4 vCPU / 8 GB x86 in Germany to start |
+| D-8 | Domain names (e.g. `docs.munaxa.com`, `test.docs.munaxa.com`) in the existing Cloudflare zone | — |
+| D-9 | What happens to AWS: billing for resources that still exist there, PR #131 and PR #134 | Settle with the AWS account owner; this work does not touch AWS |
+| D-10 | Fix finding F-1 in the Dockerfile (install OpenSSL in the build stage so the image carries Prisma's OpenSSL 3 schema engine), then remove `ops-egress` | Approve as a small, separate change with its own CI run |
+
+## 12. TEST and production
+
+Two completely separate environments [proposal]:
+
+- **separate Hetzner Cloud projects** (each with its own API tokens, firewall, servers and billing
+  view), separate buckets with separate keys, separate secret directories, separate databases;
+- **the same template and the same image digests**, so what was tested is what ships;
+- TEST: smaller server, `MAIL_DRIVER` pointing at a sink or a restricted sender, data disposable, may
+  be switched off when idle (Hetzner bills by the hour [verify]);
+- production: backups, monitoring and approval-gated deploys; no TEST credential works against it.
+
+## 13. Reuse for Munaxa School and Munaxa Work
+
+The **standard** is shared; nothing **operational** is shared:
+
+| Shared (the standard) | Never shared |
+| --- | --- |
+| The template's shape: one Compose stack per environment, edge/data/scan networks, Caddy entry point, hardening, logging limits | Servers, Hetzner projects and API tokens |
+| The ops conventions: `db-admin`, `migrate`, `provision`, digest-pinned releases | Databases, Redis instances, volumes |
+| The backup, monitoring and release patterns | Buckets and storage keys |
+| The Cloudflare account (separate zones or records per product) | Application secrets and secret directories |
+| | GitHub environments and deploy credentials (each product repository has its own) |
+
+Each product keeps its own repository and copies the template, adapting service names and routes to
+its own application. `DOCS_PROJECT_NAME` and per-product subnets mean two stacks could even share a
+host without sharing a volume or network, but **the recommendation is one server per product per
+environment**, so an incident or a compromise in one product cannot reach another.
+
+## 14. Preliminary monthly cost
+
+**[estimate] — every figure must be checked against current Hetzner, Cloudflare and mail-provider
+prices before approval.** EUR, before VAT, for Munaxa Docs only.
+
+| Item | Estimate | Assumption |
+| --- | --- | --- |
+| Production server, 4 vCPU / 8 GB / 80 GB, x86 shared CPU | €7–10 | Hetzner CX-class [verify] |
+| Hetzner server backups (+20%) — optional convenience | €1.5–2 | [verify] |
+| Volume for PostgreSQL data, 40 GB (optional) | about €2 | [verify] |
+| Primary IPv4 | about €0.5 | [verify]; may be avoidable with a tunnel and IPv6 |
+| Object storage | €0–6 | R2 free tier up to ~10 GB, or Hetzner's base fee [verify] |
+| Offsite backup target | €3–5 | Storage Box or a second bucket [verify] |
+| TEST server | €0–8 | €0 when switched off between uses |
+| Mail | €0–20 | Free tiers cover low volume [verify] |
+| Cloudflare (DNS, TLS, Tunnel), uptime and backup monitors | €0 | Free plans [verify] |
+| **Total** | **about €15–50** | Compared with ADR-0024's AWS estimate of about $102 for production alone |
+
+The template itself introduces **no** cost: it adds no paid service. Costs that may continue
+**outside** this plan: AWS resources already created (an RDS instance, KMS keys, CloudTrail, a backup
+vault, and an older non-production stack recorded at about $100/month while idle) [verified from
+records; current billing unknown] — decision D-9.
+
+## 15. Consequences
+
+- **Positive:** a fraction of the cost; no application change; one standard for three products;
+  everything above the server is in this repository and reproducible.
+- **Negative:** we operate the database and the server; a single server is a single point of failure
+  (accepted for 1–2 tenants, as ADR-0024 accepted a single-AZ database); TLS, backups, monitoring and
+  the deploy workflow are still to be built and proven.
+- **Unchanged:** the application, the tenancy model (ADR-0015, ADR-0021), the security and audit
+  requirements, the launch limitations WF-1, KEY-1 and D-1, and the rollback floor.

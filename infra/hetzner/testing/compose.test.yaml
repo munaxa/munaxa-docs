@@ -1,0 +1,88 @@
+# TEST-STACK OVERLAY — local and CI only. Never deployed to the Hetzner TEST environment or to
+# production (ADR-0026 §6, §10).
+#
+#   docker compose -f infra/hetzner/compose.yaml -f infra/hetzner/testing/compose.test.yaml …
+#
+# It adds exactly two things to the production-shaped template:
+#
+#   storage   MinIO, built from the same pinned source CI uses, standing in for the external
+#             S3-compatible store a real deployment names in config/api.env. A passing run proves the
+#             product's presigned upload + SHA-256 checksum contract against MINIO ONLY. It says
+#             nothing about Hetzner Object Storage or Cloudflare R2 (ADR-0026 §10, gate P-1).
+#   smoke     the end-to-end check (testing/smoke.mjs), run on the stack's own networks.
+#
+# Both sit on `ci-storage`, an internal network that only the API, MinIO and the smoke runner join.
+# The presigned URLs the API issues name `http://storage:9000`; a browser could not resolve that,
+# so the smoke runner plays the browser from inside the network. With a real provider the API and the
+# browser both reach its public HTTPS endpoint, and that path is what gate P-1 must test.
+
+services:
+  storage:
+    # Paths in an overlay resolve against the first file (infra/hetzner/), not this one.
+    build: ./testing/minio
+    image: munaxa-docs-test-minio:local
+    env_file:
+      - ${DOCS_CONFIG_DIR}/minio.env
+    volumes:
+      - storage-data:/data
+    networks:
+      - ci-storage
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '2'
+
+  storage-init:
+    profiles: ['test']
+    image: munaxa-docs-test-minio:local
+    env_file:
+      - ${DOCS_CONFIG_DIR}/minio.env
+    # The bucket the API's STORAGE_BUCKET names, with versioning on, as the production store must
+    # have (backup-and-restore.md §1). The alias comes from the environment, not a config file.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        export MC_HOST_t="http://$$MINIO_ROOT_USER:$$MINIO_ROOT_PASSWORD@storage:9000" &&
+        mc mb --ignore-existing t/munaxa-docs-test &&
+        mc version enable t/munaxa-docs-test
+    networks:
+      - ci-storage
+    depends_on:
+      storage:
+        condition: service_healthy
+
+  smoke:
+    profiles: ['test']
+    image: ${DOCS_API_IMAGE}
+    entrypoint: ['node', '/smoke/smoke.mjs']
+    env_file:
+      - ${DOCS_CONFIG_DIR}/smoke.env
+    volumes:
+      - ./testing/smoke.mjs:/smoke/smoke.mjs:ro
+    networks:
+      - edge
+      - ci-storage
+
+  api:
+    networks:
+      - ci-storage
+    depends_on:
+      storage:
+        condition: service_healthy
+
+networks:
+  ci-storage:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.20.0/24
+
+volumes:
+  storage-data:

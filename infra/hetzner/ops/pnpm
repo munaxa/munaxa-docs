@@ -1,0 +1,32 @@
+#!/bin/sh
+# A stand-in for `pnpm exec <bin>`, for the `migrate` service only (ADR-0026 §8).
+#
+# `scripts/migrate-tenants.mjs` and `scripts/apply-post-migrate.mjs` run `pnpm exec prisma …`, and the
+# published API image has no pnpm: its runtime stage is `node:22-bookworm-slim` with the built tree
+# copied in. The image does carry the Prisma CLI the build installed (`node_modules/.bin/prisma`), so
+# this shim lets the repository's own, unmodified migration runner execute from the release image —
+# the same schema, migrations and SQL that were built and tested together.
+#
+# It does exactly one thing and refuses everything else, so it cannot quietly stand in for a pnpm
+# feature it does not implement.
+set -eu
+
+if [ "${1:-}" != "exec" ] || [ -z "${2:-}" ]; then
+  echo "ops/pnpm: only 'pnpm exec <bin> [args…]' is supported here; got: pnpm $*" >&2
+  exit 64
+fi
+shift
+bin="$1"
+shift
+case "$bin" in
+  */* | .*)
+    echo "ops/pnpm: refusing binary name '$bin'" >&2
+    exit 64
+    ;;
+esac
+target="/app/node_modules/.bin/$bin"
+if [ ! -x "$target" ]; then
+  echo "ops/pnpm: $target is not in this image" >&2
+  exit 127
+fi
+exec "$target" "$@"

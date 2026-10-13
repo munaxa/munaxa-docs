@@ -104,3 +104,9 @@ crash.log
 terraform.tfvars
 claude.auto.tfvars
 engineering.auto.tfvars
+
+# Hetzner deployment configuration (infra/hetzner, ADR-0026). Only the placeholder examples are
+# committed; a filled-in copy holds production secrets and lives in DOCS_CONFIG_DIR, outside git.
+infra/hetzner/config/*
+!infra/hetzner/config/*.example
+infra/hetzner/deploy.env

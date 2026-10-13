@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "databaseUrlTemplate": "postgresql://edms_app:<EDMS_APP_PASSWORD>@postgres:5432/edms_{slug}",
+    "storage": {
+      "driver": "<S3 | R2>",
+      "container": "<bucket>",
+      "prefixTemplate": "tenants/{slug}"
+    },
+    "search": { "indexTemplate": "docs-{slug}" }
+  },
+  "tenants": [{ "id": "<a UUID generated once, never changed>", "slug": "<lower-case-slug>" }]
+}

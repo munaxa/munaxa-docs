@@ -1,0 +1,54 @@
+# Munaxa Docs: the single HTTP entry point of a Hetzner deployment (ADR-0026 §3).
+#
+# Routing is ADR-0024 §2.3's rule, unchanged by the move off AWS:
+#
+#   /api/v1/preview/stream*  -> the API   (browsers load previews from STORAGE_PUBLIC_URL + this path)
+#   any other /api/*          -> 404       (/api/health and /api/health/ready name every tenant by
+#                                           slug, and /api/metrics is operator-only; none is public)
+#   everything else           -> the web   (the web server calls the API server-side)
+#
+# TLS is NOT terminated here. Which component terminates it (a Cloudflare Tunnel or Cloudflare's
+# proxy with an origin certificate) is an open decision (ADR-0026 §11); until it is made this
+# listener is published on 127.0.0.1 only, so nothing on the internet can reach it.
+{
+	# No admin API: nothing in this deployment reconfigures the proxy at runtime.
+	admin off
+	# Certificates are not this process's job (above), and it must not try to obtain any.
+	auto_https off
+	# The client address. Caddy does not trust an incoming X-Forwarded-For unless the peer is listed
+	# here, so by default every hop behind it sees the real TCP peer. Once the TLS decision names the
+	# hop in front of Caddy (cloudflared, or Cloudflare's published ranges), list it here and add
+	# `client_ip_headers CF-Connecting-IP` — and test it (ADR-0026 §10, gap G-5) — or every browser
+	# will share one sign-in rate-limit allowance.
+	# servers {
+	# 	trusted_proxies static <the hop in front of this proxy>
+	# 	client_ip_headers CF-Connecting-IP
+	# }
+}
+
+:8080 {
+	@preview path /api/v1/preview/stream*
+	handle @preview {
+		reverse_proxy api:3001
+	}
+
+	@api path /api /api/*
+	handle @api {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+# The container's own health check. Bound to the loopback interface inside the container and never
+# published, so it is not reachable from the internet or from the other containers.
+http://127.0.0.1:8081 {
+	respond "ok" 200
+}
