@@ -27,7 +27,6 @@
 #   data      api, postgres, redis            internal: no egress, nothing published
 #   scan      api, antivirus                  internal: ICAP is plaintext, so only the API reaches it
 #   scanner-egress  antivirus                 egress for signature downloads, and nothing else on it
-#   ops-egress      migrate (one-off)         egress for Prisma's schema engine download (finding F-1)
 #
 # Fixed subnets and fixed proxy/web addresses, because TRUST_PROXY and WEB_TRUST_PROXY name the hops
 # in front of each service by address (docs/operations/deployment.md §3.1); `true`/`*` are refused.
@@ -279,15 +278,11 @@ services:
     volumes:
       - ${DOCS_CONFIG_DIR}/operator-tenants.json:/run/munaxa-docs/operator-tenants.json:ro
       - ./ops/pnpm:/opt/munaxa-ops/bin/pnpm:ro
-    # `ops-egress` exists for one reason (ADR-0026 §8, finding F-1): the published API image carries
-    # Prisma's schema engine for OpenSSL 1.1 only — its build stage has no OpenSSL to detect — while
-    # its runtime has OpenSSL 3. So `prisma migrate deploy` downloads the matching engine from
-    # binaries.prisma.sh on each run and checks it against Prisma's published SHA-256. The running
-    # API is unaffected: it uses the query engine, which the image carries for OpenSSL 3. Remove this
-    # network once the image carries the right schema engine (a Dockerfile change awaiting approval).
+    # The internal `data` network only: migrations download nothing. The image carries Prisma's
+    # schema engine for its own OpenSSL (Dockerfile, build stage; ADR-0026 finding F-1, fixed), and
+    # an image that did not would fail here rather than fetch an executable at run time.
     networks:
       - data
-      - ops-egress
     logging: *logging
 
   provision:
@@ -303,7 +298,11 @@ services:
       - /tmp
     env_file:
       - ${DOCS_CONFIG_DIR}/api.env
-      - ${DOCS_CONFIG_DIR}/provision.env
+      # Exists only for the one run that uses it (README.md §4). Optional here so the rest of the
+      # `ops` profile still renders and runs while it is absent; provision.js refuses to start
+      # without its variables ("Set TENANT_SLUG, …"), so nothing runs half-configured.
+      - path: ${DOCS_CONFIG_DIR}/provision.env
+        required: false
     environment:
       NODE_ENV: production
       DEPLOYMENT_PROFILE: ON_PREMISE
@@ -336,10 +335,6 @@ networks:
     ipam:
       config:
         - subnet: 172.28.13.0/24
-  ops-egress:
-    ipam:
-      config:
-        - subnet: 172.28.14.0/24
 
 volumes:
   postgres-data:

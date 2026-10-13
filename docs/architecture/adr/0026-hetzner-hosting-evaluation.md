@@ -57,7 +57,7 @@ Nuremberg), close to the previously chosen Frankfurt region [verify current loca
 | `proxy` | Caddy 2.10 | **8080, the only published port**, on `127.0.0.1` by default | `edge` |
 | `web` | `munaxa-docs-web` (`node server.mjs`) | 3000 | `edge` |
 | `api` | `munaxa-docs-api` — HTTP **and** every queue consumer and schedule | 3001 | `edge`, `data`, `scan` |
-| `migrate` (one-off) | `munaxa-docs-api` running `scripts/migrate-tenants.mjs` | — | `data`, `ops-egress` (§8, F-1) |
+| `migrate` (one-off) | `munaxa-docs-api` running `scripts/migrate-tenants.mjs` | — | `data` only: downloads nothing (§8, F-1) |
 | `antivirus` | `munaxa-docs-antivirus` (c-icap + ClamAV) | 1344 | `scan`, `scanner-egress` |
 | `postgres` | PostgreSQL 16 | 5432 | `data` |
 | `redis` | Redis 7.4 | 6379 | `data` |
@@ -184,18 +184,23 @@ the reserved `.invalid` domain, which satisfies production validation honestly a
   that supports only `pnpm exec <bin>` and refuses anything else. **Discrepancy, recorded rather
   than hidden:** ADR-0024 ran migrations from an engineer's workstation; running them from the image
   is new to this template. It changes no application behaviour.
-- **Finding F-1 — the image's Prisma schema engine is for the wrong OpenSSL.** [verified] The API
-  image carries Prisma's *query* engine for both OpenSSL 1.1 and 3 (`binaryTargets` in
-  `prisma/schema.prisma`, and CI's "query engine" check), so the running API is unaffected. But the
-  *schema* engine that `migrate deploy` and `db execute` use exists only for OpenSSL 1.1
-  (`schema-engine-debian-openssl-1.1.x`), because the Dockerfile's build stage has no OpenSSL for
-  Prisma to detect ("Defaulting to openssl-1.1.x" in the build log), while the runtime has OpenSSL 3
-  only. Run from the image, Prisma therefore **downloads** the matching engine from
-  `binaries.prisma.sh` on every migration, checked against Prisma's published SHA-256. The template
-  allows exactly that: the one-off `migrate` command, and nothing else, has a dedicated egress
-  network (`ops-egress`). It worked in the test run. The root fix is to install OpenSSL in the build
-  stage so the image carries the right schema engine — a change to the published images, so it is
-  **not** made here (decision D-10).
+- **Finding F-1 — the image's Prisma schema engine was for the wrong OpenSSL. Fixed.** [verified]
+  - *Cause.* `@prisma/engines` installs its schema engine — the binary `migrate deploy` and
+    `db execute` run — for the platform it detects during `pnpm install`, by `openssl version` and
+    then `ldconfig -p`. The Dockerfile's build stage (`node:22-bookworm-slim`) had no OpenSSL at all,
+    so Prisma fell back to `debian-openssl-1.1.x` (seven "Prisma failed to detect the libssl/openssl
+    version" warnings in the build log), while the runtime stage has OpenSSL 3 only. The query engine
+    escaped because `binaryTargets` in `prisma/schema.prisma` names `debian-openssl-3.0.x`; nothing
+    names it for the schema engine. Run from the image, a migration therefore downloaded the right
+    engine from `binaries.prisma.sh` every time.
+  - *Fix.* The build stage installs Debian's `openssl` (the same libssl3 as the runtime stage)
+    before `pnpm install`, so Prisma detects the real platform. No Prisma or dependency upgrade, no
+    build-time secret, no change to application code. The image now carries only OpenSSL 3 engines,
+    including `schema-engine-debian-openssl-3.0.x`, and is about 76 MB smaller.
+  - *Evidence.* The detection warning count went from 7 to 0. Migrations from the fixed image ran
+    with no network egress across two tenant databases, then twice more with nothing pending. The
+    pre-fix image, in the same offline setup, failed with `EAI_AGAIN binaries.prisma.sh`. The stack
+    test now checks both engines before migrating, and `migrate` has no egress network.
 - **Provisioning:** the documented D-1 procedure (go-live-runbook.md §1a): the `provision` service runs
   `provision.js` in single-tenant form for one tenant with a temporary `provision.env` that is deleted
   afterwards.
@@ -281,7 +286,7 @@ disclosure, pre-existing, independent of hosting; noted for a later application 
 
 | Gate | What must pass | Status |
 | --- | --- | --- |
-| **P-1 Provider storage** | The smoke test's upload checks (signed checksum accepted, tampered bytes refused, digest returned on HEAD, presigned GET) against a **real** Hetzner Object Storage and/or R2 bucket, from a browser origin with CORS | **Open — not tested** |
+| **P-1 Provider storage** | The smoke test's upload checks (signed checksum accepted, digest returned on HEAD, tampered bytes refused, scanner read-back) and a CORS preflight from the web origin, against a **real** Hetzner Object Storage and/or R2 bucket. Not covered by that run, and still to check: server-side multipart writes, versioning, a download in a real browser | **Open — not tested.** The harness is ready: `run-stack-test.sh` with `EXTERNAL_STORAGE_ENV` ([README §6](../../../infra/hetzner/README.md)) |
 | P-2 TLS + client address | The chosen TLS option end to end; sign-in rate limit keyed on the real browser address | Open |
 | P-3 Mail | A real notification delivered with SPF/DKIM/DMARC passing | Open |
 | P-4 Backup + restore | WAL + dump + document copy restored on TEST; audit chain verifies | Open |
@@ -318,7 +323,7 @@ deployment workflow itself (not written yet).
 | D-7 | Server size and location | 4 vCPU / 8 GB x86 in Germany to start |
 | D-8 | Domain names (e.g. `docs.munaxa.com`, `test.docs.munaxa.com`) in the existing Cloudflare zone | — |
 | D-9 | What happens to AWS: billing for resources that still exist there, PR #131 and PR #134 | Settle with the AWS account owner; this work does not touch AWS |
-| D-10 | Fix finding F-1 in the Dockerfile (install OpenSSL in the build stage so the image carries Prisma's OpenSSL 3 schema engine), then remove `ops-egress` | Approve as a small, separate change with its own CI run |
+| D-10 | ~~Fix finding F-1 in the Dockerfile~~ — **done** (§8). Remaining: publish a release whose images carry the fix, when a release is next approved | — |
 
 ## 12. TEST and production
 

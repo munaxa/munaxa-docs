@@ -45,6 +45,20 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
+# OpenSSL in the build stage, so Prisma installs the engines the runtime stage can execute.
+#
+# `@prisma/engines` downloads its schema engine — the binary `prisma migrate deploy` and
+# `prisma db execute` run — for whatever platform it detects during `pnpm install`, and it detects
+# OpenSSL with `openssl version` and then `ldconfig -p`. `node:22-bookworm-slim` has neither, so it
+# fell back to `debian-openssl-1.1.x` ("Prisma failed to detect the libssl/openssl version"), while
+# the runtime stage has OpenSSL 3 only. The query engine escaped because `binaryTargets` in
+# prisma/schema.prisma names `debian-openssl-3.0.x`; nothing names it for the schema engine, so
+# every migration run from this image downloaded the right one from binaries.prisma.sh at run time
+# (ADR-0026, finding F-1). Same Debian release and the same libssl3 as the runtime stage below.
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends openssl \
+ && rm -rf /var/lib/apt/lists/*
+
 # The manifests first, so a change to source does not re-resolve the dependency graph. Every
 # workspace member's manifest has to be present or pnpm resolves a different graph from the one the
 # lockfile describes.

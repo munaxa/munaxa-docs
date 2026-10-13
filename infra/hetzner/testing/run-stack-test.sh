@@ -12,6 +12,14 @@
 #                      one a day, as ci.yml does, because ClamAV's mirrors throttle repeat downloads)
 #   CLAMAV_EXPORT_DIR  copy the scanner's signatures here after the run, for that cache
 #   EXTRA_COMPOSE_FILE one more overlay, for an environment's own plumbing (never a product setting)
+#   EXTERNAL_STORAGE_ENV  a file naming a REAL S3-compatible bucket (Cloudflare R2, Hetzner Object
+#                      Storage) to run the same upload checks against instead of MinIO — gate P-1
+#                      (README.md §6). Parsed, never executed; its values are never printed. Only
+#                      these keys are read: STORAGE_DRIVER, STORAGE_BUCKET, STORAGE_REGION,
+#                      STORAGE_ENDPOINT, STORAGE_FORCE_PATH_STYLE, STORAGE_ACCESS_KEY_ID,
+#                      STORAGE_SECRET_ACCESS_KEY, and optionally STORAGE_TEST_CORS_ORIGIN (the web
+#                      origin the bucket's CORS rule admits, for a browser preflight check).
+#                      Each run writes under its own prefix and deletes what it wrote afterwards.
 #   KEEP_STACK=1       leave the stack and its config running for inspection
 set -euo pipefail
 
@@ -44,6 +52,30 @@ cleanup() {
       compose logs --no-color --tail 40 "$service" 2>/dev/null || true
     done
   fi
+  # An external bucket keeps what it is given, the EICAR test file included, so this run removes
+  # everything under its own prefix — through the product's own S3 adapter, as
+  # scripts/storage-backup.mjs does, with the API's own configuration — whether or not it passed.
+  if [ -n "${EXTERNAL_STORAGE_ENV:-}" ] && [ -f "$config/api.env" ]; then
+    echo "--- removing this run's objects (prefix $run_prefix/) from the external bucket"
+    # shellcheck disable=SC2016 # the single-quoted text is JavaScript, read by node, not the shell
+    compose run --rm --no-deps -T -e "RUN_PREFIX=$run_prefix/" --entrypoint node api -e '
+      const { S3StorageAdapter } = require("/app/apps/api/dist/infrastructure/storage/s3.adapter.js");
+      const e = process.env;
+      const storage = new S3StorageAdapter({
+        driver: e.STORAGE_DRIVER, bucket: e.STORAGE_BUCKET, region: e.STORAGE_REGION,
+        endpoint: e.STORAGE_ENDPOINT, forcePathStyle: e.STORAGE_FORCE_PATH_STYLE === "true",
+        credentials: { accessKeyId: e.STORAGE_ACCESS_KEY_ID, secretAccessKey: e.STORAGE_SECRET_ACCESS_KEY },
+        now: () => new Date(),
+      });
+      (async () => {
+        const keys = await storage.list(e.RUN_PREFIX);
+        for (const key of keys) await storage.delete(key);
+        const left = await storage.list(e.RUN_PREFIX);
+        console.log(`removed ${keys.length} object(s); ${left.length} left under the run prefix`);
+        process.exit(left.length === 0 ? 0 : 1);
+      })().catch((error) => { console.error(`cleanup failed: ${error.message}`); process.exit(1); });
+    ' || echo "WARNING: could not remove every test object; delete prefix $run_prefix/ by hand"
+  fi
   if [ "${KEEP_STACK:-}" = "1" ]; then
     echo "KEEP_STACK=1: stack left running; config in $config"
   else
@@ -55,6 +87,13 @@ cleanup() {
 trap cleanup EXIT
 
 step() { printf '\n=== %s\n' "$*"; }
+
+# One value from EXTERNAL_STORAGE_ENV, by exact key, without executing the file.
+external() {
+  local line
+  line="$(grep -E "^$1=" "$EXTERNAL_STORAGE_ENV" | tail -n 1 || true)"
+  printf '%s' "${line#*=}"
+}
 secret() { openssl rand -hex 32; }
 
 # --- Throwaway configuration ---------------------------------------------------------------------
@@ -85,7 +124,28 @@ MINIO_ROOT_USER=$minio_user
 MINIO_ROOT_PASSWORD=$minio_pw
 EOF
 
-storage='"storage":{"driver":"S3","container":"munaxa-docs-test","prefixTemplate":"tenants/{slug}"},"search":{"indexTemplate":"docs-{slug}"}'
+# Object storage: the test MinIO, or the external bucket under test (gate P-1).
+run_prefix="stacktest-$(openssl rand -hex 6)"
+if [ -n "${EXTERNAL_STORAGE_ENV:-}" ]; then
+  [ -r "$EXTERNAL_STORAGE_ENV" ] || { echo "EXTERNAL_STORAGE_ENV is not a readable file"; exit 1; }
+  s_driver="$(external STORAGE_DRIVER)" s_bucket="$(external STORAGE_BUCKET)"
+  s_region="$(external STORAGE_REGION)" s_endpoint="$(external STORAGE_ENDPOINT)"
+  s_path_style="$(external STORAGE_FORCE_PATH_STYLE)" s_key_id="$(external STORAGE_ACCESS_KEY_ID)"
+  s_secret="$(external STORAGE_SECRET_ACCESS_KEY)" s_cors="$(external STORAGE_TEST_CORS_ORIGIN)"
+  for pair in "STORAGE_DRIVER:$s_driver" "STORAGE_BUCKET:$s_bucket" "STORAGE_REGION:$s_region" \
+    "STORAGE_ENDPOINT:$s_endpoint" "STORAGE_ACCESS_KEY_ID:$s_key_id" \
+    "STORAGE_SECRET_ACCESS_KEY:$s_secret"; do
+    [ -n "${pair#*:}" ] || { echo "EXTERNAL_STORAGE_ENV does not set ${pair%%:*}"; exit 1; }
+  done
+  case "$s_driver" in S3 | R2) ;; *) echo "STORAGE_DRIVER must be S3 or R2"; exit 1 ;; esac
+  case "$s_endpoint" in https://*) ;; *) echo "STORAGE_ENDPOINT must be https://"; exit 1 ;; esac
+  echo "Object storage under test: EXTERNAL ($s_driver, bucket and endpoint from EXTERNAL_STORAGE_ENV)"
+else
+  s_driver=S3 s_bucket=munaxa-docs-test s_region=us-east-1 s_endpoint=http://storage:9000
+  s_path_style=true s_key_id="$minio_user" s_secret="$minio_pw" s_cors=''
+  echo "Object storage under test: the test MinIO"
+fi
+storage="\"storage\":{\"driver\":\"$s_driver\",\"container\":\"$s_bucket\",\"prefixTemplate\":\"$run_prefix/tenants/{slug}\"},\"search\":{\"indexTemplate\":\"docs-{slug}\"}"
 tenants="\"tenants\":[{\"id\":\"$acme_id\",\"slug\":\"acme\"},{\"id\":\"$rival_id\",\"slug\":\"rival\"}]"
 cat > "$config/tenants.json" <<EOF
 {"defaults":{"databaseUrlTemplate":"postgresql://edms_app:$app_pw@postgres:5432/edms_{slug}",$storage},$tenants}
@@ -115,13 +175,13 @@ AUDIT_CHECKPOINT_SECRET=$(secret)
 MFA_TOTP_SEALING_KEY=$(secret)
 CORS_ORIGINS=http://localhost:8080
 WEB_BASE_URL=http://localhost:8080
-STORAGE_DRIVER=S3
-STORAGE_BUCKET=munaxa-docs-test
-STORAGE_REGION=us-east-1
-STORAGE_ENDPOINT=http://storage:9000
-STORAGE_FORCE_PATH_STYLE=true
-STORAGE_ACCESS_KEY_ID=$minio_user
-STORAGE_SECRET_ACCESS_KEY=$minio_pw
+STORAGE_DRIVER=$s_driver
+STORAGE_BUCKET=$s_bucket
+STORAGE_REGION=$s_region
+STORAGE_ENDPOINT=$s_endpoint
+STORAGE_FORCE_PATH_STYLE=${s_path_style:-false}
+STORAGE_ACCESS_KEY_ID=$s_key_id
+STORAGE_SECRET_ACCESS_KEY=$s_secret
 STORAGE_PUBLIC_URL=http://localhost:8080
 MAIL_DRIVER=SMTP
 MAIL_SMTP_HOST=smtp.invalid
@@ -144,6 +204,7 @@ cat > "$config/smoke.env" <<EOF
 SMOKE_TENANT=acme
 SMOKE_ADMIN_EMAIL=admin@acme.invalid
 SMOKE_ADMIN_PASSWORD=$admin_pw
+SMOKE_CORS_ORIGIN=$s_cors
 EOF
 
 # --- Validate --------------------------------------------------------------------------------------
@@ -177,7 +238,29 @@ step "db-admin create-tenant acme / rival"
 compose --profile ops run --rm db-admin create-tenant acme
 compose --profile ops run --rm db-admin create-tenant rival
 
-step "migrate (the repository's runner, from the API image)"
+# ADR-0026 finding F-1. `migrate` runs on the internal `data` network only, so an image without the
+# schema engine its runtime needs fails there (trying to download one) — this names the cause first.
+# The same question ci.yml asks about the query engine, asked of both engines.
+step "The API image carries the Prisma engines its own runtime needs"
+docker run --rm --entrypoint sh "$DOCS_API_IMAGE" -eu -c '
+  ssl=$(ls /usr/lib/x86_64-linux-gnu/libssl.so.* 2>/dev/null | sed -n "s/.*libssl\.so\.\([0-9]\).*/\1/p" | head -1)
+  case "${ssl:-}" in
+    3) want=debian-openssl-3.0.x ;;
+    1) want=debian-openssl-1.1.x ;;
+    *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
+  esac
+  echo "This runtime requires: $want"
+  for engine in "libquery_engine-$want.so.node" "schema-engine-$want"; do
+    if find /app/node_modules -name "$engine" | grep -q .; then
+      echo "OK    $engine"
+    else
+      echo "FAIL  no $engine in this image"
+      exit 1
+    fi
+  done
+'
+
+step "migrate (the repository's runner, from the API image, no network egress)"
 compose --profile ops run --rm migrate
 step "migrate again (nothing may be pending)"
 second="$(compose --profile ops run --rm migrate 2>&1)"
@@ -243,7 +326,7 @@ refused 'no audit checkpoint key' AUDIT_CHECKPOINT_SECRET -e AUDIT_CHECKPOINT_SE
 step "No generated credential appears in any container log"
 logs="$(compose logs --no-color 2>&1)"
 leaked=0
-for value in "$owner_pw" "$app_pw" "$backup_pw" "$redis_pw" "$minio_pw" "$admin_pw"; do
+for value in "$owner_pw" "$app_pw" "$backup_pw" "$redis_pw" "$minio_pw" "$admin_pw" "$s_secret"; do
   if printf '%s' "$logs" | grep -qF "$value"; then
     leaked=1
   fi

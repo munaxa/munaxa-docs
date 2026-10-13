@@ -21,6 +21,9 @@ const API = process.env.SMOKE_API_URL ?? 'http://api:3001';
 const TENANT = required('SMOKE_TENANT');
 const EMAIL = required('SMOKE_ADMIN_EMAIL');
 const PASSWORD = required('SMOKE_ADMIN_PASSWORD');
+// Set only when testing a real bucket (run-stack-test.sh, EXTERNAL_STORAGE_ENV): the web origin its
+// CORS rule must admit. MinIO answers any origin by default, so the check means nothing there.
+const CORS_ORIGIN = process.env.SMOKE_CORS_ORIGIN ?? '';
 
 const results = [];
 
@@ -172,6 +175,28 @@ check(
   cleanTarget.status === 201 && signedChecksum,
   `HTTP ${cleanTarget.status}`,
 );
+
+// What a browser sends before that PUT: a CORS preflight naming the signed headers. Without the
+// bucket admitting it, every browser upload fails even though a server-side PUT succeeds.
+if (CORS_ORIGIN) {
+  const preflight = await fetch(cleanTarget.body.url, {
+    method: 'OPTIONS',
+    headers: {
+      origin: CORS_ORIGIN,
+      'access-control-request-method': cleanTarget.body.method,
+      'access-control-request-headers': Object.keys(cleanTarget.body.headers ?? {})
+        .map((name) => name.toLowerCase())
+        .join(','),
+    },
+  });
+  const allowed = preflight.headers.get('access-control-allow-origin');
+  check(
+    'object store admits the browser preflight from the web origin (CORS)',
+    preflight.ok && (allowed === CORS_ORIGIN || allowed === '*'),
+    `HTTP ${preflight.status}, allow-origin ${allowed ?? 'absent'}`,
+  );
+}
+
 const putStatus = await transfer(cleanTarget.body, clean);
 check('browser-side PUT to the object store accepted', putStatus === 200, `HTTP ${putStatus}`);
 const cleanDone = await complete(cleanTarget.body);
@@ -191,12 +216,12 @@ const forgedTarget = await requestTarget(
   sha256(Buffer.concat([clean, Buffer.from(nonce)])),
   `forged-${nonce}.txt`,
 );
-const forgedPut =
-  forgedTarget.status === 201 ? await transfer(forgedTarget.body, forged) : forgedTarget.status;
+// Only a PUT that reached the store counts: a refusal from the API before it would prove nothing.
+const forgedPut = forgedTarget.status === 201 ? await transfer(forgedTarget.body, forged) : null;
 check(
   'object store refuses bytes that do not match the signed SHA-256',
-  forgedPut === 400,
-  `HTTP ${forgedPut}`,
+  forgedPut !== null && forgedPut >= 400 && forgedPut < 500,
+  forgedPut === null ? `no target issued (HTTP ${forgedTarget.status})` : `HTTP ${forgedPut}`,
 );
 
 // The EICAR test file, assembled at runtime as infra/antivirus/probe.mjs does.
