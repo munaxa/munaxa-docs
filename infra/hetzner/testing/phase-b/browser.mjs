@@ -36,14 +36,14 @@ function result(name, facts) {
     mkdirSync(`${OUT}/screens`, { recursive: true });
     shots.push(
       lastPage
-        .screenshot({ path: `${OUT}/screens/${name}.png`, fullPage: true })
+        .screenshot({ path: `${OUT}/screens/${name}.png`, fullPage: false })
         .catch(() => undefined),
     );
   }
 }
 async function closeContext(context) {
   await Promise.all(shots.splice(0));
-  await closeContext(context);
+  await context.close();
 }
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -195,8 +195,11 @@ async function close() {
 }
 
 /** A signed-in context, optionally in Arabic (the interface reads only the edms_locale cookie). */
-async function session(email, password, { arabic = false } = {}) {
-  const context = await browser.newContext({ acceptDownloads: true });
+async function session(email, password, { arabic = false, viewport = null } = {}) {
+  const context = await browser.newContext({
+    acceptDownloads: true,
+    ...(viewport === null ? {} : { viewport }),
+  });
   if (arabic) {
     await context.addCookies([{ name: 'edms_locale', value: 'ar', url: WEB }]);
   }
@@ -490,7 +493,39 @@ const cases = {
   /** B-8, then B-1/B-2: file a document through the upload dialog, then download it every way. */
   async 'upload-and-download'() {
     const { documents, library, typeId } = state();
-    const { context, page } = await asAdmin();
+
+    // B-8 at the default 1280×720 window: can a person reach the dialog's submit button at all?
+    // Judged on its own (`ui-upload-720`), never normalised away by the larger window below.
+    {
+      const small = await asAdmin();
+      writeFileSync(`${OUT}/reach-probe.txt`, textOfSize(1024, 'reach-probe'));
+      await small.page.goto(
+        `${WEB}/documents?libraryId=${library.id}&folderId=${library.folderId}`,
+        {
+          waitUntil: 'networkidle',
+        },
+      );
+      await small.page.getByRole('button', { name: 'Add', exact: true }).click();
+      const smallDialog = small.page.getByRole('dialog', { name: 'Add documents' });
+      await smallDialog.locator('input[type=file]').setInputFiles(`${OUT}/reach-probe.txt`);
+      const button = smallDialog.getByRole('button', { name: /^File \d+ documents?$/ });
+      await button.waitFor({ state: 'visible', timeout: 60_000 });
+      await sleep(3_000);
+      await button.scrollIntoViewIfNeeded().catch(() => undefined);
+      const box = await button.boundingBox();
+      const viewport = small.page.viewportSize();
+      result('ui-upload-720', {
+        viewport,
+        buttonTop: box === null ? null : Math.round(box.y),
+        buttonBottom: box === null ? null : Math.round(box.y + box.height),
+        submitInViewport:
+          box !== null && viewport !== null && box.y >= 0 && box.y + box.height <= viewport.height,
+      });
+      await closeContext(small.context);
+    }
+
+    // The rest of the path in a 1920×1080 window, where the button is on screen.
+    const { context, page } = await asAdmin({ viewport: { width: 1920, height: 1080 } });
     const bytes = textOfSize(64 * 1024, 'ui-upload');
     const title = `phase-b-ui-${randomBytes(3).toString('hex')}`;
     const path = `${OUT}/${title}.txt`;
@@ -505,6 +540,8 @@ const cases = {
     const submit = dialog.getByRole('button', { name: /^File \d+ documents?$/ });
     await submit.waitFor({ state: 'visible', timeout: 60_000 });
     for (let i = 0; i < 120 && !(await submit.isEnabled()); i += 1) await sleep(500);
+    // As a person would: the file's own badge says "Uploaded" before they file it.
+    await dialog.getByText('Uploaded', { exact: true }).waitFor({ timeout: 120_000 });
     await submit.click();
     await dialog.waitFor({ state: 'hidden', timeout: 60_000 }).catch(() => undefined);
     const token = await adminToken();
@@ -519,10 +556,11 @@ const cases = {
     }
     const detail =
       filed === null ? null : (await call(token, 'GET', `/documents/${filed.id}`)).body;
+    const file = detail?.currentRevision?.file ?? detail?.latestRevision?.file ?? null;
     result('ui-upload', {
       filed: filed !== null,
-      scanStatus: detail?.file?.scanStatus ?? null,
-      recordedDigest: detail?.file?.checksumSha256 ?? null,
+      scanStatus: file?.scanStatus ?? null,
+      recordedDigest: file?.checksumSha256 ?? null,
       chosenDigest: sha256(bytes),
     });
     if (filed !== null) {
@@ -791,63 +829,112 @@ const cases = {
         expectedDigest: documents.text.digest,
       })),
     });
+    // The swapped file is quarantined by step 7. Does the page say so before anyone clicks, and
+    // what does the refusal say in Arabic when they do?
     await documentPage(page, documents.swapped.id);
-    const notices = await page.locator('[role=alert], [role=status]').allTextContents();
-    result('arabic-integrity', { downloadEvent: false, message: notices.join(' | ') || null });
+    const warnedBeforeClick =
+      (await page.locator('[role=alert]').allTextContents()).join(' | ') || null;
+    const downloadButtonEnabled = await page
+      .getByRole('button', { name: 'تنزيل', exact: true })
+      .first()
+      .isEnabled()
+      .catch(() => null);
+    result('arabic-integrity', {
+      warnedBeforeClick,
+      downloadButtonEnabled,
+      ...(await attempt(page, () => headerDownload(page, 'تنزيل'), { timeoutMs: 15_000 })),
+    });
     await closeContext(context);
   },
 
   /** B-10: a report export and an audit export, each opened in its own tab. */
   async exports() {
-    const { context, page } = await asAdmin();
-    const exported = async (name, start, panelName) => {
-      await start();
+    const { context, page } = await asAdmin({ viewport: { width: 1920, height: 1080 } });
+    lastPage = page;
+    // Every new tab's download is caught from the moment the tab exists: `window.open` to a signed
+    // store URL starts the download before a listener added after the tab opened would see it.
+    const popupDownloads = [];
+    context.on('page', (popup) => {
+      popupDownloads.push(popup.waitForEvent('download', { timeout: 60_000 }).catch(() => null));
+    });
+    const takeExport = async (name, panelName) => {
       const panel = page.getByRole('region', { name: panelName });
-      let button = null;
-      for (let i = 0; i < 60; i += 1) {
-        button = panel.getByRole('button', { name: 'Download' }).first();
-        if ((await button.count()) > 0) break;
-        await sleep(3_000);
-        await page.reload({ waitUntil: 'networkidle' });
+      const download = panel.getByRole('button', { name: 'Download' }).first();
+      let seen = false;
+      for (let i = 0; i < 40 && !seen; i += 1) {
+        seen = (await download.count()) > 0;
+        if (!seen) {
+          await sleep(3_000);
+          await page.reload({ waitUntil: 'networkidle' });
+        }
       }
-      const tab = context.waitForEvent('page', { timeout: 30_000 });
-      await button.click();
-      const opened = await tab;
-      const download = await opened.waitForEvent('download', { timeout: 30_000 }).catch(() => null);
-      if (download === null) {
-        result(name, { downloadEvent: false });
+      if (!seen) {
+        result(name, { exportListed: false, downloadEvent: false });
+        return;
+      }
+      popupDownloads.length = 0;
+      // With `noopener`, Chromium reports the tab's download on the page that opened it.
+      const onOpener = page.waitForEvent('download', { timeout: 60_000 }).catch(() => null);
+      await download.click();
+      for (let i = 0; i < 50 && popupDownloads.length === 0; i += 1) await sleep(100);
+      const got = await Promise.race([
+        onOpener,
+        ...(popupDownloads.length > 0 ? [popupDownloads[0]] : []),
+      ]).then(async (first) => first ?? (await onOpener));
+      if (got === null) {
+        result(name, {
+          exportListed: true,
+          tabOpened: popupDownloads.length > 0,
+          downloadEvent: false,
+        });
         return;
       }
       const saved = `${OUT}/export-${name}`;
-      await download.saveAs(saved);
-      const direct = await fetch(download.url());
+      await got.saveAs(saved);
+      const direct = await fetch(got.url());
       result(name, {
+        exportListed: true,
         downloadEvent: true,
+        savedBytes: readFileSync(saved).length,
         matchesStore:
           sha256(readFileSync(saved)) === sha256(Buffer.from(await direct.arrayBuffer())),
-        link: pathOnly(download.url()),
+        link: pathOnly(got.url()),
+        suggestedFilename: got.suggestedFilename(),
       });
     };
+
+    // A report export: the first report this administrator may run, as CSV.
     await page.goto(`${WEB}/reports`, { waitUntil: 'networkidle' });
-    await exported(
-      'report-export',
-      async () => {
-        await page
-          .getByRole('region', { name: 'Reports you can run' })
-          .getByRole('button')
-          .first()
-          .click();
-        await page.getByRole('button', { name: 'Run report' }).click();
-        await page.getByRole('button', { name: 'CSV', exact: true }).click();
-      },
-      'Recent exports',
-    );
+    await page
+      .getByRole('region', { name: 'Reports you can run' })
+      .getByRole('button')
+      .first()
+      .click();
+    await page.getByRole('button', { name: 'Run report' }).click();
+    await page.getByRole('button', { name: 'CSV', exact: true }).click();
+    const queued = await page
+      .getByRole('status')
+      .first()
+      .textContent({ timeout: 15_000 })
+      .catch(() => null);
+    await takeExport('report-export', 'Recent exports');
+    console.log(`report export requested: ${JSON.stringify(queued)}`);
+
+    // An audit evidence export of today's range.
     await page.goto(`${WEB}/audit`, { waitUntil: 'networkidle' });
-    await exported(
-      'audit-export',
-      () => page.getByRole('button', { name: 'Export this range' }).click(),
-      'Evidence exports',
-    );
+    const today = new Date().toISOString().slice(0, 10);
+    await page.getByLabel('From').fill(today);
+    await page.getByLabel('To').fill(today);
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Export this range' }).click();
+    const requested = await page
+      .getByRole('status')
+      .first()
+      .textContent({ timeout: 15_000 })
+      .catch(() => null);
+    console.log(`audit export requested: ${JSON.stringify(requested)}`);
+    await takeExport('audit-export', 'Evidence exports');
     await closeContext(context);
   },
 
@@ -861,7 +948,10 @@ const cases = {
 };
 
 const names = process.argv.slice(2);
-const unknown = names.filter((name) => !(name in cases));
+// `integrity-follow` takes the names of the documents to follow, not further cases.
+const unknown = (names[0] === 'integrity-follow' ? names.slice(0, 1) : names).filter(
+  (name) => !(name in cases),
+);
 if (names.length === 0 || unknown.length > 0) {
   console.error(`unknown or missing case(s): ${unknown.join(', ') || '(none given)'}`);
   process.exit(2);
@@ -879,6 +969,13 @@ try {
     `FAIL  browser case(s) ${names.join(' ')}: ${String(error.message).replace(/https?:\/\/\S+/g, '<url>')}`,
   );
   process.exitCode = 1;
+  // The page the failure left, as evidence of why.
+  if (lastPage !== null && !lastPage.isClosed()) {
+    mkdirSync(`${OUT}/screens`, { recursive: true });
+    await lastPage
+      .screenshot({ path: `${OUT}/screens/FAILED-${names.join('-')}.png` })
+      .catch(() => undefined);
+  }
 } finally {
   await close();
 }

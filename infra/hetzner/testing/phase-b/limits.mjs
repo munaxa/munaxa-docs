@@ -6,7 +6,8 @@
 // and the API containers' own state. No URL, token or password is ever printed.
 //
 //   node limits.mjs setup
-//   node limits.mjs overflow <api> <count> <case>   issue <count> links on <api>, follow them all at once
+//   node limits.mjs overflow <api> <count> <case> [document|small]
+//                                                   issue <count> links on <api>, follow them all at once
 //   node limits.mjs interrupt <staging|sending>     leave one download part-way, at the stack's API
 //   node limits.mjs follow-one <api> <case>         one download; writes /out/following.flag as it starts
 //
@@ -107,7 +108,10 @@ async function follow(link, service, digest, signal) {
 }
 
 const cases = {
-  /** One 128 MiB PDF document, through the stack's API (every API container shares the database). */
+  /**
+   * Two PDF documents through the stack's API (every API container shares the database): 128 MiB
+   * (`document`) and 48 MiB (`small`, two of which overrun a 64 MiB staging disk with no reserve).
+   */
   async setup() {
     const base = apiBase('api');
     const token = await adminToken(base);
@@ -121,58 +125,71 @@ const cases = {
     );
     const types = ok(await call(base, token, 'GET', '/admin/document-types?pageSize=100'), 'types');
     const type = (Array.isArray(types) ? types : (types.items ?? types.data ?? []))[0];
-    const bytes = randomBytes(128 * MiB);
-    Buffer.from(`%PDF-1.7\n% phase-b limits ${randomBytes(8).toString('hex')}\n`, 'latin1').copy(
-      bytes,
-      0,
-    );
-    Buffer.from('\n%%EOF\n', 'latin1').copy(bytes, bytes.length - 7);
-    const created = ok(
-      await call(base, token, 'POST', '/uploads', {
-        filename: 'phase-b-limits.pdf',
-        mimeType: 'application/pdf',
-        sizeBytes: bytes.length,
-        magicBytes: bytes.subarray(0, 64).toString('base64'),
-        checksumSha256: sha256(bytes),
-      }),
-      'upload',
-    );
-    const put = await fetch(created.url, {
-      method: created.method,
-      headers: created.headers,
-      body: bytes,
-    });
-    if (!put.ok) throw new Error(`PUT answered ${put.status}`);
-    const done = ok(
-      await call(base, token, 'POST', `/uploads/${created.uploadSessionId}/complete`, {
-        parts: [],
-      }),
-      'completion',
-    );
-    const document = ok(
-      await call(base, token, 'POST', '/documents', {
-        folderId: library.rootFolderId,
-        documentTypeId: type.id,
-        title: 'Phase B limits 128 MiB',
-        fileObjectId: done.fileObjectId,
-        filename: 'phase-b-limits.pdf',
-      }),
-      'document',
-    );
-    save({
-      document: {
+    const made = {};
+    for (const [key, mib] of [
+      ['document', 128],
+      ['small', 48],
+    ]) {
+      const bytes = randomBytes(mib * MiB);
+      Buffer.from(`%PDF-1.7\n% phase-b limits ${randomBytes(8).toString('hex')}\n`, 'latin1').copy(
+        bytes,
+        0,
+      );
+      Buffer.from('\n%%EOF\n', 'latin1').copy(bytes, bytes.length - 7);
+      const filename = `phase-b-limits-${mib}.pdf`;
+      const created = ok(
+        await call(base, token, 'POST', '/uploads', {
+          filename,
+          mimeType: 'application/pdf',
+          sizeBytes: bytes.length,
+          magicBytes: bytes.subarray(0, 64).toString('base64'),
+          checksumSha256: sha256(bytes),
+        }),
+        'upload',
+      );
+      const put = await fetch(created.url, {
+        method: created.method,
+        headers: created.headers,
+        body: bytes,
+      });
+      if (!put.ok) throw new Error(`PUT answered ${put.status}`);
+      const done = ok(
+        await call(base, token, 'POST', `/uploads/${created.uploadSessionId}/complete`, {
+          parts: [],
+        }),
+        'completion',
+      );
+      const document = ok(
+        await call(base, token, 'POST', '/documents', {
+          folderId: library.rootFolderId,
+          documentTypeId: type.id,
+          title: `Phase B limits ${mib} MiB`,
+          fileObjectId: done.fileObjectId,
+          filename,
+        }),
+        'document',
+      );
+      made[key] = {
         id: document.id,
         fileObjectId: done.fileObjectId,
         digest: sha256(bytes),
         sizeBytes: bytes.length,
-      },
+        scanStatus: done.scanStatus,
+      };
+    }
+    save(made);
+    result('limits-setup', {
+      fileObjectId: made.document.fileObjectId,
+      scanStatus: made.document.scanStatus,
+      smallFileObjectId: made.small.fileObjectId,
+      smallScanStatus: made.small.scanStatus,
     });
-    result('limits-setup', { fileObjectId: done.fileObjectId, scanStatus: done.scanStatus });
   },
 
-  /** `count` links issued on `service`, then followed all at once. */
-  async overflow(service, count, name) {
-    const { document } = state();
+  /** `count` links issued on `service` for one document (`document` or `small`), followed at once. */
+  async overflow(service, count, name, key = 'document') {
+    const document = state()[key];
+    if (!document) throw new Error(`no '${key}' document in the limits state`);
     const base = apiBase(service);
     const token = await adminToken(base);
     const links = [];

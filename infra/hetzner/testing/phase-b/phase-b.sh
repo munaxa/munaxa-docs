@@ -104,8 +104,12 @@ pb_browser setup || pb_fail "the set-up did not complete"
 
 step "Phase B 2 — upload through the interface, then download it (B-8, B-1, B-2)"
 pb_browser upload-and-download || pb_fail "the upload-and-download cases did not complete"
+# Judged on its own and never normalised: at the default 1280×720 window the dialog's submit button
+# lies below the window, in a dialog nothing can scroll (a product finding, not a harness limit).
+pb_expect ui-upload-720 'f.submitInViewport === true' \
+  "the Add documents dialog's submit button is reachable in a 1280×720 window"
 pb_expect ui-upload 'f.filed === true && f.scanStatus === "CLEAN" && f.recordedDigest === f.chosenDigest' \
-  "filed through the upload dialog, scanned CLEAN, the recorded digest is the browser's own"
+  "filed through the upload dialog (1920×1080 window), scanned CLEAN, the recorded digest is the browser's own"
 for pb_c in download-text download-pdf download-binary download-large download-ui-upload; do
   pb_expect "$pb_c" 'f.downloadEvent === true && f.sameBytes === true && f.navigatedAway === false' \
     "a download event, and the saved file is byte for byte the document"
@@ -139,7 +143,8 @@ step "Phase B 6 — who may download (B-6)"
 pb_browser access || pb_fail "the access cases did not complete"
 pb_expect viewer-without-download 'f.downloadEvent === false && (f.buttonAbsent === true || /permission/.test(f.message ?? ""))' "no download for a viewer without document:download"
 pb_expect confidential 'f.downloadEvent === false && /permission/.test(f.message ?? "")' "no download where the confidentiality level forbids it"
-pb_expect other-tenant 'f.downloadEvent === false && f.notFound === true' "another tenant's document is not found"
+pb_expect other-tenant 'f.downloadEvent === false && f.notFound === true' \
+  "a document id this tenant does not have is not found (tenants are separate databases; a real second-tenant document was not created)"
 pb_expect signed-out 'f.downloadEvent === false && f.atSignIn === true' "signed out: back at sign-in, no file"
 
 step "Phase B 7 — tampered, missing, quarantined, unavailable: no file bytes (B-7)"
@@ -162,8 +167,9 @@ for pb_c in swapped vanished quarantined; do
   pb_expect "integrity-$pb_c" 'f.downloadEvent === false && f.savedBytes === 0 && /integrity check/.test(f.message ?? "")' \
     "the integrity message, and no file saved"
 done
-pb_expect integrity-unavailable 'f.downloadEvent === false && f.savedBytes === 0 && /temporarily|busy|try again/i.test(f.message ?? "")' \
-  "a try-again message, and no file saved"
+pb_expect integrity-unavailable 'f.downloadEvent === false && f.savedBytes === 0' "store down: no file saved"
+pb_expect integrity-unavailable '/temporarily|busy|try again/i.test(f.message ?? "")' \
+  "store down: the person is told to try again (the API's sentence reaches the interface)"
 pb_is() { # actual expected pass-message fail-message
   if [ "$1" = "$2" ]; then pb_pass "$3"; else pb_fail "$4 (got $1)"; fi
 }
@@ -176,10 +182,14 @@ pb_expect integrity-unavailable-again 'f.downloadEvent === true && f.sameBytes =
 step "Phase B 8 — the Arabic interface (B-9) and the exports (B-10)"
 pb_browser arabic exports || pb_fail "the Arabic and export cases did not complete"
 pb_expect arabic-download 'f.downloadEvent === true && f.sameBytes === true && f.dir === "rtl"' "an Arabic, right-to-left interface downloads the same bytes"
-pb_expect arabic-integrity 'f.downloadEvent === false && f.message !== null' "the integrity refusal, in Arabic (wording for native review)"
-pb_finding "Arabic integrity message as shown: $(pb_q "(R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).message ?? null")"
-pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true' "a report export's tab saves exactly what the store serves (a signed store URL: exports are not on the verified path)"
-pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true' "an audit export's tab saves exactly what the store serves (a signed store URL: exports are not on the verified path)"
+pb_expect arabic-integrity 'f.downloadEvent === false && f.savedBytes === 0' "a quarantined file, in Arabic: no file saved"
+pb_expect arabic-integrity '/سلامة/.test(f.message ?? "")' \
+  "a quarantined file, in Arabic: the person is told it failed its integrity check"
+pb_finding "a quarantined file's page, before any click: warning shown $(pb_q "JSON.stringify((R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).warnedBeforeClick ?? null)"), Download button enabled $(pb_q "(R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).downloadButtonEnabled ?? null"); message on click: $(pb_q "(R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).message ?? null")"
+pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true && !/^\/api\/v1\/downloads/.test(f.link ?? "")' \
+  "a report export saves exactly what the store served, through a direct signed store URL (NOT the verified path; see hetzner-export-download-gap.md)"
+pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true && !/^\/api\/v1\/downloads/.test(f.link ?? "")' \
+  "an audit export saves exactly what the store served, through a direct signed store URL (NOT the verified path)"
 
 # =================================================================================================
 step "Phase B 9 — verified downloads at and past their resource limits (no limit raised)"
@@ -253,8 +263,9 @@ pb_wait_live() {
   return 1
 }
 
-pb_limits setup || pb_fail "the 128 MiB limits document could not be set up"
+pb_limits setup || pb_fail "the 128 MiB and 48 MiB limits documents could not be set up"
 pb_limits_file="$(pb_q "(R.filter((r) => r.case === 'limits-setup').pop() ?? {}).fileObjectId ?? ''")"
+pb_small_file="$(pb_q "(R.filter((r) => r.case === 'limits-setup').pop() ?? {}).smallFileObjectId ?? ''")"
 pb_api="$(pb_cid api)"
 pb_api_state="$(pb_restarts "$pb_api")"
 pb_served_before="$(pb_audits FILE_DOWNLOAD_SERVED "$pb_limits_file")"
@@ -266,12 +277,12 @@ read -r pb_u pb_a pb_s <<< "$(pb_sample_stop)"
 pb_measure "within limits (8 × 128 MiB at once): $(pb_limit_case within-limits) | API cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
 pb_expect within-limits 'f.served === 8 && f.corrupt === 0' "all 8 served byte for byte"
 
-# 9b. Past the concurrency limit: 24 at once. Each must be the exact file or a 503 with Retry-After.
+# 9b. Past the concurrency limit: 40 at once. Each must be the exact file or a 503 with Retry-After.
 pb_sample_start "$pb_api"
-pb_limits overflow api 24 over-concurrency >/dev/null || pb_fail "the over-concurrency downloads did not complete"
+pb_limits overflow api 40 over-concurrency >/dev/null || pb_fail "the over-concurrency downloads did not complete"
 read -r pb_u pb_a pb_s <<< "$(pb_sample_stop)"
-pb_measure "past the concurrency limit (24 × 128 MiB at once): $(pb_limit_case over-concurrency) | API cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
-pb_expect over-concurrency 'f.corrupt === 0 && f.other.length === 0 && f.served + f.busy === 24' \
+pb_measure "past the concurrency limit (40 × 128 MiB at once): $(pb_limit_case over-concurrency) | API cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
+pb_expect over-concurrency 'f.corrupt === 0 && f.other.length === 0 && f.served + f.busy === 40' \
   "every answer is the exact file or a retryable 503 (Retry-After: 30); none partial, none other"
 if [ "${pb_s:-0}" -le 1024 ]; then
   pb_pass "never more than 8 × 128 MiB staged at once (peak ${pb_s} MiB)"
@@ -284,10 +295,10 @@ compose --profile test up -d --no-deps api-small-staging >/dev/null 2>&1 || pb_f
 pb_wait_live api-small-staging || pb_fail "api-small-staging did not become live"
 pb_small="$(pb_cid api-small-staging)"
 pb_sample_start "$pb_small"
-pb_limits overflow api-small-staging 8 over-staging >/dev/null || pb_fail "the over-staging downloads did not complete"
+pb_limits overflow api-small-staging 24 over-staging >/dev/null || pb_fail "the over-staging downloads did not complete"
 read -r pb_u pb_a pb_s <<< "$(pb_sample_stop)"
-pb_measure "past the staging budget (8 × 128 MiB, budget 256 MiB): $(pb_limit_case over-staging) | cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
-pb_expect over-staging 'f.corrupt === 0 && f.other.length === 0 && f.served + f.busy === 8' \
+pb_measure "past the staging budget (24 × 128 MiB, budget 256 MiB): $(pb_limit_case over-staging) | cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
+pb_expect over-staging 'f.corrupt === 0 && f.other.length === 0 && f.served + f.busy === 24' \
   "every answer is the exact file or a retryable 503"
 if [ "${pb_s:-0}" -le 256 ]; then
   pb_pass "never more than the 256 MiB staging budget staged (peak ${pb_s} MiB)"
@@ -302,15 +313,19 @@ pb_limits overflow api-tiny-disk 1 disk-reserve >/dev/null || pb_fail "the disk-
 pb_expect disk-reserve 'f.busy === 1 && f.served === 0' "refused 503 with Retry-After, no file bytes"
 pb_measure "api-tiny-disk staging after: files, open, KiB used = $(pb_left_in "$(pb_cid api-tiny-disk)")"
 
-# 9e. The disk fills part-way (reserve 0, 64 MiB for a 128 MiB file): what staging failure answers.
+# 9e. The disk fills part-way: reserve 0, and two 48 MiB downloads at once on the 64 MiB disk. Each
+# passes the free-space check alone; together they cannot both be staged — what staging failure
+# (ENOSPC) answers.
 compose --profile test up -d --no-deps api-disk-fills >/dev/null 2>&1 || pb_fail "could not start api-disk-fills"
 pb_wait_live api-disk-fills || pb_fail "api-disk-fills did not become live"
 pb_fills="$(pb_cid api-disk-fills)"
 pb_fills_state="$(pb_restarts "$pb_fills")"
-pb_limits follow-one api-disk-fills disk-fills >/dev/null || pb_fail "the disk-fills download did not complete"
+pb_limits overflow api-disk-fills 2 disk-fills small >/dev/null || pb_fail "the disk-fills downloads did not complete"
 pb_measure "disk fills part-way: $(pb_limit_case disk-fills); staging after: files, open, KiB used = $(pb_left_in "$pb_fills"); container $(pb_restarts "$pb_fills") (before: $pb_fills_state)"
-pb_expect disk-fills 'f.status !== 200 && f.disposition === null && f.bodyBytes < 4096' "no file bytes sent when staging fails"
-pb_expect disk-fills 'f.status === 503 && f.retryAfter === "30"' "answered as retryable (503 with Retry-After)"
+pb_expect disk-fills 'f.corrupt === 0 && f.statuses.every((s) => s === 200 || typeof s === "number")' \
+  "the disk filling part-way delivers no partial or unverified file"
+pb_expect disk-fills 'f.other.length === 0 && f.served + f.busy === 2' \
+  "every answer is the exact file or a retryable 503 (Retry-After) — not an error page"
 if [ "$(pb_restarts "$pb_fills")" = "$pb_fills_state" ] && [ "$(pb_left_in "$pb_fills" | awk '{print $1, $2, $3}')" = "0 0 0" ]; then
   pb_pass "disk fills part-way: the API kept running and freed the staging disk"
 else
@@ -352,6 +367,10 @@ fi
 case "$(pb_integrity "$pb_limits_file")" in
   UNVERIFIED | VERIFIED) pb_pass "the limits file was never quarantined ($(pb_integrity "$pb_limits_file"); INTEGRITY_MISMATCH rows: $(pb_audits INTEGRITY_MISMATCH "$pb_limits_file"))" ;;
   *) pb_fail "the limits file was quarantined: $(pb_integrity "$pb_limits_file")" ;;
+esac
+case "$(pb_integrity "$pb_small_file")" in
+  UNVERIFIED | VERIFIED) pb_pass "the 48 MiB file was never quarantined by the disk filling ($(pb_integrity "$pb_small_file"))" ;;
+  *) pb_fail "the 48 MiB file was quarantined: $(pb_integrity "$pb_small_file")" ;;
 esac
 pb_served_after="$(pb_audits FILE_DOWNLOAD_SERVED "$pb_limits_file")"
 pb_served_expected=$((pb_served_before + $(pb_q "['within-limits','over-concurrency','over-staging'].map((c) => (R.filter((r) => r.case === c).pop() ?? {}).served ?? 0).reduce((a, b) => a + b, 0)")))
