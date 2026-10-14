@@ -1,8 +1,10 @@
 # Munaxa Docs on Hetzner — deployment template
 
-**Status: a tested template, not a deployment.** It has run only in a disposable local stack with
-MinIO standing in for object storage (§5). Nothing here has run on Hetzner, and whether Hetzner Object
-Storage or Cloudflare R2 meet the product's upload contract is an open gate (ADR-0026 §10, P-1).
+**Status: a tested template, not a deployment.** It has run in disposable stacks: locally and in CI
+against MinIO (§5), and in CI against a dedicated Cloudflare R2 test bucket (§6). Nothing here has run
+on Hetzner. R2 passed the upload-contract checks, but it is **not approved for production**. Gate P-1
+stays open for multipart writes, browser downloads and versioning, and Hetzner Object Storage is
+untested (ADR-0026 §10).
 The decision record is [ADR-0026](../../docs/architecture/adr/0026-hetzner-hosting-evaluation.md).
 
 ## 1. What is here
@@ -111,11 +113,35 @@ backups, load, or recovery.
 | --- | --- | --- |
 | 2026-10-13 | `api`, `web`, `antivirus` built locally from `main` at `f838433` | **All passed** — smoke 14/14, unsafe settings refused 8/8, no credential in logs. Details: ADR-0026 §10 |
 | 2026-10-13 | `api`, `web` rebuilt with the F-1 Dockerfile fix; `antivirus` unchanged | **All passed** — both engines present for OpenSSL 3; migrations offline, second run a no-op; smoke 14/14; 8/8; no credential in logs. Negative control: the pre-fix image fails the same offline migration (`EAI_AGAIN binaries.prisma.sh`) |
+| 2026-10-14 | All three built in CI from `3216654` ([run 38535100979](https://github.com/munaxa/munaxa-docs/actions/runs/38535100979)) | **All passed** — the MinIO job, and the Cloudflare R2 test bucket job (§6): smoke 14/14 plus CORS; scanner verdicts confirmed in the database; 8/8; no credential in logs; 0 objects left |
 
 ## 6. Gate P-1: the same checks against a real bucket
 
-**Not run, and not yet approved: it needs a real bucket.** Until it passes, no provider is known to
-work with this product (ADR-0026 §10).
+**Run against Cloudflare R2 on 2026-10-14: the compatibility test passed.** R2 is compatible with
+the storage behaviours this test verifies. That is **not production readiness**: see *Still
+unverified* below. Hetzner Object Storage has not been tested.
+
+| | |
+| --- | --- |
+| Run | [GitHub Actions run 38535100979](https://github.com/munaxa/munaxa-docs/actions/runs/38535100979), job `external-storage`, at commit `3216654` |
+| Bucket | `munaxa-docs-p1-storage-test`: Standard storage class, default jurisdiction, **eastern US (ENAM)**, private. Accessed with a token limited to that bucket. One CORS rule: origin `https://p1-storage-test.munaxa.invalid`, `PUT`, headers `content-type` and `x-amz-checksum-sha256` |
+| Application fix | `3216654`: the S3 adapter's `head()` asks for an uncompressed answer. R2 omits `content-length` from a HEAD that allows gzip for text larger than a few dozen bytes, and the adapter had read that as size 0 (completion answered 415). A missing size is now refused, never guessed |
+| Smoke checks | **14 of 14 standard checks passed, plus the browser CORS preflight (HTTP 204)**: completion with size and SHA-256 confirmed and scanned CLEAN, same-size tampered bytes refused (400), EICAR detected INFECTED |
+| Scanner evidence | The tenant database records the ICAP scanner's verdicts, including the EICAR file as INFECTED with signature `Eicar-Test-Signature` (a stack-test step, not only the HTTP answer) |
+| Cleanup | 33 objects removed, **0 left** under the run prefix |
+| Credentials | None of the generated credentials, nor the storage secret, appears in the 580 container log lines. The storage file was deleted at the end of the job |
+| Other checks on `3216654` | GitHub `CI` and the MinIO `stack` job passed. Locally: format, lint, typecheck and unit tests passed. The full integration suite passed 56 of 56 files **on its third run**. The two earlier runs each had three application-starting test files fail at start-up with a configuration error; those files passed when run alone |
+
+**Still unverified, and needed before R2 could hold production documents:**
+- Server-side **multipart** writes, used for large internal objects.
+- **Downloads in a real browser**.
+- **Backup and restore**.
+- **Version history:** R2 has no S3 object versioning, so the version history ADR-0026 §6 requires
+  needs an alternative to be designed and tested.
+- **EU data residency:** the test bucket is in the eastern US, so no EU location or jurisdiction
+  has been verified.
+
+Nothing was deployed, merged or published, no DNS record was changed, and AWS was not accessed.
 
 The stack test takes an external bucket in place of MinIO; nothing else changes. It runs the same
 smoke checks — the API issues a presigned PUT that signs `x-amz-checksum-sha256`, the store must
@@ -165,5 +191,6 @@ than `S3`/`R2` is refused before anything starts.
 **What a pass will and will not prove.** It proves the single-PUT upload path, checksum confirmation,
 tampered-byte refusal and scanner read-back on that provider. It does not exercise server-side
 multipart writes (used for large internal objects such as audit evidence exports), object versioning
-(which ADR-0026 §6 asks for; Cloudflare R2 is understood not to offer S3 versioning — verify), or
+(which ADR-0026 §6 asks for; Cloudflare R2 does not offer S3 object versioning — its S3 API
+documents `PutBucketVersioning` as not implemented), or
 downloads in a real browser.

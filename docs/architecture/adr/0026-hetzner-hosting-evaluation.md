@@ -1,7 +1,9 @@
 # ADR-0026 — Evaluate hosting Munaxa Docs on a Hetzner Cloud server with Docker Compose
 
 - **Status:** **Proposed** — not accepted. Nothing in this record has been purchased, provisioned or
-  deployed, and no provider compatibility has been proven (§10).
+  deployed. One storage provider, Cloudflare R2, has passed the compatibility test for the
+  behaviours that test covers (§10, gate P-1). That test is not production readiness, and gate P-1
+  is not complete.
 - **Date:** 2026-10-13
 - **Phase:** Hosting migration Phase 2 (foundation)
 - **Builds on:** [ADR-0015](./0015-database-per-tenant.md), [ADR-0021](./0021-multi-tenant-hosted-launch.md),
@@ -155,12 +157,13 @@ the file's digest", `apps/api/src/modules/storage/application/storage.service.ts
 | MinIO (test stack only) | **Verified in §10** — accepted, refused tampered bytes, returned the digest |
 | AWS S3 | Verified earlier on Fargate (ADR-0024 evidence); not available |
 | **Hetzner Object Storage** | **Not tested.** S3-compatible [verify]; checksum behaviour unknown |
-| **Cloudflare R2** | **Not tested.** Has its own `STORAGE_DRIVER=R2` name in this product; checksum behaviour unknown |
+| **Cloudflare R2** | **Compatible with the tested behaviours** (§10, 2026-10-14; test bucket in eastern US, ENAM): the signed checksum is enforced, the digest is returned on HEAD, tampered bytes are refused, and CORS works. It needed one application fix (`3216654`). **Not production-ready:** no S3 object versioning, and multipart writes, browser downloads and backup/restore are untested |
 | Self-hosted MinIO in production | Not recommended: no maintained images any more (`ci.yml` builds it from source), and it would put the documents on the same machine as everything else |
 
 The provider is chosen only after gate **P-1** (§10). Whichever is chosen, the bucket needs
-versioning, CORS limited to the web origin with `PUT`/`GET` and the `content-type` and
-`x-amz-checksum-sha256` headers (as the AWS bucket had), a key pair scoped to that bucket, and a
+versioning (R2 does not provide S3 object versioning, so choosing R2 would need an alternative to be
+designed and tested — §10; this record does not change the requirement), CORS limited to the web
+origin with `PUT`/`GET` and the `content-type` and `x-amz-checksum-sha256` headers (as the AWS bucket had), a key pair scoped to that bucket, and a
 nightly copy to a **different** provider (§9).
 
 ## 7. Email
@@ -279,6 +282,63 @@ fetched once and seeded). That plumbing is not in the repository and changes no 
 A pass proves the template wires the real images together correctly **against MinIO**. It does not
 prove anything about Hetzner, Cloudflare, R2, real mail, TLS, load, or recovery.
 
+### Gate P-1 run against Cloudflare R2 (2026-10-14)
+
+**Result: the compatibility test passed.** R2 is compatible with the storage behaviours this
+test verifies. **R2 is not approved for production**, gate P-1 is not complete, and this ADR stays
+Proposed.
+
+- **Where:** GitHub Actions, workflow `hetzner-template.yml`, job `external-storage`:
+  [run 38535100979](https://github.com/munaxa/munaxa-docs/actions/runs/38535100979), at commit
+  `3216654`. The test images were built on the runner and never published.
+- **Bucket:** the dedicated test bucket `munaxa-docs-p1-storage-test`.
+  - Standard storage class, default jurisdiction, location **eastern US (ENAM)**.
+  - Private (no public access).
+  - One CORS rule: origin `https://p1-storage-test.munaxa.invalid`, method `PUT`, headers
+    `content-type` and `x-amz-checksum-sha256`.
+  - Accessed with an API token limited to that bucket.
+- **Application fix:** `3216654`, found by earlier runs of this test.
+  - R2 answers a HEAD request that allows gzip without `content-length` for text larger than a
+    few dozen bytes. The S3 adapter read that missing size as 0, so completion refused a good
+    upload with 415.
+  - `head()` now asks for an uncompressed answer (`accept-encoding: identity`). It refuses a
+    missing or malformed size as a storage failure instead of guessing.
+  - The size and SHA-256 checks in completion are unchanged. Unit tests cover the change.
+
+| Check | Result (R2) |
+| --- | --- |
+| The 14 standard smoke checks: readiness, proxy routing and private endpoints (8 together), sign-in, upload target with signed `x-amz-checksum-sha256`, browser-side PUT, completion, tampered bytes, EICAR | Pass, 14 of 14 |
+| Browser CORS preflight from the test web origin | Pass (HTTP 204, origin allowed) |
+| Upload completion: size and SHA-256 read back and confirmed, then scanned CLEAN | Pass (HTTP 201 CLEAN) |
+| Same-size tampered bytes refused by R2 | Pass (HTTP 400) |
+| EICAR test file detected | Pass (INFECTED). Confirmed in the tenant database, not only in the HTTP answer: the ICAP scanner's verdict was recorded with signature `Eicar-Test-Signature` |
+| Text uploads of 24 bytes, 67–68 bytes and 4 KiB: size reported correctly | Pass. The 68-byte smoke content also completed CLEAN in three rounds from each of two containers |
+| Production validation refuses unsafe settings | Pass (8 of 8) |
+| No generated credential, and not the storage secret, in any container log (580 lines) | Pass |
+| Cleanup of the run's objects under its own prefix | Pass: 33 objects removed, **0 left** under the run prefix |
+
+**Other checks on `3216654`:**
+- GitHub: the `CI` workflow and the MinIO `stack` job both passed.
+- Locally: formatting, lint (0 errors), typecheck and the unit tests of every package passed.
+- The full integration suite passed **56 of 56 files on its third full run**. In the two runs
+  before, three test files that start the whole application (`auth.e2e`,
+  `numbering-collision.e2e`, `request-size`) failed at start-up with a configuration error before
+  any test ran. They passed 24 of 24 when run alone, and they run with object storage disabled.
+  That startup failure was not investigated further. It is recorded here, not presented as a
+  clean run.
+
+**Not verified by this run, and needed before production:**
+- Server-side **multipart** writes, used for large internal objects such as audit evidence exports.
+- **Downloads in a real browser**.
+- **Backup and restore** procedures, including the nightly copy to a second provider (§9, P-4).
+- **Version history:** R2 does not provide the S3 object versioning that §6 requires, so an
+  alternative must be designed and tested before R2 could hold production documents.
+- **Data residency:** the test bucket is in the eastern US (ENAM). Nothing about EU location or
+  EU jurisdiction has been verified.
+- Hetzner Object Storage has not been tested at all.
+
+Nothing was deployed, merged or published, no DNS record was changed, and AWS was not accessed.
+
 **Observed, not changed:** F-2 — API responses carry `X-Powered-By: Express`. Minor information
 disclosure, pre-existing, independent of hosting; noted for a later application change.
 
@@ -286,13 +346,15 @@ disclosure, pre-existing, independent of hosting; noted for a later application 
 
 | Gate | What must pass | Status |
 | --- | --- | --- |
-| **P-1 Provider storage** | The smoke test's upload checks (signed checksum accepted, digest returned on HEAD, tampered bytes refused, scanner read-back) and a CORS preflight from the web origin, against a **real** Hetzner Object Storage and/or R2 bucket. Not covered by that run, and still to check: server-side multipart writes, versioning, a download in a real browser | **Open — not tested.** The harness is ready: `run-stack-test.sh` with `EXTERNAL_STORAGE_ENV` ([README §6](../../../infra/hetzner/README.md)) |
+| **P-1 Provider storage** | The smoke test's upload checks (signed checksum accepted, digest returned on HEAD, tampered bytes refused, scanner read-back) and a CORS preflight from the web origin, against a **real** Hetzner Object Storage and/or R2 bucket. Not covered by that run, and still to check: server-side multipart writes, versioning, a download in a real browser | **Partly passed — still open.** **Cloudflare R2:** the upload checks and CORS passed on 2026-10-14 (above; run 38535100979, fix `3216654`). Still open: multipart writes, a browser download, and the versioning alternative. Hetzner Object Storage is not tested. Harness: `run-stack-test.sh` with `EXTERNAL_STORAGE_ENV` ([README §6](../../../infra/hetzner/README.md)) |
 | P-2 TLS + client address | The chosen TLS option end to end; sign-in rate limit keyed on the real browser address | Open |
 | P-3 Mail | A real notification delivered with SPF/DKIM/DMARC passing | Open |
 | P-4 Backup + restore | WAL + dump + document copy restored on TEST; audit chain verifies | Open |
 | P-5 Go-live checks | go-live-runbook.md §14–17 on TEST | Open |
 
-**Known gaps (not tested):** G-1 Hetzner/R2 behaviour; G-2 TLS termination; G-3 email delivery;
+**Known gaps (not tested):** G-1 Hetzner Object Storage behaviour, and for R2 multipart writes,
+browser downloads, versioning and EU data residency (R2's upload path is tested, above); G-2 TLS
+termination; G-3 email delivery;
 G-4 backups and restore; G-5 client-address chain behind Cloudflare; G-6 host hardening (firewall,
 SSH, updates); G-7 behaviour under load and memory pressure on the chosen server size; G-8 the
 deployment workflow itself (not written yet).
