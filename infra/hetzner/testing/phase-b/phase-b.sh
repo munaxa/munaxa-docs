@@ -150,20 +150,28 @@ pb_expect signed-out 'f.downloadEvent === false && f.atSignIn === true' "signed 
 step "Phase B 7 — tampered, missing, quarantined, unavailable: no file bytes (B-7)"
 pb_browser integrity-setup || pb_fail "the integrity set-up did not complete"
 pb_doc() { pb_q "(R.filter((r) => r.case === 'integrity-setup').pop() ?? {}).documents?.$1 ?? ''"; }
-# Changed in the store after each link is issued, through the browser's own download action.
-pb_browser integrity-issue || pb_fail "the integrity links could not be issued"
+# Changed in the store after each link is issued, through the browser's own download action, and
+# followed by the same signed-in browser once the change is made (the links live 30 s).
+rm -f "$PHASE_B_OUT/issued.flag" "$PHASE_B_OUT/tampered.flag"
+pb_browser integrity-issue &
+pb_issue_pid=$!
+for _ in $(seq 1 6000); do [ -f "$PHASE_B_OUT/issued.flag" ] && break; sleep 0.1; done
+[ -f "$PHASE_B_OUT/issued.flag" ] || pb_fail "the integrity links were not issued"
 { printf 'phase-b: these bytes replaced the stored ones\n'; head -c 4096 /dev/zero | tr '\0' 'x'; } \
   | head -c 4096 | pb_mc pipe "$pb_bucket/$pb_tenant_prefix/$(pb_key "$(pb_doc swapped)")" >/dev/null \
   || pb_fail "could not swap the object's bytes"
 pb_mc rm "$pb_bucket/$pb_tenant_prefix/$(pb_key "$(pb_doc vanished)")" >/dev/null \
   || pb_fail "could not delete the vanished object"
 printf "UPDATE file_object SET integrity_status = 'MISMATCH' WHERE id = '%s';\n" "$(pb_doc quarantined)" | pb_sql >/dev/null
-pb_browser integrity-follow swapped vanished quarantined || pb_fail "the integrity cases did not complete"
+touch "$PHASE_B_OUT/tampered.flag"
+wait "$pb_issue_pid" || pb_fail "the integrity cases did not complete"
 compose stop storage >/dev/null 2>&1 || pb_fail "could not stop the test MinIO"
 pb_browser integrity-follow unavailable || pb_fail "the unavailable case did not complete"
 compose start storage >/dev/null 2>&1 || pb_fail "could not start the test MinIO again"
 for _ in $(seq 1 60); do compose exec -T storage mc ready local >/dev/null 2>&1 && break; sleep 2; done
 for pb_c in swapped vanished quarantined; do
+  pb_expect "integrity-$pb_c" 'f.tamperedFirst === true && f.linkAgeMs < 30000' \
+    "followed after the store was changed, inside the link's 30 s lifetime"
   pb_expect "integrity-$pb_c" 'f.downloadEvent === false && f.savedBytes === 0 && /integrity check/.test(f.message ?? "")' \
     "the integrity message, and no file saved"
 done

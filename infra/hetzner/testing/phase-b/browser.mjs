@@ -781,6 +781,11 @@ const cases = {
   },
 
   /** B-7: links issued through the interface, captured unfollowed, so the store can change after. */
+  /**
+   * B-7: issue the three links, let the shell change the store (it waits for /out/issued.flag and
+   * answers with /out/tampered.flag), then follow them in the same signed-in page. One sign-in, so
+   * the links are followed well inside their test-only 30 s lifetime.
+   */
   async 'integrity-issue'() {
     const { documents } = state();
     const { context, page } = await asAdmin();
@@ -789,14 +794,25 @@ const cases = {
       await documentPage(page, documents[name].id);
       links[name] = await captureLink(page, () => headerDownload(page));
     }
-    save({ links });
+    const issuedAt = Date.now();
     result('integrity-issue', {
       issued: Object.fromEntries(Object.entries(links).map(([k, v]) => [k, v !== null])),
     });
+    writeFileSync(`${OUT}/issued.flag`, String(issuedAt));
+    for (let i = 0; i < 200 && !existsSync(`${OUT}/tampered.flag`); i += 1) await sleep(100);
+    const tampered = existsSync(`${OUT}/tampered.flag`);
+    for (const name of ['swapped', 'vanished', 'quarantined']) {
+      const linkAgeMs = Date.now() - issuedAt;
+      result(`integrity-${name}`, {
+        tamperedFirst: tampered,
+        linkAgeMs,
+        ...(await followLink(page, links[name], documents[name].digest)),
+      });
+    }
     await closeContext(context);
   },
 
-  /** B-7: follow the captured links; for the outage, use the Download button itself. */
+  /** B-7, the outage: the Download button itself, with the store stopped and started again. */
   async 'integrity-follow'(...names) {
     const { documents, links } = state();
     const { context, page } = await asAdmin();
