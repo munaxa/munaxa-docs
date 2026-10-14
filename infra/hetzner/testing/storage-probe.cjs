@@ -89,16 +89,11 @@ const print = (label, value) => console.log(`probe: ${label}: ${value}`);
  * Phase 2: the upload exactly as the product performs it — target from the API, PUT, then the staged
  * object inspected with the adapter at the moment before the API's own completion reads it, then the
  * completion. Separates "the store answers differently for this object" from "the completion
- * disagrees with what the store answered". Credentials come from the run's smoke.env, never printed.
+ * disagrees with what the store answered". The run's throwaway credentials arrive by environment.
  */
 async function replayThroughTheApi() {
-  const smoke = Object.fromEntries(
-    require('node:fs')
-      .readFileSync('/probe/smoke.env', 'utf8')
-      .split('\n')
-      .filter((line) => line.includes('='))
-      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
-  );
+  // Passed by name from run-stack-test.sh's own environment (`-e NAME`, no value on any command line).
+  const smoke = e;
   const api = 'http://api:3001';
   const signIn = await fetch(`${api}/api/v1/auth/login`, {
     method: 'POST',

@@ -295,9 +295,13 @@ if [ -n "${EXTERNAL_STORAGE_ENV:-}" ]; then
   # Diagnostic only (testing/storage-probe.cjs): what the external store does with each step of the
   # upload contract, through the product's own adapter. The smoke test below decides pass or fail.
   step "Storage contract probe (external bucket)"
-  compose run --rm --no-deps -T -e "RUN_PREFIX=$run_prefix/" \
-    -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" -v "$config/smoke.env:/probe/smoke.env:ro" \
-    --entrypoint node api \
+  # The replay's sign-in values go by name (`-e NAME`): Compose copies them from this process's
+  # environment, so no value appears on a command line. smoke.env itself is 0600 and unreadable to
+  # the API image's user.
+  SMOKE_TENANT=acme SMOKE_ADMIN_EMAIL=admin@acme.invalid SMOKE_ADMIN_PASSWORD="$admin_pw" \
+    compose run --rm --no-deps -T -e "RUN_PREFIX=$run_prefix/" \
+    -e SMOKE_TENANT -e SMOKE_ADMIN_EMAIL -e SMOKE_ADMIN_PASSWORD \
+    -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" --entrypoint node api \
     /probe/storage-probe.cjs || echo "probe: did not complete (see its last line)"
 fi
 
