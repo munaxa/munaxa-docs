@@ -296,7 +296,8 @@ if [ -n "${EXTERNAL_STORAGE_ENV:-}" ]; then
   # upload contract, through the product's own adapter. The smoke test below decides pass or fail.
   step "Storage contract probe (external bucket)"
   compose run --rm --no-deps -T -e "RUN_PREFIX=$run_prefix/" \
-    -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" --entrypoint node api \
+    -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" -v "$config/smoke.env:/probe/smoke.env:ro" \
+    --entrypoint node api \
     /probe/storage-probe.cjs || echo "probe: did not complete (see its last line)"
 fi
 

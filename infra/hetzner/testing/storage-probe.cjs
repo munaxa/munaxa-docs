@@ -78,7 +78,81 @@ const print = (label, value) => console.log(`probe: ${label}: ${value}`);
     'GET returned the same bytes',
     read !== null && Buffer.compare(read, bytes) === 0 ? 'yes' : 'no',
   );
+
+  await replayThroughTheApi();
 })().catch((error) => {
   print('failed', error.message.replace(/https?:\/\/\S+/g, '<url>'));
   process.exit(1);
 });
+
+/**
+ * Phase 2: the upload exactly as the product performs it — target from the API, PUT, then the staged
+ * object inspected with the adapter at the moment before the API's own completion reads it, then the
+ * completion. Separates "the store answers differently for this object" from "the completion
+ * disagrees with what the store answered". Credentials come from the run's smoke.env, never printed.
+ */
+async function replayThroughTheApi() {
+  const smoke = Object.fromEntries(
+    require('node:fs')
+      .readFileSync('/probe/smoke.env', 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('='))
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+  );
+  const api = 'http://api:3001';
+  const signIn = await fetch(`${api}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      email: smoke.SMOKE_ADMIN_EMAIL,
+      password: smoke.SMOKE_ADMIN_PASSWORD,
+      tenant: smoke.SMOKE_TENANT,
+    }),
+  });
+  print('replay: sign-in status', signIn.status);
+  const { accessToken } = await signIn.json();
+  const auth = { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' };
+
+  const bytes = Buffer.from(`P-1 replay ${Date.now()} ${Math.random()}\n`, 'utf8');
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const created = await fetch(`${api}/api/v1/uploads`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({
+      filename: 'replay.txt',
+      mimeType: 'text/plain',
+      sizeBytes: bytes.length,
+      magicBytes: bytes.toString('base64'),
+      checksumSha256: digest,
+    }),
+  });
+  const target = await created.json();
+  print('replay: target status', created.status);
+  print('replay: target headers', Object.keys(target.headers ?? {}).join(', '));
+
+  const put = await fetch(target.url, {
+    method: target.method,
+    headers: target.headers,
+    body: bytes,
+  });
+  print('replay: PUT status', put.status);
+
+  const staged = `${e.RUN_PREFIX}tenants/${smoke.SMOKE_TENANT}/staging/${target.uploadSessionId}`;
+  const head = await storage.head(staged);
+  print('replay: HEAD found the staged object', head !== null ? 'yes' : 'no');
+  if (head !== null) {
+    print('replay: HEAD size vs declared', `${head.sizeBytes} vs ${bytes.length}`);
+    print('replay: HEAD returned a SHA-256', head.checksumSha256 !== null ? 'yes' : 'no');
+    if (head.checksumSha256 !== null) {
+      print('replay: HEAD SHA-256 equals the bytes', head.checksumSha256 === digest ? 'yes' : 'no');
+    }
+  }
+
+  const done = await fetch(`${api}/api/v1/uploads/${target.uploadSessionId}/complete`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ parts: [] }),
+  });
+  const result = await done.json().catch(() => ({}));
+  print('replay: completion status', `${done.status} scan=${result.scanStatus ?? 'none'}`);
+}
