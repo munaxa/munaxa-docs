@@ -12,6 +12,7 @@ import { STORAGE_PORT, type StoragePort } from '../../../ports/storage.port';
 import type {
   BlobReaper,
   IntegritySweep,
+  OrphanSweep,
   ReclaimableBlob,
 } from '../../retention/application/ports';
 import { STORAGE_SERVICE, type StorageService } from '../application/ports';
@@ -112,6 +113,11 @@ export class StorageBlobReaper implements BlobReaper {
    */
   verifyStoredIntegrity(): Promise<IntegritySweep> {
     return this.storageService.verifyIntegrity();
+  }
+
+  /** `storage.sweep-orphaned-objects`: a pass-through to the module that owns the bytes. */
+  sweepOrphanedObjects(): Promise<OrphanSweep> {
+    return this.storageService.sweepOrphanedObjects();
   }
 
   async expireUploadSessions(now: Date): Promise<number> {

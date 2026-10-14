@@ -47,11 +47,15 @@ import { StorageAudit } from '../domain/audit-actions';
 import { ByteBudget, ByteBudgetTimeoutError } from '../domain/byte-budget';
 import { unreachableBecause } from '../domain/reachability';
 import {
+  BLOB_PREFIX,
+  STAGING_PREFIX,
   blobKeyFor,
   derivedKeyFor,
   evidenceKeyFor,
   evidencePrefixFor,
+  isBlobKey,
   stagingKeyFor,
+  stagingSessionOf,
 } from '../domain/content-key';
 import {
   fileIntegrityMismatchEvent,
@@ -76,6 +80,8 @@ import {
   UPLOAD_SESSION_REPOSITORY,
   type UploadSessionRecord,
   type UploadSessionRepository,
+  type OrphanSweepArea,
+  type OrphanSweepResult,
 } from './ports';
 
 /**
@@ -615,6 +621,54 @@ export class DefaultStorageService implements StorageService {
     return result;
   }
 
+  /**
+   * Removes objects nothing refers to — ADR-0026 §10, Phase A.
+   *
+   * Phase A left two kinds behind. A completion interrupted after its copy (eight were, when the
+   * API was killed) left the content key holding bytes no row names. A transfer that outlasted its
+   * link and the expiry sweep left staged bytes whose session was already `EXPIRED`, which that
+   * sweep — it looks only at `OPEN` sessions — never visits again. This finds both, by listing
+   * the two prefixes this module writes uploads to and asking the database about each key.
+   *
+   * ## What keeps an object
+   *
+   * - **A reference.** Staged bytes are kept while their session is `OPEN` (the expiry sweep owns
+   *   those). A content key is kept while *any* row names it — live or deleted.
+   * - **Youth.** Anything younger than `STORAGE_ORPHAN_GRACE_SECONDS` is left alone, because a
+   *   completion copies its bytes before it writes the row naming them; configuration refuses a
+   *   grace shorter than the longest a completion can take.
+   * - **A second look.** Immediately before a delete, the reference and the object's age are
+   *   asked again, so a completion or a re-upload that arrived during the pass is not undone.
+   * - **Not being ours.** Only keys of exactly the two shapes this module writes are considered;
+   *   anything else under the prefixes is counted and never touched. Derived and evidence objects
+   *   live elsewhere and are not listed.
+   *
+   * Idempotent — a second pass finds nothing the first removed — and safe to stop at any point.
+   * `STORAGE_ORPHAN_SWEEP_DRY_RUN` reports the same findings and removes nothing.
+   */
+  async sweepOrphanedObjects(): Promise<OrphanSweepResult> {
+    const dryRun = this.config.storage.orphanSweepDryRun;
+    const graceSeconds = this.config.storage.orphanGraceSeconds;
+    const orphanedKeys: string[] = [];
+
+    const staging = await this.sweepArea(STAGING_PREFIX, graceSeconds, dryRun, orphanedKeys, {
+      recognised: (key) => stagingSessionOf(key) !== null,
+      referenced: async (key) => {
+        const id = stagingSessionOf(key) as string;
+        const session = await this.writer.read(() =>
+          this.sessions.findById(asId<UploadSessionId>(id)),
+        );
+        return session !== null && session.state === UploadSessionState.OPEN;
+      },
+    });
+    const blobs = await this.sweepArea(BLOB_PREFIX, graceSeconds, dryRun, orphanedKeys, {
+      recognised: isBlobKey,
+      referenced: (key) => this.writer.read(() => this.files.referencesStorageKey(key)),
+    });
+
+    return { dryRun, graceSeconds, staging, blobs, orphanedKeys };
+  }
+
   get(fileObjectId: FileObjectId): Promise<FileObjectRecord | null> {
     return this.files.findById(fileObjectId);
   }
@@ -1094,6 +1148,66 @@ export class DefaultStorageService implements StorageService {
       this.sessions.settle(session.id, UploadSessionState.EXPIRED, null),
     );
     throw new UploadExpiredError();
+  }
+
+  /** One prefix of the orphan sweep: list, classify, re-check, remove. */
+  private async sweepArea(
+    prefix: string,
+    graceSeconds: number,
+    dryRun: boolean,
+    orphanedKeys: string[],
+    rules: {
+      readonly recognised: (key: string) => boolean;
+      readonly referenced: (key: string) => Promise<boolean>;
+    },
+  ): Promise<OrphanSweepArea> {
+    const area = { listed: 0, referenced: 0, recent: 0, unrecognised: 0, orphaned: 0 };
+    const keys = await this.storage.list(prefix);
+    const olderThanGrace = async (key: string): Promise<boolean | null> => {
+      const metadata = await this.storage.head(key);
+      if (metadata === null) {
+        return null;
+      }
+      return this.clock.now().getTime() - metadata.lastModifiedAt.getTime() >= graceSeconds * 1000;
+    };
+
+    for (const key of keys) {
+      area.listed += 1;
+      if (!rules.recognised(key)) {
+        area.unrecognised += 1;
+        continue;
+      }
+      if (await rules.referenced(key)) {
+        area.referenced += 1;
+        continue;
+      }
+      const old = await olderThanGrace(key);
+      if (old === null) {
+        // Gone since the listing — removed by somebody else, which is what was wanted.
+        continue;
+      }
+      if (!old) {
+        area.recent += 1;
+        continue;
+      }
+      // The second look, as late as possible: a re-upload of the same bytes during the pass has
+      // refreshed the object by now, and a completion has written its row. The reference is asked
+      // last, immediately before the delete.
+      if ((await olderThanGrace(key)) !== true) {
+        area.recent += 1;
+        continue;
+      }
+      if (await rules.referenced(key)) {
+        area.referenced += 1;
+        continue;
+      }
+      area.orphaned += 1;
+      orphanedKeys.push(key);
+      if (!dryRun) {
+        await this.storage.delete(key);
+      }
+    }
+    return area;
   }
 
   /**

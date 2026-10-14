@@ -335,6 +335,15 @@ export const SCHEDULE: readonly ScheduledJob[] = Object.freeze([
     description: 'Expires abandoned upload sessions and their partial objects.',
   },
   {
+    // ADR-0026 §10, Phase A: what an interrupted completion or an outlived link leaves behind.
+    name: 'storage.sweep-orphaned-objects',
+    queue: QueueName.RETENTION_RUN,
+    cron: '40 4 * * *',
+    lockKey: 'schedule:storage.sweep-orphaned-objects',
+    description:
+      'Removes staged and content objects no session or row refers to, past a grace period.',
+  },
+  {
     /**
      * The only thing that watches `effective_to` — Phase 6.1.
      *

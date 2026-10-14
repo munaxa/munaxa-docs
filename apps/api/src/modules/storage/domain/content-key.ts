@@ -101,6 +101,24 @@ export function evidencePrefixFor(exportId: string): string {
 const EVIDENCE_ROOT = 'evidence';
 
 /** True for a key this product could have produced. Used when reading a key back from a row. */
+/** Where staged uploads live; the orphan sweep lists it. */
+export const STAGING_PREFIX = 'staging/';
+/** Where uploaded content lives; the orphan sweep lists it. Derived and evidence keys are not here. */
+export const BLOB_PREFIX = `${BLOB_ROOT}/`;
+
+/** The session a staging key belongs to, or null for a key this product would not have made. */
+export function stagingSessionOf(key: string): string | null {
+  const match = /^staging\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(
+    key,
+  );
+  return match?.[1] ?? null;
+}
+
+/** Whether a key is exactly an uploaded blob's content key (`blobKeyFor`), and nothing else. */
+export function isBlobKey(key: string): boolean {
+  return /^blobs\/([0-9a-f]{2})\/([0-9a-f]{2})\/\1\2[0-9a-f]{60}$/.test(key);
+}
+
 export function isContentKey(key: string): boolean {
   return /^(?:blobs|derived)\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/.test(key);
 }

@@ -52,6 +52,11 @@ export interface FileObjectRepository {
   /** Dedupe: an identical checksum within the tenant is the same blob. */
   findByChecksum(checksum: string): Promise<FileObjectRecord | null>;
   /**
+   * Whether any row of this tenant — live or deleted — names this storage key. The orphan sweep
+   * keeps every object a row names, whatever state the row is in.
+   */
+  referencesStorageKey(storageKey: string): Promise<boolean>;
+  /**
    * Inserts the blob, and answers whether it was the one to insert it.
    *
    * `false` means another transaction stored this digest first — `uq_file_object_checksum` is one
@@ -147,6 +152,30 @@ export interface IntegritySweepResult {
   readonly unreadable: number;
 }
 
+/** One area the orphan sweep covers, and what it found there. */
+export interface OrphanSweepArea {
+  /** Objects listed under the prefix. */
+  readonly listed: number;
+  /** Named by a row or an open session: kept. */
+  readonly referenced: number;
+  /** Unreferenced, but younger than the grace: left for a later sweep. */
+  readonly recent: number;
+  /** Keys this product would not have written there: never touched, only counted. */
+  readonly unrecognised: number;
+  /** Unreferenced, older than the grace, and still so when re-checked: removed (or, dry, not). */
+  readonly orphaned: number;
+}
+
+/** One pass of the orphan sweep — ADR-0026 §10, Phase A. Keys only: no credential, no content. */
+export interface OrphanSweepResult {
+  readonly dryRun: boolean;
+  readonly graceSeconds: number;
+  readonly staging: OrphanSweepArea;
+  readonly blobs: OrphanSweepArea;
+  /** The keys found orphaned (removed unless `dryRun`), relative to the tenant's prefix. */
+  readonly orphanedKeys: readonly string[];
+}
+
 export const STORAGE_SERVICE = Symbol('StorageService');
 
 /**
@@ -201,6 +230,11 @@ export interface StorageService {
    * exists to make impossible.
    */
   verifyIntegrity(): Promise<IntegritySweepResult>;
+  /**
+   * Removes stored objects nothing refers to — staged bytes whose session is no longer open, and
+   * content keys no row names — once they are older than STORAGE_ORPHAN_GRACE_SECONDS.
+   */
+  sweepOrphanedObjects(): Promise<OrphanSweepResult>;
 
   get(fileObjectId: FileObjectId): Promise<FileObjectRecord | null>;
 

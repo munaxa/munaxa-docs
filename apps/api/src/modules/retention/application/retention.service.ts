@@ -31,6 +31,7 @@ import {
   type DocumentExpiry,
   type DocumentExpirySweep,
   type IntegritySweep,
+  type OrphanSweep,
   DOCUMENT_DISPOSITION,
   type DocumentDisposition,
   LEGAL_HOLD_REPOSITORY,
@@ -242,6 +243,11 @@ export class DefaultRetentionService implements RetentionService {
    */
   verifyStoredIntegrity(): Promise<IntegritySweep> {
     return this.blobs.verifyStoredIntegrity();
+  }
+
+  /** `storage.sweep-orphaned-objects`, the fifth — a pass-through like the verifier above. */
+  sweepOrphanedObjects(): Promise<OrphanSweep> {
+    return this.blobs.sweepOrphanedObjects();
   }
 
   /**

@@ -20,6 +20,8 @@ const SWEEP_SCHEDULE = 'retention.sweep';
 const UPLOAD_SCHEDULE = 'storage.sweep-upload-sessions';
 /** Phase 18's rolling integrity verifier, the third schedule on this lane. */
 const INTEGRITY_SCHEDULE = 'storage.verify-integrity';
+/** ADR-0026 §10, Phase A: objects an interrupted completion or an outlived link left behind. */
+const ORPHAN_SCHEDULE = 'storage.sweep-orphaned-objects';
 /** Phase 6.1's effective-window sweep, the fourth. */
 const EXPIRY_SCHEDULE = 'documents.expire-effective';
 
@@ -35,6 +37,9 @@ const SWEEP_BATCH = 500;
  * over a few hours rather than holding the lane for one long pass. The steady state is zero.
  */
 const EXPIRY_BATCH = 200;
+
+/** How many of a pass's orphaned keys are named in its log line; the rest are counted. */
+const ORPHAN_KEYS_LOGGED = 50;
 
 /**
  * The `retention.run` lane's first consumer — the last declared lane in the product to gain one.
@@ -87,7 +92,13 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
       await this.handle(job);
     });
 
-    for (const name of [SWEEP_SCHEDULE, UPLOAD_SCHEDULE, INTEGRITY_SCHEDULE, EXPIRY_SCHEDULE]) {
+    for (const name of [
+      SWEEP_SCHEDULE,
+      UPLOAD_SCHEDULE,
+      INTEGRITY_SCHEDULE,
+      EXPIRY_SCHEDULE,
+      ORPHAN_SCHEDULE,
+    ]) {
       const scheduled = SCHEDULE.find((entry) => entry.name === name);
       if (scheduled === undefined) {
         // The catalogue is the single source of the cron expression; an entry removed from it must
@@ -117,6 +128,8 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
         return this.fanOut(job, 'storage.verify-integrity-tenant');
       case `${EXPIRY_SCHEDULE}-fanout`:
         return this.fanOut(job, 'documents.expire-effective-tenant');
+      case `${ORPHAN_SCHEDULE}-fanout`:
+        return this.fanOut(job, 'storage.sweep-orphans-tenant');
       case 'retention.sweep-tenant':
         return this.sweepTenant(job, payload);
       case 'retention.expire-uploads-tenant':
@@ -125,6 +138,8 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
         return this.verifyIntegrity(job, payload);
       case 'documents.expire-effective-tenant':
         return this.expireDocuments(job, payload);
+      case 'storage.sweep-orphans-tenant':
+        return this.sweepOrphans(job, payload);
       default:
         // Unretryable: the payload will not grow a recognisable shape on a fifth attempt. Logged
         // and dropped, as every consumer since Phase 7 treats a malformed job.
@@ -210,6 +225,33 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
    * and a line per tenant per hour saying "nothing expired" would be twenty-four thousand lines a
    * day drowning the ones that matter. Its steady state is silence.
    */
+  private async sweepOrphans(job: JobEnvelope, payload: Record<string, unknown>): Promise<void> {
+    const tenantId = asString(payload['tenantId']);
+    if (tenantId === null) {
+      this.logger.warn('Dropped an orphan sweep job with no tenant', { jobId: job.jobId });
+      return;
+    }
+    await runWithContext(systemContext(tenantId, job.jobId), async () => {
+      const pass = await this.retention.sweepOrphanedObjects();
+      // Keys only (a session id or a digest, under the tenant's prefix): never a credential, a
+      // URL or content. Capped, so one pass after a long outage cannot flood the log.
+      this.logger.info(
+        pass.dryRun
+          ? 'The orphan sweep found objects it would remove (dry run: nothing removed)'
+          : 'The orphan sweep removed objects nothing refers to',
+        {
+          tenantId,
+          dryRun: pass.dryRun,
+          graceSeconds: pass.graceSeconds,
+          staging: pass.staging,
+          blobs: pass.blobs,
+          orphanedKeys: pass.orphanedKeys.slice(0, ORPHAN_KEYS_LOGGED),
+          orphanedKeysOmitted: Math.max(0, pass.orphanedKeys.length - ORPHAN_KEYS_LOGGED),
+        },
+      );
+    });
+  }
+
   private async expireDocuments(job: JobEnvelope, payload: Record<string, unknown>): Promise<void> {
     const tenantId = asString(payload['tenantId']);
     if (tenantId === null) {

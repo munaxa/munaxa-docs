@@ -295,6 +295,11 @@ export interface BlobReaper {
    * fired.
    */
   verifyStoredIntegrity(): Promise<IntegritySweep>;
+  /**
+   * One pass of the orphan sweep — `storage.sweep-orphaned-objects`, ADR-0026 §10, Phase A. On this
+   * lane for the same reason as the verifier; the work, and every judgement in it, is Storage's.
+   */
+  sweepOrphanedObjects(): Promise<OrphanSweep>;
 }
 
 export const DOCUMENT_EXPIRY = Symbol('DocumentExpiry');
@@ -330,6 +335,23 @@ export interface IntegritySweep {
   readonly verified: number;
   readonly mismatched: number;
   readonly unreadable: number;
+}
+
+/** What one orphan-sweep pass found, per area, and the keys it removed (or would have, dry). */
+export interface OrphanSweep {
+  readonly dryRun: boolean;
+  readonly graceSeconds: number;
+  readonly staging: OrphanSweepCounts;
+  readonly blobs: OrphanSweepCounts;
+  readonly orphanedKeys: readonly string[];
+}
+
+export interface OrphanSweepCounts {
+  readonly listed: number;
+  readonly referenced: number;
+  readonly recent: number;
+  readonly unrecognised: number;
+  readonly orphaned: number;
 }
 
 export interface ReclaimableBlob {
@@ -369,6 +391,8 @@ export interface RetentionService {
   verifyStoredIntegrity(): Promise<IntegritySweep>;
   /** `documents.expire-effective`, the lane's fourth schedule — Phase 6.1. */
   expireEffectiveDocuments(limit: number): Promise<DocumentExpirySweep>;
+  /** `storage.sweep-orphaned-objects`, the lane's fifth — ADR-0026 §10, Phase A. */
+  sweepOrphanedObjects(): Promise<OrphanSweep>;
 }
 
 /**

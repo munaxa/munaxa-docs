@@ -398,6 +398,33 @@ describe('the antivirus driver — RC D-3', () => {
     ).toThrowError(/AV_ICAP_URL is set but AV_DRIVER is not ICAP/);
   });
 
+  it('bounds the bytes scanned at once and the wait for them (ADR-0026 §10, Phase A)', () => {
+    const config = loadConfig(productionEnv);
+    expect(config.antivirus.budgetBytes).toBe(268_435_456);
+    expect(config.antivirus.queueTimeoutMs).toBe(60_000);
+    expect(() => loadConfig({ ...productionEnv, AV_SCAN_BUDGET_BYTES: '1000' })).toThrowError(
+      /AV_SCAN_BUDGET_BYTES/,
+    );
+  });
+
+  it('refuses an orphan grace shorter than the longest a completion can take', () => {
+    const config = loadConfig(productionEnv);
+    expect(config.storage.orphanGraceSeconds).toBe(86_400);
+    expect(config.storage.orphanSweepDryRun).toBe(false);
+    // Default queue wait 60 s + scan timeout 120 s + a minute = 240 s.
+    expect(() =>
+      loadConfig({ ...productionEnv, STORAGE_ORPHAN_GRACE_SECONDS: '239' }),
+    ).toThrowError(/STORAGE_ORPHAN_GRACE_SECONDS/);
+    expect(
+      loadConfig({ ...productionEnv, STORAGE_ORPHAN_GRACE_SECONDS: '240' }).storage
+        .orphanGraceSeconds,
+    ).toBe(240);
+    expect(
+      loadConfig({ ...productionEnv, STORAGE_ORPHAN_SWEEP_DRY_RUN: 'true' }).storage
+        .orphanSweepDryRun,
+    ).toBe(true);
+  });
+
   it('bounds the scan size and the scan time', () => {
     expect(() => loadConfig({ ...productionEnv, AV_ICAP_MAX_BYTES: '10' })).toThrowError(
       /AV_ICAP_MAX_BYTES/,

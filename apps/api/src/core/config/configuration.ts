@@ -221,6 +221,15 @@ export const configSchema = z
      */
     STORAGE_INTEGRITY_BATCH_SIZE: z.coerce.number().int().min(1).max(10_000).default(200),
     STORAGE_INTEGRITY_MAX_BYTES: z.coerce.number().int().min(1_024).default(134_217_728),
+    /**
+     * How old an unreferenced object must be before the orphan sweep removes it — ADR-0026 §10,
+     * Phase A. A completion copies its bytes to their content key before it writes the row naming
+     * them, so for a while a legitimate object has no row; this must outlast the longest such while.
+     * Refused below the scan queue wait plus the scan timeout plus a minute (see the refinement).
+     */
+    STORAGE_ORPHAN_GRACE_SECONDS: z.coerce.number().int().min(60).default(86_400),
+    /** Report what the orphan sweep would remove, and remove nothing. */
+    STORAGE_ORPHAN_SWEEP_DRY_RUN: booleanFromEnv.default(false),
 
     SEARCH_DRIVER: z.enum(['POSTGRES', 'OPENSEARCH']).default('POSTGRES'),
     /**
@@ -658,6 +667,20 @@ export const configSchema = z
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   })
   .superRefine((config, ctx) => {
+    // --- The orphan sweep's grace, in every environment ------------------------------------
+    //
+    // An object younger than the longest a completion can take may be one that completion is
+    // about to record. A grace shorter than that would let the sweep delete bytes a row is about
+    // to name — the one outcome it must never have.
+    const longestCompletionMs = config.AV_SCAN_QUEUE_TIMEOUT_MS + config.AV_SCAN_TIMEOUT_MS + 60_000;
+    if (config.STORAGE_ORPHAN_GRACE_SECONDS * 1000 < longestCompletionMs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['STORAGE_ORPHAN_GRACE_SECONDS'],
+        message: `Must be at least ${String(Math.ceil(longestCompletionMs / 1000))} seconds: AV_SCAN_QUEUE_TIMEOUT_MS plus AV_SCAN_TIMEOUT_MS plus a minute.`,
+      });
+    }
+
     // --- Tenancy, in every environment ---------------------------------------------------
     //
     // A deployment either derives its one tenant from this environment or reads a catalogue.
@@ -1087,6 +1110,10 @@ export interface AppConfig {
     /** The rolling integrity verifier's page, and the largest blob it will read back — Phase 18. */
     readonly integrityBatchSize: number;
     readonly integrityMaxBytes: number;
+    /** STORAGE_ORPHAN_GRACE_SECONDS: the age below which the orphan sweep leaves an object alone. */
+    readonly orphanGraceSeconds: number;
+    /** STORAGE_ORPHAN_SWEEP_DRY_RUN: report, remove nothing. */
+    readonly orphanSweepDryRun: boolean;
   };
   readonly providers: {
     readonly search: RawConfig['SEARCH_DRIVER'];
@@ -1310,6 +1337,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       streamPartBytes: raw.STORAGE_STREAM_PART_BYTES,
       integrityBatchSize: raw.STORAGE_INTEGRITY_BATCH_SIZE,
       integrityMaxBytes: raw.STORAGE_INTEGRITY_MAX_BYTES,
+      orphanGraceSeconds: raw.STORAGE_ORPHAN_GRACE_SECONDS,
+      orphanSweepDryRun: raw.STORAGE_ORPHAN_SWEEP_DRY_RUN,
     },
     audit: {
       readBufferSize: raw.AUDIT_READ_BUFFER_SIZE,

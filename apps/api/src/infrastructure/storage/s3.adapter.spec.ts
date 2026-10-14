@@ -251,3 +251,35 @@ describe('read()', () => {
     expect(await adapter(STATIC, fetch).read('acme/missing')).toBeNull();
   });
 });
+
+/** The orphan sweep lists whole prefixes; a listing longer than one page must not stop at it. */
+describe('list()', () => {
+  const STATIC = { accessKeyId: 'AKIA-STATIC', secretAccessKey: 'static-secret' };
+
+  it('follows the continuation token to the end and returns every key', async () => {
+    const pages = [
+      '<ListBucketResult><Contents><Key>staging/a</Key></Contents><Contents><Key>staging/b</Key></Contents><IsTruncated>true</IsTruncated><NextContinuationToken>page-2</NextContinuationToken></ListBucketResult>',
+      '<ListBucketResult><Contents><Key>staging/c</Key></Contents><IsTruncated>false</IsTruncated></ListBucketResult>',
+    ];
+    const fetch = vi.fn<typeof globalThis.fetch>((input) =>
+      Promise.resolve(
+        new Response(
+          (input instanceof Request ? input.url : input.toString()).includes(
+            'continuation-token=page-2',
+          )
+            ? pages[1]
+            : pages[0],
+          {
+            status: 200,
+          },
+        ),
+      ),
+    );
+    expect(await adapter(STATIC, fetch).list('staging/')).toEqual([
+      'staging/a',
+      'staging/b',
+      'staging/c',
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});

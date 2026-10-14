@@ -36,6 +36,26 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
     return row === null ? null : toRecord(row);
   }
 
+  async referencesStorageKey(storageKey: string): Promise<boolean> {
+    const tx = requireTransaction();
+    // A live row first, which `uq_file_object_key` (live rows only) answers from its index — the
+    // common case for every object the sweep lists.
+    const live = await tx.fileObject.findFirst({
+      where: { tenantId: this.tenantId(), storageKey, deletedAt: null },
+      select: { id: true },
+    });
+    if (live !== null) {
+      return true;
+    }
+    // Then deleted rows too, deliberately: the sweep must never remove bytes any row names. No
+    // index covers them, but this is asked only for an object that already looks orphaned.
+    const any = await tx.fileObject.findFirst({
+      where: { tenantId: this.tenantId(), storageKey },
+      select: { id: true },
+    });
+    return any !== null;
+  }
+
   async findByChecksum(checksum: string): Promise<FileObjectRecord | null> {
     const row = await requireTransaction().fileObject.findFirst({
       // Within the tenant, always. Dedupe across tenants would let one customer's storage costs
