@@ -14,22 +14,32 @@ const { createHash } = require('node:crypto');
 const { S3StorageAdapter } = require('/app/apps/api/dist/infrastructure/storage/s3.adapter.js');
 
 const e = process.env;
-const storage = new S3StorageAdapter({
-  driver: e.STORAGE_DRIVER,
-  bucket: e.STORAGE_BUCKET,
-  region: e.STORAGE_REGION,
-  endpoint: e.STORAGE_ENDPOINT,
-  forcePathStyle: e.STORAGE_FORCE_PATH_STYLE === 'true',
-  credentials: {
-    accessKeyId: e.STORAGE_ACCESS_KEY_ID,
-    secretAccessKey: e.STORAGE_SECRET_ACCESS_KEY,
-  },
-  now: () => new Date(),
-});
+// `replay-only`: run from the smoke container, which holds no storage credentials — API calls and
+// the browser-side PUT only, never the adapter.
+const REPLAY_ONLY = e.PROBE_MODE === 'replay-only';
+const where = REPLAY_ONLY ? 'smoke container' : 'api container';
+const storage = REPLAY_ONLY
+  ? null
+  : new S3StorageAdapter({
+      driver: e.STORAGE_DRIVER,
+      bucket: e.STORAGE_BUCKET,
+      region: e.STORAGE_REGION,
+      endpoint: e.STORAGE_ENDPOINT,
+      forcePathStyle: e.STORAGE_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: e.STORAGE_ACCESS_KEY_ID,
+        secretAccessKey: e.STORAGE_SECRET_ACCESS_KEY,
+      },
+      now: () => new Date(),
+    });
 
 const print = (label, value) => console.log(`probe: ${label}: ${value}`);
 
 (async () => {
+  if (REPLAY_ONLY) {
+    await replayThroughTheApi();
+    return;
+  }
   const bytes = Buffer.from(`P-1 storage probe ${Date.now()}\n`, 'utf8');
   const digest = createHash('sha256').update(bytes).digest('hex');
   const key = `${e.RUN_PREFIX}probe/${digest}`;
@@ -108,17 +118,17 @@ async function replayThroughTheApi() {
       tenant: e.SMOKE_TENANT,
     }),
   });
-  print('replay: sign-in status', signIn.status);
+  print(`replay (${where}): sign-in status`, signIn.status);
   const { accessToken } = await signIn.json();
   const auth = { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' };
   const staged = (id) => `${e.RUN_PREFIX}tenants/${e.SMOKE_TENANT}/staging/${id}`;
 
-  async function target(bytes) {
+  async function target(bytes, filename = 'replay.txt') {
     const created = await fetch(`${api}/api/v1/uploads`, {
       method: 'POST',
       headers: auth,
       body: JSON.stringify({
-        filename: 'replay.txt',
+        filename,
         mimeType: 'text/plain',
         sizeBytes: bytes.length,
         magicBytes: bytes.toString('base64'),
@@ -146,6 +156,25 @@ async function replayThroughTheApi() {
   const fresh = (label) => Buffer.from(`P-1 ${label} ${Date.now()} ${Math.random()}\n`, 'utf8');
 
   for (let round = 1; round <= 3; round += 1) {
+    // D — the smoke test's own content and file name, as the smoke test sends them.
+    {
+      const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const bytes = Buffer.from(`Munaxa Docs Hetzner template smoke test ${nonce}\n`, 'utf8');
+      const t = await target(bytes, `smoke-${nonce}.txt`);
+      const preflight = await fetch(t.url, {
+        method: 'OPTIONS',
+        headers: {
+          origin: e.SMOKE_CORS_ORIGIN || 'https://p1-storage-test.munaxa.invalid',
+          'access-control-request-method': t.method,
+          'access-control-request-headers': 'content-type,x-amz-checksum-sha256',
+        },
+      });
+      const status = await put(t, bytes);
+      print(
+        `replay ${round}D (${where}): smoke content, preflight, PUT, complete`,
+        `${preflight.status}, ${status}, ${await complete(t)}`,
+      );
+    }
     // A — as the smoke test does it.
     {
       const bytes = fresh('A');
@@ -170,6 +199,9 @@ async function replayThroughTheApi() {
       const t = await target(bytes);
       const status = await put(t, bytes);
       print(`replay ${round}B: PUT, complete`, `${status}, ${await complete(t)}`);
+    }
+    if (REPLAY_ONLY) {
+      continue;
     }
     // C — inspected before completion.
     {

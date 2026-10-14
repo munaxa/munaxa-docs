@@ -303,6 +303,11 @@ if [ -n "${EXTERNAL_STORAGE_ENV:-}" ]; then
     -e SMOKE_TENANT -e SMOKE_ADMIN_EMAIL -e SMOKE_ADMIN_PASSWORD -e SMOKE_CORS_ORIGIN \
     -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" --entrypoint node api \
     /probe/storage-probe.cjs || echo "probe: did not complete (see its last line)"
+  # The same replay from the smoke runner's own container: the smoke test's network and environment,
+  # no storage credentials (its API calls and PUTs only).
+  compose --profile test run --rm --no-deps -T -e PROBE_MODE=replay-only \
+    -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" --entrypoint node smoke \
+    /probe/storage-probe.cjs || echo "probe (smoke container): did not complete (see its last line)"
 fi
 
 step "Smoke test"
