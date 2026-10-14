@@ -4,7 +4,7 @@ import { Controller, Get, Inject, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
 import { ErrorCode, type FileObjectId, asId, isDomainError } from '@edms/domain';
-import { type MessageKey, negotiateLocale, translate } from '@edms/i18n';
+import { isLocale, type MessageKey, negotiateLocale, translate } from '@edms/i18n';
 import { contentDisposition } from '@edms/utils';
 
 import { Public } from '../../../core/auth/public.decorator';
@@ -62,7 +62,7 @@ export class DownloadLinkController {
     response.setHeader('Cache-Control', 'private, no-store');
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Content-Type-Options', 'nosniff');
-    const locale = negotiateLocale(request.headers['accept-language']);
+    const locale = localeOf(request);
 
     const grant = this.delivery.decode(token ?? '');
     if (grant === null) {
@@ -187,6 +187,17 @@ export class DownloadLinkController {
     });
     refusalPage(response, locale, 500, 'error.INTERNAL');
   }
+}
+
+/**
+ * The interface's language: the web app keeps it in the `edms_locale` cookie, which a same-origin
+ * navigation to this door carries; the browser's own Accept-Language otherwise.
+ */
+function localeOf(request: Request): ReturnType<typeof negotiateLocale> {
+  const cookie = /(?:^|;\s*)edms_locale=([^;]*)/u.exec(request.headers.cookie ?? '')?.[1];
+  return cookie !== undefined && isLocale(cookie)
+    ? cookie
+    : negotiateLocale(request.headers['accept-language']);
 }
 
 /** Types a browser may render in place. Anything else is always an attachment. */

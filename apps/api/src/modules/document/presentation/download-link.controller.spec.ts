@@ -193,6 +193,14 @@ describe('a verified download link, followed by a browser', () => {
     expect(body).toContain('التنزيلات مشغولة');
   });
 
+  it('answers in the interface’s language (the edms_locale cookie) before the browser’s', async () => {
+    const { url } = await serve();
+    const response = await fetch(`${url}?token=bad`, {
+      headers: { 'accept-language': 'en', cookie: 'edms_tenant=acme; edms_locale=ar' },
+    });
+    expect(await response.text()).toContain('dir="rtl"');
+  });
+
   it('records nothing as served when the person leaves part-way', async () => {
     let release: () => void = () => {};
     const sending = new Promise<void>((resolve) => {
