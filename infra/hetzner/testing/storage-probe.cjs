@@ -86,68 +86,117 @@ const print = (label, value) => console.log(`probe: ${label}: ${value}`);
 });
 
 /**
- * Phase 2: the upload exactly as the product performs it — target from the API, PUT, then the staged
- * object inspected with the adapter at the moment before the API's own completion reads it, then the
- * completion. Separates "the store answers differently for this object" from "the completion
- * disagrees with what the store answered". The run's throwaway credentials arrive by environment.
+ * Phase 2: the upload exactly as the product performs it — target from the API, PUT, completion —
+ * in variants that differ in one thing each, so a failure names its cause:
+ *
+ *   A  as the smoke test: CORS preflight, PUT, completion at once
+ *   B  PUT, completion at once
+ *   C  PUT, the staged object inspected with the adapter, then completion
+ *
+ * After a failed completion the staged object is gone (the product discards it), so B also records
+ * what HEAD saw for a fresh upload 0 ms and 2 s after its PUT, without completing it. Statuses and
+ * yes/no facts only. The run's throwaway sign-in arrives by environment (`-e NAME`).
  */
 async function replayThroughTheApi() {
-  // Passed by name from run-stack-test.sh's own environment (`-e NAME`, no value on any command line).
-  const smoke = e;
   const api = 'http://api:3001';
   const signIn = await fetch(`${api}/api/v1/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      email: smoke.SMOKE_ADMIN_EMAIL,
-      password: smoke.SMOKE_ADMIN_PASSWORD,
-      tenant: smoke.SMOKE_TENANT,
+      email: e.SMOKE_ADMIN_EMAIL,
+      password: e.SMOKE_ADMIN_PASSWORD,
+      tenant: e.SMOKE_TENANT,
     }),
   });
   print('replay: sign-in status', signIn.status);
   const { accessToken } = await signIn.json();
   const auth = { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' };
+  const staged = (id) => `${e.RUN_PREFIX}tenants/${e.SMOKE_TENANT}/staging/${id}`;
 
-  const bytes = Buffer.from(`P-1 replay ${Date.now()} ${Math.random()}\n`, 'utf8');
-  const digest = createHash('sha256').update(bytes).digest('hex');
-  const created = await fetch(`${api}/api/v1/uploads`, {
-    method: 'POST',
-    headers: auth,
-    body: JSON.stringify({
-      filename: 'replay.txt',
-      mimeType: 'text/plain',
-      sizeBytes: bytes.length,
-      magicBytes: bytes.toString('base64'),
-      checksumSha256: digest,
-    }),
-  });
-  const target = await created.json();
-  print('replay: target status', created.status);
-  print('replay: target headers', Object.keys(target.headers ?? {}).join(', '));
+  async function target(bytes) {
+    const created = await fetch(`${api}/api/v1/uploads`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        filename: 'replay.txt',
+        mimeType: 'text/plain',
+        sizeBytes: bytes.length,
+        magicBytes: bytes.toString('base64'),
+        checksumSha256: createHash('sha256').update(bytes).digest('hex'),
+      }),
+    });
+    return created.json();
+  }
+  const put = async (t, bytes) =>
+    (await fetch(t.url, { method: t.method, headers: t.headers, body: bytes })).status;
+  const complete = async (t) => {
+    const done = await fetch(`${api}/api/v1/uploads/${t.uploadSessionId}/complete`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ parts: [] }),
+    });
+    const body = await done.json().catch(() => ({}));
+    return `${done.status}${body.scanStatus ? ` ${body.scanStatus}` : ''}`;
+  };
+  const describe = (head, bytes, digest) =>
+    head === null
+      ? 'not found'
+      : `size ${head.sizeBytes === bytes.length ? 'ok' : `${head.sizeBytes}≠${bytes.length}`}, ` +
+        `sha256 ${head.checksumSha256 === null ? 'absent' : head.checksumSha256 === digest ? 'ok' : 'wrong'}`;
+  const fresh = (label) => Buffer.from(`P-1 ${label} ${Date.now()} ${Math.random()}\n`, 'utf8');
 
-  const put = await fetch(target.url, {
-    method: target.method,
-    headers: target.headers,
-    body: bytes,
-  });
-  print('replay: PUT status', put.status);
-
-  const staged = `${e.RUN_PREFIX}tenants/${smoke.SMOKE_TENANT}/staging/${target.uploadSessionId}`;
-  const head = await storage.head(staged);
-  print('replay: HEAD found the staged object', head !== null ? 'yes' : 'no');
-  if (head !== null) {
-    print('replay: HEAD size vs declared', `${head.sizeBytes} vs ${bytes.length}`);
-    print('replay: HEAD returned a SHA-256', head.checksumSha256 !== null ? 'yes' : 'no');
-    if (head.checksumSha256 !== null) {
-      print('replay: HEAD SHA-256 equals the bytes', head.checksumSha256 === digest ? 'yes' : 'no');
+  for (let round = 1; round <= 3; round += 1) {
+    // A — as the smoke test does it.
+    {
+      const bytes = fresh('A');
+      const t = await target(bytes);
+      const preflight = await fetch(t.url, {
+        method: 'OPTIONS',
+        headers: {
+          origin: e.SMOKE_CORS_ORIGIN || 'https://p1-storage-test.munaxa.invalid',
+          'access-control-request-method': t.method,
+          'access-control-request-headers': 'content-type,x-amz-checksum-sha256',
+        },
+      });
+      const status = await put(t, bytes);
+      print(
+        `replay ${round}A: preflight, PUT, complete`,
+        `${preflight.status}, ${status}, ${await complete(t)}`,
+      );
+    }
+    // B — no preflight, no inspection.
+    {
+      const bytes = fresh('B');
+      const t = await target(bytes);
+      const status = await put(t, bytes);
+      print(`replay ${round}B: PUT, complete`, `${status}, ${await complete(t)}`);
+    }
+    // C — inspected before completion.
+    {
+      const bytes = fresh('C');
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      const t = await target(bytes);
+      const status = await put(t, bytes);
+      const head = await storage.head(staged(t.uploadSessionId));
+      print(
+        `replay ${round}C: PUT, HEAD, complete`,
+        `${status}, ${describe(head, bytes, digest)}, ${await complete(t)}`,
+      );
+    }
+    // What HEAD sees for a fresh upload immediately and 2 s later (not completed; cleaned up with
+    // the run prefix).
+    {
+      const bytes = fresh('T');
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      const t = await target(bytes);
+      await put(t, bytes);
+      const now = await storage.head(staged(t.uploadSessionId));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const later = await storage.head(staged(t.uploadSessionId));
+      print(
+        `replay ${round}T: HEAD at 0 s / 2 s`,
+        `${describe(now, bytes, digest)} / ${describe(later, bytes, digest)}`,
+      );
     }
   }
-
-  const done = await fetch(`${api}/api/v1/uploads/${target.uploadSessionId}/complete`, {
-    method: 'POST',
-    headers: auth,
-    body: JSON.stringify({ parts: [] }),
-  });
-  const result = await done.json().catch(() => ({}));
-  print('replay: completion status', `${done.status} scan=${result.scanStatus ?? 'none'}`);
 }

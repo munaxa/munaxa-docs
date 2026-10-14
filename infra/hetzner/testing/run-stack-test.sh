@@ -299,8 +299,8 @@ if [ -n "${EXTERNAL_STORAGE_ENV:-}" ]; then
   # environment, so no value appears on a command line. smoke.env itself is 0600 and unreadable to
   # the API image's user.
   SMOKE_TENANT=acme SMOKE_ADMIN_EMAIL=admin@acme.invalid SMOKE_ADMIN_PASSWORD="$admin_pw" \
-    compose run --rm --no-deps -T -e "RUN_PREFIX=$run_prefix/" \
-    -e SMOKE_TENANT -e SMOKE_ADMIN_EMAIL -e SMOKE_ADMIN_PASSWORD \
+    SMOKE_CORS_ORIGIN="$s_cors" compose run --rm --no-deps -T -e "RUN_PREFIX=$run_prefix/" \
+    -e SMOKE_TENANT -e SMOKE_ADMIN_EMAIL -e SMOKE_ADMIN_PASSWORD -e SMOKE_CORS_ORIGIN \
     -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" --entrypoint node api \
     /probe/storage-probe.cjs || echo "probe: did not complete (see its last line)"
 fi
