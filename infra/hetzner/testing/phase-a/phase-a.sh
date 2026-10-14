@@ -14,8 +14,10 @@
 #   FINDING  an observed behaviour recorded as evidence, not judged here (ADR-0026 §10 records them)
 #   MEASURE  a number (time, memory)
 # Nothing in it changes a product setting. The one test-only setting is a second API container,
-# `phase-a-api-ttl`, whose links last 30 s (STORAGE_SIGNED_URL_TTL_SECONDS=30) for step 3 and the
-# expired-link case of step 6; the stack's own API keeps the product default.
+# `phase-a-api-ttl`, whose links last 30 s (STORAGE_SIGNED_URL_TTL_SECONDS=30 for uploads,
+# DOWNLOAD_LINK_TTL_SECONDS=30 for downloads) for step 3 and the expired-link case of step 6; the
+# stack's own API keeps the product defaults. Step 6v stops and restarts the test MinIO once, to
+# stand in for a store outage.
 
 if [ -n "${EXTERNAL_STORAGE_ENV:-}" ]; then
   echo "FAIL  Phase A runs against the local test MinIO only; unset EXTERNAL_STORAGE_ENV"
@@ -206,7 +208,8 @@ fi
 
 # =================================================================================================
 step "Phase A 3 — uploads slower than their link (test-only API with a 30 s link lifetime)"
-compose run -d --no-deps --name phase-a-api-ttl -e STORAGE_SIGNED_URL_TTL_SECONDS=30 api >/dev/null \
+compose run -d --no-deps --name phase-a-api-ttl -e STORAGE_SIGNED_URL_TTL_SECONDS=30 \
+  -e DOWNLOAD_LINK_TTL_SECONDS=30 api >/dev/null \
   || pa_fail "could not start the 30 s-link API"
 for _ in $(seq 1 60); do
   if docker exec phase-a-api-ttl node -e "fetch('http://127.0.0.1:3001/api/health/live').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))" 2>/dev/null; then
@@ -398,16 +401,160 @@ expect() { # name, condition (JS over the case's facts f), description
     pa_fail "download $1: expected $3 — got $(pa_q "R.find((r) => r.step === 'dl-post' && r.case === '$1') ?? null")"
   fi
 }
-expect open '[200, 201].includes(f.issue) && f.get === 200 && f.sameBytes === true && /^attachment/.test(f.disposition ?? "")' \
-  "link issued, served as an attachment, the same bytes"
+expect open '[200, 201].includes(f.issue) && f.viaApi === true && f.get === 200 && f.sameBytes === true && /^attachment/.test(f.disposition ?? "")' \
+  "verified link issued, served by the API as an attachment, the same bytes"
 expect nodl 'f.issue === 403' "refused by the confidentiality level (403)"
 expect tampered 'f.issue >= 400 && f.get === undefined' "refused after the verifier quarantined it, no link"
 expect missing 'f.issue >= 400 && f.get === undefined' "refused after the verifier quarantined it, no link"
 expect reader-without-download-permission 'f.issue === 403' "refused for a user without document:download (403)"
-expect expired-link 'f.beforeExpiry === 200 && f.afterExpiry === 403' "served before expiry, refused after"
-expect edited-signature 'f.status === 403' "refused by the store"
-expect edited-path 'f.status === 403' "refused by the store"
-pa_finding "non-ASCII file name 'Résumé تقرير.txt': link $(d unicode issue), store $(d unicode get), same bytes $(d unicode sameBytes); Content-Disposition as received: $(d unicode disposition)"
+expect expired-link 'f.beforeExpiry === 200 && f.beforeExpirySameBytes === true && f.afterExpiry === 404 && /expired/.test(f.afterExpiryPage ?? "")' \
+  "served before expiry, refused after with the expired-link page"
+expect edited-signature 'f.status === 404 && f.disposition === null' "refused by the API, no file"
+expect edited-payload 'f.status === 404 && f.disposition === null' "refused by the API, no file"
+expect unicode 'f.get === 200 && f.sameBytes === true && decodeURIComponent((/filename\*=UTF-8\x27\x27([^;]+)/.exec(f.disposition ?? "") ?? [])[1] ?? "") === "Résumé تقرير.txt" && /filename="[ -~]+"/.test(f.disposition ?? "")' \
+  "the name arrives intact in filename*, with an ASCII fallback"
+pa_finding "a verified link followed with no session at all answered $(d followed-without-a-session status): a link is a bearer link for its lifetime (60 s), re-checked against its person when followed"
+
+# =================================================================================================
+step "Phase A 6v — verified delivery: no file byte is sent before the whole file matches its record"
+for pa_c in swapped vanished outage; do
+  pa_client dl-issue "$pa_c" >/dev/null || pa_fail "could not issue the $pa_c link"
+done
+f() { pa_q "R.filter((r) => r.step === 'dl-follow' && r.case === '$1' && r.round === '${2:-1}').pop() ?? null"; }
+fo() { pa_q "(R.filter((r) => r.step === 'dl-follow' && r.case === '$1' && r.round === '${2:-1}').pop() ?? {}).$3 ?? null"; }
+audits() { printf "SELECT count(*) FROM audit_event WHERE action = '%s' AND subject_id = '%s';\n" "$1" "$2" | pa_sql; }
+
+# Swapped after the link was issued: the same size, other bytes — what a HEAD at issue cannot see.
+pa_swapped_key="$pa_tenant_prefix/$(key_of "$(dq swapped fileObjectId)")"
+{ printf 'phase-a: these bytes replaced the stored ones\n'; head -c 4096 /dev/zero | tr '\0' 'x'; } \
+  | head -c 4096 | pa_mc pipe "$pa_bucket/$pa_swapped_key" >/dev/null \
+  || pa_fail "could not swap the object's bytes"
+pa_client dl-follow swapped >/dev/null || pa_fail "could not follow the swapped link"
+if pa_holds "$(printf "R.filter((r) => r.step === 'dl-follow' && r.case === 'swapped').pop()")" \
+  "f.status === 409 && /^text\/html/.test(f.contentType ?? '') && f.disposition === null && !f.containsOriginal && !f.containsReplacement && f.bodyBytes < 2048 && /integrity check/.test(f.page ?? '')"; then
+  pa_pass "swapped after issue (same size): 409 integrity page, 0 bytes of the file, original or replacement — $(f swapped)"
+else
+  pa_fail "swapped after issue: expected 409 and no file bytes — got $(f swapped)"
+fi
+pa_s_id="$(dq swapped fileObjectId)"
+if [ "$(integrity "$pa_s_id")" = MISMATCH ] && [ "$(audits INTEGRITY_MISMATCH "$pa_s_id")" -ge 1 ] && [ "$(audits FILE_DOWNLOAD_SERVED "$pa_s_id")" = 0 ]; then
+  pa_pass "the swapped file is quarantined MISMATCH with INTEGRITY_MISMATCH in the trail, and no FILE_DOWNLOAD_SERVED"
+else
+  pa_fail "swapped: integrity $(integrity "$pa_s_id"), INTEGRITY_MISMATCH $(audits INTEGRITY_MISMATCH "$pa_s_id"), served $(audits FILE_DOWNLOAD_SERVED "$pa_s_id")"
+fi
+
+# Deleted after the link was issued.
+pa_mc rm "$pa_bucket/$pa_tenant_prefix/$(key_of "$(dq vanished fileObjectId)")" >/dev/null \
+  || pa_fail "could not delete the vanished object"
+pa_client dl-follow vanished >/dev/null || pa_fail "could not follow the vanished link"
+pa_v_id="$(dq vanished fileObjectId)"
+if pa_holds "R.filter((r) => r.step === 'dl-follow' && r.case === 'vanished').pop()" \
+  "f.status === 409 && f.disposition === null && !f.containsOriginal && f.bodyBytes < 2048" \
+  && [ "$(integrity "$pa_v_id")" = UNREADABLE ]; then
+  pa_pass "deleted after issue: 409, no file bytes, quarantined UNREADABLE after a confirming HEAD"
+else
+  pa_fail "deleted after issue: got $(f vanished), integrity $(integrity "$pa_v_id")"
+fi
+
+# The store down when the link is followed: retryable, nothing quarantined, and served once it is back.
+compose stop storage >/dev/null 2>&1 || pa_fail "could not stop the test MinIO"
+pa_client dl-follow outage 1 >/dev/null || pa_fail "could not follow the outage link"
+compose start storage >/dev/null 2>&1 || pa_fail "could not start the test MinIO again"
+for _ in $(seq 1 60); do
+  compose exec -T storage mc ready local >/dev/null 2>&1 && break
+  sleep 2
+done
+pa_o_id="$(dq outage fileObjectId)"
+if pa_holds "R.filter((r) => r.step === 'dl-follow' && r.case === 'outage' && r.round === '1').pop()" \
+  "f.status === 503 && f.retryAfter === '30' && f.disposition === null && !f.containsOriginal" \
+  && [ "$(integrity "$pa_o_id")" = UNVERIFIED ] && [ "$(audits INTEGRITY_MISMATCH "$pa_o_id")" = 0 ]; then
+  pa_pass "store down: 503 with Retry-After, no file bytes, nothing quarantined — $(f outage 1)"
+else
+  pa_fail "store down: expected 503 and no quarantine — got $(f outage 1), integrity $(integrity "$pa_o_id")"
+fi
+pa_client dl-issue outage >/dev/null || pa_fail "could not issue the outage link again"
+pa_client dl-follow outage 2 >/dev/null || pa_fail "could not follow the outage link again"
+if pa_holds "R.filter((r) => r.step === 'dl-follow' && r.case === 'outage' && r.round === '2').pop()" \
+  "f.status === 200 && f.sameBytes === true" && [ "$(audits FILE_DOWNLOAD_SERVED "$pa_o_id")" -ge 1 ]; then
+  pa_pass "store back: the same file is served, byte for byte, and FILE_DOWNLOAD_SERVED is recorded"
+else
+  pa_fail "store back: got $(f outage 2), served audits $(audits FILE_DOWNLOAD_SERVED "$pa_o_id")"
+fi
+
+pa_open_id="$(dq open fileObjectId)"
+pa_measure "trail for the open document: FILE_DOWNLOAD_ISSUED $(audits FILE_DOWNLOAD_ISSUED "$pa_open_id"), FILE_DOWNLOAD_SERVED $(audits FILE_DOWNLOAD_SERVED "$pa_open_id")"
+[ "$(audits FILE_DOWNLOAD_SERVED "$pa_open_id")" -ge 1 ] \
+  || pa_fail "no FILE_DOWNLOAD_SERVED for the open document's successful downloads"
+
+# Nothing staged is left: no file in the directory, and no staging file still open in the API.
+pa_staging_left() {
+  docker exec "$(compose ps -q api)" sh -c '
+    n=0; for fd in /proc/[0-9]*/fd/*; do
+      case "$(readlink "$fd" 2>/dev/null)" in /var/lib/munaxa-docs/download-staging/*) n=$((n+1)) ;; esac
+    done
+    echo "$(ls -A /var/lib/munaxa-docs/download-staging | wc -l) $n"'
+}
+if [ "$(pa_staging_left)" = "0 0" ]; then
+  pa_pass "download staging is empty: no file in the directory, none held open"
+else
+  pa_fail "download staging after step 6v: files, open = $(pa_staging_left)"
+fi
+
+# =================================================================================================
+step "Phase A 6m — verified downloads measured: time to first byte, memory, staging disk"
+# Bytes of staging files the API holds open, sampled inside its container every half second.
+pa_staged_start() {
+  : > "$pa_dir/staged.samples"
+  docker exec "$(compose ps -q api)" rm -f /tmp/pa-staged-stop
+  # Ends itself when the stop marker appears: killing `docker exec` would leave it running inside.
+  docker exec "$(compose ps -q api)" sh -c '
+    while [ ! -e /tmp/pa-staged-stop ]; do
+      s=0
+      for fd in /proc/[0-9]*/fd/*; do
+        case "$(readlink "$fd" 2>/dev/null)" in
+          /var/lib/munaxa-docs/download-staging/*) s=$((s + $(stat -L -c %s "$fd" 2>/dev/null || echo 0))) ;;
+        esac
+      done
+      echo "$s"; sleep 0.5
+    done' >> "$pa_dir/staged.samples" 2>/dev/null &
+  pa_stager=$!
+}
+pa_staged_stop() {
+  docker exec "$(compose ps -q api)" touch /tmp/pa-staged-stop || true
+  wait "$pa_stager" 2>/dev/null || true
+  sort -n "$pa_dir/staged.samples" | tail -1
+}
+pa_client dl-measure-setup || pa_fail "the measurement documents could not be set up"
+pa_dl_measure() { # name concurrency label
+  local peak staged
+  pa_sample_start || pa_fail "could not sample the API's memory"
+  pa_staged_start
+  pa_client dl-measure "$1" "$2" >/dev/null || pa_fail "the $3 download measurement did not complete"
+  peak="$(pa_sample_stop)"
+  staged="$(pa_staged_stop)"
+  local m="R.filter((r) => r.step === 'dl-measure' && r.case === '$1' && r.concurrency === $2).pop()"
+  pa_measure "$3: $(pa_q "(($m).outcomes).map((o) => o.status).join(',')") | TTFB ms $(pa_q "(($m).outcomes).map((o) => o.ttfbMs).join(',')") | total ms $(pa_q "(($m).outcomes).map((o) => o.totalMs).join(',')") | wall $(pa_q "($m).wallMs") ms | API peak memory $(pa_mib "$peak") MiB | peak staged $(pa_mib "${staged:-0}") MiB"
+  if pa_holds "$m" "f.outcomes.every((o) => o.status === 200 && o.sameBytes === true)"; then
+    pa_pass "$3: every download served the document's exact bytes"
+  else
+    pa_finding "$3: not every download was served — $(pa_q "(($m).outcomes).map((o) => [o.status, o.retryAfter, o.sameBytes])")"
+  fi
+}
+pa_dl_measure m1 1 "1 MiB, one download"
+pa_dl_measure m32 1 "32 MiB, one download"
+pa_dl_measure m128 1 "128 MiB, one download"
+pa_dl_measure m128 8 "128 MiB, 8 at once (DOWNLOAD_MAX_CONCURRENT=8)"
+pa_dl_measure m128 12 "128 MiB, 12 at once (4 must wait for a slot)"
+if [ "$(pa_api_state)" = "$pa_api_baseline_state" ]; then
+  pa_pass "the API was not restarted or OOM-killed by the download measurements ($(pa_api_state))"
+else
+  pa_fail "the API restarted during the download measurements: $(pa_api_state) (baseline $pa_api_baseline_state)"
+fi
+if [ "$(pa_staging_left)" = "0 0" ]; then
+  pa_pass "download staging is empty after the measurements"
+else
+  pa_fail "download staging after the measurements: files, open = $(pa_staging_left)"
+fi
 
 # =================================================================================================
 step "Phase A 7 — completions interrupted by a killed API, a retry, and the orphan sweep"
@@ -574,9 +721,10 @@ for pa_key in $(printf "SELECT storage_key FROM file_object WHERE deleted_at IS 
   pa_exists "$pa_tenant_prefix/$pa_key" || pa_missing_rows=$((pa_missing_rows + 1))
 done
 pa_quarantined="$(printf "SELECT count(*) FROM file_object WHERE deleted_at IS NULL AND integrity_status IN ('UNREADABLE');\n" | pa_sql)"
-# Step 6 deliberately deleted one object (its row is UNREADABLE); every other row's bytes must be there.
+# Steps 6 and 6v deliberately deleted two objects (their rows are UNREADABLE); every other row's bytes
+# must be there.
 if [ "$pa_missing_rows" = "$pa_quarantined" ]; then
-  pa_pass "every live file row's object is still in the store (bar the $pa_quarantined step 6 deleted on purpose)"
+  pa_pass "every live file row's object is still in the store (bar the $pa_quarantined steps 6 and 6v deleted on purpose)"
 else
   pa_fail "$pa_missing_rows live file rows have no object, $pa_quarantined of them deleted on purpose"
 fi

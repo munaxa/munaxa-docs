@@ -17,6 +17,9 @@ import http from 'node:http';
 const e = process.env;
 const API = e.PA_API_URL ?? 'http://api:3001';
 const TTL_API = e.PA_TTL_API_URL ?? 'http://phase-a-api-ttl:3001';
+// The proxy, as a browser reaches it. Verified download links name STORAGE_PUBLIC_URL
+// (http://localhost:8080 in the stack test), which inside this network is the proxy.
+const PROXY = e.PA_PROXY_URL ?? 'http://proxy:8080';
 const STATE = '/pa/state.json';
 const MiB = 1024 * 1024;
 /** How many times a load-step completion refused as busy is completed again. */
@@ -114,6 +117,22 @@ function problem(body) {
   const strip = (value) =>
     typeof value === 'string' ? value.replace(/https?:\/\/\S+/g, '<url>').slice(0, 200) : value;
   return { code: strip(body.code ?? body.title ?? null), detail: strip(body.detail ?? null) };
+}
+
+/** A link as the browser follows it: the public origin is the proxy, seen from inside the network. */
+function follow(url, init) {
+  const target = new URL(url);
+  if (target.origin === 'http://localhost:8080') {
+    const proxy = new URL(PROXY);
+    target.protocol = proxy.protocol;
+    target.host = proxy.host;
+  }
+  return fetch(target, init);
+}
+
+/** The visible text of a refusal page, without its markup. */
+function pageText(html) {
+  return (html.match(/<p>([^<]*)<\/p>/) ?? [])[1] ?? null;
 }
 
 async function createUpload(
@@ -474,6 +493,10 @@ const steps = {
       ['tampered', null, 'phase-a-tampered.txt'],
       ['missing', null, 'phase-a-missing.txt'],
       ['unicode', null, 'Résumé تقرير.txt'],
+      // Verified delivery (ADR-0026 §10): each is changed in the store after its link is issued.
+      ['swapped', null, 'phase-a-swapped.txt'],
+      ['vanished', null, 'phase-a-vanished.txt'],
+      ['outage', null, 'phase-a-outage.txt'],
     ]) {
       const bytes = textOfSize(4096, `dl-${name}`);
       const stored = await upload(API, token, bytes, `dl-${name}`);
@@ -527,7 +550,12 @@ const steps = {
       await call(API, token, 'POST', `/admin/users/${user.id}/activate`);
     }
     console.log(`dl-setup: role '${reader.key}' holds document:view and not document:download`);
-    save({ ...safeState(), documents, reader: { email, password, role: reader.key } });
+    save({
+      ...safeState(),
+      documents,
+      reader: { email, password, role: reader.key },
+      catalog: { folderId: library.rootFolderId, documentTypeId: type.id },
+    });
     result('dl-setup', {
       documents: Object.fromEntries(
         Object.entries(documents).map(([k, v]) => [
@@ -573,43 +601,168 @@ const steps = {
       'POST',
       `/documents/${documents.open.id}/content`,
     );
-    const fresh = await fetch(shortLived.body.url);
-    await fresh.arrayBuffer();
+    const fresh = await follow(shortLived.body.url);
+    const freshBytes = Buffer.from(await fresh.arrayBuffer());
     await sleep(35_000);
-    const stale = await fetch(shortLived.body.url);
+    const stale = await follow(shortLived.body.url);
     const staleText = await stale.text();
     result('dl-post', {
       case: 'expired-link',
       issue: shortLived.status,
       beforeExpiry: fresh.status,
+      beforeExpirySameBytes: sha256(freshBytes) === documents.open.digest,
       afterExpiry: stale.status,
-      afterExpiryCode: (staleText.match(/<Code>([^<]*)<\/Code>/) ?? [])[1] ?? null,
+      afterExpiryPage: pageText(staleText),
     });
 
-    // Edited links: the signature altered, and the path pointed at another object.
+    // Edited links: the token's signature altered, and its payload altered (another file named).
     const issued = await call(API, token, 'POST', `/documents/${documents.open.id}/content`);
     const url = new URL(issued.body.url);
-    const signature = url.searchParams.get('X-Amz-Signature');
+    const tokenValue = url.searchParams.get('token') ?? '';
+    const [payload, signature] = tokenValue.split('.');
     const flipped = new URL(url);
     flipped.searchParams.set(
-      'X-Amz-Signature',
-      `${signature.slice(0, -1)}${signature.endsWith('0') ? '1' : '0'}`,
+      'token',
+      `${payload}.${signature.slice(0, -1)}${signature.endsWith('A') ? 'B' : 'A'}`,
     );
-    const other = await call(API, token, 'POST', `/documents/${documents.unicode.id}/content`);
+    const other = Buffer.from(payload, 'base64url')
+      .toString('utf8')
+      .replace(documents.open.fileObjectId, documents.unicode.fileObjectId);
     const moved = new URL(url);
-    moved.pathname = new URL(other.body.url).pathname;
+    moved.searchParams.set(
+      'token',
+      `${Buffer.from(other, 'utf8').toString('base64url')}.${signature}`,
+    );
     for (const [name, edited] of [
       ['edited-signature', flipped],
-      ['edited-path', moved],
+      ['edited-payload', moved],
     ]) {
-      const answer = await fetch(edited);
+      const answer = await follow(edited);
       const text = await answer.text();
       result('dl-post', {
         case: name,
         status: answer.status,
-        code: (text.match(/<Code>([^<]*)<\/Code>/) ?? [])[1] ?? null,
+        page: pageText(text),
+        disposition: answer.headers.get('content-disposition'),
       });
     }
+
+    // A link is a bearer link for its lifetime: followed with no session at all, it still works.
+    // Recorded, not judged — the reason links are short and re-checked when followed.
+    const bearer = await follow(issued.body.url);
+    await bearer.arrayBuffer();
+    result('dl-post', { case: 'followed-without-a-session', status: bearer.status });
+  },
+
+  /** 6v. Issue a verified link now, to be followed after the store has been changed. */
+  async 'dl-issue'(name) {
+    const { documents } = state();
+    const token = await admin();
+    const issued = await call(API, token, 'POST', `/documents/${documents[name].id}/content`);
+    save({ ...state(), links: { ...(state().links ?? {}), [name]: issued.body?.url ?? null } });
+    result('dl-issue', { case: name, issue: issued.status, problem: problem(issued.body) });
+  },
+
+  /**
+   * 6v. Follow a link issued earlier, as a browser would, and say exactly what arrived: the status,
+   * the headers, how many bytes, and whether any of them were the document's bytes — the original
+   * ones (identified by the label written into them) or the ones the store was changed to.
+   */
+  async 'dl-follow'(name, round = '1') {
+    const { documents, links } = state();
+    const response = await follow(links[name]);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const text = bytes.toString('utf8');
+    result('dl-follow', {
+      case: name,
+      round,
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      disposition: response.headers.get('content-disposition'),
+      retryAfter: response.headers.get('retry-after'),
+      bodyBytes: bytes.length,
+      sameBytes: sha256(bytes) === documents[name].digest,
+      containsOriginal: text.includes(`phase-a dl-${name} `),
+      containsReplacement: text.includes('these bytes replaced the stored ones'),
+      page: pageText(text),
+    });
+  },
+
+  /** 6m. Documents of representative sizes for the download measurements. */
+  async 'dl-measure-setup'() {
+    const { folderId, documentTypeId } = state().catalog;
+    const token = await admin();
+    const measured = {};
+    for (const [name, bytes, filename] of [
+      ['m1', textOfSize(MiB, 'measure-1'), 'measure-1MiB.txt'],
+      ['m32', pdfOfSize(32 * MiB, 'measure-32'), 'measure-32MiB.pdf'],
+      ['m128', pdfOfSize(128 * MiB, 'measure-128'), 'measure-128MiB.pdf'],
+    ]) {
+      const stored = await upload(API, token, bytes, `measure-${name}`);
+      if (stored.complete !== 201 || stored.scanStatus !== 'CLEAN') {
+        throw new Error(`the ${name} measurement upload answered ${JSON.stringify(stored)}`);
+      }
+      const created = await call(API, token, 'POST', '/documents', {
+        folderId,
+        documentTypeId,
+        title: `Phase A measure ${name}`,
+        fileObjectId: stored.fileObjectId,
+        filename,
+      });
+      if (created.status >= 300) {
+        throw new Error(`the ${name} document answered ${created.status}`);
+      }
+      measured[name] = { id: created.body.id, digest: stored.digest, sizeBytes: bytes.length };
+    }
+    save({ ...state(), measured });
+    result('dl-measure-setup', { sizes: Object.values(measured).map((m) => m.sizeBytes) });
+  },
+
+  /**
+   * 6m. `concurrency` verified downloads of one document at once, each issued and followed as a
+   * browser would: time to first byte (the response headers, sent only after verification), total
+   * time, status, and whether the bytes were the document's.
+   */
+  async 'dl-measure'(name, concurrency = '1') {
+    const { measured } = state();
+    const document = measured[name];
+    const token = await admin();
+    const links = [];
+    for (let i = 0; i < Number(concurrency); i += 1) {
+      const issued = await call(API, token, 'POST', `/documents/${document.id}/content`);
+      links.push(issued.body.url);
+    }
+    const started = performance.now();
+    const outcomes = await Promise.all(
+      links.map(async (link) => {
+        const begin = performance.now();
+        const response = await follow(link);
+        const ttfbMs = Math.round(performance.now() - begin);
+        const hash = createHash('sha256');
+        let size = 0;
+        for await (const chunk of response.body ?? []) {
+          hash.update(chunk);
+          size += chunk.byteLength;
+        }
+        return {
+          status: response.status,
+          retryAfter: response.headers.get('retry-after'),
+          ttfbMs,
+          totalMs: Math.round(performance.now() - begin),
+          sameBytes:
+            response.status === 200 && size === document.sizeBytes
+              ? hash.digest('hex') === document.digest
+              : false,
+        };
+      }),
+    );
+    result('dl-measure', {
+      case: name,
+      concurrency: Number(concurrency),
+      sizeBytes: document.sizeBytes,
+      wallMs: Math.round(performance.now() - started),
+      outcomes,
+    });
   },
 };
 
@@ -628,7 +781,7 @@ async function download(base, token, document) {
   if (issued.status !== 201 && issued.status !== 200) {
     return { issue: issued.status, problem: problem(issued.body) };
   }
-  const response = await fetch(issued.body.url, { headers: { 'accept-encoding': 'gzip' } });
+  const response = await follow(issued.body.url, { headers: { 'accept-encoding': 'gzip' } });
   const bytes = Buffer.from(await response.arrayBuffer());
   return {
     issue: issued.status,
@@ -636,6 +789,7 @@ async function download(base, token, document) {
     sameBytes: response.status === 200 ? sha256(bytes) === document.digest : null,
     contentType: response.headers.get('content-type'),
     disposition: response.headers.get('content-disposition'),
+    viaApi: new URL(issued.body.url).pathname === '/api/v1/downloads',
   };
 }
 
