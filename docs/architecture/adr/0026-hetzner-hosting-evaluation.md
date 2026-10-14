@@ -3,7 +3,8 @@
 - **Status:** **Proposed** — not accepted. Nothing in this record has been purchased, provisioned or
   deployed. One storage provider, Cloudflare R2, has passed the compatibility test for the
   behaviours that test covers (§10, gate P-1). That test is not production readiness, and gate P-1
-  is not complete.
+  is not complete. Phase A's local upload and download checks passed after five application fixes
+  (§10); that is local evidence only.
 - **Date:** 2026-10-13
 - **Phase:** Hosting migration Phase 2 (foundation)
 - **Builds on:** [ADR-0015](./0015-database-per-tenant.md), [ADR-0021](./0021-multi-tenant-hosted-launch.md),
@@ -324,8 +325,9 @@ Proposed.
   before, three test files that start the whole application (`auth.e2e`,
   `numbering-collision.e2e`, `request-size`) failed at start-up with a configuration error before
   any test ran. They passed 24 of 24 when run alone, and they run with object storage disabled.
-  That startup failure was not investigated further. It is recorded here, not presented as a
-  clean run.
+  It is recorded here, not presented as a clean run. Phase A (below) traced it to the local test
+  setup: `TENANT_CATALOGUE` was exported in the same shell as the tests, which the configuration
+  refuses alongside a single-tenant setting. It was not a product defect.
 
 **Not verified by this run, and needed before production:**
 - Server-side **multipart** writes, used for large internal objects such as audit evidence exports.
@@ -338,6 +340,134 @@ Proposed.
 - Hetzner Object Storage has not been tested at all.
 
 Nothing was deployed, merged or published, no DNS record was changed, and AWS was not accessed.
+
+### Phase A: local upload and download checks, and the fixes they led to (2026-10-14)
+
+**Result: every Phase A expectation held on the local MinIO stack after five application fixes.**
+This is **local evidence only**: it says nothing about R2, Hetzner, a real browser, TLS, or the
+production server size. It is **not production readiness**, and this ADR stays Proposed.
+
+- **Harness:** `infra/hetzner/testing/phase-a/` (`phase-a.sh`, sourced by `run-stack-test.sh` via
+  `EXTRA_CHECKS`). It refuses to run against an external bucket. Every check is judged from the
+  tenant database and the object store as well as from the HTTP answer.
+- **First run** (`d438a86`, before the fixes): it recorded the findings below as evidence.
+- **Fixes** (application code, each with unit or integration tests):
+
+  | Commit | Fix |
+  | --- | --- |
+  | `fc4df79` | Scanning admits uploads within a byte budget (`AV_SCAN_BUDGET_BYTES`, default 256 MiB, per API process). A completion that waits longer than `AV_SCAN_QUEUE_TIMEOUT_MS` (default 60 s) is refused 503 "scanner busy", with its upload session and staged bytes kept so a retry succeeds. The S3 read preallocates the object's size instead of growing a buffer |
+  | `1f46464` | Refused and expired uploads end in a final state (ABORTED, EXPIRED), or stay OPEN with "not received yet". Staged bytes are deleted only after the database has recorded the outcome |
+  | `3beaa60` | Refusals name their real cause, in English and Arabic, at unchanged status codes, without internal detail |
+  | `fcb9c6d` | a daily orphan sweep (`storage.sweep-orphaned-objects`) for staged uploads and content blobs that no record refers to |
+  | `9496c9a` | Before a download link is signed, the stored object is checked (HEAD): missing, wrong size or wrong checksum is refused 409. The preview stream hashes what it serves |
+  | `fc4cb94` | The real-scanner test suites check the scanner is ready once, and fail at once with a clear message instead of failing test by test |
+
+- **Second run** (API image built from `0a7021d`, web image with the F-1 fix, local MinIO and
+  ClamAV): the 14 standard smoke checks passed, Phase A passed in full, production validation
+  refused 8 of 8 unsafe settings, and no generated credential appeared in 1562 log lines.
+
+**Memory** (API container limit 1536 MiB; uploads of about 120 MiB each):
+
+| Measurement | Before the fixes (`d438a86`) | After (`0a7021d`) |
+| --- | --- | --- |
+| Peak during step 1 (1 MiB, 127 MiB and 128 MiB uploads in turn) | 507 MiB | 292 MiB |
+| 4 uploads completed at once | 1068 MiB peak; wall time 36 s | 424 MiB peak; all CLEAN; wall time 50 s |
+| 8 uploads completed at once | 1509 MiB peak, then **killed by the kernel for running out of memory**; 8 sessions left OPEN | 550 MiB peak; all 8 CLEAN; no restart; 0 refused as busy; wall time 83 s |
+
+The budget trades time for memory: concurrent completions wait their turn, so the wall time grew.
+Scanning still holds each whole object in memory, and the budget is per process. These are
+measurements on one local machine, not a sizing for the production server (G-7 stays open).
+
+**Upload limits:** 1 MiB, 127 MiB and 128 MiB uploads completed CLEAN. 128 MiB + 1 byte was refused at
+creation with "This file is too large. The limit for this kind of file is 128 MB." A text file of
+32 MiB + 1 byte was refused naming 32 MB. Neither limit changed.
+
+**Failed and interrupted uploads:**
+
+| Case | Before the fixes | After |
+| --- | --- | --- |
+| Completed without a confirmable checksum | 415 "That file type is not accepted."; session left OPEN | 415 naming the unconfirmed fingerprint; session ABORTED; staged bytes removed; no file recorded |
+| PUT after the link expired | Store refused (403); completion 503 "a service is unavailable" | Store refused (403); completion 422 "The upload link expired…"; session EXPIRED |
+| Transfer started in time, finished after the link expired | 201 CLEAN | 201 CLEAN (unchanged; the store checks the link when the transfer starts) |
+| Expiry sweep ran during the transfer | 422 "Some of the details are not valid."; staged object left with nothing to remove it | 422 "This upload has already been finished."; the orphan sweep removed the staged object |
+| API killed (SIGKILL) during 4 completions | — (new step 7) | All 4 interrupted (2 had already copied their bytes). The 2 that had not were completed again: 201, one row each, no staged bytes |
+
+**Orphan cleanup** (step 7; the sweep was run with a 240 s grace period in a test-only container,
+because the product default is 24 hours):
+
+- Dry run: reported 1 staged object and 2 blobs as orphaned (of 26 blobs listed, 24 referenced),
+  and removed nothing.
+- Real run: removed exactly those 3 objects.
+- Second run: found nothing to remove (24 blobs listed, 24 referenced).
+- Every live file record's object was still in the store, except the one step 6 deleted on purpose.
+- At the end: 0 open upload sessions, 0 staged objects, 0 unfinished multipart uploads.
+- The sweep checks age first and the database last, immediately before each delete, and logs keys
+  and counts only. It never touches derived files or audit evidence exports. No bucket lifecycle rule
+  was added or changed.
+
+**Downloads and integrity** (step 6):
+
+| Case | Before the fixes | After |
+| --- | --- | --- |
+| Object replaced with other bytes, before the integrity verifier ran | Link issued; **the other bytes were served** | Refused 409 "This file failed its integrity check…"; no link |
+| Object deleted, before the verifier ran | Link issued; the store answered 404 | Refused 409; no link |
+| The same objects after the verifier ran | Refused 409 | Refused 409; recorded MISMATCH and UNREADABLE |
+| Open file; confidentiality level without download; reader without `document:download` | 201 attachment with identical bytes; 403; 403 | Unchanged |
+| Link used after expiry; signature or path edited | Store refused 403 | Unchanged |
+| Non-ASCII name `Résumé تقرير.txt` | Bytes identical; `Content-Disposition` carries raw UTF-8 that a client reads as mojibake | Unchanged — a Phase B item |
+
+**Limits of the integrity fix:**
+- The check runs when the link is signed. A link stays valid for its lifetime (300 s by default),
+  so an object replaced in that window would still be served.
+- Where the store holds no checksum for an object (streamed exports, objects restored by a plain
+  write), only its size and its last-modified time are checked.
+- Whether R2 keeps the SHA-256 checksum when it copies an object is unverified (Phase C). If it does
+  not, uploads also fall back to the weaker check.
+- Closing the window needs downloads that pass through the API; a design proposal is in
+  [`docs/reports/hetzner-download-integrity-proposal.md`](../../reports/hetzner-download-integrity-proposal.md). It is
+  not implemented.
+
+**Scanner readiness:** the intermittent integration failures had two local causes, both in the local
+test setup rather than the product:
+- the scanner was used before ClamAV had loaded its signatures (CI waits with
+  `probe.mjs --wait`; the local runs did not);
+- `TENANT_CATALOGUE` was exported in the same shell as the tests, which the configuration refuses
+  alongside a single-tenant setting.
+
+The real-scanner suites now check readiness once (`fc4cb94`), with no fixed delays. With a ready
+scanner the ICAP suite passed 10 of 10. With a scanner still starting, it failed with one clear
+"not ready" message.
+
+**Validation on `0a7021d`, local:**
+- Format, lint, typecheck and unit tests all passed:
+
+  | Package | Passed |
+  | --- | --- |
+  | API | 985 (1 skipped) |
+  | Web | 508 |
+  | Domain | 164 |
+  | i18n | 80 |
+  | Contracts | 63 |
+  | Utils | 38 |
+  | Worker | 2 |
+
+- The integration suite passed **57 of 57 files (1218 of 1218 tests) on each of three consecutive
+  runs**. The suite has 57 files now; it had 56 at `3216654`, and the orphan-sweep spec is the new
+  one.
+- On GitHub at `41bf8dd`, the `CI` workflow and the MinIO stack job passed. The stack job's first
+  attempt failed while building the test MinIO, on a dropped download from the Go module proxy,
+  before any test ran. Its single re-run passed. The R2 job did not run.
+
+**Still open after Phase A:**
+- Phase B: downloads in a real browser, including non-ASCII file names.
+- Phase C: the same checks against R2, including multipart part sizes and checksum preservation on
+  copy.
+- The download-integrity window above.
+- Scanning that streams instead of holding whole objects.
+- Native review of the new Arabic messages.
+
+Nothing was deployed or published, no cloud resource or DNS record was changed, and AWS was not
+accessed.
 
 **Observed, not changed:** F-2 — API responses carry `X-Powered-By: Express`. Minor information
 disclosure, pre-existing, independent of hosting; noted for a later application change.
@@ -356,7 +486,7 @@ disclosure, pre-existing, independent of hosting; noted for a later application 
 browser downloads, versioning and EU data residency (R2's upload path is tested, above); G-2 TLS
 termination; G-3 email delivery;
 G-4 backups and restore; G-5 client-address chain behind Cloudflare; G-6 host hardening (firewall,
-SSH, updates); G-7 behaviour under load and memory pressure on the chosen server size; G-8 the
+SSH, updates); G-7 behaviour under load and memory pressure on the chosen server size (Phase A measured the API locally under 4 and 8 concurrent ~120 MiB uploads, below; the production size is still untested); G-8 the
 deployment workflow itself (not written yet).
 
 **Failure scenarios:**
@@ -366,6 +496,7 @@ deployment workflow itself (not written yet).
 | Server lost | Full outage; documents safe in the external store | Rebuild from the template, restore PostgreSQL from offsite backups, restore secrets |
 | PostgreSQL volume corrupted | Full outage | Point-in-time restore (needs §9 item 1 in place) |
 | Scanner down / signatures unavailable | Uploads recorded FAILED and refused; reads continue | Restart; signatures persist in a volume |
+| Scanner busy (more bytes waiting than `AV_SCAN_BUDGET_BYTES` admits for 60 s) | Completion refused 503 "scanner busy"; session and bytes kept | The user retries; nothing is lost (Phase A, below) |
 | Redis lost | Queued but unconsumed jobs lost (notifications, previews); schedules and timers rebuilt automatically | None needed beyond restart (backup-and-restore.md §1) |
 | Object store unavailable | Uploads and downloads fail | Provider-dependent; the second-provider copy is the last resort |
 | Secrets lost | Signatures/MFA/checkpoints unverifiable — **irreversible** | Only the offsite secret copy prevents this |

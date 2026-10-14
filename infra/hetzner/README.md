@@ -114,6 +114,48 @@ backups, load, or recovery.
 | 2026-10-13 | `api`, `web`, `antivirus` built locally from `main` at `f838433` | **All passed** — smoke 14/14, unsafe settings refused 8/8, no credential in logs. Details: ADR-0026 §10 |
 | 2026-10-13 | `api`, `web` rebuilt with the F-1 Dockerfile fix; `antivirus` unchanged | **All passed** — both engines present for OpenSSL 3; migrations offline, second run a no-op; smoke 14/14; 8/8; no credential in logs. Negative control: the pre-fix image fails the same offline migration (`EAI_AGAIN binaries.prisma.sh`) |
 | 2026-10-14 | All three built in CI from `3216654` ([run 38535100979](https://github.com/munaxa/munaxa-docs/actions/runs/38535100979)) | **All passed** — the MinIO job, and the Cloudflare R2 test bucket job (§6): smoke 14/14 plus CORS; scanner verdicts confirmed in the database; 8/8; no credential in logs; 0 objects left |
+| 2026-10-14 | `api` built locally from `0a7021d` (the five Phase A fixes), `web` with the F-1 fix, `antivirus` local | **All passed**, with Phase A (below): smoke 14/14; Phase A every expectation held; 8/8; no credential in 1562 log lines. On GitHub at `41bf8dd`: `CI` and the MinIO job passed (the job's first attempt failed on a Go module download before any test; its one re-run passed) |
+
+### Phase A: local upload and download checks
+
+```bash
+EXTRA_CHECKS=infra/hetzner/testing/phase-a/phase-a.sh DOCS_API_IMAGE=… DOCS_WEB_IMAGE=… \
+  DOCS_ANTIVIRUS_IMAGE=… infra/hetzner/testing/run-stack-test.sh
+```
+
+**Local MinIO only.** It refuses to run with `EXTERNAL_STORAGE_ENV`. After the standard checks it
+runs seven steps, judged from the database and the store as well as from HTTP answers:
+1. upload sizes and limits;
+2. an upload without a confirmable checksum;
+3. expired and slow upload links;
+4. server-side multipart writes;
+5. 4 and 8 uploads completed at once, with memory measured;
+6. downloads: authorization, expired and edited links, and tampered and missing objects;
+7. the API killed mid-completion, then the orphan sweep (dry run, real run, second run).
+
+**Result on 2026-10-14** (API from `0a7021d`): every expectation held. ADR-0026 §10 has the full
+record; in short:
+
+| Area | Result |
+| --- | --- |
+| Memory, API limit 1536 MiB | 8 uploads of ~120 MiB at once: **550 MiB** peak, all CLEAN, no restart (before the fixes: 1509 MiB, then killed for running out of memory). 4 at once: 424 MiB (before: 1068 MiB). Slower: 83 s and 50 s wall time |
+| Limits | 128 MiB accepted, 128 MiB + 1 refused naming "128 MB"; text over 32 MiB refused naming "32 MB" |
+| Failed uploads | Each ends ABORTED, EXPIRED or still OPEN, with a message naming the cause; uploads interrupted by a killed API completed on retry |
+| Orphan sweep | Dry run reported 3 orphaned objects and removed nothing; the real run removed those 3; a second run found 0; every live record's object was still present |
+| Download integrity | Tampered and missing objects refused 409 before the verifier ran (before the fixes, the tampered bytes were served); authorization and link checks unchanged |
+| Non-ASCII file names | Bytes correct, but the file name header is raw UTF-8 — for Phase B |
+
+**Not production readiness.** Still open:
+- a signed link is valid for 300 s after the integrity check, and objects with no stored checksum
+  get only a size and age check (proposal:
+  [`docs/reports/hetzner-download-integrity-proposal.md`](../../docs/reports/hetzner-download-integrity-proposal.md));
+- scanning still holds each whole object in memory, and the scan budget is per process;
+- browser downloads (Phase B) and every R2 behaviour beyond gate P-1 (Phase C);
+- native review of the new Arabic messages.
+
+The orphan sweep's grace period is 24 hours by default (`STORAGE_ORPHAN_GRACE_SECONDS`), and
+`STORAGE_ORPHAN_SWEEP_DRY_RUN=true` makes it report without deleting. It never touches derived files
+or audit evidence exports, and no bucket lifecycle rule is needed for it.
 
 ## 6. Gate P-1: the same checks against a real bucket
 
