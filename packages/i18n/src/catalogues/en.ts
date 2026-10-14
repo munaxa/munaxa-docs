@@ -1837,6 +1837,35 @@ export const en = {
     INTERNAL: 'Something went wrong on our side.',
   },
   /**
+   * Why a refusal happened, when the cause is known and safe to state — ADR-0026 §10, Phase A.
+   * Keyed by `ErrorReason`; the status and the code stay those of the error.
+   */
+  errorReason: {
+    TYPE_NOT_ALLOWED: 'That file type is not accepted.',
+    TYPE_MISMATCH:
+      'The contents of this file do not match its type. Check the file and upload it again.',
+    TOO_LARGE: 'This file is too large. The limit for this kind of file is {limit}.',
+    EMPTY: 'That file is empty.',
+    FILENAME_UNUSABLE: 'A file needs a name of up to 255 characters.',
+    SIZE_MISMATCH:
+      'The file that arrived was not the size that was declared, so it was not accepted. Upload it again.',
+    DIGEST_UNCONFIRMED:
+      'The file’s fingerprint could not be confirmed, so it was not accepted. Upload it again from an up-to-date browser over a secure connection.',
+    UPLOAD_EXPIRED: 'The upload link expired before the file arrived. Start the upload again.',
+    UPLOAD_NOT_RECEIVED:
+      'The file has not finished uploading yet. Try again when the transfer is complete.',
+    UPLOAD_FINISHED: 'This upload has already been finished.',
+    SCAN_PENDING: 'This file is still being checked for malware. Try again shortly.',
+    SCAN_INFECTED: 'This file did not pass the malware check and cannot be opened.',
+    SCAN_FAILED: 'The malware check on this file did not complete, so it cannot be opened.',
+    SCAN_SKIPPED: 'No malware scanner checked this file, so it cannot be opened.',
+    INTEGRITY_FAILED:
+      'This file failed its integrity check and cannot be opened. An administrator needs to restore it.',
+    SCANNER_BUSY:
+      'The malware scanner is busy. Nothing was lost — try finishing the upload again in a minute.',
+    STORAGE_UNAVAILABLE: 'File storage is temporarily unavailable. Try again shortly.',
+  },
+  /**
    * Reports — Phase 15.
    *
    * Three groups, and the split matters. `name.*` and `column.*` are the *catalogue's* keys given

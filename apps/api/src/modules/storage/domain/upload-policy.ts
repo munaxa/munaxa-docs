@@ -49,6 +49,8 @@ export type UploadRejectionReason =
 export interface UploadRejection {
   readonly reason: UploadRejectionReason;
   readonly detail: string;
+  /** Facts the refusal's public sentence names — the size limit, for `TOO_LARGE`. */
+  readonly values?: Readonly<Record<string, string>>;
 }
 
 export interface UploadAcceptance {
@@ -155,6 +157,7 @@ export function checkUpload(
     return {
       reason: 'TOO_LARGE',
       detail: `A ${sniffed.label} may be up to ${formatBytes(ceiling)}.`,
+      values: { limit: formatBytes(ceiling) },
     };
   }
 

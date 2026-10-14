@@ -1,4 +1,11 @@
-import { DomainError, ErrorCode, type ErrorCodeKey, type ErrorDetails } from '@edms/domain';
+import {
+  DomainError,
+  ErrorCode,
+  ErrorReason,
+  type ErrorCodeKey,
+  type ErrorDetails,
+  type PublicReason,
+} from '@edms/domain';
 
 /**
  * The failures the application layer raises, expressed once so every use case reports the
@@ -46,8 +53,9 @@ export class ValidationError extends DomainError {
   constructor(
     message: string,
     readonly fieldErrors: readonly { field: string; message: string }[] = [],
+    publicReason: PublicReason | null = null,
   ) {
-    super(ErrorCode.VALIDATION_FAILED, message);
+    super(ErrorCode.VALIDATION_FAILED, message, {}, publicReason);
   }
 }
 
@@ -57,7 +65,14 @@ export class ValidationError extends DomainError {
  */
 export class UploadExpiredError extends DomainError {
   constructor() {
-    super(ErrorCode.VALIDATION_FAILED, 'The upload link expired before the file arrived.');
+    super(
+      ErrorCode.VALIDATION_FAILED,
+      'The upload link expired before the file arrived.',
+      {},
+      {
+        reason: ErrorReason.UPLOAD_EXPIRED,
+      },
+    );
   }
 }
 
@@ -67,7 +82,14 @@ export class UploadExpiredError extends DomainError {
  */
 export class UploadNotReceivedError extends DomainError {
   constructor() {
-    super(ErrorCode.VALIDATION_FAILED, 'The file has not arrived in storage yet.');
+    super(
+      ErrorCode.VALIDATION_FAILED,
+      'The file has not arrived in storage yet.',
+      {},
+      {
+        reason: ErrorReason.UPLOAD_NOT_RECEIVED,
+      },
+    );
   }
 }
 
@@ -193,8 +215,12 @@ export class TenantReadOnlyError extends DomainError {
 }
 
 export class DependencyUnavailableError extends DomainError {
-  constructor(dependency: string, details: ErrorDetails = {}) {
-    super(ErrorCode.DEPENDENCY_UNAVAILABLE, `${dependency} is unavailable.`, details);
+  constructor(
+    dependency: string,
+    details: ErrorDetails = {},
+    publicReason: PublicReason | null = null,
+  ) {
+    super(ErrorCode.DEPENDENCY_UNAVAILABLE, `${dependency} is unavailable.`, details, publicReason);
   }
 }
 
@@ -219,7 +245,7 @@ export class ProviderNotConfiguredError extends DependencyUnavailableError {
  */
 export class StorageUnavailableError extends DependencyUnavailableError {
   constructor(reason: string, options: { readonly cause?: unknown } = {}) {
-    super('Object storage', { reason });
+    super('Object storage', { reason }, { reason: ErrorReason.STORAGE_UNAVAILABLE });
     if (options.cause !== undefined) {
       this.cause = options.cause;
     }
@@ -233,7 +259,7 @@ export class StorageUnavailableError extends DependencyUnavailableError {
  */
 export class ScannerBusyError extends DependencyUnavailableError {
   constructor() {
-    super('Malware scanner', { reason: 'busy' });
+    super('Malware scanner', { reason: 'busy' }, { reason: ErrorReason.SCANNER_BUSY });
   }
 }
 
@@ -245,6 +271,14 @@ export class ScannerBusyError extends DependencyUnavailableError {
  * (`17-security-architecture.md` §5). A 404 would be a lie and a 403 would suggest a permission
  * somebody could be granted.
  */
+/** The sentence for each scan status that keeps content unreachable. */
+const SCAN_REASONS: Readonly<Record<string, PublicReason['reason']>> = {
+  PENDING: ErrorReason.SCAN_PENDING,
+  INFECTED: ErrorReason.SCAN_INFECTED,
+  FAILED: ErrorReason.SCAN_FAILED,
+  SKIPPED: ErrorReason.SCAN_SKIPPED,
+};
+
 export class ContentNotScannedError extends DomainError {
   constructor(status: string) {
     super(
@@ -253,6 +287,7 @@ export class ContentNotScannedError extends DomainError {
         ? 'This file is still being checked for malware. Try again shortly.'
         : 'This file did not pass the malware check and cannot be opened.',
       { scanStatus: status },
+      { reason: SCAN_REASONS[status] ?? ErrorReason.SCAN_FAILED },
     );
   }
 }
@@ -271,14 +306,21 @@ export class ContentQuarantinedError extends DomainError {
       ErrorCode.CONTENT_NOT_SCANNED,
       'This file failed its integrity check and cannot be opened.',
       { integrityStatus },
+      // Said as what it is (ADR-0026 §10, Phase A): the code is shared with an unscanned file, and
+      // the code's own sentence — a malware check "still in progress" — described neither.
+      { reason: ErrorReason.INTEGRITY_FAILED },
     );
   }
 }
 
 /** The declared type, the sniffed type, the size or the archive limits refused the upload. */
 export class UnsupportedContentError extends DomainError {
-  constructor(message: string, details: ErrorDetails = {}) {
-    super(ErrorCode.UNSUPPORTED_CONTENT, message, details);
+  constructor(
+    message: string,
+    details: ErrorDetails = {},
+    publicReason: PublicReason | null = null,
+  ) {
+    super(ErrorCode.UNSUPPORTED_CONTENT, message, details, publicReason);
   }
 }
 

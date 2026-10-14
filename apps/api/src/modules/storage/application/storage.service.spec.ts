@@ -676,3 +676,41 @@ describe('Phase A: a refused or interrupted completion settles, and never accept
     ]);
   });
 });
+
+describe('Phase A: an upload refused for its size says so, and the limits are unchanged', () => {
+  const MiB = 1024 * 1024;
+  const create = (h: Harness, mimeType: string, sizeBytes: number, magic: string) =>
+    inContext(() =>
+      h.service.createUploadSession({
+        filename: mimeType === 'text/plain' ? 'notes.txt' : 'drawing.pdf',
+        mimeType,
+        sizeBytes,
+        magicBytes: Buffer.from(magic),
+      }),
+    );
+
+  it('a PDF of exactly 128 MiB is issued a target; one byte more is refused as too large', async () => {
+    const h = harness({});
+    const issued = await create(h, 'application/pdf', 128 * MiB, '%PDF-1.7\n');
+    expect(issued.url).not.toBe('');
+    await expect(create(h, 'application/pdf', 128 * MiB + 1, '%PDF-1.7\n')).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CONTENT',
+      publicReason: { reason: 'TOO_LARGE', values: { limit: '128 MB' } },
+    });
+  });
+
+  it('a text file is limited to 32 MiB, and the refusal names that limit', async () => {
+    const h = harness({});
+    await expect(create(h, 'text/plain', 32 * MiB + 1, 'plain text\n')).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CONTENT',
+      publicReason: { reason: 'TOO_LARGE', values: { limit: '32 MB' } },
+    });
+  });
+
+  it('a type that is not allowed is refused as such', async () => {
+    const h = harness({});
+    await expect(create(h, 'application/x-msdownload', 1024, 'MZ')).rejects.toMatchObject({
+      publicReason: { reason: 'TYPE_NOT_ALLOWED' },
+    });
+  });
+});

@@ -8,6 +8,7 @@ import {
   type DomainEventDraft,
   type FileObjectId,
   AuditOutcome,
+  ErrorReason,
   IntegrityStatus,
   type IntegrityStatusKey,
   ScanStatus,
@@ -147,7 +148,11 @@ export class DefaultStorageService implements StorageService {
       this.policy(),
     );
     if (isRejection(verdict)) {
-      throw new UnsupportedContentError(verdict.detail, { reason: verdict.reason });
+      throw new UnsupportedContentError(
+        verdict.detail,
+        { reason: verdict.reason },
+        { reason: verdict.reason, ...(verdict.values !== undefined && { values: verdict.values }) },
+      );
     }
 
     const digest = normalizeDigest(input.checksumSha256);
@@ -281,9 +286,11 @@ export class DefaultStorageService implements StorageService {
     }
     this.refuseAnotherPersonsUpload(session);
     if (session.state !== UploadSessionState.OPEN) {
-      throw new ValidationError('That upload has already been finished.', [
-        { field: 'state', message: session.state },
-      ]);
+      throw new ValidationError(
+        'That upload has already been finished.',
+        [{ field: 'state', message: session.state }],
+        { reason: ErrorReason.UPLOAD_FINISHED },
+      );
     }
 
     // A single PUT has nothing to finish, so the store is simply asked what it holds — and an
@@ -310,10 +317,11 @@ export class DefaultStorageService implements StorageService {
       // what arrived rather than to record a blob whose provenance is already in question.
       return this.refuseTransfer(
         session,
-        new UnsupportedContentError('The upload did not match the size it declared.', {
-          declared: session.declaredSizeBytes,
-          stored: metadata.sizeBytes,
-        }),
+        new UnsupportedContentError(
+          'The upload did not match the size it declared.',
+          { declared: session.declaredSizeBytes, stored: metadata.sizeBytes },
+          { reason: ErrorReason.SIZE_MISMATCH },
+        ),
       );
     }
 
@@ -321,7 +329,11 @@ export class DefaultStorageService implements StorageService {
     if (digest === null) {
       return this.refuseTransfer(
         session,
-        new UnsupportedContentError('Storage could not confirm the file’s digest.'),
+        new UnsupportedContentError(
+          'Storage could not confirm the file’s digest.',
+          {},
+          { reason: ErrorReason.DIGEST_UNCONFIRMED },
+        ),
       );
     }
 
@@ -479,9 +491,11 @@ export class DefaultStorageService implements StorageService {
        * so the answer never tells a caller which of the two their identifier reached.
        */
       if (!(await this.discard(session.targetKey, id))) {
-        throw new ValidationError('That upload has already been finished.', [
-          { field: 'state', message: session.state },
-        ]);
+        throw new ValidationError(
+          'That upload has already been finished.',
+          [{ field: 'state', message: session.state }],
+          { reason: ErrorReason.UPLOAD_FINISHED },
+        );
       }
       return {
         result: undefined,
@@ -1255,9 +1269,11 @@ export class DefaultStorageService implements StorageService {
 
   private requireClaimed(claimed: boolean): void {
     if (!claimed) {
-      throw new ValidationError('That upload has already been finished.', [
-        { field: 'state', message: 'not open' },
-      ]);
+      throw new ValidationError(
+        'That upload has already been finished.',
+        [{ field: 'state', message: 'not open' }],
+        { reason: ErrorReason.UPLOAD_FINISHED },
+      );
     }
   }
 

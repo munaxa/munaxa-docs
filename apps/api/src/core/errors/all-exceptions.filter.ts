@@ -153,7 +153,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
         .join(' '),
       status,
       code: error.code,
-      detail: translate(locale, `error.${error.code}`),
+      // The reason's own sentence when the cause is known and safe to state (ADR-0026 §10, Phase A);
+      // otherwise the code's. Either way a catalogue entry, never the internal message.
+      detail:
+        error.publicReason === null
+          ? translate(locale, `error.${error.code}`)
+          : translate(
+              locale,
+              `errorReason.${error.publicReason.reason}`,
+              error.publicReason.values ?? {},
+            ),
       correlationId,
     };
     if (
