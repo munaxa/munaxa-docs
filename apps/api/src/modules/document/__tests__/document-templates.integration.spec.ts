@@ -108,6 +108,7 @@ beforeAll(async () => {
     env: 'test',
     database: { url: APP_URL, poolSize: 10 },
     storage: { driver: 'LOCAL', signedUrlTtlSeconds: 300 },
+    antivirus: { budgetBytes: 268_435_456, queueTimeoutMs: 60_000 },
     acl: { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 },
   } as unknown as AppConfig;
 

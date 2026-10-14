@@ -158,6 +158,7 @@ beforeAll(async () => {
     env: 'test',
     database: { url: APP_URL, poolSize: 10 },
     storage: { driver: 'LOCAL', signedUrlTtlSeconds: 300 },
+    antivirus: { budgetBytes: 268_435_456, queueTimeoutMs: 60_000 },
     // No cache: every reach assertion below asks the database twice and expects the same answer.
     acl: { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 },
     outbound: {

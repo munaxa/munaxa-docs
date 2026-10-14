@@ -31,6 +31,7 @@ const config = {
   env: 'test',
   database: { url: APP_URL, poolSize: 10 },
   storage: { integrityBatchSize: 10, maxIntegrityReadBytes: 1024 },
+  antivirus: { budgetBytes: 268_435_456, queueTimeoutMs: 60_000 },
 } as unknown as AppConfig;
 const logger = {
   info: () => {},
@@ -55,12 +56,32 @@ const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
  */
 class ParkingStorage implements Partial<StoragePort> {
   readonly deleted: string[] = [];
+  /**
+   * The objects this store holds, as the download gate's HEAD sees them (ADR-0026 §10, Phase A):
+   * a link is signed only for an object that is there and is what its row describes.
+   */
+  readonly objects = new Map<string, { sizeBytes: number; checksumSha256: string }>();
   target: string | null = null;
   reached: (() => void) | null = null;
   admit: Promise<void> | null = null;
   readonly driver = 'LOCAL';
 
   /** Signs whatever it is asked to: the gate under test runs before the port is reached. */
+  head(key: string) {
+    const object = this.objects.get(key);
+    return Promise.resolve(
+      object === undefined
+        ? null
+        : {
+            key,
+            sizeBytes: object.sizeBytes,
+            contentType: 'text/csv',
+            checksumSha256: object.checksumSha256,
+            lastModifiedAt: now,
+          },
+    );
+  }
+
   createDownloadUrl(key: string): Promise<{ url: string; expiresAt: Date }> {
     return Promise.resolve({ url: `https://store.test/${key}`, expiresAt: new Date(now) });
   }
@@ -378,6 +399,10 @@ describe('who may be handed a download link', () => {
         refCount: 1,
         derived,
       },
+    });
+    storagePort.objects.set(`blobs/${id}`, {
+      sizeBytes: 11,
+      checksumSha256: id.replaceAll('-', '').padEnd(64, '0'),
     });
     return asId<FileObjectId>(id);
   }

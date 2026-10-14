@@ -173,6 +173,7 @@ beforeAll(async () => {
     env: 'test',
     database: { url: APP_URL, poolSize: 10 },
     storage: { driver: 'LOCAL', signedUrlTtlSeconds: 300 },
+    antivirus: { budgetBytes: 268_435_456, queueTimeoutMs: 60_000 },
     // The cache off by default: every assertion below asks the database twice and expects the same
     // answer, and a cached decision between the two would make the second a recollection. One test
     // turns it on deliberately, which is the only honest way to test a cache.
