@@ -98,18 +98,43 @@ async function call(base, token, method, path, body) {
 }
 
 async function signIn(email, password, base = API) {
-  const answer = await call(base, null, 'POST', '/auth/login', {
-    email,
-    password,
-    tenant: e.SMOKE_TENANT,
-  });
-  if (answer.status !== 200) {
-    throw new Error(`sign-in for a test user answered ${answer.status}`);
+  // The product limits sign-ins (about ten per five minutes per address); a limited answer is
+  // waited out, as a person would, rather than failing the step.
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const answer = await call(base, null, 'POST', '/auth/login', {
+      email,
+      password,
+      tenant: e.SMOKE_TENANT,
+    });
+    if (answer.status === 200) {
+      return answer.body.accessToken;
+    }
+    if (answer.status !== 429) {
+      throw new Error(`sign-in for a test user answered ${answer.status}`);
+    }
+    await sleep(30_000);
   }
-  return answer.body.accessToken;
+  throw new Error('sign-in for a test user stayed rate-limited for six minutes');
 }
 
-const admin = (base = API) => signIn(e.SMOKE_ADMIN_EMAIL, e.SMOKE_ADMIN_PASSWORD, base);
+/**
+ * The administrator's access token, signed in once and reused for a few minutes across steps (each
+ * step is its own process) — so the phase does not spend the sign-in allowance it is not testing.
+ * Kept in the run's private state file (0600, deleted with the run); never printed.
+ */
+async function admin(base = API) {
+  const cached = safeState().adminTokens?.[base];
+  if (cached && Date.now() - cached.at < 4 * 60_000) {
+    return cached.token;
+  }
+  const token = await signIn(e.SMOKE_ADMIN_EMAIL, e.SMOKE_ADMIN_PASSWORD, base);
+  const current = safeState();
+  save({
+    ...current,
+    adminTokens: { ...(current.adminTokens ?? {}), [base]: { token, at: Date.now() } },
+  });
+  return token;
+}
 
 /** What a problem answer may safely show: its code and detail, never a URL. */
 function problem(body) {

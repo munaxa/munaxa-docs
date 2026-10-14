@@ -100,16 +100,29 @@ async function call(token, method, path, body) {
   return { status: response.status, body: json };
 }
 
+/** Sign-ins are rate limited by the product; a limited answer is waited out, not failed. */
 async function signInApi(email, password) {
-  const answer = await call(null, 'POST', '/auth/login', {
-    email,
-    password,
-    tenant: e.SMOKE_TENANT,
-  });
-  if (answer.status !== 200) throw new Error(`API sign-in answered ${answer.status}`);
-  return answer.body.accessToken;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const answer = await call(null, 'POST', '/auth/login', {
+      email,
+      password,
+      tenant: e.SMOKE_TENANT,
+    });
+    if (answer.status === 200) return answer.body.accessToken;
+    if (answer.status !== 429) throw new Error(`API sign-in answered ${answer.status}`);
+    await sleep(30_000);
+  }
+  throw new Error('API sign-in stayed rate-limited for six minutes');
 }
-const adminToken = () => signInApi(e.SMOKE_ADMIN_EMAIL, e.SMOKE_ADMIN_PASSWORD);
+
+/** The administrator's API token, reused for four minutes across cases (state file, 0600, never printed). */
+async function adminToken() {
+  const cached = state().adminToken;
+  if (cached && Date.now() - cached.at < 4 * 60_000) return cached.token;
+  const token = await signInApi(e.SMOKE_ADMIN_EMAIL, e.SMOKE_ADMIN_PASSWORD);
+  save({ adminToken: { token, at: Date.now() } });
+  return token;
+}
 
 function ok(answer, what) {
   if (answer.status >= 300) {
@@ -169,13 +182,23 @@ async function session(email, password, { arabic = false } = {}) {
   }
   const page = await context.newPage();
   watchConsole(page);
-  await page.goto(`${WEB}/login`, { waitUntil: 'domcontentloaded' });
-  await page.getByLabel(arabic ? 'البريد الإلكتروني' : 'Email address').fill(email);
-  await page.getByLabel(arabic ? 'كلمة المرور' : 'Password').fill(password);
-  await page.getByLabel(arabic ? 'المؤسسة' : 'Organisation').fill(e.SMOKE_TENANT);
-  await page.getByRole('button', { name: arabic ? 'تسجيل الدخول' : 'Sign in' }).click();
-  await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 });
-  return { context, page };
+  // A rate-limited sign-in stays on /login; it is waited out, as a person would.
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await page.goto(`${WEB}/login`, { waitUntil: 'domcontentloaded' });
+    await page.getByLabel(arabic ? 'البريد الإلكتروني' : 'Email address').fill(email);
+    await page.getByLabel(arabic ? 'كلمة المرور' : 'Password').fill(password);
+    await page.getByLabel(arabic ? 'المؤسسة' : 'Organisation').fill(e.SMOKE_TENANT);
+    await page.getByRole('button', { name: arabic ? 'تسجيل الدخول' : 'Sign in' }).click();
+    const signedIn = await page
+      .waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 15_000 })
+      .then(
+        () => true,
+        () => false,
+      );
+    if (signedIn) return { context, page };
+    await sleep(30_000);
+  }
+  throw new Error('UI sign-in did not succeed within six minutes');
 }
 const asAdmin = (options) => session(e.SMOKE_ADMIN_EMAIL, e.SMOKE_ADMIN_PASSWORD, options);
 

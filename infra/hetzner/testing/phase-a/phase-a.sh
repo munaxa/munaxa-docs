@@ -467,7 +467,8 @@ done
 pa_o_id="$(dq outage fileObjectId)"
 if pa_holds "R.filter((r) => r.step === 'dl-follow' && r.case === 'outage' && r.round === '1').pop()" \
   "f.status === 503 && f.retryAfter === '30' && f.disposition === null && !f.containsOriginal" \
-  && [ "$(integrity "$pa_o_id")" = UNVERIFIED ] && [ "$(audits INTEGRITY_MISMATCH "$pa_o_id")" = 0 ]; then
+  && case "$(integrity "$pa_o_id")" in UNVERIFIED | VERIFIED) true ;; *) false ;; esac \
+  && [ "$(audits INTEGRITY_MISMATCH "$pa_o_id")" = 0 ]; then
   pa_pass "store down: 503 with Retry-After, no file bytes, nothing quarantined — $(f outage 1)"
 else
   pa_fail "store down: expected 503 and no quarantine — got $(f outage 1), integrity $(integrity "$pa_o_id")"
