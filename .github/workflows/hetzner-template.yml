@@ -16,9 +16,10 @@ name: Hetzner template
 #
 # Gate P-1 is the `external-storage` job: the same stack test against a real, dedicated test bucket,
 # through run-stack-test.sh's EXTERNAL_STORAGE_ENV (infra/hetzner/README.md §6). It runs only for a
-# pushed tag `storage-test/<anything>` — workflow_dispatch is offered only for workflows on the
-# default branch, which this one is not — and only inside the `r2-storage-test` environment, whose
-# secrets no other job, workflow or branch can read. Nothing in it is a production setting.
+# pushed tag `storage-test/<anything>`, or a branch push whose head commit message contains
+# `[storage-test]` — workflow_dispatch is offered only for workflows on the default branch, which
+# this one is not — and only inside the `r2-storage-test` environment, whose deployment rules name
+# the refs allowed to read its secrets. Nothing in it is a production setting.
 
 on:
   pull_request:
@@ -142,7 +143,9 @@ jobs:
   # `r2-storage-test` environment; the steps up to the test are the `stack` job's.
   external-storage:
     name: Compose stack · real images, Cloudflare R2 test bucket (gate P-1)
-    if: ${{ startsWith(github.ref, 'refs/tags/storage-test/') }}
+    if: >-
+      ${{ startsWith(github.ref, 'refs/tags/storage-test/') ||
+          (github.event_name == 'push' && contains(github.event.head_commit.message, '[storage-test]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: r2-storage-test

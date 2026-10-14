@@ -143,7 +143,9 @@ EXTERNAL_STORAGE_ENV=/secure/path/storage-under-test.env DOCS_API_IMAGE=… DOCS
 environment `r2-storage-test` (`R2_TEST_ENDPOINT`, `R2_TEST_ACCESS_KEY_ID`,
 `R2_TEST_SECRET_ACCESS_KEY`) and runs the same command against the test bucket
 `munaxa-docs-p1-storage-test`, with the CORS origin `https://p1-storage-test.munaxa.invalid`. It runs
-only for a pushed tag `storage-test/<name>`, and the file is deleted when the job ends.
+only for a pushed tag `storage-test/<name>` or a push whose head commit message contains
+`[storage-test]` (on a ref the environment's deployment rules allow), and the file is deleted when
+the job ends.
 
 The file is parsed, never executed; only the keys above are read; values are never printed, and the
 log check also looks for the storage secret. A plain-`http` endpoint, a missing key or a driver other
