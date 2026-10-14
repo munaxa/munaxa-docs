@@ -291,6 +291,15 @@ step "Waiting for api, web and proxy to report healthy"
 compose up -d --wait --wait-timeout 300 api web proxy
 compose ps
 
+if [ -n "${EXTERNAL_STORAGE_ENV:-}" ]; then
+  # Diagnostic only (testing/storage-probe.cjs): what the external store does with each step of the
+  # upload contract, through the product's own adapter. The smoke test below decides pass or fail.
+  step "Storage contract probe (external bucket)"
+  compose run --rm --no-deps -T -e "RUN_PREFIX=$run_prefix/" \
+    -v "$here/storage-probe.cjs:/probe/storage-probe.cjs:ro" --entrypoint node api \
+    /probe/storage-probe.cjs || echo "probe: did not complete (see its last line)"
+fi
+
 step "Smoke test"
 compose --profile test run --rm smoke
 

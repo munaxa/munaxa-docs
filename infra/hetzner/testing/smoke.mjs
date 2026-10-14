@@ -184,16 +184,24 @@ if (CORS_ORIGIN) {
     headers: {
       origin: CORS_ORIGIN,
       'access-control-request-method': cleanTarget.body.method,
+      // As a browser builds it: the signed headers it will send, minus the ones it sets itself and
+      // never asks CORS permission for (Content-Length is a forbidden request header).
       'access-control-request-headers': Object.keys(cleanTarget.body.headers ?? {})
         .map((name) => name.toLowerCase())
+        .filter((name) => name !== 'content-length')
         .join(','),
     },
   });
   const allowed = preflight.headers.get('access-control-allow-origin');
+  // The store's own reason, when it refuses: the error <Code> only, never the body (which can echo
+  // the request) and never the URL (which carries the access key id).
+  const refusal = preflight.ok
+    ? ''
+    : `, store error ${((await preflight.text()).match(/<Code>([^<]*)<\/Code>/) ?? [])[1] ?? 'none'}`;
   check(
     'object store admits the browser preflight from the web origin (CORS)',
     preflight.ok && (allowed === CORS_ORIGIN || allowed === '*'),
-    `HTTP ${preflight.status}, allow-origin ${allowed ?? 'absent'}`,
+    `HTTP ${preflight.status}, allow-origin ${allowed ?? 'absent'}${refusal}`,
   );
 }
 
