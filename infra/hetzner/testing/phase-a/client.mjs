@@ -723,7 +723,9 @@ const steps = {
       ['m32', pdfOfSize(32 * MiB, 'measure-32'), 'measure-32MiB.pdf'],
       ['m128', pdfOfSize(128 * MiB, 'measure-128'), 'measure-128MiB.pdf'],
     ]) {
-      const stored = await upload(API, token, bytes, `measure-${name}`);
+      const stored = await upload(API, token, bytes, `measure-${name}`, {
+        mimeType: filename.endsWith('.pdf') ? 'application/pdf' : 'text/plain',
+      });
       if (stored.complete !== 201 || stored.scanStatus !== 'CLEAN') {
         throw new Error(`the ${name} measurement upload answered ${JSON.stringify(stored)}`);
       }
