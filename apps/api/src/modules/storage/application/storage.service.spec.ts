@@ -54,12 +54,22 @@ interface Harness {
   readonly events: string[];
   readonly transactions: { opened: number };
   readonly targets: Record<string, unknown>[];
+  /** Every copy and delete the service asked the store for, in order. */
+  readonly storageOps: string[];
+  readonly sizeBytes: number;
 }
 
 function harness(options: {
   scanner?: (checksum: string) => Promise<{ status: ScanStatusKey; threat?: string }>;
   stored?: string; // the bytes the store reports for every completed upload
+  /** Each completed upload reports bytes of its own (its staging key), not one shared digest. */
+  distinct?: boolean;
+  sizeBytes?: number;
+  budgetBytes?: number;
+  queueTimeoutMs?: number;
 }): Harness {
+  const sizeBytes = options.sizeBytes ?? 10;
+  const storageOps: string[] = [];
   const files = new Map<string, FileObjectRecord>();
   const sessions = new Map<string, UploadSessionRecord>();
   const scans: Harness['scans'] = [];
@@ -141,10 +151,19 @@ function harness(options: {
         }),
       });
     },
-    completeUpload: () =>
-      Promise.resolve({ sizeBytes: 10, checksumSha256: sha(options.stored ?? 'clean bytes') }),
-    copy: () => Promise.resolve(),
-    delete: () => Promise.resolve(),
+    completeUpload: (key: string) =>
+      Promise.resolve({
+        sizeBytes,
+        checksumSha256: sha(options.distinct === true ? key : (options.stored ?? 'clean bytes')),
+      }),
+    copy: (from: string, to: string) => {
+      storageOps.push(`copy ${from} -> ${to}`);
+      return Promise.resolve();
+    },
+    delete: (key: string) => {
+      storageOps.push(`delete ${key}`);
+      return Promise.resolve();
+    },
   } as unknown as StoragePort;
   const antivirus: AntivirusPort = {
     scanner: 'ICAP test',
@@ -166,7 +185,12 @@ function harness(options: {
     },
   };
   const config = {
-    antivirus: { timeoutMs: 120_000, maxBytes: 134_217_728 },
+    antivirus: {
+      timeoutMs: 120_000,
+      maxBytes: 134_217_728,
+      budgetBytes: options.budgetBytes ?? 268_435_456,
+      queueTimeoutMs: options.queueTimeoutMs ?? 60_000,
+    },
     providers: { antivirus: 'ICAP' },
     storage: { maxUploadBytes: 2 ** 31, signedUrlTtlSeconds: 300 },
   } as unknown as AppConfig;
@@ -181,7 +205,7 @@ function harness(options: {
     config,
     writer,
   );
-  return { service, files, sessions, scans, events, transactions, targets };
+  return { service, files, sessions, scans, events, transactions, targets, storageOps, sizeBytes };
 }
 
 function record(file: {
@@ -217,7 +241,7 @@ function openSession(h: Harness): UploadSessionId {
     id,
     filename: 'f.pdf',
     declaredMimeType: 'application/pdf',
-    declaredSizeBytes: 10,
+    declaredSizeBytes: h.sizeBytes,
     targetKey: `staging/${id}`,
     state: UploadSessionState.OPEN,
     multipartUploadId: null,
@@ -446,5 +470,92 @@ describe('STG-10: a large browser upload is one signed PUT bound to its digest',
     expect(issued).toMatchObject({ method: 'PUT', parts: null, alreadyStored: null });
     const session = h.sessions.get((issued as { uploadSessionId: string }).uploadSessionId);
     expect(session?.multipartUploadId).toBeNull();
+  });
+});
+
+describe('Phase A: scans are admitted within AV_SCAN_BUDGET_BYTES', () => {
+  const MiB = 1024 * 1024;
+  const waitFor = async (condition: () => boolean) => {
+    while (!condition()) {
+      await new Promise((tick) => setImmediate(tick));
+    }
+  };
+
+  it('runs no more completions at once than the budget admits, and finishes every one', async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let running = 0;
+    let most = 0;
+    const h = harness({
+      distinct: true,
+      sizeBytes: 120 * MiB,
+      budgetBytes: 256 * MiB,
+      scanner: async () => {
+        running += 1;
+        most = Math.max(most, running);
+        await held;
+        running -= 1;
+        return { status: ScanStatus.CLEAN };
+      },
+    });
+    const ids = Array.from({ length: 8 }, () => openSession(h));
+    const completions = ids.map((id) => inContext(() => h.service.completeUploadSession(id, [])));
+    await waitFor(() => h.scans.length === 2);
+    // Two 120 MiB scans fit in 256 MiB; the other six wait, and none of them has copied anything.
+    await new Promise((tick) => setTimeout(tick, 20));
+    expect(h.scans).toHaveLength(2);
+    expect(h.storageOps.filter((op) => op.startsWith('copy'))).toHaveLength(2);
+    release();
+    const done = await Promise.all(completions);
+    expect(done.map((d) => d.scanStatus)).toEqual(Array(8).fill('CLEAN'));
+    expect(most).toBe(2);
+    expect(ids.map((id) => h.sessions.get(id)?.state)).toEqual(Array(8).fill('COMPLETED'));
+  });
+
+  it('refuses a completion that waits too long as busy, having changed nothing', async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const h = harness({
+      distinct: true,
+      sizeBytes: 120 * MiB,
+      budgetBytes: 128 * MiB,
+      queueTimeoutMs: 30,
+      scanner: async () => {
+        await held;
+        return { status: ScanStatus.CLEAN };
+      },
+    });
+    const first = openSession(h);
+    const second = openSession(h);
+    const running = inContext(() => h.service.completeUploadSession(first, []));
+    await waitFor(() => h.scans.length === 1);
+
+    await expect(
+      inContext(() => h.service.completeUploadSession(second, [])),
+    ).rejects.toMatchObject({ code: 'DEPENDENCY_UNAVAILABLE', name: 'ScannerBusyError' });
+    // Still open, its staged bytes untouched: the same request can be made again.
+    expect(h.sessions.get(second)?.state).toBe('OPEN');
+    expect(h.storageOps.some((op) => op.includes(`staging/${second}`))).toBe(false);
+
+    release();
+    await running;
+    const retried = await inContext(() => h.service.completeUploadSession(second, []));
+    expect(retried.scanStatus).toBe('CLEAN');
+    expect(h.sessions.get(second)?.state).toBe('COMPLETED');
+  });
+
+  it('gives the capacity back when a scan fails, so the next completion runs', async () => {
+    const h = harness({
+      distinct: true,
+      sizeBytes: 120 * MiB,
+      budgetBytes: 128 * MiB,
+      queueTimeoutMs: 30,
+      scanner: () => Promise.reject(new AntivirusScanError('no verdict', 'SCANNER_ERROR')),
+    });
+    const failed = await inContext(() => h.service.completeUploadSession(openSession(h), []));
+    expect(failed.scanStatus).toBe('FAILED');
+    const next = await inContext(() => h.service.completeUploadSession(openSession(h), []));
+    expect(next.scanStatus).toBe('FAILED');
+    expect(h.scans).toHaveLength(2);
   });
 });

@@ -192,3 +192,62 @@ describe('the size head() reports', () => {
     ).rejects.toBeInstanceOf(StorageUnavailableError);
   });
 });
+
+/**
+ * `read()` fills one buffer of the stated size (ADR-0026 §10, Phase A): a scan reads every object
+ * this way, and collecting then joining the chunks briefly cost twice the object's size.
+ */
+describe('read()', () => {
+  const STATIC = { accessKeyId: 'AKIA-STATIC', secretAccessKey: 'static-secret' };
+
+  function streamed(chunks: Uint8Array[], length: string | null) {
+    return vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              for (const chunk of chunks) controller.enqueue(chunk);
+              controller.close();
+            },
+          }),
+          { status: 200, headers: length === null ? {} : { 'content-length': length } },
+        ),
+      ),
+    );
+  }
+
+  it('returns exactly the bytes the store sent, asking for them uncompressed', async () => {
+    const parts = [Buffer.from('first part, '), Buffer.from('second part')];
+    const fetch = streamed(parts, String(Buffer.concat(parts).length));
+    const bytes = await adapter(STATIC, fetch).read('acme/blob');
+    expect(bytes?.toString()).toBe('first part, second part');
+    const headers = fetch.mock.calls[0]![1]!.headers as Record<string, string>;
+    expect(headers['accept-encoding']).toBe('identity');
+  });
+
+  it('refuses a body shorter than its stated length', async () => {
+    const fetch = streamed([Buffer.from('short')], '10');
+    await expect(adapter(STATIC, fetch).read('acme/blob')).rejects.toBeInstanceOf(
+      StorageUnavailableError,
+    );
+  });
+
+  it('refuses a body longer than its stated length', async () => {
+    const fetch = streamed([Buffer.from('longer than stated')], '4');
+    await expect(adapter(STATIC, fetch).read('acme/blob')).rejects.toBeInstanceOf(
+      StorageUnavailableError,
+    );
+  });
+
+  it('still reads a body whose length is not stated', async () => {
+    const fetch = streamed([Buffer.from('no length')], null);
+    expect((await adapter(STATIC, fetch).read('acme/blob'))?.toString()).toBe('no length');
+  });
+
+  it('answers null for an object that is not there', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    );
+    expect(await adapter(STATIC, fetch).read('acme/missing')).toBeNull();
+  });
+});

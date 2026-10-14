@@ -354,12 +354,36 @@ export class S3StorageAdapter implements StoragePort {
   }
 
   async read(key: StorageKey): Promise<Buffer | null> {
-    const response = await this.send('GET', key);
+    // Uncompressed, as `head()` asks: the length the store states is then the stored size, which
+    // is what lets the bytes be read straight into one buffer of that size.
+    const response = await this.send('GET', key, { 'accept-encoding': 'identity' });
     if (response.status === 404) {
       return null;
     }
     this.refuseFailure(response, 'read');
-    return Buffer.from(await response.arrayBuffer());
+    const length = response.headers.get('content-length');
+    if (length === null || !/^\d+$/.test(length) || response.body === null) {
+      return Buffer.from(await response.arrayBuffer());
+    }
+    // One allocation of the stated size, filled as the body arrives — ADR-0026 §10, Phase A.
+    // `arrayBuffer()` collects the chunks and then joins them, so a 128 MiB object briefly cost
+    // 256 MiB; a scan reads every object this way, and that doubling was part of what got eight
+    // concurrent completions killed. A body that disagrees with its own length is refused rather
+    // than returned short or long: the scanner and the verifier hash what this returns.
+    const size = Number(length);
+    const bytes = Buffer.allocUnsafe(size);
+    let offset = 0;
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      if (offset + chunk.byteLength > size) {
+        throw new StorageUnavailableError('Object storage sent more bytes than it stated.');
+      }
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    if (offset !== size) {
+      throw new StorageUnavailableError('Object storage sent fewer bytes than it stated.');
+    }
+    return bytes;
   }
 
   /** Every key under a prefix, following the store's continuation token to the end. */

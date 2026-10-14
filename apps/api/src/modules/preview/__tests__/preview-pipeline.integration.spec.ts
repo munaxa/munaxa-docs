@@ -278,7 +278,13 @@ beforeAll(async () => {
       office: 'NONE',
     },
     ocr: { tesseractPath: 'tesseract', languages: 'ara+eng' },
-    antivirus: { icap: null, maxBytes: 134_217_728, timeoutMs: 120_000 },
+    antivirus: {
+      icap: null,
+      maxBytes: 134_217_728,
+      timeoutMs: 120_000,
+      budgetBytes: 268_435_456,
+      queueTimeoutMs: 60_000,
+    },
     office: { libreofficePath: 'soffice' },
     preview: {
       timeoutMs: 60_000,

@@ -207,6 +207,17 @@ export class StorageUnavailableError extends DependencyUnavailableError {
 }
 
 /**
+ * Every scan this process can hold in memory is already running, and this one waited its bound —
+ * ADR-0026 §10, Phase A. Nothing was done: the upload is as it was, and completing it again later
+ * is the remedy. A 503 like any other dependency that is temporarily unable to take the work.
+ */
+export class ScannerBusyError extends DependencyUnavailableError {
+  constructor() {
+    super('Malware scanner', { reason: 'busy' });
+  }
+}
+
+/**
  * The content is stored but not yet cleared by the malware scanner, or was cleared and failed.
  *
  * Its own code because it is its own answer: the document exists, the caller may see it, and the

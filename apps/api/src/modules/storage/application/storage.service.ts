@@ -24,6 +24,7 @@ import {
   ContentQuarantinedError,
   ForbiddenError,
   NotFoundError,
+  ScannerBusyError,
   StorageUnavailableError,
   UnsupportedContentError,
   ValidationError,
@@ -40,6 +41,7 @@ import {
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { STORAGE_PORT, type StoragePort } from '../../../ports/storage.port';
 import { StorageAudit } from '../domain/audit-actions';
+import { ByteBudget, ByteBudgetTimeoutError } from '../domain/byte-budget';
 import { unreachableBecause } from '../domain/reachability';
 import {
   blobKeyFor,
@@ -96,6 +98,9 @@ import {
  * trigger, because "enforced in the use case and in the database" is what the architecture asks for
  * and because the use case is not the only thing that ever writes these rows.
  */
+/** How long one integrity re-read may wait for scan capacity before the pass gives up. */
+const VERIFIER_CAPACITY_WAIT_MS = 10 * 60 * 1000;
+
 @Injectable()
 export class DefaultStorageService implements StorageService {
   constructor(
@@ -107,7 +112,12 @@ export class DefaultStorageService implements StorageService {
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly writer: AdministeredWriter,
-  ) {}
+  ) {
+    this.scanCapacity = new ByteBudget(config.antivirus.budgetBytes);
+  }
+
+  /** The bytes of content scanned at once in this process (`AV_SCAN_BUDGET_BYTES`). */
+  private readonly scanCapacity: ByteBudget;
 
   /**
    * Validates, then issues a target — or reports that the bytes are already here.
@@ -326,10 +336,13 @@ export class DefaultStorageService implements StorageService {
     }
 
     const contentKey = blobKeyFor(digest);
-    await this.storage.copy(session.targetKey, contentKey);
-    await this.storage.delete(session.targetKey);
-
-    const scan = await this.scan(contentKey, digest, metadata.sizeBytes, session.declaredMimeType);
+    // Admitted before anything is copied: a completion refused as busy has changed nothing, so the
+    // same request succeeds later (ADR-0026 §10, Phase A).
+    const scan = await this.withScanCapacity(metadata.sizeBytes, async () => {
+      await this.storage.copy(session.targetKey, contentKey);
+      await this.storage.delete(session.targetKey);
+      return this.scan(contentKey, digest, metadata.sizeBytes, session.declaredMimeType);
+    });
 
     return this.writer.write<CompletedUpload>(async () => {
       const fileObjectId = this.writer.clock.nextId();
@@ -842,13 +855,34 @@ export class DefaultStorageService implements StorageService {
     }
     return {
       checksumSha256: existing.checksumSha256,
-      outcome: await this.scan(
-        existing.storageKey,
-        existing.checksumSha256,
-        existing.sizeBytes,
-        existing.mimeType,
+      outcome: await this.withScanCapacity(existing.sizeBytes, () =>
+        this.scan(
+          existing.storageKey,
+          existing.checksumSha256,
+          existing.sizeBytes,
+          existing.mimeType,
+        ),
       ),
     };
+  }
+
+  /**
+   * Runs work that reads content into memory for a scan, within `AV_SCAN_BUDGET_BYTES`.
+   *
+   * Phase A (ADR-0026 §10): a scan holds its whole object in memory, and eight ~120 MiB completions
+   * at once got the API killed inside its 1.5 GB limit. Admission waits, first come first served,
+   * for the bytes to fit; a wait past `AV_SCAN_QUEUE_TIMEOUT_MS` is refused as busy before any of
+   * the work has started.
+   */
+  private async withScanCapacity<T>(sizeBytes: number, work: () => Promise<T>): Promise<T> {
+    try {
+      return await this.scanCapacity.run(sizeBytes, this.config.antivirus.queueTimeoutMs, work);
+    } catch (error) {
+      if (error instanceof ByteBudgetTimeoutError) {
+        throw new ScannerBusyError();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -932,9 +966,18 @@ export class DefaultStorageService implements StorageService {
       return null;
     }
     try {
-      const bytes = await this.storage.read(file.storageKey);
+      // Within the same byte budget as scans: this read holds the whole object too, and the
+      // verifier runs beside live completions. It is background work, so it may wait far longer
+      // than a request; a wait that still runs out ends the pass (it runs again) rather than being
+      // mistaken below for an unreadable object.
+      const bytes = await this.scanCapacity.run(file.sizeBytes, VERIFIER_CAPACITY_WAIT_MS, () =>
+        this.storage.read(file.storageKey),
+      );
       return bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
-    } catch {
+    } catch (error) {
+      if (error instanceof ByteBudgetTimeoutError) {
+        throw error;
+      }
       // A store that is briefly unreachable must not quarantine a tenant's library, so this is
       // indistinguishable here from a missing object — and the *finding* below is what tells them
       // apart, because an object that reads as absent twice is an incident and one pass is not.

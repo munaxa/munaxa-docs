@@ -394,6 +394,21 @@ export const configSchema = z
     /** How long one scan may take. A scanner that has not answered by then has cleared nothing. */
     AV_SCAN_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
     /**
+     * How many bytes of content this process scans at once — ADR-0026 §10, Phase A.
+     *
+     * A scan holds its whole object in memory, so this bounds the memory completions cost together:
+     * a completion waits until its size fits beside the scans already running (one always runs,
+     * whatever its size). The default admits two uploads at the 128 MiB ceiling together, which
+     * Phase A measured as safe inside the template's 1.5 GB API; a larger API can raise it.
+     */
+    AV_SCAN_BUDGET_BYTES: z.coerce.number().int().min(1_048_576).default(268_435_456),
+    /**
+     * How long a completion waits for that capacity before it is refused as busy. The refusal leaves
+     * the upload exactly as it was — still open, its bytes still staged — so completing it again
+     * later succeeds.
+     */
+    AV_SCAN_QUEUE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
+    /**
      * The office-to-PDF converter. `NONE` degrades honestly: Office documents keep their
      * extracted text and lose their paginated rendition — the same posture as `OCR_DRIVER=NONE`.
      * Deliberately absent from the production must-be-real list beside it: a deployment that
@@ -1085,6 +1100,10 @@ export interface AppConfig {
     readonly icap: IcapEndpoint | null;
     readonly maxBytes: number;
     readonly timeoutMs: number;
+    /** AV_SCAN_BUDGET_BYTES: the bytes of content scanned at once in this process. */
+    readonly budgetBytes: number;
+    /** AV_SCAN_QUEUE_TIMEOUT_MS: how long a completion waits for that capacity. */
+    readonly queueTimeoutMs: number;
   };
   readonly ocr: {
     readonly tesseractPath: string;
@@ -1321,6 +1340,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       icap: raw.AV_ICAP_URL === undefined ? null : parseIcapUrl(raw.AV_ICAP_URL),
       maxBytes: raw.AV_ICAP_MAX_BYTES,
       timeoutMs: raw.AV_SCAN_TIMEOUT_MS,
+      budgetBytes: raw.AV_SCAN_BUDGET_BYTES,
+      queueTimeoutMs: raw.AV_SCAN_QUEUE_TIMEOUT_MS,
     },
     ocr: {
       tesseractPath: raw.OCR_TESSERACT_PATH,
