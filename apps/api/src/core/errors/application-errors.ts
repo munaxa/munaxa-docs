@@ -51,6 +51,26 @@ export class ValidationError extends DomainError {
   }
 }
 
+/**
+ * The upload's link expired before its bytes arrived — ADR-0026 §10, Phase A. The session is
+ * settled `EXPIRED`; the remedy is to start the upload again.
+ */
+export class UploadExpiredError extends DomainError {
+  constructor() {
+    super(ErrorCode.VALIDATION_FAILED, 'The upload link expired before the file arrived.');
+  }
+}
+
+/**
+ * Completion was asked for before the bytes arrived, while the link is still valid. Nothing is
+ * settled: the transfer may still be running, and completing again once it has finished succeeds.
+ */
+export class UploadNotReceivedError extends DomainError {
+  constructor() {
+    super(ErrorCode.VALIDATION_FAILED, 'The file has not arrived in storage yet.');
+  }
+}
+
 export class VersionConflictError extends DomainError {
   constructor(expected: number, actual: number) {
     super(

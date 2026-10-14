@@ -57,6 +57,7 @@ interface Harness {
   /** Every copy and delete the service asked the store for, in order. */
   readonly storageOps: string[];
   readonly sizeBytes: number;
+  readonly expiresAt: Date;
 }
 
 function harness(options: {
@@ -67,8 +68,15 @@ function harness(options: {
   sizeBytes?: number;
   budgetBytes?: number;
   queueTimeoutMs?: number;
+  /** The store reports nothing under any staging key: the bytes never arrived. */
+  missing?: boolean;
+  /** Each session's link expired this long before "now" (the default is an hour after). */
+  expiredAgoMs?: number;
+  /** The first attempt to write the file row fails, as a crash or a lost connection would. */
+  failFirstInsert?: boolean;
 }): Harness {
   const sizeBytes = options.sizeBytes ?? 10;
+  const insertFailed = { value: false };
   const storageOps: string[] = [];
   const files = new Map<string, FileObjectRecord>();
   const sessions = new Map<string, UploadSessionRecord>();
@@ -97,6 +105,10 @@ function harness(options: {
     findByChecksum: (checksum: string) =>
       Promise.resolve([...files.values()].find((f) => f.checksumSha256 === checksum) ?? null),
     insert: (file: { id: string; checksumSha256: string } & Record<string, unknown>) => {
+      if (options.failFirstInsert === true && !insertFailed.value) {
+        insertFailed.value = true;
+        return Promise.reject(new Error('connection lost'));
+      }
       if ([...files.values()].some((f) => f.checksumSha256 === file.checksumSha256)) {
         return Promise.resolve(false);
       }
@@ -156,6 +168,21 @@ function harness(options: {
         sizeBytes,
         checksumSha256: sha(options.distinct === true ? key : (options.stored ?? 'clean bytes')),
       }),
+    head: (key: string) =>
+      Promise.resolve(
+        options.missing === true
+          ? null
+          : {
+              key,
+              sizeBytes,
+              contentType: 'application/pdf',
+              checksumSha256:
+                options.stored === 'no digest'
+                  ? null
+                  : sha(options.distinct === true ? key : (options.stored ?? 'clean bytes')),
+              lastModifiedAt: now(),
+            },
+      ),
     copy: (from: string, to: string) => {
       storageOps.push(`copy ${from} -> ${to}`);
       return Promise.resolve();
@@ -205,7 +232,22 @@ function harness(options: {
     config,
     writer,
   );
-  return { service, files, sessions, scans, events, transactions, targets, storageOps, sizeBytes };
+  return {
+    service,
+    files,
+    sessions,
+    scans,
+    events,
+    transactions,
+    targets,
+    storageOps,
+    sizeBytes,
+    expiresAt: new Date(
+      options.expiredAgoMs === undefined
+        ? now().getTime() + 3_600_000
+        : now().getTime() - options.expiredAgoMs,
+    ),
+  };
 }
 
 function record(file: {
@@ -246,7 +288,7 @@ function openSession(h: Harness): UploadSessionId {
     state: UploadSessionState.OPEN,
     multipartUploadId: null,
     fileObjectId: null,
-    expiresAt: new Date('2026-09-29T13:00:00Z'),
+    expiresAt: h.expiresAt,
     createdBy: USER,
   });
   return id;
@@ -557,5 +599,80 @@ describe('Phase A: scans are admitted within AV_SCAN_BUDGET_BYTES', () => {
     const next = await inContext(() => h.service.completeUploadSession(openSession(h), []));
     expect(next.scanStatus).toBe('FAILED');
     expect(h.scans).toHaveLength(2);
+  });
+});
+
+describe('Phase A: a refused or interrupted completion settles, and never accepts other bytes', () => {
+  it('a missing digest aborts the session and removes the staged bytes', async () => {
+    const h = harness({ stored: 'no digest' });
+    const id = openSession(h);
+    await expect(inContext(() => h.service.completeUploadSession(id, []))).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CONTENT',
+    });
+    expect(h.sessions.get(id)?.state).toBe('ABORTED');
+    expect(h.storageOps).toEqual([`delete staging/${id}`]);
+    expect(h.files.size).toBe(0);
+    // A second completion is told it is finished; it does not look at the bytes again.
+    await expect(inContext(() => h.service.completeUploadSession(id, []))).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+    });
+    expect(h.scans).toHaveLength(0);
+  });
+
+  it('a size that differs from the declared one aborts the session', async () => {
+    const h = harness({ sizeBytes: 10 });
+    const id = openSession(h);
+    h.sessions.set(id, { ...h.sessions.get(id)!, declaredSizeBytes: 11 });
+    await expect(inContext(() => h.service.completeUploadSession(id, []))).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CONTENT',
+    });
+    expect(h.sessions.get(id)?.state).toBe('ABORTED');
+    expect(h.files.size).toBe(0);
+  });
+
+  it('no bytes after the link expired: settled EXPIRED, refused as expired', async () => {
+    const h = harness({ missing: true, expiredAgoMs: 1_000 });
+    const id = openSession(h);
+    await expect(inContext(() => h.service.completeUploadSession(id, []))).rejects.toMatchObject({
+      name: 'UploadExpiredError',
+      code: 'VALIDATION_FAILED',
+    });
+    expect(h.sessions.get(id)?.state).toBe('EXPIRED');
+    expect(h.storageOps).toEqual([]);
+  });
+
+  it('no bytes yet while the link is valid: left OPEN, refused as not received', async () => {
+    const h = harness({ missing: true });
+    const id = openSession(h);
+    await expect(inContext(() => h.service.completeUploadSession(id, []))).rejects.toMatchObject({
+      name: 'UploadNotReceivedError',
+    });
+    expect(h.sessions.get(id)?.state).toBe('OPEN');
+  });
+
+  it('an interrupted completion keeps its staged bytes, and completing again succeeds', async () => {
+    const h = harness({ failFirstInsert: true });
+    const id = openSession(h);
+    await expect(inContext(() => h.service.completeUploadSession(id, []))).rejects.toThrow(
+      'connection lost',
+    );
+    expect(h.sessions.get(id)?.state).toBe('OPEN');
+    expect(h.storageOps.some((op) => op === `delete staging/${id}`)).toBe(false);
+
+    const done = await inContext(() => h.service.completeUploadSession(id, []));
+    expect(done.scanStatus).toBe('CLEAN');
+    expect(h.sessions.get(id)?.state).toBe('COMPLETED');
+    // Removed only now, after the row that says what the bytes became.
+    expect(h.storageOps.at(-1)).toBe(`delete staging/${id}`);
+  });
+
+  it('a completed upload removes its staged bytes only after the row is written', async () => {
+    const h = harness({});
+    const id = openSession(h);
+    await inContext(() => h.service.completeUploadSession(id, []));
+    expect(h.storageOps).toEqual([
+      `copy staging/${id} -> blobs/${sha('clean bytes').slice(0, 2)}/${sha('clean bytes').slice(2, 4)}/${sha('clean bytes')}`,
+      `delete staging/${id}`,
+    ]);
   });
 });

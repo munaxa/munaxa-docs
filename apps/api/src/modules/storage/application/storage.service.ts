@@ -27,6 +27,8 @@ import {
   ScannerBusyError,
   StorageUnavailableError,
   UnsupportedContentError,
+  UploadExpiredError,
+  UploadNotReceivedError,
   ValidationError,
 } from '../../../core/errors/application-errors';
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
@@ -284,15 +286,23 @@ export class DefaultStorageService implements StorageService {
       ]);
     }
 
-    const metadata = await this.storage.completeUpload(
-      session.targetKey,
-      parts.map((part) => ({
-        partNumber: part.partNumber,
-        url: '',
-        etag: part.etag,
-        ...(session.multipartUploadId !== null && { uploadId: session.multipartUploadId }),
-      })),
-    );
+    // A single PUT has nothing to finish, so the store is simply asked what it holds — and an
+    // answer of "nothing" is told apart from a store that is down (ADR-0026 §10, Phase A).
+    const metadata =
+      session.multipartUploadId === null
+        ? await this.storage.head(session.targetKey)
+        : await this.storage.completeUpload(
+            session.targetKey,
+            parts.map((part) => ({
+              partNumber: part.partNumber,
+              url: '',
+              etag: part.etag,
+              uploadId: session.multipartUploadId ?? undefined,
+            })),
+          );
+    if (metadata === null) {
+      return this.refuseMissingBytes(session);
+    }
 
     if (metadata.sizeBytes !== session.declaredSizeBytes) {
       // The bytes that arrived are not the bytes that were approved. The target was signed for a
@@ -319,20 +329,21 @@ export class DefaultStorageService implements StorageService {
     // standard form converge here rather than at the client's optional pre-check.
     const existing = await this.writer.read(() => this.files.findByChecksum(digest));
     if (existing !== null) {
-      await this.storage.delete(session.targetKey);
       const known = await this.verdictFor(existing);
-      return this.writer.write<CompletedUpload>(async () => {
+      const deduplicated = await this.writer.write<CompletedUpload>(async () => {
         const current = await this.files.findByChecksum(digest);
         if (current === null) {
-          // Reclaimed while this upload was being scanned: the bytes it would settle onto are gone,
-          // and this session's own staged copy was already removed. Nothing is recorded; the
-          // session stays open until it expires, and uploading the file again stores it afresh.
+          // Reclaimed while this upload was being scanned: the bytes it would settle onto are gone.
+          // Nothing is recorded and this session's staged copy is still there, so completing again
+          // stores the bytes afresh.
           throw new StorageUnavailableError(
             'The stored copy of this file was removed while the upload finished.',
           );
         }
         return await this.deduplicatedOnto(current, id, known);
       });
+      await this.removeStaged(session.targetKey);
+      return deduplicated;
     }
 
     const contentKey = blobKeyFor(digest);
@@ -340,11 +351,14 @@ export class DefaultStorageService implements StorageService {
     // same request succeeds later (ADR-0026 §10, Phase A).
     const scan = await this.withScanCapacity(metadata.sizeBytes, async () => {
       await this.storage.copy(session.targetKey, contentKey);
-      await this.storage.delete(session.targetKey);
       return this.scan(contentKey, digest, metadata.sizeBytes, session.declaredMimeType);
     });
 
-    return this.writer.write<CompletedUpload>(async () => {
+    // The staged bytes outlive everything that can fail before the row commits (ADR-0026 §10,
+    // Phase A): a completion interrupted anywhere above — refused, crashed, killed — leaves the
+    // session OPEN with its bytes staged, and completing it again repeats the copy (to the same
+    // content key) and the scan. They are removed only once the row says what they became.
+    const completed = await this.writer.write<CompletedUpload>(async () => {
       const fileObjectId = this.writer.clock.nextId();
       const created = await this.files.insert({
         id: fileObjectId,
@@ -434,6 +448,8 @@ export class DefaultStorageService implements StorageService {
         }),
       };
     });
+    await this.removeStaged(session.targetKey);
+    return completed;
   }
 
   async abandonUploadSession(id: UploadSessionId): Promise<void> {
@@ -1030,33 +1046,66 @@ export class DefaultStorageService implements StorageService {
   }
 
   /**
+   * Refuses a completed transfer whose bytes are not the ones approved, removing what arrived.
+   *
+   * The session is settled `ABORTED` in a transaction of its own that commits before the refusal is
+   * thrown, and only the caller that won that claim deletes the staged bytes.
+   */
+  private async refuseTransfer(session: UploadSessionRecord, refusal: Error): Promise<never> {
+    // The claim is committed on its own, *then* the refusal is thrown — ADR-0026 §10, Phase A.
+    // Thrown inside the claim's transaction it rolled the claim back, so a refused upload stayed
+    // `OPEN` with its bytes already deleted until the expiry sweep found it. Now it is `ABORTED`
+    // at once, and a second completion is told it is finished rather than tried again.
+    const claimed = await this.writer.change(() =>
+      this.sessions.settle(session.id, UploadSessionState.ABORTED, null),
+    );
+    if (claimed) {
+      await this.removeStaged(session.targetKey);
+    }
+    throw refusal;
+  }
+
+  /**
+   * Completion found no bytes under the session's key.
+   *
+   * After the link expired they can no longer arrive, so the session is settled `EXPIRED` and the
+   * caller is told to start again. Before then the transfer may still be running, so nothing is
+   * settled and completing again once it has finished succeeds.
+   */
+  private async refuseMissingBytes(session: UploadSessionRecord): Promise<never> {
+    if (session.expiresAt.getTime() > this.clock.now().getTime()) {
+      throw new UploadNotReceivedError();
+    }
+    await this.writer.change(() =>
+      this.sessions.settle(session.id, UploadSessionState.EXPIRED, null),
+    );
+    throw new UploadExpiredError();
+  }
+
+  /**
+   * Removes a session's staged bytes once nothing needs them, as best it can.
+   *
+   * A failure here is not the caller's failure — the upload has already been recorded or refused —
+   * and the object is not lost track of: the orphan sweep removes staged bytes whose session is
+   * no longer `OPEN` (`sweepOrphanedObjects`).
+   */
+  private async removeStaged(key: string): Promise<void> {
+    try {
+      await this.storage.delete(key);
+    } catch {
+      // Left for the orphan sweep; see above.
+    }
+  }
+
+  /**
    * Aborts a session and removes what it staged. Answers whether it was the one to abort it.
    *
    * **The claim comes first** — Slice 43. `settle` carries `state: OPEN` in its predicate, which is
    * what makes it a compare-and-set rather than an assignment, and taking it before touching the
    * store is what stops an abandon from deleting bytes a completion running beside it is still
    * copying. The order was the other way round, which was safe only because nothing read the
-   * answer.
-   *
-   * The completion path calls this on a size or digest mismatch and then throws, so its `settle`
-   * rolls back with the rest of that transaction and the object is gone either way — the same net
-   * effect as before, and the reason that caller needs no change.
+   * answer. Used by `abandonUploadSession`, whose transaction commits the claim.
    */
-  /**
-   * Refuses a completed transfer whose bytes are not the ones approved, removing what arrived.
-   *
-   * The same effect the refusal always had: `discard` claims the session and deletes the staged
-   * object, and the refusal is thrown inside that transaction so the claim rolls back with it — the
-   * session stays as it was, and the bytes are gone either way. Its own short transaction now,
-   * because completion no longer runs inside one (STG-1).
-   */
-  private refuseTransfer(session: UploadSessionRecord, refusal: Error): Promise<never> {
-    return this.writer.change<never>(async () => {
-      await this.discard(session.targetKey, session.id);
-      throw refusal;
-    });
-  }
-
   private async discard(key: string, id: UploadSessionId): Promise<boolean> {
     const claimed = await this.sessions.settle(id, UploadSessionState.ABORTED, null);
     if (claimed) {
