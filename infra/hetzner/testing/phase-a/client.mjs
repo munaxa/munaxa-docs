@@ -19,6 +19,8 @@ const API = e.PA_API_URL ?? 'http://api:3001';
 const TTL_API = e.PA_TTL_API_URL ?? 'http://phase-a-api-ttl:3001';
 const STATE = '/pa/state.json';
 const MiB = 1024 * 1024;
+/** How many times a load-step completion refused as busy is completed again. */
+const BUSY_RETRIES = 12;
 
 const result = (step, facts) => console.log(`RESULT ${JSON.stringify({ step, ...facts })}`);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -321,12 +323,76 @@ const steps = {
     console.log(`load ${n}: ${n} files of ~120 MiB prepared; starting together`);
     const started = Date.now();
     const outcomes = await Promise.all(
-      files.map((bytes, i) =>
-        upload(API, token, bytes, `load${n}-${i}`, { mimeType: 'application/pdf' }),
-      ),
+      files.map(async (bytes, i) => {
+        const facts = await upload(API, token, bytes, `load${n}-${i}`, {
+          mimeType: 'application/pdf',
+        });
+        // A completion refused as busy (503, nothing changed) is completed again, as a client
+        // that reads the answer would: that is the behaviour the scan budget promises.
+        facts.busyRefusals = 0;
+        while (facts.complete === 503 && facts.busyRefusals < BUSY_RETRIES) {
+          facts.busyRefusals += 1;
+          await sleep(10_000);
+          const again = await complete(API, token, facts.sessionId);
+          Object.assign(facts, {
+            complete: again.status,
+            scanStatus: again.scanStatus,
+            fileObjectId: again.fileObjectId,
+            problem: again.problem,
+          });
+        }
+        facts.ms = Date.now() - started;
+        return facts;
+      }),
     );
     for (const facts of outcomes) result(`load${n}`, facts);
     result(`load${n}-total`, { count: n, wallSeconds: Math.round((Date.now() - started) / 1000) });
+  },
+
+  /** 7a. Uploads transferred and not yet completed: what the API will be killed in the middle of. */
+  async 'interrupt-prepare'(count) {
+    const token = await admin();
+    const prepared = [];
+    for (let i = 0; i < Number(count); i += 1) {
+      const bytes = pdfOfSize(120 * MiB + i, `interrupt-${i}`);
+      const created = await createUpload(API, token, bytes, {
+        filename: `interrupt-${i}.pdf`,
+        mimeType: 'application/pdf',
+      });
+      const transfer = await put(created.body, bytes);
+      prepared.push({
+        sessionId: created.body.uploadSessionId,
+        digest: sha256(bytes),
+        put: transfer.status,
+      });
+    }
+    save({ ...safeState(), interrupted: prepared });
+    for (const facts of prepared) result('interrupt-prepare', facts);
+  },
+
+  /** 7b. Every prepared upload completed at once; the API is killed while they run. */
+  async 'interrupt-complete'() {
+    const token = await admin();
+    const { interrupted } = state();
+    const outcomes = await Promise.all(
+      interrupted.map(async (upload) => {
+        try {
+          return { ...upload, ...(await complete(API, token, upload.sessionId)) };
+        } catch (error) {
+          return { ...upload, error: String(error.cause?.code ?? error.message) };
+        }
+      }),
+    );
+    for (const facts of outcomes) result('interrupt-complete', facts);
+  },
+
+  /** 7c. The named interrupted uploads completed again, as a person retrying would. */
+  async 'interrupt-retry'(...sessionIds) {
+    const token = await admin();
+    const { interrupted } = state();
+    for (const upload of interrupted.filter((u) => sessionIds.includes(u.sessionId))) {
+      result('interrupt-retry', { ...upload, ...(await complete(API, token, upload.sessionId)) });
+    }
   },
 
   /**

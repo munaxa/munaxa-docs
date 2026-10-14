@@ -41,7 +41,7 @@ pa_finding() { echo "FINDING  $*"; }
 pa_measure() { echo "MEASURE  $*"; }
 
 extra_cleanup() {
-  docker rm -f phase-a-api-ttl >/dev/null 2>&1 || true
+  docker rm -f phase-a-api-ttl phase-a-sweeper >/dev/null 2>&1 || true
   if [ -n "${pa_sampler:-}" ]; then kill "$pa_sampler" 2>/dev/null || true; fi
   rm -rf "$pa_dir"
 }
@@ -74,6 +74,9 @@ pa_mc() {
 pa_exists() { pa_mc stat "$pa_bucket/$1" >/dev/null 2>&1; }
 
 pa_sql() { tenant_sql; }
+
+# Whether a JavaScript condition over one RESULT line holds: pa_holds '<find>' '<condition on f>'.
+pa_holds() { [ "$(pa_q "((f) => Boolean($2))($1 ?? {})")" = "true" ]; }
 
 # Fires a declared schedule now, through the product's own operator script (scripts/run-schedule.mjs)
 # on the API's network and configuration: only the clock is substituted.
@@ -162,15 +165,17 @@ done
 pa_over="size-128MiB-plus-1"
 pa_create="$(pa_q "R.find((r) => r.label === '$pa_over')?.create ?? null")"
 pa_sessions="$(printf 'SELECT count(*) FROM upload_session WHERE declared_size_bytes = %s;\n' $((128 * MiB + 1)) | pa_sql)"
-if [ "$pa_create" -ge 400 ] 2>/dev/null && [ "$pa_sessions" = "0" ]; then
+if [ "$pa_create" = "415" ] && [ "$pa_sessions" = "0" ] \
+  && pa_holds "R.find((r) => r.label === '$pa_over')" "/too large.*128 MB/.test(f.problem?.detail ?? '')"; then
   pa_pass "$pa_over: refused at creation (HTTP $pa_create, $(pa_q "R.find((r) => r.label === '$pa_over')?.problem")); no upload session row; no target issued"
 else
   pa_fail "$pa_over: creation answered $pa_create; upload sessions recorded for that size: $pa_sessions"
 fi
 pa_text="text-32MiB-plus-1"
-pa_finding "$pa_text (text family cap 32 MiB): creation answered $(pa_q "R.find((r) => r.label === '$pa_text')?.create ?? null") $(pa_q "R.find((r) => r.label === '$pa_text')?.problem ?? null")"
-if [ "$(pa_q "R.find((r) => r.label === '$pa_text')?.create ?? 0")" -lt 400 ]; then
-  pa_fail "$pa_text: a text file over its family's 32 MiB cap was accepted"
+if pa_holds "R.find((r) => r.label === '$pa_text')" "f.create === 415 && /too large.*32 MB/.test(f.problem?.detail ?? '')"; then
+  pa_pass "$pa_text: refused as too large, naming the text limit — $(pa_q "R.find((r) => r.label === '$pa_text')?.problem")"
+else
+  pa_fail "$pa_text: expected 415 naming the 32 MB text limit — got $(pa_q "R.find((r) => r.label === '$pa_text') ?? null")"
 fi
 pa_staged=0
 for pa_session in $(pa_q "R.filter((r) => r.step === 'sizes' && r.sessionId).map((r) => r.sessionId).join(' ')"); do
@@ -192,10 +197,11 @@ pa_nd_state="$(printf "SELECT state FROM upload_session WHERE id = '%s';\n" "$pa
 pa_nd_files="$(printf "SELECT count(*) FROM file_object WHERE checksum_sha256 = '%s';\n" "$pa_nd_digest" | pa_sql)"
 if pa_exists "$pa_tenant_prefix/staging/$pa_nd_session"; then pa_nd_object=present; else pa_nd_object=absent; fi
 pa_finding "no-digest: database session state ${pa_nd_state:-<none>}; file_object rows for its bytes: $pa_nd_files; staged object: $pa_nd_object"
-if [ "$pa_nd_files" = "0" ]; then
-  pa_pass "no-digest: nothing recorded as a file for bytes whose digest was never confirmed"
+if [ "$pa_nd_files" = "0" ] && [ "$pa_nd_state" = "ABORTED" ] && [ "$pa_nd_object" = "absent" ] \
+  && pa_holds "R.find((r) => r.step === 'no-digest')" "f.complete === 415 && /fingerprint could not be confirmed/.test(f.problem?.detail ?? '')"; then
+  pa_pass "no-digest: refused 415 naming the unconfirmed fingerprint; session ABORTED; staged bytes removed; no file recorded"
 else
-  pa_fail "no-digest: a file_object was recorded for unconfirmed bytes"
+  pa_fail "no-digest: expected 415 (fingerprint), ABORTED, staged bytes removed, no file — got session ${pa_nd_state:-<none>}, staged $pa_nd_object, files $pa_nd_files"
 fi
 
 # =================================================================================================
@@ -244,9 +250,29 @@ for pa_variant in expired-before-put slow-before-sweep sweep-during-put; do
     pa_fail "$pa_variant: a file_object ($pa_files) exists without a 201 CLEAN completion"
   fi
 done
+pa_slow_state() {
+  printf "SELECT state FROM upload_session WHERE id = '%s';\n" \
+    "$(pa_q "R.find((r) => r.variant === '$1')?.sessionId ?? ''")" | pa_sql
+}
+if pa_holds "R.find((r) => r.variant === 'expired-before-put')" "f.put === 403 && f.complete === 422 && /link expired/.test(f.problem?.detail ?? '')" \
+  && [ "$(pa_slow_state expired-before-put)" = "EXPIRED" ]; then
+  pa_pass "expired-before-put: the store refused the late PUT (403); completion 422 naming the expired link; session EXPIRED"
+else
+  pa_fail "expired-before-put: expected PUT 403, completion 422 (link expired), session EXPIRED — got session $(pa_slow_state expired-before-put)"
+fi
+if pa_holds "R.find((r) => r.variant === 'slow-before-sweep')" "f.complete === 201 && f.scanStatus === 'CLEAN'"; then
+  pa_pass "slow-before-sweep: a transfer that started in time and ended after the link expired completed 201 CLEAN (the store checks the link when the transfer starts)"
+else
+  pa_fail "slow-before-sweep: expected 201 CLEAN"
+fi
 pa_sdp_session="$(pa_q "R.find((r) => r.variant === 'sweep-during-put')?.sessionId ?? ''")"
+if pa_holds "R.find((r) => r.variant === 'sweep-during-put')" "f.complete === 422 && /already been finished/.test(f.problem?.detail ?? '')"; then
+  pa_pass "sweep-during-put: completion after the sweep is refused 422 (already finished); no file recorded"
+else
+  pa_fail "sweep-during-put: expected completion 422 (already finished)"
+fi
 if pa_exists "$pa_tenant_prefix/staging/$pa_sdp_session"; then
-  pa_finding "sweep-during-put: the staged object exists with its session $(printf "SELECT state FROM upload_session WHERE id = '%s';\n" "$pa_sdp_session" | pa_sql) — no OPEN session refers to it, so no later sweep will delete it (an untracked object; only a bucket lifecycle rule would)"
+  pa_finding "sweep-during-put: its staged object is still there (session $(pa_slow_state sweep-during-put)); step 7's orphan sweep is expected to remove it"
 fi
 
 # =================================================================================================
@@ -284,7 +310,7 @@ pa_load() {
   local finished
   finished="$(pa_q "R.filter((r) => r.step === 'load$n').length")"
   if [ "$ok" = "true" ] && [ "$finished" = "$n" ] && [ "$(pa_api_state)" = "$pa_api_baseline_state" ]; then
-    pa_pass "$n concurrent uploads: all $n completed 201 CLEAN; API not restarted or OOM-killed ($(pa_api_state))"
+    pa_pass "$n concurrent uploads: all $n completed 201 CLEAN; API not restarted or OOM-killed ($(pa_api_state)); completions refused as busy and completed again: $(pa_q "R.filter((r) => r.step === 'load$n').reduce((sum, r) => sum + (r.busyRefusals ?? 0), 0)")"
     return 0
   fi
   pa_fail "$n concurrent uploads: outcomes $(pa_q "R.filter((r) => r.step === 'load$n').map((r) => [r.complete ?? null, r.scanStatus ?? null, r.error ?? r.problem ?? null])"); API state $(pa_api_state) (baseline $pa_api_baseline_state)"
@@ -340,7 +366,11 @@ if ! pa_exists "$pa_tampered_key" || pa_exists "$pa_missing_key"; then
 fi
 pa_client dl-pre || pa_fail "the pre-verifier download checks did not complete"
 for pa_c in tampered missing; do
-  pa_finding "before the verifier, $pa_c object: link issued $(pa_q "R.find((r) => r.step === 'dl-pre' && r.case === '$pa_c')?.issue"), store answered $(pa_q "R.find((r) => r.step === 'dl-pre' && r.case === '$pa_c')?.get"), bytes match the recorded digest: $(pa_q "R.find((r) => r.step === 'dl-pre' && r.case === '$pa_c')?.sameBytes")"
+  if pa_holds "R.find((r) => r.step === 'dl-pre' && r.case === '$pa_c')" "f.issue === 409 && f.get === undefined && /integrity check/.test(f.problem?.detail ?? '')"; then
+    pa_pass "before the verifier, the $pa_c object is refused 409 (integrity check) and no link is issued"
+  else
+    pa_fail "before the verifier, the $pa_c object: expected 409 with no link — got $(pa_q "R.find((r) => r.step === 'dl-pre' && r.case === '$pa_c') ?? null")"
+  fi
 done
 
 echo "firing storage.verify-integrity (the rolling verifier) and waiting for its findings"
@@ -378,6 +408,178 @@ expect expired-link 'f.beforeExpiry === 200 && f.afterExpiry === 403' "served be
 expect edited-signature 'f.status === 403' "refused by the store"
 expect edited-path 'f.status === 403' "refused by the store"
 pa_finding "non-ASCII file name 'Résumé تقرير.txt': link $(d unicode issue), store $(d unicode get), same bytes $(d unicode sameBytes); Content-Disposition as received: $(d unicode disposition)"
+
+# =================================================================================================
+step "Phase A 7 — completions interrupted by a killed API, a retry, and the orphan sweep"
+# The orphan sweep runs only on a process that consumes the retention lane. For this step one test
+# container does, with a grace of 240 s (the least configuration accepts at the default scan queue
+# wait and timeout); the stack's own API and the 30 s-link API are stopped while it runs, so the
+# sweep's settings are the ones under test. STORAGE_ORPHAN_SWEEP_DRY_RUN is tried first.
+pa_client interrupt-prepare 4 || pa_fail "the interrupted uploads could not be prepared"
+pa_client interrupt-complete &
+pa_complete_pid=$!
+# Kill the API while completions are under way: as soon as at least one has copied its bytes to the
+# content key (each ~120 MiB scan then takes several seconds), so the kill interrupts real work.
+pa_digests_list="$(pa_q "R.filter((r) => r.step === 'interrupt-prepare').map((r) => r.digest).join(' ')")"
+for _ in $(seq 1 120); do
+  pa_copied=0
+  for pa_d in $pa_digests_list; do
+    pa_exists "$pa_tenant_prefix/blobs/${pa_d:0:2}/${pa_d:2:2}/$pa_d" && pa_copied=$((pa_copied + 1))
+  done
+  [ "$pa_copied" -gt 0 ] && break
+  sleep 0.5
+done
+pa_killed_at="$(date +%s)"
+docker kill --signal KILL "$(compose ps -q api)" >/dev/null || pa_fail "could not kill the API"
+wait "$pa_complete_pid" || true
+# Docker may treat a kill it was asked for as a manual stop and not restart it; a supervisor would.
+sleep 5
+[ "$(docker inspect -f '{{.State.Running}}' "$(compose ps -aq api)")" = "true" ] || compose start api >/dev/null
+pa_recovered="$(pa_wait_api)" || pa_fail "the API did not come back after being killed"
+pa_measure "API live again ${pa_recovered:-?} s after being killed; $(pa_api_state)"
+
+pa_interrupt_state() { # session → "state staged blob rows"
+  local session="$1" digest
+  digest="$(pa_q "R.find((r) => r.step === 'interrupt-prepare' && r.sessionId === '$session').digest")"
+  local staged=absent blob=absent
+  pa_exists "$pa_tenant_prefix/staging/$session" && staged=present
+  pa_exists "$pa_tenant_prefix/blobs/${digest:0:2}/${digest:2:2}/$digest" && blob=present
+  echo "$(printf "SELECT state FROM upload_session WHERE id = '%s';\n" "$session" | pa_sql) staged:$staged blob:$blob rows:$(printf "SELECT count(*) FROM file_object WHERE checksum_sha256 = '%s';\n" "$digest" | pa_sql)"
+}
+pa_sessions_7="$(pa_q "R.filter((r) => r.step === 'interrupt-prepare').map((r) => r.sessionId).join(' ')")"
+pa_unfinished=0
+for pa_session in $pa_sessions_7; do
+  pa_st="$(pa_interrupt_state "$pa_session")"
+  pa_finding "after the kill, upload $pa_session: $pa_st; client: $(pa_q "(() => { const r = R.find((x) => x.step === 'interrupt-complete' && x.sessionId === '$pa_session'); return r?.error ?? r?.status ?? null; })()")"
+  case "$pa_st" in
+    "OPEN staged:present"*) pa_unfinished=$((pa_unfinished + 1)) ;;
+    "COMPLETED staged:absent"*) ;;
+    *) pa_fail "upload $pa_session after the kill is neither OPEN with its staged bytes nor COMPLETED: $pa_st" ;;
+  esac
+done
+pa_measure "$pa_unfinished of 4 completions were interrupted by the kill"
+
+# The interrupted uploads that had not copied anything yet are completed again, as a person would:
+# their staged bytes are still there. Those that had copied are left, as an abandoned upload is,
+# so their content keys become the orphans the sweep must find.
+pa_retry_ids=""
+for pa_session in $pa_sessions_7; do
+  case "$(pa_interrupt_state "$pa_session")" in
+    "OPEN staged:present blob:absent"*) pa_retry_ids="$pa_retry_ids $pa_session" ;;
+  esac
+done
+pa_measure "completing again: ${pa_retry_ids:- none}"
+# shellcheck disable=SC2086 # one argument per session id
+pa_client interrupt-retry $pa_retry_ids || pa_fail "the retries did not complete"
+for pa_session in $(pa_q "R.filter((r) => r.step === 'interrupt-retry').map((r) => r.sessionId).join(' ')"); do
+  pa_r="$(pa_q "R.filter((r) => r.step === 'interrupt-retry' && r.sessionId === '$pa_session').at(-1)")"
+  case "$(pa_interrupt_state "$pa_session")" in
+    "COMPLETED staged:absent blob:present rows:1")
+      pa_pass "upload $pa_session completed after the kill (retry answered $(pa_q "R.filter((r) => r.step === 'interrupt-retry' && r.sessionId === '$pa_session').at(-1).status")): one row, its blob, no staged bytes" ;;
+    *) pa_fail "upload $pa_session after its retry: $(pa_interrupt_state "$pa_session"); client $pa_r" ;;
+  esac
+done
+
+# The other two are left, as an abandoned upload is: their links expire (300 s), the expiry sweep
+# settles them, and whatever their interrupted completion copied has no row.
+pa_wait_until=$((pa_killed_at + 310))
+pa_now="$(date +%s)"
+[ "$pa_now" -lt "$pa_wait_until" ] && { echo "waiting $((pa_wait_until - pa_now)) s for the abandoned uploads' links to expire"; sleep $((pa_wait_until - pa_now)); }
+pa_schedule storage.sweep-upload-sessions >/dev/null || pa_fail "the upload sweep could not be fired"
+sleep 10
+
+# Only the sweeper consumes the retention lane from here.
+docker rm -f phase-a-api-ttl >/dev/null 2>&1 || true
+compose stop api >/dev/null
+pa_sweeper() { # dry-run true|false
+  docker rm -f phase-a-sweeper >/dev/null 2>&1 || true
+  compose run -d --no-deps --name phase-a-sweeper -e STORAGE_ORPHAN_GRACE_SECONDS=240 \
+    -e "STORAGE_ORPHAN_SWEEP_DRY_RUN=$1" api >/dev/null
+  for _ in $(seq 1 60); do
+    docker exec phase-a-sweeper node -e "fetch('http://127.0.0.1:3001/api/health/live').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+# One pass: fire the schedule, wait for the sweeper's log line for this tenant, print its JSON.
+pa_sweep_lines() {
+  { docker logs phase-a-sweeper 2>&1 || true; } | grep '"msg":"The orphan sweep' \
+    | grep -F "\"tenantId\":\"$acme_id\"" || true
+}
+pa_sweep_pass() {
+  local before
+  before="$(pa_sweep_lines | wc -l)"
+  pa_schedule storage.sweep-orphaned-objects >/dev/null || return 1
+  for _ in $(seq 1 60); do
+    if [ "$(pa_sweep_lines | wc -l)" -gt "$before" ]; then
+      pa_sweep_lines | tail -1
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+pa_present_7() { # how many of the abandoned uploads' blobs, and all of step 7's staged bytes, are present
+  local blobs=0 staged=0 session digest
+  for session in $pa_sessions_7; do
+    digest="$(pa_q "R.find((r) => r.step === 'interrupt-prepare' && r.sessionId === '$session').digest")"
+    pa_exists "$pa_tenant_prefix/blobs/${digest:0:2}/${digest:2:2}/$digest" && blobs=$((blobs + 1))
+    pa_exists "$pa_tenant_prefix/staging/$session" && staged=$((staged + 1))
+  done
+  echo "blobs:$blobs staged:$staged"
+}
+pa_digests_7="$(pa_q "R.filter((r) => r.step === 'interrupt-prepare').map((r) => \"'\" + r.digest + \"'\").join(',')")"
+pa_before_sweep="$(pa_present_7)"
+pa_measure "before the orphan sweep: step 7 objects $pa_before_sweep; file rows for step 7's bytes: $(printf "SELECT count(*) FROM file_object WHERE checksum_sha256 IN (%s);\n" "$pa_digests_7" | pa_sql)"
+pa_sweeper true || pa_fail "the dry-run sweeper did not start"
+pa_dry="$(pa_sweep_pass)" || pa_fail "the dry-run orphan sweep did not report"
+pa_measure "dry run: $(printf '%s' "$pa_dry" | node -e 'const l=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(JSON.stringify({dryRun:l.dryRun,graceSeconds:l.graceSeconds,staging:l.staging,blobs:l.blobs,orphanedKeys:l.orphanedKeys.length}))')"
+pa_after_dry="$(pa_present_7)"
+pa_sweeper false || pa_fail "the sweeper did not start"
+pa_real="$(pa_sweep_pass)" || pa_fail "the orphan sweep did not report"
+pa_measure "sweep: $(printf '%s' "$pa_real" | node -e 'const l=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(JSON.stringify({dryRun:l.dryRun,staging:l.staging,blobs:l.blobs,orphanedKeys:l.orphanedKeys}))')"
+pa_after_real="$(pa_present_7)"
+pa_again="$(pa_sweep_pass)" || pa_fail "the second orphan sweep did not report"
+pa_measure "second sweep: $(printf '%s' "$pa_again" | node -e 'const l=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(JSON.stringify({staging:l.staging,blobs:l.blobs,orphaned:l.orphanedKeys.length}))')"
+docker rm -f phase-a-sweeper >/dev/null 2>&1 || true
+compose start api >/dev/null
+pa_wait_api >/dev/null || pa_fail "the API did not come back after the sweep"
+
+# Judged from the store and the database, not from the sweep's own report.
+if printf '%s' "$pa_dry" | grep -q '"dryRun":true' && [ "$pa_after_dry" = "$pa_before_sweep" ]; then
+  pa_pass "dry run: reported its findings and removed nothing (step 7 objects before and after: $pa_after_dry)"
+else
+  pa_fail "dry run: expected nothing removed — before $pa_before_sweep, after $pa_after_dry"
+fi
+pa_recorded_7="$(printf "SELECT count(DISTINCT checksum_sha256) FROM file_object WHERE checksum_sha256 IN (%s);\n" "$pa_digests_7" | pa_sql)"
+pa_orphaned_7="$(printf '%s' "$pa_real" | node -e 'const l=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(l.orphanedKeys.filter((k) => k.startsWith("blobs/")).length)')"
+if [ "$pa_after_real" = "blobs:$pa_recorded_7 staged:0" ] && [ "$pa_orphaned_7" -gt 0 ]; then
+  pa_pass "orphan sweep: removed $pa_orphaned_7 orphaned content key(s); of step 7 only the $pa_recorded_7 uploads with a file row keep their blob, and no staged object is left"
+else
+  pa_fail "orphan sweep: expected blobs:$pa_recorded_7 staged:0 with at least one orphan removed — got $pa_after_real, $pa_orphaned_7 orphaned content keys"
+fi
+if printf '%s' "$pa_again" | grep -q '"orphanedKeys":\[\]'; then
+  pa_pass "a second orphan sweep found nothing to remove"
+else
+  pa_fail "a second orphan sweep still found orphans: $pa_again"
+fi
+if ! pa_exists "$pa_tenant_prefix/staging/$pa_sdp_session"; then
+  pa_pass "step 3's staged object left by the sweep-during-put transfer is gone"
+else
+  pa_fail "step 3's staged object left by the sweep-during-put transfer is still there"
+fi
+# Nothing legitimate was touched: every file row's object is still in the store.
+pa_missing_rows=0
+for pa_key in $(printf "SELECT storage_key FROM file_object WHERE deleted_at IS NULL;\n" | pa_sql); do
+  pa_exists "$pa_tenant_prefix/$pa_key" || pa_missing_rows=$((pa_missing_rows + 1))
+done
+pa_quarantined="$(printf "SELECT count(*) FROM file_object WHERE deleted_at IS NULL AND integrity_status IN ('UNREADABLE');\n" | pa_sql)"
+# Step 6 deliberately deleted one object (its row is UNREADABLE); every other row's bytes must be there.
+if [ "$pa_missing_rows" = "$pa_quarantined" ]; then
+  pa_pass "every live file row's object is still in the store (bar the $pa_quarantined step 6 deleted on purpose)"
+else
+  pa_fail "$pa_missing_rows live file rows have no object, $pa_quarantined of them deleted on purpose"
+fi
 
 # =================================================================================================
 step "Phase A — what is left, before the stack is removed"
