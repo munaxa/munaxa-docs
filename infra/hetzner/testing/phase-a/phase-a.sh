@@ -101,12 +101,29 @@ pa_usage() {
   local dir="$1"
   if [ -f "$dir/memory.usage_in_bytes" ]; then cat "$dir/memory.usage_in_bytes"; else cat "$dir/memory.current"; fi
 }
-# Samples the API's memory every half second into a file; prints the peak when stopped.
+# The container's anonymous memory — the process's own heap and buffers, without the page cache of
+# files it wrote (which the kernel reclaims, and which `usage` counts).
+pa_anon() {
+  local dir="$1"
+  if [ -f "$dir/memory.stat" ] && grep -q '^anon ' "$dir/memory.stat"; then
+    awk '$1 == "anon" {print $2}' "$dir/memory.stat"
+  else
+    awk '$1 == "total_rss" || $1 == "rss" {print $2; exit}' "$dir/memory.stat"
+  fi
+}
+# Samples the API's memory every half second into a file; prints the peak when stopped. The peak of
+# the anonymous part is kept beside it (pa_anon_peak), because a download writes its staging file
+# through the page cache and `usage` then counts those cached pages too.
 pa_sample_start() {
   local dir
   dir="$(pa_cgroup "$(pa_api_id)")" || { echo "no cgroup for the API container"; return 1; }
   : > "$pa_dir/mem.samples"
-  (while :; do pa_usage "$dir" >> "$pa_dir/mem.samples" 2>/dev/null; sleep 0.5; done) &
+  : > "$pa_dir/anon.samples"
+  (while :; do
+    pa_usage "$dir" >> "$pa_dir/mem.samples" 2>/dev/null
+    pa_anon "$dir" >> "$pa_dir/anon.samples" 2>/dev/null
+    sleep 0.5
+  done) &
   pa_sampler=$!
 }
 pa_sample_stop() {
@@ -114,6 +131,7 @@ pa_sample_stop() {
   kill "$pa_sampler" 2>/dev/null || true
   wait "$pa_sampler" 2>/dev/null || true
   pa_sampler=''
+  pa_anon_peak="$(sort -n "$pa_dir/anon.samples" | tail -1)"
   sort -n "$pa_dir/mem.samples" | tail -1
 }
 # Counts lines of a store listing; a prefix with nothing under it is 0, not an error.
@@ -307,7 +325,7 @@ pa_load() {
   pa_sample_start || pa_fail "could not sample the API's memory"
   pa_client load "$n" || pa_fail "the $n-upload load step did not complete"
   peak="$(pa_sample_stop)"
-  pa_measure "API peak memory, $n concurrent uploads: $(pa_mib "$peak") MiB of 1536 MiB; wall time $(pa_q "R.find((r) => r.step === 'load$n-total')?.wallSeconds") s"
+  pa_measure "API peak memory, $n concurrent uploads: $(pa_mib "$peak") MiB of 1536 MiB (anonymous $(pa_mib "${pa_anon_peak:-0}") MiB); wall time $(pa_q "R.find((r) => r.step === 'load$n-total')?.wallSeconds") s"
   local ok
   ok="$(pa_q "R.filter((r) => r.step === 'load$n').every((r) => r.complete === 201 && r.scanStatus === 'CLEAN')")"
   local finished
@@ -534,7 +552,7 @@ pa_dl_measure() { # name concurrency label
   peak="$(pa_sample_stop)"
   staged="$(pa_staged_stop)"
   local m="R.filter((r) => r.step === 'dl-measure' && r.case === '$1' && r.concurrency === $2).pop()"
-  pa_measure "$3: $(pa_q "(($m).outcomes).map((o) => o.status).join(',')") | TTFB ms $(pa_q "(($m).outcomes).map((o) => o.ttfbMs).join(',')") | total ms $(pa_q "(($m).outcomes).map((o) => o.totalMs).join(',')") | wall $(pa_q "($m).wallMs") ms | API peak memory $(pa_mib "$peak") MiB | peak staged $(pa_mib "${staged:-0}") MiB"
+  pa_measure "$3: $(pa_q "(($m).outcomes).map((o) => o.status).join(',')") | TTFB ms $(pa_q "(($m).outcomes).map((o) => o.ttfbMs).join(',')") | total ms $(pa_q "(($m).outcomes).map((o) => o.totalMs).join(',')") | wall $(pa_q "($m).wallMs") ms | API peak memory $(pa_mib "$peak") MiB (of which anonymous, i.e. not page cache: $(pa_mib "${pa_anon_peak:-0}") MiB) | peak staged $(pa_mib "${staged:-0}") MiB"
   if pa_holds "$m" "f.outcomes.every((o) => o.status === 200 && o.sameBytes === true)"; then
     pa_pass "$3: every download served the document's exact bytes"
   else
