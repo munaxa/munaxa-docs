@@ -1,0 +1,36 @@
+# PHASE B OVERLAY — local test stack only (ADR-0026 §10, docs/reports/hetzner-phase-b-browser-test-plan.md).
+# Never used by a deployment, and no product default changes: the 30 s link lifetime below applies to
+# this throwaway stack's API only, for the expired-link cases.
+#
+#   added by phase-b.sh after compose.yaml and testing/compose.test.yaml
+#
+# `browser` runs Chromium (Playwright 1.62.1, the version in apps/web's lockfile) on the stack's own
+# networks: `edge` to reach the proxy and `ci-storage` to reach the test MinIO, whose presigned
+# upload URLs name http://storage:9000. Inside the container a small forward makes the proxy answer at
+# http://localhost:8080 — the origin CORS_ORIGINS, WEB_BASE_URL and STORAGE_PUBLIC_URL name — so
+# cookies, CORS and the secure context the upload checksum needs behave as they do for a person.
+
+services:
+  api:
+    environment:
+      DOWNLOAD_LINK_TTL_SECONDS: '30'
+
+  browser:
+    profiles: ['test']
+    image: ${PHASE_B_BROWSER_IMAGE:-mcr.microsoft.com/playwright:v1.62.1-noble}
+    working_dir: /repo/infra/hetzner/testing/phase-b
+    user: pwuser
+    environment:
+      PB_PROXY_URL: http://proxy:8080
+      SMOKE_TENANT: ${PHASE_B_TENANT:-acme}
+    env_file:
+      - ${DOCS_CONFIG_DIR}/smoke.env
+    volumes:
+      # Paths in an overlay resolve against the first file (infra/hetzner/). The repository, read
+      # only, for the `playwright` package apps/web already depends on (pnpm's links resolve inside it).
+      - ../..:/repo:ro
+      - ${PHASE_B_OUT:?set PHASE_B_OUT}:/out
+    networks:
+      - edge
+      - ci-storage
+    shm_size: 1g
