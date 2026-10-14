@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type { StorageDriverKey } from '@edms/domain';
+import { contentDisposition } from '@edms/utils';
 
 import { StorageUnavailableError } from '../../core/errors/application-errors';
 import type {
@@ -217,8 +218,11 @@ export class S3StorageAdapter implements StoragePort {
       // Set through the query rather than as a signed request header, because the browser is not
       // going to send it — it is the *response* header the store should emit, and only the store
       // can attach it to bytes it serves.
-      query['response-content-disposition'] =
-        `${options.inline === true ? 'inline' : 'attachment'}; filename="${options.filename}"`;
+      // RFC 6266 with RFC 8187's `filename*`, so an Arabic or accented name survives — ADR-0026 §10.
+      query['response-content-disposition'] = contentDisposition(
+        options.inline === true ? 'inline' : 'attachment',
+        options.filename,
+      );
     }
     const signed = presignedQueryString({
       credentials,

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { StorageDriver, TenantStatus, type TenantId, asId } from '@edms/domain';
-import { uuidv7 } from '@edms/utils';
+import { sanitizeFilename, uuidv7 } from '@edms/utils';
 
 import type { TenantPlacement } from '../../../core/tenancy/tenant-placement';
 import type { TenantRegistry } from '../../../core/tenancy/tenant-registry.port';
@@ -373,6 +373,33 @@ describe('the S3 driver specifically', () => {
       expect(Buffer.from(await response.arrayBuffer())).toEqual(CONTENT);
     });
   });
+
+  it.each([
+    ['Arabic', 'تقرير الربع الأول.pdf', 'download.pdf'],
+    ['accented', 'Résumé café.pdf', 'Resume cafe.pdf'],
+    ['spaces and quotes', 'QA "draft" 2.pdf', 'QA _draft_ 2.pdf'],
+    ['unsafe', 'a.pdf\r\nSet-Cookie: x=1', 'a.pdfSet-Cookie_ x=1'],
+  ])(
+    'serves a %s name in the standard header, through the real store (ADR-0026 §10)',
+    async (_case, filename, fallback) => {
+      await as(ACME, async () => {
+        const signed = await scoped().createDownloadUrl(`${KEY}-signed-get`, {
+          expiresInSeconds: 120,
+          filename,
+        });
+        const response = await fetch(signed.url);
+        expect(response.status).toBe(200);
+        const header = response.headers.get('content-disposition') ?? '';
+        expect(header).not.toMatch(/[\r\n]/u);
+        expect(header.startsWith(`attachment; filename="${fallback}"`)).toBe(true);
+        expect(response.headers.get('set-cookie')).toBeNull();
+        const extended = /filename\*=UTF-8''([^;]+)$/u.exec(header)?.[1];
+        const chosen = extended === undefined ? fallback : decodeURIComponent(extended);
+        expect(chosen).toBe(sanitizeFilename(filename.replace(/[\r\n]/gu, '')));
+        await response.arrayBuffer();
+      });
+    },
+  );
 
   it('stops verifying the moment the URL is edited to name another object', async () => {
     // The property the whole signing exercise exists for. A signed URL for Acme's object, with the

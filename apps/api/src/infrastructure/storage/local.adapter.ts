@@ -13,6 +13,7 @@ import {
 import { dirname, relative, resolve, sep } from 'node:path';
 
 import type { StorageDriverKey } from '@edms/domain';
+import { contentDisposition } from '@edms/utils';
 
 import { ForbiddenError, StorageUnavailableError } from '../../core/errors/application-errors';
 import type {
@@ -113,7 +114,10 @@ export class LocalStorageAdapter implements StoragePort {
         method: 'GET',
         expiresAt,
         ...(options.filename !== undefined && {
-          disposition: `${options.inline === true ? 'inline' : 'attachment'}; filename="${options.filename}"`,
+          disposition: contentDisposition(
+            options.inline === true ? 'inline' : 'attachment',
+            options.filename,
+          ),
         }),
       }),
       expiresAt,

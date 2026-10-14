@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { StorageKey } from '../../ports/storage.port';
 import { LocalStorageAdapter } from './local.adapter';
+import { decodeTransferToken } from './local-transfer-token';
 
 /**
  * `copy` onto a key somebody is reading — RC D-3.
@@ -62,5 +63,28 @@ describe('copying onto a key that is being read', () => {
 
     expect((await adapter.read(key('blobs/bb/content')))?.toString()).toBe('second');
     expect(await readdir(join(root, 'blobs', 'bb'))).toEqual(['content']);
+  });
+});
+
+describe('the disposition a LOCAL download link carries (RFC 6266) — ADR-0026 §10', () => {
+  async function dispositionFor(filename: string, inline = false): Promise<string | null> {
+    const signed = await adapter.createDownloadUrl(key('acme/doc'), {
+      expiresInSeconds: 60,
+      filename,
+      inline,
+    });
+    const token = new URL(signed.url).searchParams.get('token') ?? '';
+    const decoded = decodeTransferToken('s'.repeat(32), token, 'GET', new Date());
+    return 'grant' in decoded ? (decoded.grant.disposition ?? null) : null;
+  }
+
+  it('signs the standard header for Arabic and accented names', async () => {
+    expect(await dispositionFor('تقرير.pdf')).toBe(
+      `attachment; filename="download.pdf"; filename*=UTF-8''%D8%AA%D9%82%D8%B1%D9%8A%D8%B1.pdf`,
+    );
+    expect(await dispositionFor('Résumé.txt', true)).toBe(
+      `inline; filename="Resume.txt"; filename*=UTF-8''R%C3%A9sum%C3%A9.txt`,
+    );
+    expect(await dispositionFor('QA-014.pdf')).toBe('attachment; filename="QA-014.pdf"');
   });
 });
