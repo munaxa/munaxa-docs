@@ -21,6 +21,11 @@
 #                      origin the bucket's CORS rule admits, for a browser preflight check).
 #                      Each run writes under its own prefix and deletes what it wrote afterwards.
 #   KEEP_STACK=1       leave the stack and its config running for inspection
+#   EXTRA_CHECKS       a script SOURCED after the standard checks, with this script's functions and
+#                      values in scope (compose, step, tenant_sql, $config, $run_prefix, $admin_pw).
+#                      Used by testing/phase-a/phase-a.sh. It may define `extra_cleanup`, which runs
+#                      before the stack is torn down, whether or not the run passed, and set
+#                      `extra_failures`, which fails the run after the remaining checks.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,6 +80,9 @@ cleanup() {
         process.exit(left.length === 0 ? 0 : 1);
       })().catch((error) => { console.error(`cleanup failed: ${error.message}`); process.exit(1); });
     ' || echo "WARNING: could not remove every test object; delete prefix $run_prefix/ by hand"
+  fi
+  if declare -F extra_cleanup >/dev/null; then
+    extra_cleanup || echo "WARNING: the extra checks' own cleanup did not complete"
   fi
   if [ "${KEEP_STACK:-}" = "1" ]; then
     echo "KEEP_STACK=1: stack left running; config in $config"
@@ -340,6 +348,11 @@ if [ "$scanned" != "t" ]; then
 fi
 echo "PASS  the ICAP scanner recorded an EICAR signature match (INFECTED) and a CLEAN verdict"
 
+if [ -n "${EXTRA_CHECKS:-}" ]; then
+  # shellcheck source=/dev/null
+  . "$EXTRA_CHECKS"
+fi
+
 # --- Production validation is on ------------------------------------------------------------------
 # Each case starts the real API image with the stack's own production configuration and ONE setting
 # made unsafe, and must be refused at boot naming that setting. No case prints the configuration.
@@ -386,6 +399,11 @@ echo "PASS  none of the generated credentials appears in $(printf '%s\n' "$logs"
 if [ -n "${CLAMAV_EXPORT_DIR:-}" ]; then
   mkdir -p "$CLAMAV_EXPORT_DIR"
   compose cp antivirus:/var/lib/clamav/. "$CLAMAV_EXPORT_DIR/" >/dev/null
+fi
+
+if [ "${extra_failures:-0}" -ne 0 ]; then
+  echo "FAIL  $extra_failures expectation(s) of the extra checks did not hold (see above)"
+  exit 1
 fi
 
 step "All stack checks passed"
