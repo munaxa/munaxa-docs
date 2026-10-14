@@ -672,7 +672,8 @@ export const configSchema = z
     // An object younger than the longest a completion can take may be one that completion is
     // about to record. A grace shorter than that would let the sweep delete bytes a row is about
     // to name — the one outcome it must never have.
-    const longestCompletionMs = config.AV_SCAN_QUEUE_TIMEOUT_MS + config.AV_SCAN_TIMEOUT_MS + 60_000;
+    const longestCompletionMs =
+      config.AV_SCAN_QUEUE_TIMEOUT_MS + config.AV_SCAN_TIMEOUT_MS + 60_000;
     if (config.STORAGE_ORPHAN_GRACE_SECONDS * 1000 < longestCompletionMs) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
