@@ -89,11 +89,54 @@ const print = (label, value) => console.log(`probe: ${label}: ${value}`);
     read !== null && Buffer.compare(read, bytes) === 0 ? 'yes' : 'no',
   );
 
+  await headerFacts();
   await replayThroughTheApi();
 })().catch((error) => {
   print('failed', error.message.replace(/https?:\/\/\S+/g, '<url>'));
   process.exit(1);
 });
+
+/**
+ * Run 38527543056: for the smoke test's 68-byte text the adapter's HEAD read the size as 0 while
+ * the SHA-256 was right; 30–40-byte texts read correctly. The adapter takes the size from
+ * `content-length` and reads a missing one as 0. This asks the store directly, through the
+ * adapter's own signed request, whether HEAD carries `content-length` and `content-encoding`, with
+ * fetch's default `accept-encoding` and with `identity`, for a short and a longer text. Header
+ * names and the encoding token only.
+ */
+async function headerFacts() {
+  for (const [label, text] of [
+    ['short text', `P-1 short ${Date.now()}\n`],
+    ['68-byte smoke text', `Munaxa Docs Hetzner template smoke test ${'0'.repeat(26)}\n`],
+    ['4 KiB text', `${'Munaxa Docs P-1 '.repeat(256)}\n`],
+  ]) {
+    const bytes = Buffer.from(text, 'utf8');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const key = `${e.RUN_PREFIX}headers/${digest}`;
+    const t = await storage.createUploadTarget({
+      key,
+      contentType: 'text/plain',
+      sizeBytes: bytes.length,
+      checksumSha256: digest,
+      expiresInSeconds: 300,
+    });
+    await fetch(t.url, { method: t.method, headers: t.headers, body: bytes });
+    for (const [mode, extra] of [
+      ['default accept-encoding', {}],
+      ['accept-encoding identity', { 'accept-encoding': 'identity' }],
+    ]) {
+      // `send` is the adapter's private signed request; plain JavaScript can reach it.
+      const r = await storage.send('HEAD', key, { 'x-amz-checksum-mode': 'ENABLED', ...extra });
+      const length = r.headers.get('content-length');
+      print(
+        `HEAD ${label} (${bytes.length} bytes), ${mode}`,
+        `${r.status}, content-length ${length === null ? 'absent' : length === String(bytes.length) ? 'ok' : `${length}`}, ` +
+          `content-encoding ${r.headers.get('content-encoding') ?? 'none'}, ` +
+          `transfer-encoding ${r.headers.get('transfer-encoding') ?? 'none'}`,
+      );
+    }
+  }
+}
 
 /**
  * Phase 2: the upload exactly as the product performs it — target from the API, PUT, completion —
