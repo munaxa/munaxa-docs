@@ -245,7 +245,15 @@ export class S3StorageAdapter implements StoragePort {
     // object that has one, so `decodeChecksum` reads null and `completeUploadSession` refuses a
     // perfectly good upload. Signing the digest into the presigned PUT was necessary and not
     // sufficient: the write had to record it *and* the read had to request it.
-    const response = await this.send('HEAD', key, { 'x-amz-checksum-mode': 'ENABLED' });
+    //
+    // `accept-encoding: identity` — ADR-0026 §10, gate P-1. fetch offers gzip by default, and
+    // Cloudflare R2 then answers HEAD for a text object of more than a few dozen bytes as if
+    // compressed: `content-encoding: gzip` and no `content-length`. The size is the stored size only
+    // when nothing is encoded, so it is asked for that way.
+    const response = await this.send('HEAD', key, {
+      'x-amz-checksum-mode': 'ENABLED',
+      'accept-encoding': 'identity',
+    });
     if (response.status === 404) {
       // A real answer — "no such object" — rather than a failure. The sweeper that looks for
       // orphaned upload sessions asks this question about keys it expects to be absent.
@@ -253,10 +261,17 @@ export class S3StorageAdapter implements StoragePort {
     }
     this.refuseFailure(response, 'read');
 
-    const size = Number(response.headers.get('content-length') ?? '0');
+    // A size the store did not state is unknown, not zero. Completion compares it with the size
+    // that was approved, so a guess either refuses a good upload or — were the guess ever right by
+    // accident — vouches for bytes nobody measured. Refused as a storage failure instead: nothing
+    // is recorded, and the upload can be completed again.
+    const length = response.headers.get('content-length');
+    if (length === null || !/^\d+$/.test(length)) {
+      throw new StorageUnavailableError('Object storage did not report the object’s size.');
+    }
     return {
       key,
-      sizeBytes: Number.isFinite(size) ? size : 0,
+      sizeBytes: Number(length),
       contentType: response.headers.get('content-type') ?? 'application/octet-stream',
       checksumSha256: decodeChecksum(response.headers.get('x-amz-checksum-sha256')),
       lastModifiedAt: new Date(response.headers.get('last-modified') ?? this.options.now()),

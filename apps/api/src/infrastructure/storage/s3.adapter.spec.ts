@@ -118,3 +118,77 @@ describe('signing with a fixed key pair', () => {
     expect(signed.expiresAt).toEqual(new Date(NOW.getTime() + 300 * 1000));
   });
 });
+
+/**
+ * The size `head()` reports is what completion compares with the approved size. Cloudflare R2 (gate
+ * P-1, ADR-0026 §10) answers a HEAD that offers gzip without `content-length` for text of more than
+ * a few dozen bytes, so the size is asked for uncompressed, and a size the store does not state is
+ * refused rather than read as 0.
+ */
+describe('the size head() reports', () => {
+  const STATIC = { accessKeyId: 'AKIA-STATIC', secretAccessKey: 'static-secret' };
+  const DIGEST_BASE64 = Buffer.alloc(32, 7).toString('base64');
+
+  function store(headers: Record<string, string>) {
+    return vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(new Response(null, { status: 200, headers })),
+    );
+  }
+
+  it('asks for an uncompressed answer, and signs that it did', async () => {
+    const fetch = store({ 'content-length': '68' });
+    await adapter(STATIC, fetch).head('acme/staging/upload');
+
+    const headers = fetch.mock.calls[0]![1]!.headers as Record<string, string>;
+    expect(headers['accept-encoding']).toBe('identity');
+    expect(headers['x-amz-checksum-mode']).toBe('ENABLED');
+    expect(headers['authorization']).toMatch(/SignedHeaders=[^,]*accept-encoding/);
+  });
+
+  it('reports the stored size and SHA-256 when the store states them', async () => {
+    const fetch = store({
+      'content-length': '68',
+      'content-type': 'text/plain',
+      'x-amz-checksum-sha256': DIGEST_BASE64,
+    });
+    const metadata = await adapter(STATIC, fetch).head('acme/staging/upload');
+
+    expect(metadata?.sizeBytes).toBe(68);
+    expect(metadata?.checksumSha256).toBe('07'.repeat(32));
+  });
+
+  it('reports an empty object as 0 bytes when the store says 0', async () => {
+    const metadata = await adapter(STATIC, store({ 'content-length': '0' })).head('acme/empty');
+    expect(metadata?.sizeBytes).toBe(0);
+  });
+
+  it('refuses, rather than reading 0, when the store states no size', async () => {
+    const fetch = store({ 'content-encoding': 'gzip', 'x-amz-checksum-sha256': DIGEST_BASE64 });
+    await expect(adapter(STATIC, fetch).head('acme/staging/upload')).rejects.toBeInstanceOf(
+      StorageUnavailableError,
+    );
+  });
+
+  it('refuses a size that is not a whole number of bytes', async () => {
+    for (const length of ['', '-1', '6.8', 'abc']) {
+      // `new Response` would drop an invalid content-length, so the headers are handed over as-is.
+      const fetch = vi.fn<typeof globalThis.fetch>(() =>
+        Promise.resolve({
+          status: 200,
+          ok: true,
+          headers: new Headers({ 'content-length': length }),
+        } as Response),
+      );
+      await expect(adapter(STATIC, fetch).head('acme/staging/upload')).rejects.toBeInstanceOf(
+        StorageUnavailableError,
+      );
+    }
+  });
+
+  it('fails completion of an upload whose size the store did not state, recording nothing', async () => {
+    const fetch = store({ 'x-amz-checksum-sha256': DIGEST_BASE64 });
+    await expect(
+      adapter(STATIC, fetch).completeUpload('acme/staging/upload', []),
+    ).rejects.toBeInstanceOf(StorageUnavailableError);
+  });
+});

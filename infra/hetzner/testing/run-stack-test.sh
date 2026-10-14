@@ -313,6 +313,33 @@ fi
 step "Smoke test"
 compose --profile test run --rm smoke
 
+# An HTTP answer is the API's word for it. The scan verdicts are also recorded in the tenant's
+# database with the scanner that gave them and, for an infected file, the signature that matched — a
+# name only the scanner supplies. Read back over the server's local socket; no credential involved.
+step "The scanner gave the verdicts (recorded scan results)"
+# The variable is the container's own (from postgres.env), so it expands there, not here.
+# shellcheck disable=SC2016
+tenant_sql() {
+  compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d edms_acme --no-psqlrc -tA -F " | "'
+}
+tenant_sql <<'SQL'
+SELECT scan_status, coalesce(scanner, 'none'), coalesce(scan_threat, '-'), scanned_at IS NOT NULL,
+       count(*)
+  FROM file_object GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3;
+SQL
+scanned="$(tenant_sql <<'SQL'
+SELECT EXISTS (SELECT 1 FROM file_object WHERE scan_status = 'INFECTED' AND scanner LIKE 'ICAP %'
+                 AND scan_threat ILIKE '%eicar%' AND scanned_at IS NOT NULL)
+   AND EXISTS (SELECT 1 FROM file_object WHERE scan_status = 'CLEAN' AND scanner LIKE 'ICAP %'
+                 AND scanned_at IS NOT NULL);
+SQL
+)"
+if [ "$scanned" != "t" ]; then
+  echo "FAIL  no scanner-recorded INFECTED (EICAR signature) and CLEAN verdicts in the tenant database"
+  exit 1
+fi
+echo "PASS  the ICAP scanner recorded an EICAR signature match (INFECTED) and a CLEAN verdict"
+
 # --- Production validation is on ------------------------------------------------------------------
 # Each case starts the real API image with the stack's own production configuration and ONE setting
 # made unsafe, and must be refused at boot naming that setting. No case prints the configuration.
