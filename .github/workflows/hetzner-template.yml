@@ -11,8 +11,14 @@ name: Hetzner template
 # of a hosting option that has not been accepted does not belong among the merge gates. Promoting it
 # to a required check is a decision for whoever accepts ADR-0026.
 #
-# A pass proves the template against MinIO only. It says nothing about Hetzner Object Storage or
-# Cloudflare R2 (ADR-0026 §10, gate P-1).
+# A pass of the `stack` job proves the template against MinIO only. It says nothing about Hetzner
+# Object Storage or Cloudflare R2 (ADR-0026 §10, gate P-1).
+#
+# Gate P-1 is the `external-storage` job: the same stack test against a real, dedicated test bucket,
+# through run-stack-test.sh's EXTERNAL_STORAGE_ENV (infra/hetzner/README.md §6). It runs only for a
+# pushed tag `storage-test/<anything>` — workflow_dispatch is offered only for workflows on the
+# default branch, which this one is not — and only inside the `r2-storage-test` environment, whose
+# secrets no other job, workflow or branch can read. Nothing in it is a production setting.
 
 on:
   pull_request:
@@ -30,6 +36,8 @@ on:
       - '.github/workflows/hetzner-template.yml'
   push:
     branches-ignore: [main]
+    # Path filters are not evaluated for tag pushes, so a `storage-test/*` tag always runs.
+    tags: ['storage-test/**']
     paths:
       - 'infra/hetzner/**'
       - '.github/workflows/hetzner-template.yml'
@@ -45,6 +53,7 @@ permissions:
 jobs:
   stack:
     name: Compose stack · real images, MinIO, production validation
+    if: ${{ !startsWith(github.ref, 'refs/tags/storage-test/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -127,3 +136,122 @@ jobs:
           DOCS_ANTIVIRUS_IMAGE: munaxa-docs-antivirus:stacktest
           CLAMAV_SEED_DIR: ${{ runner.temp }}/clamav-db
           CLAMAV_EXPORT_DIR: ${{ runner.temp }}/clamav-db
+
+  # Gate P-1. The same images, the same test, the same harness — with the test MinIO replaced by
+  # the dedicated R2 test bucket. A separate job only because the credentials must stay inside the
+  # `r2-storage-test` environment; the steps up to the test are the `stack` job's.
+  external-storage:
+    name: Compose stack · real images, Cloudflare R2 test bucket (gate P-1)
+    if: ${{ startsWith(github.ref, 'refs/tags/storage-test/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: r2-storage-test
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Write the registry credential for the build secret
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          push: false
+          load: true
+          tags: munaxa-docs-api:stacktest
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+
+      - name: Build the web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          push: false
+          load: true
+          tags: munaxa-docs-web:stacktest
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+
+      - name: Build the antivirus image
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/antivirus
+          push: false
+          load: true
+          tags: munaxa-docs-antivirus:stacktest
+
+      - name: Remove the registry credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/npmrc"
+
+      - name: Date the signature cache
+        id: signatures
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the ClamAV signatures
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/clamav-db
+          key: hetzner-clamav-db-${{ steps.signatures.outputs.day }}
+          restore-keys: hetzner-clamav-db-
+
+      # The bucket under test, written to a private file the harness parses and never prints. The
+      # endpoint and key pair are environment secrets (GitHub masks them in the log as well); the
+      # rest is the bucket's non-sensitive configuration. The CORS origin is a test-only name under
+      # the reserved `.invalid` domain: the bucket's CORS rule admits exactly this origin.
+      - name: Write the storage-under-test file
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in R2_TEST_ENDPOINT R2_TEST_ACCESS_KEY_ID R2_TEST_SECRET_ACCESS_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::environment secret $name is not set in the r2-storage-test environment"
+              exit 1
+            fi
+          done
+          {
+            echo 'STORAGE_DRIVER=R2'
+            echo 'STORAGE_BUCKET=munaxa-docs-p1-storage-test'
+            echo 'STORAGE_REGION=auto'
+            echo "STORAGE_ENDPOINT=$R2_TEST_ENDPOINT"
+            echo 'STORAGE_FORCE_PATH_STYLE=false'
+            echo "STORAGE_ACCESS_KEY_ID=$R2_TEST_ACCESS_KEY_ID"
+            echo "STORAGE_SECRET_ACCESS_KEY=$R2_TEST_SECRET_ACCESS_KEY"
+            echo 'STORAGE_TEST_CORS_ORIGIN=https://p1-storage-test.munaxa.invalid'
+          } > "$RUNNER_TEMP/storage-under-test.env"
+        env:
+          R2_TEST_ENDPOINT: ${{ secrets.R2_TEST_ENDPOINT }}
+          R2_TEST_ACCESS_KEY_ID: ${{ secrets.R2_TEST_ACCESS_KEY_ID }}
+          R2_TEST_SECRET_ACCESS_KEY: ${{ secrets.R2_TEST_SECRET_ACCESS_KEY }}
+
+      - name: Run the stack test against the R2 test bucket
+        run: infra/hetzner/testing/run-stack-test.sh
+        env:
+          DOCS_API_IMAGE: munaxa-docs-api:stacktest
+          DOCS_WEB_IMAGE: munaxa-docs-web:stacktest
+          DOCS_ANTIVIRUS_IMAGE: munaxa-docs-antivirus:stacktest
+          CLAMAV_SEED_DIR: ${{ runner.temp }}/clamav-db
+          EXTERNAL_STORAGE_ENV: ${{ runner.temp }}/storage-under-test.env
+
+      - name: Remove the storage-under-test file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/storage-under-test.env"

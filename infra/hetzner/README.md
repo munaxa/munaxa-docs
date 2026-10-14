@@ -112,7 +112,7 @@ backups, load, or recovery.
 | 2026-10-13 | `api`, `web`, `antivirus` built locally from `main` at `f838433` | **All passed** — smoke 14/14, unsafe settings refused 8/8, no credential in logs. Details: ADR-0026 §10 |
 | 2026-10-13 | `api`, `web` rebuilt with the F-1 Dockerfile fix; `antivirus` unchanged | **All passed** — both engines present for OpenSSL 3; migrations offline, second run a no-op; smoke 14/14; 8/8; no credential in logs. Negative control: the pre-fix image fails the same offline migration (`EAI_AGAIN binaries.prisma.sh`) |
 
-## 6. Gate P-1: the same checks against a real bucket (not yet run)
+## 6. Gate P-1: the same checks against a real bucket
 
 **Not run, and not yet approved: it needs a real bucket.** Until it passes, no provider is known to
 work with this product (ADR-0026 §10).
@@ -137,6 +137,13 @@ what it wrote afterwards, the EICAR test file included.
 EXTERNAL_STORAGE_ENV=/secure/path/storage-under-test.env DOCS_API_IMAGE=… DOCS_WEB_IMAGE=… \
   DOCS_ANTIVIRUS_IMAGE=… infra/hetzner/testing/run-stack-test.sh
 ```
+
+**On GitHub (how P-1 is run for Cloudflare R2).** The `external-storage` job of
+`.github/workflows/hetzner-template.yml` writes that file from three secrets of the GitHub
+environment `r2-storage-test` (`R2_TEST_ENDPOINT`, `R2_TEST_ACCESS_KEY_ID`,
+`R2_TEST_SECRET_ACCESS_KEY`) and runs the same command against the test bucket
+`munaxa-docs-p1-storage-test`, with the CORS origin `https://p1-storage-test.munaxa.invalid`. It runs
+only for a pushed tag `storage-test/<name>`, and the file is deleted when the job ends.
 
 The file is parsed, never executed; only the keys above are read; values are never printed, and the
 log check also looks for the storage secret. A plain-`http` endpoint, a missing key or a driver other
