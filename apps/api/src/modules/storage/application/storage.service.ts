@@ -12,6 +12,7 @@ import {
   IntegrityStatus,
   type IntegrityStatusKey,
   ScanStatus,
+  isServableIntegrity,
   type ScanStatusKey,
   UploadSessionState,
   type UploadSessionId,
@@ -582,6 +583,12 @@ export class DefaultStorageService implements StorageService {
    * argument 13 §2 makes for not auditing favourites, at a far larger scale. What is recorded is
    * the *finding*, on the row, where the next pass reads it. Only a mismatch is an event.
    *
+   * **Only a finding quarantines** — ADR-0026 §10. Bytes read back with another digest, or an
+   * object the store says is absent on two looks, are findings. A blob too large to read and a read
+   * that failed (a store error, a timeout, a store out of reach) are not: they record that the blob
+   * is not verified now, and leave a quarantine already in place as it was. A failed read was once
+   * indistinguishable from an absent object, so one store outage quarantined every blob it touched.
+   *
    * **The read is bounded, and a blob too large to read is marked checked anyway.**
    * `StoragePort.read` returns a whole `Buffer` — there is no streaming read on the port — so a
    * 2 GB scan would be 2 GB of process memory, which is exactly what 19 §5 forbids of a background
@@ -594,32 +601,50 @@ export class DefaultStorageService implements StorageService {
     const page = await this.writer.read(() =>
       this.files.listForIntegrityCheck(this.config.storage.integrityBatchSize),
     );
-    const result = { checked: 0, verified: 0, mismatched: 0, unreadable: 0 };
+    const result = {
+      checked: 0,
+      verified: 0,
+      mismatched: 0,
+      unreadable: 0,
+      inconclusive: 0,
+      tooLarge: 0,
+    };
 
     for (const file of page) {
       // Outside any transaction: this is a network read of somebody else's object store, and
       // holding a database transaction open across it would put an object store's latency in
       // front of every other write in the tenant.
-      const actual = await this.rehash(file);
-      const status = integrityFrom(file.checksumSha256, actual);
+      const reading = await this.rehash(file);
       result.checked += 1;
 
-      if (status === IntegrityStatus.VERIFIED || status === IntegrityStatus.UNVERIFIED) {
-        if (status === IntegrityStatus.VERIFIED) {
-          result.verified += 1;
+      switch (reading.kind) {
+        case 'read': {
+          const status =
+            reading.sha256 === file.checksumSha256
+              ? IntegrityStatus.VERIFIED
+              : IntegrityStatus.MISMATCH;
+          if (status === IntegrityStatus.VERIFIED) {
+            result.verified += 1;
+            await this.recordIntegrity(file, status);
+          } else {
+            result.mismatched += 1;
+            await this.quarantine(file, status, reading.sha256);
+          }
+          break;
         }
-        await this.writer.read(() =>
-          this.files.recordIntegrity(file.id, { status, at: this.clock.now() }),
-        );
-        continue;
+        case 'absent':
+          result.unreadable += 1;
+          await this.quarantine(file, IntegrityStatus.UNREADABLE, null);
+          break;
+        case 'too-large':
+          result.tooLarge += 1;
+          await this.recordIntegrity(file, notVerifiedNow(file.integrityStatus));
+          break;
+        case 'inconclusive':
+          result.inconclusive += 1;
+          await this.recordIntegrity(file, notVerifiedNow(file.integrityStatus));
+          break;
       }
-
-      if (status === IntegrityStatus.MISMATCH) {
-        result.mismatched += 1;
-      } else {
-        result.unreadable += 1;
-      }
-      await this.quarantine(file, status, actual);
     }
 
     return result;
@@ -1042,35 +1067,49 @@ export class DefaultStorageService implements StorageService {
   }
 
   /**
-   * Reads a blob back and re-hashes it.
+   * Reads a blob back and re-hashes it, saying which of four things happened — ADR-0026 §10.
    *
-   * Answers `null` for "could not read", which covers a missing object, a store that refused and a
-   * blob past the size bound alike — the caller distinguishes the last of those by the size it
-   * already has on the row, because the three need different findings and only one of them is an
-   * incident.
+   * Only `read` (with whatever digest it gave) and `absent` are findings. `absent` needs the store to
+   * say "no such object" twice — to the read, and then to a HEAD — so an object that is merely slow
+   * to appear, or a store that answered one request wrongly, is not an incident.
    */
-  private async rehash(file: FileObjectRecord): Promise<string | null> {
+  private async rehash(file: FileObjectRecord): Promise<IntegrityReading> {
     if (file.sizeBytes > this.config.storage.integrityMaxBytes) {
-      return null;
+      return { kind: 'too-large' };
     }
+    let bytes: Buffer | null;
     try {
       // Within the same byte budget as scans: this read holds the whole object too, and the
       // verifier runs beside live completions. It is background work, so it may wait far longer
       // than a request; a wait that still runs out ends the pass (it runs again) rather than being
       // mistaken below for an unreadable object.
-      const bytes = await this.scanCapacity.run(file.sizeBytes, VERIFIER_CAPACITY_WAIT_MS, () =>
+      bytes = await this.scanCapacity.run(file.sizeBytes, VERIFIER_CAPACITY_WAIT_MS, () =>
         this.storage.read(file.storageKey),
       );
-      return bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
     } catch (error) {
       if (error instanceof ByteBudgetTimeoutError) {
         throw error;
       }
-      // A store that is briefly unreachable must not quarantine a tenant's library, so this is
-      // indistinguishable here from a missing object — and the *finding* below is what tells them
-      // apart, because an object that reads as absent twice is an incident and one pass is not.
-      return null;
+      // A store that is briefly unreachable must not quarantine a tenant's library.
+      return { kind: 'inconclusive' };
     }
+    if (bytes !== null) {
+      return { kind: 'read', sha256: createHash('sha256').update(bytes).digest('hex') };
+    }
+    try {
+      return (await this.storage.head(file.storageKey)) === null
+        ? { kind: 'absent' }
+        : { kind: 'inconclusive' };
+    } catch {
+      return { kind: 'inconclusive' };
+    }
+  }
+
+  /** Stamps what one pass found, outside the caller's transaction; never a quarantine. */
+  private async recordIntegrity(file: FileObjectRecord, status: IntegrityStatusKey): Promise<void> {
+    await this.writer.read(() =>
+      this.files.recordIntegrity(file.id, { status, at: this.clock.now() }),
+    );
   }
 
   /**
@@ -1466,17 +1505,24 @@ export class DefaultStorageService implements StorageService {
   }
 }
 
+/** What one re-read of a blob came to. Only `read` and `absent` are findings. */
+type IntegrityReading =
+  | { readonly kind: 'read'; readonly sha256: string }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'too-large' }
+  | { readonly kind: 'inconclusive' };
+
 /**
- * What one blob's re-read says about it.
+ * The status to record when a pass could not look at a blob — ADR-0026 §10.
  *
- * `UNVERIFIED` is the "we did not manage to look" answer — a blob past the size bound. It is not a
- * finding and never quarantines; it is recorded so the ordering advances past it.
+ * Not a finding, so it never quarantines; and never a release from quarantine, so a blob already
+ * found MISMATCH or UNREADABLE stays so until a read shows the original bytes again. Otherwise
+ * `UNVERIFIED`, also over an earlier `VERIFIED`: the stamp moves the ordering past the blob, and a
+ * `VERIFIED` stamped now would vouch for bytes this pass never read (the download gate trusts an
+ * object no newer than its last verification).
  */
-function integrityFrom(expected: string, actual: string | null): IntegrityStatusKey {
-  if (actual === null) {
-    return IntegrityStatus.UNREADABLE;
-  }
-  return actual === expected ? IntegrityStatus.VERIFIED : IntegrityStatus.MISMATCH;
+function notVerifiedNow(current: IntegrityStatusKey): IntegrityStatusKey {
+  return isServableIntegrity(current) ? IntegrityStatus.UNVERIFIED : current;
 }
 
 /** What one scan came to. `failure` is why a configured scanner gave no verdict, for the audit. */

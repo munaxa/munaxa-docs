@@ -212,6 +212,12 @@ export class RetentionLaneConsumer implements OnApplicationBootstrap {
         this.logger.error('The integrity sweep found stored bytes it cannot vouch for', context);
         return;
       }
+      if (pass.inconclusive > 0) {
+        // Not a finding — the store did not answer — but a verifier that keeps failing to read is
+        // one that has stopped verifying, so it is said, at warn.
+        this.logger.warn('The integrity sweep could not read some stored blobs', context);
+        return;
+      }
       this.logger.info('The integrity sweep verified stored blobs', context);
     });
   }

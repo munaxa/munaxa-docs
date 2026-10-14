@@ -335,6 +335,10 @@ export interface IntegritySweep {
   readonly verified: number;
   readonly mismatched: number;
   readonly unreadable: number;
+  /** Not read this pass — a store error, a timeout, an unreachable store. Not a finding. */
+  readonly inconclusive: number;
+  /** Past `STORAGE_INTEGRITY_MAX_BYTES`, so not read. Not a finding. */
+  readonly tooLarge: number;
 }
 
 /** What one orphan-sweep pass found, per area, and the keys it removed (or would have, dry). */

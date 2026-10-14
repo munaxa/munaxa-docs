@@ -3,7 +3,7 @@ import 'reflect-metadata';
 import { createHash } from 'node:crypto';
 
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   type FileObjectId,
@@ -20,6 +20,7 @@ import type { Logger } from '../../../core/observability/logger';
 import type { AntivirusPort, ScanRequest, ScanVerdict } from '../../../ports/antivirus.port';
 import type { BlobMetadata, StorageKey, StoragePort } from '../../../ports/storage.port';
 
+import { StorageUnavailableError } from '../../../core/errors/application-errors';
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { realS3TenantStorage, realWriteStack } from '../../../testing/real-collaborators';
@@ -519,6 +520,257 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
       inOther(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'x.pdf')),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(await reachable(fileObjectId, inOther)).toBe(false);
+  });
+});
+
+// --- ADR-0026 §10: only a finding quarantines ---------------------------------------------------
+
+/**
+ * The store as the verifier sees it, with faults on chosen keys. Everything else is the real store.
+ * `read` faults throw what a failing store makes the adapter throw (a 5xx, a timeout, no route);
+ * `absentOnRead` answers the read "no such object" while the object is in fact there.
+ */
+class FaultyStore implements StoragePort {
+  readonly driver = scoped.driver;
+  readonly readFaults = new Map<string, () => Error>();
+  readonly absentOnRead = new Set<string>();
+  readonly headFaults = new Set<string>();
+
+  createUploadTarget(...a: Parameters<StoragePort['createUploadTarget']>) {
+    return scoped.createUploadTarget(...a);
+  }
+  completeUpload(...a: Parameters<StoragePort['completeUpload']>) {
+    return scoped.completeUpload(...a);
+  }
+  createDownloadUrl(...a: Parameters<StoragePort['createDownloadUrl']>) {
+    return scoped.createDownloadUrl(...a);
+  }
+  head(key: StorageKey): Promise<BlobMetadata | null> {
+    if (this.headFaults.has(key)) {
+      return Promise.reject(new StorageUnavailableError('HEAD answered 503.'));
+    }
+    return scoped.head(key);
+  }
+  copy(...a: Parameters<StoragePort['copy']>) {
+    return scoped.copy(...a);
+  }
+  put(...a: Parameters<StoragePort['put']>) {
+    return scoped.put(...a);
+  }
+  read(key: StorageKey): Promise<Buffer | null> {
+    const fault = this.readFaults.get(key);
+    if (fault !== undefined) {
+      return Promise.reject(fault());
+    }
+    if (this.absentOnRead.has(key)) {
+      return Promise.resolve(null);
+    }
+    return scoped.read(key);
+  }
+  list(prefix: string) {
+    return scoped.list(prefix);
+  }
+  delete(key: StorageKey) {
+    return scoped.delete(key);
+  }
+  clear(): void {
+    this.readFaults.clear();
+    this.absentOnRead.clear();
+    this.headFaults.clear();
+  }
+}
+
+describe('the integrity verifier quarantines a finding, never a failure to look (ADR-0026 §10)', () => {
+  const faulty = new FaultyStore();
+  const verifier = new DefaultStorageService(
+    new PrismaFileObjectRepository(stamps),
+    new PrismaUploadSessionRepository(stamps),
+    faulty,
+    antivirus,
+    clock,
+    outbox,
+    config,
+    writer,
+  );
+  const EPOCH = new Date('2000-01-01T00:00:00.000Z');
+
+  /** One pass of the verifier over the faulty store, with the blob at the front of its queue. */
+  async function verifyThroughFaults(fileObjectId: string) {
+    await owner.fileObject.update({
+      where: { id: fileObjectId },
+      data: { integrityCheckedAt: EPOCH },
+    });
+    return inAcme(() => verifier.verifyIntegrity());
+  }
+
+  function findingsFor(fileObjectId: string) {
+    return Promise.all([
+      owner.auditEvent.count({
+        where: { tenantId: ACME, action: 'INTEGRITY_MISMATCH', subjectId: fileObjectId },
+      }),
+      owner.outboxMessage.count({
+        where: {
+          tenantId: ACME,
+          eventType: 'storage.integrity-mismatch',
+          aggregateId: fileObjectId,
+        },
+      }),
+    ]);
+  }
+
+  async function aHeldUpload(bytes: Buffer): Promise<{ id: string; key: string }> {
+    const { fileObjectId } = await inAcme(() => upload(bytes));
+    await hold(fileObjectId);
+    return { id: fileObjectId, key: (await rowOf(fileObjectId)).storageKey };
+  }
+
+  afterEach(() => {
+    faulty.clear();
+  });
+
+  it('records a legitimate file past the read bound as not verified, and keeps serving it', async () => {
+    // Over this suite's `integrityMaxBytes` (1 MiB) — as an export over the 128 MiB default would be.
+    const large = Buffer.concat([aPdf('large'), Buffer.alloc(2 * 1024 * 1024, 0x20)]);
+    const { id } = await aHeldUpload(large);
+
+    const pass = await verifyThroughFaults(id);
+
+    expect(pass.tooLarge).toBeGreaterThanOrEqual(1);
+    const row = await rowOf(id);
+    expect(row.integrityStatus).toBe('UNVERIFIED');
+    // Stamped, so the next pass reaches other blobs instead of this one for ever.
+    expect(row.integrityCheckedAt?.getTime()).toBeGreaterThan(EPOCH.getTime());
+    expect(await findingsFor(id)).toEqual([0, 0]);
+    expect(await reachable(id)).toBe(true);
+    const signed = await inAcme(() =>
+      storage.createDownloadUrl(asId<FileObjectId>(id), 'large.pdf'),
+    );
+    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(large));
+  });
+
+  it.each([
+    ['a store error (HTTP 503)', () => new StorageUnavailableError('read answered 503.')],
+    ['a timeout', () => new DOMException('The operation timed out.', 'TimeoutError')],
+    ['an unreachable store', () => new TypeError('fetch failed')],
+  ])(
+    'treats %s as inconclusive: no quarantine, no finding, and no longer vouched for',
+    async (_case, fault) => {
+      const bytes = aPdf('outage');
+      const { id, key } = await aHeldUpload(bytes);
+      await verify(id);
+      expect((await rowOf(id)).integrityStatus).toBe('VERIFIED');
+
+      faulty.readFaults.set(key, fault);
+      const pass = await verifyThroughFaults(id);
+
+      expect(pass.inconclusive).toBeGreaterThanOrEqual(1);
+      // Not quarantined — and not left VERIFIED either: this pass read nothing to vouch for.
+      expect((await rowOf(id)).integrityStatus).toBe('UNVERIFIED');
+      expect(await findingsFor(id)).toEqual([0, 0]);
+      expect(await reachable(id)).toBe(true);
+
+      // The store recovers, and the next pass verifies the bytes again.
+      faulty.clear();
+      await verifyThroughFaults(id);
+      expect((await rowOf(id)).integrityStatus).toBe('VERIFIED');
+    },
+  );
+
+  it('does not take one "no such object" for an absence the store then contradicts', async () => {
+    const { id, key } = await aHeldUpload(aPdf('flicker'));
+    faulty.absentOnRead.add(key);
+
+    const pass = await verifyThroughFaults(id);
+
+    expect(pass.inconclusive).toBeGreaterThanOrEqual(1);
+    expect((await rowOf(id)).integrityStatus).toBe('UNVERIFIED');
+    expect(await findingsFor(id)).toEqual([0, 0]);
+  });
+
+  it('does not quarantine an absence it could not confirm because the store then failed', async () => {
+    const { id, key } = await aHeldUpload(aPdf('unconfirmed'));
+    await inAcme(() => scoped.delete(key));
+    faulty.headFaults.add(key);
+
+    await verifyThroughFaults(id);
+
+    expect((await rowOf(id)).integrityStatus).toBe('UNVERIFIED');
+    expect(await findingsFor(id)).toEqual([0, 0]);
+  });
+
+  it('quarantines a confirmed missing object, with the audit event and the incident', async () => {
+    const { id, key } = await aHeldUpload(aPdf('confirmed-missing'));
+    await inAcme(() => scoped.delete(key));
+
+    const pass = await verifyThroughFaults(id);
+
+    expect(pass.unreadable).toBeGreaterThanOrEqual(1);
+    expect((await rowOf(id)).integrityStatus).toBe('UNREADABLE');
+    expect(await findingsFor(id)).toEqual([1, 1]);
+    const audit = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: ACME, action: 'INTEGRITY_MISMATCH', subjectId: id },
+    });
+    expect(audit.outcome).toBe('FAILED');
+    expect(audit.payload).toMatchObject({
+      after: { integrityStatus: 'UNREADABLE', actualSha256: null },
+    });
+    await expect(
+      inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(id), 'p.pdf')),
+    ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+  });
+
+  it('quarantines a confirmed checksum mismatch, recording both digests', async () => {
+    const bytes = aPdf('confirmed-mismatch');
+    const { id, key } = await aHeldUpload(bytes);
+    const other = Buffer.from(`${bytes.toString()}% rewritten\n`);
+    await inAcme(() => scoped.put(key, once(other), { contentType: 'application/pdf' }));
+
+    const pass = await verifyThroughFaults(id);
+
+    expect(pass.mismatched).toBeGreaterThanOrEqual(1);
+    expect((await rowOf(id)).integrityStatus).toBe('MISMATCH');
+    expect(await findingsFor(id)).toEqual([1, 1]);
+    const audit = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: ACME, action: 'INTEGRITY_MISMATCH', subjectId: id },
+    });
+    expect(audit.payload).toMatchObject({
+      after: {
+        integrityStatus: 'MISMATCH',
+        expectedSha256: sha256(bytes),
+        actualSha256: sha256(other),
+      },
+    });
+    expect(await reachable(id)).toBe(false);
+  });
+
+  it('never releases a quarantine because a later read failed, or the file outgrew the bound', async () => {
+    const bytes = aPdf('stays-quarantined');
+    const { id, key } = await aHeldUpload(bytes);
+    await inAcme(() =>
+      scoped.put(key, once(Buffer.from('%PDF-1.7\n% damaged\n')), {
+        contentType: 'application/pdf',
+      }),
+    );
+    await verifyThroughFaults(id);
+    expect((await rowOf(id)).integrityStatus).toBe('MISMATCH');
+
+    faulty.readFaults.set(key, () => new StorageUnavailableError('read answered 503.'));
+    await verifyThroughFaults(id);
+    expect((await rowOf(id)).integrityStatus).toBe('MISMATCH');
+    expect(await reachable(id)).toBe(false);
+    // The failure to look is not a second finding.
+    expect(await findingsFor(id)).toEqual([1, 1]);
+
+    // Nor does a quarantined blob past the read bound come out of quarantine.
+    const large = Buffer.concat([aPdf('large-quarantined'), Buffer.alloc(2 * 1024 * 1024, 0x20)]);
+    const held = await aHeldUpload(large);
+    await owner.fileObject.update({
+      where: { id: held.id },
+      data: { integrityStatus: 'UNREADABLE' },
+    });
+    expect((await verifyThroughFaults(held.id)).tooLarge).toBeGreaterThanOrEqual(1);
+    expect((await rowOf(held.id)).integrityStatus).toBe('UNREADABLE');
+    expect(await reachable(held.id)).toBe(false);
   });
 });
 

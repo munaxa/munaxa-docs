@@ -150,6 +150,10 @@ export interface IntegritySweepResult {
   readonly verified: number;
   readonly mismatched: number;
   readonly unreadable: number;
+  /** Not read this pass — a store error, a timeout, an unreachable store. Not a finding. */
+  readonly inconclusive: number;
+  /** Past `STORAGE_INTEGRITY_MAX_BYTES`, so not read. Not a finding. */
+  readonly tooLarge: number;
 }
 
 /** One area the orphan sweep covers, and what it found there. */
