@@ -203,6 +203,24 @@ async function replayThroughTheApi() {
     if (REPLAY_ONLY) {
       continue;
     }
+    // DC — the smoke test's content, inspected before completion (sizes, SHA-256, content type).
+    {
+      const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const bytes = Buffer.from(`Munaxa Docs Hetzner template smoke test ${nonce}\n`, 'utf8');
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      const t = await target(bytes, `smoke-${nonce}.txt`);
+      const status = await put(t, bytes);
+      const head = await storage.head(staged(t.uploadSessionId));
+      const signedType = Object.entries(t.headers).find(
+        ([k]) => k.toLowerCase() === 'content-type',
+      )?.[1];
+      print(
+        `replay ${round}DC: smoke content (${bytes.length} bytes), PUT, HEAD, complete`,
+        `${status}, ${describe(head, bytes, digest)}, ` +
+          `content-type ${head === null ? 'n/a' : head.contentType === signedType ? 'as signed' : 'differs'}, ` +
+          `${await complete(t)}`,
+      );
+    }
     // C — inspected before completion.
     {
       const bytes = fresh('C');
