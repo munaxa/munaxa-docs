@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { parseIcapUrl } from '../../../../core/config/icap-url';
 import { AntivirusScanError } from '../../../../ports/antivirus.port';
+import { requireReadyScanner } from '../../../../testing/scanner-readiness';
 import { IcapAntivirusAdapter } from '../icap-antivirus.adapter';
 
 /**
@@ -97,13 +98,14 @@ async function failure(promise: Promise<unknown>): Promise<AntivirusScanError> {
   throw new Error('expected no verdict');
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   if (SCANNER === '') {
     throw new Error(
       'AV_ICAP_TEST_URL must name a running ICAP antivirus service (infra/antivirus/): this suite ' +
         'proves verdicts from a real scanner and has nothing to prove without one.',
     );
   }
+  await requireReadyScanner(SCANNER);
 });
 
 describe('a real scanner, clean content', () => {

@@ -17,6 +17,7 @@ import { Permission } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
 import { ScryptPasswordHasher } from '../modules/identity/infrastructure/scrypt-password-hasher';
+import { requireReadyScanner } from '../testing/scanner-readiness';
 
 /**
  * Upload → real scanner → document, over real HTTP — RC D-3.
@@ -511,6 +512,7 @@ beforeAll(async () => {
         'this suite asserts comes from a real scanner.',
     );
   }
+  await requireReadyScanner(SCANNER);
   storageRoot = await mkdtemp(join(tmpdir(), 'munaxa-av-'));
 
   acme = {
