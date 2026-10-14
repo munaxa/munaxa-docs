@@ -1864,6 +1864,12 @@ export const en = {
     SCANNER_BUSY:
       'The malware scanner is busy. Nothing was lost — try finishing the upload again in a minute.',
     STORAGE_UNAVAILABLE: 'File storage is temporarily unavailable. Try again shortly.',
+    DOWNLOAD_BUSY:
+      'Downloads are busy right now. Nothing is wrong with the file — try again in a minute.',
+    DOWNLOAD_TOO_LARGE:
+      'This file is larger than the {limit} that can be checked for download. Ask an administrator.',
+    DOWNLOAD_LINK_INVALID:
+      'This download link has expired or is no longer valid. Go back to the document and download it again.',
   },
   /**
    * Reports — Phase 15.

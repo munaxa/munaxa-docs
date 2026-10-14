@@ -155,6 +155,9 @@ class ParkingStore implements StoragePort {
   read(key: StorageKey) {
     return scoped.read(key);
   }
+  openRead(...a: Parameters<StoragePort['openRead']>) {
+    return scoped.openRead(...a);
+  }
   list(prefix: string) {
     return scoped.list(prefix);
   }
@@ -566,6 +569,9 @@ class FaultyStore implements StoragePort {
       return Promise.resolve(null);
     }
     return scoped.read(key);
+  }
+  openRead(...a: Parameters<StoragePort['openRead']>) {
+    return scoped.openRead(...a);
   }
   list(prefix: string) {
     return scoped.list(prefix);

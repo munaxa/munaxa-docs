@@ -71,4 +71,16 @@ export class StorageContentGateAdapter implements DocumentContentGate {
   ): Promise<{ url: string; expiresAt: Date }> {
     return this.storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), filename, options);
   }
+
+  downloadLink(
+    fileObjectId: string,
+    filename: string,
+    options: { inline?: boolean; documentId: string; revisionId: string | null },
+  ): Promise<{ url: string; expiresAt: Date }> {
+    return this.storage.createVerifiedDownloadLink(
+      asId<FileObjectId>(fileObjectId),
+      filename,
+      options,
+    );
+  }
 }

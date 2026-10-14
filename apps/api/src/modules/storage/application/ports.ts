@@ -1,3 +1,4 @@
+import type { DownloadLinkGrant } from '../domain/download-link-token';
 import type {
   FileObjectId,
   IntegrityStatusKey,
@@ -218,6 +219,44 @@ export interface StorageService {
   ): Promise<{ url: string; expiresAt: Date }>;
 
   /**
+   * A verified download link — ADR-0026 §10, the download-integrity proposal §3.1.
+   *
+   * The same refusals as `createDownloadUrl` (scan, integrity, the store's HEAD), plus the size
+   * the verified path accepts, and the same `FILE_DOWNLOAD_ISSUED` event. The link names the
+   * person in the current context, their permission version, and the document (and revision) it
+   * is for, so its redemption can ask every question again. Nothing is signed by the store: the
+   * bytes are served by the API, after verification.
+   */
+  createVerifiedDownloadLink(
+    fileObjectId: FileObjectId,
+    filename: string,
+    options: {
+      readonly inline?: boolean;
+      readonly documentId: string;
+      readonly revisionId: string | null;
+    },
+  ): Promise<{ url: string; expiresAt: Date }>;
+
+  /** The file, if it may be served now; otherwise the gate's own refusal (404, 409). */
+  servable(fileObjectId: FileObjectId): Promise<FileObjectRecord>;
+
+  /**
+   * Quarantines a blob on a confirmed finding made outside the verifier — a download that did not
+   * verify. The verifier's own path: the row, `INTEGRITY_MISMATCH` and the outbox event together.
+   */
+  recordIntegrityFinding(
+    fileObjectId: FileObjectId,
+    status: 'MISMATCH' | 'UNREADABLE',
+    actualSha256: string | null,
+  ): Promise<void>;
+
+  /** `FILE_DOWNLOAD_SERVED`: every verified byte was handed to the connection. */
+  recordDownloadServed(
+    fileObjectId: FileObjectId,
+    details: { readonly sizeBytes: number; readonly verifiedAfterMs: number },
+  ): Promise<void>;
+
+  /**
    * The gate: content is unreachable until its scan verdict is CLEAN (or, for a file the product
    * generated, `SKIPPED` by construction) — and, since Phase 18, only while the rolling verifier
    * has not found its bytes changed or missing. The same predicate `createDownloadUrl` refuses on;
@@ -308,4 +347,50 @@ export interface CompletedUpload {
   readonly scanStatus: ScanStatusKey;
   /** True when completion found the digest already stored and referenced that blob instead. */
   readonly deduplicated: boolean;
+}
+
+// --- Verified downloads — ADR-0026 §10 ----------------------------------------------------------
+
+export const DOWNLOAD_STAGING = Symbol('DownloadStaging');
+export const VERIFIED_DOWNLOAD_DELIVERY = Symbol('VerifiedDownloadDelivery');
+
+/** One download's bytes while they are verified: encrypted, unlinked, gone when disposed. */
+export interface StagingFile {
+  readonly bytesWritten: number;
+  write(chunk: Uint8Array): Promise<void>;
+  /** The bytes written, in order; each record's authentication is checked before it is yielded. */
+  replay(): AsyncIterable<Buffer>;
+  /** Closes the file (freeing it) and overwrites the key. Idempotent. */
+  dispose(): Promise<void>;
+}
+
+export interface DownloadStaging {
+  create(): Promise<StagingFile>;
+  /** Free space on the staging file system, for the reserve check. */
+  freeBytes(): Promise<number>;
+}
+
+/** What `send` receives: bytes whose size and SHA-256 already equal the record. */
+export interface VerifiedDownload {
+  readonly sizeBytes: number;
+  readonly chunks: AsyncIterable<Buffer>;
+  /** From the request's admission to the end of verification — the time to first byte, nearly. */
+  readonly verifiedAfterMs: number;
+}
+
+export { DOWNLOAD_LINK_PATH, type DownloadLinkGrant } from '../domain/download-link-token';
+
+export interface VerifiedDownloadDelivery {
+  /** The grant a link's token carries, if it is genuine and unexpired. Authorizes nothing. */
+  decode(token: string): DownloadLinkGrant | null;
+
+  /**
+   * Stages and verifies the blob, then calls `send` — and only then. Throws, having called nothing,
+   * when the blob may not be served, did not verify (quarantined), or could not be read now.
+   */
+  deliver(
+    fileObjectId: FileObjectId,
+    send: (download: VerifiedDownload) => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<void>;
 }

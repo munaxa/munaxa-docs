@@ -128,7 +128,8 @@ services:
     restart: unless-stopped
     <<: *hardening
     # Supported by the image: nothing writes to its own filesystem except STORAGE_DRIVER=LOCAL,
-    # which this deployment does not use (Dockerfile, runtime stage).
+    # which this deployment does not use, and download staging, which has its own volume below
+    # (Dockerfile, runtime stage).
     read_only: true
     tmpfs:
       - /tmp
@@ -147,8 +148,14 @@ services:
       # The hops that may report a client address: the proxy (preview streams) and the web server
       # (every other call, server-side).
       TRUST_PROXY: 172.28.10.10,172.28.10.20
+      # Verified downloads (ADR-0026 §10): staged on a disk volume, never on the /tmp tmpfs, whose
+      # pages would count against this container's memory limit.
+      DOWNLOAD_STAGING_DIR: /var/lib/munaxa-docs/download-staging
     volumes:
       - ${DOCS_CONFIG_DIR}/tenants.json:/run/munaxa-docs/tenants.json:ro
+      # Holds only encrypted, already-unlinked staging files whose keys never leave the process's
+      # memory; the API empties it at start-up. Nothing in it needs a backup.
+      - api-download-staging:/var/lib/munaxa-docs/download-staging
     networks:
       - edge
       - data
@@ -337,6 +344,7 @@ networks:
         - subnet: 172.28.13.0/24
 
 volumes:
+  api-download-staging:
   postgres-data:
   redis-data:
   antivirus-signatures:

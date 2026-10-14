@@ -10,6 +10,7 @@ import type {
   SignedUrl,
   StorageKey,
   StoragePort,
+  StoredObjectStream,
   UploadPart,
   UploadTarget,
   UploadTargetInput,
@@ -390,6 +391,41 @@ export class S3StorageAdapter implements StoragePort {
     return bytes;
   }
 
+  async openRead(
+    key: StorageKey,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<StoredObjectStream | null> {
+    // Uncompressed, for the reason `read()` gives: the stated length is then the stored size.
+    const response = await this.send(
+      'GET',
+      key,
+      { 'accept-encoding': 'identity' },
+      {},
+      undefined,
+      options.signal,
+    );
+    if (response.status === 404) {
+      await response.body?.cancel();
+      return null;
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+    }
+    this.refuseFailure(response, 'read');
+    const length = response.headers.get('content-length');
+    if (length === null || !/^\d+$/.test(length) || response.body === null) {
+      await response.body?.cancel();
+      throw new StorageUnavailableError('Object storage did not report the object’s size.');
+    }
+    const sizeBytes = Number(length);
+    const reader = response.body.getReader();
+    return {
+      sizeBytes,
+      body: exactly(sizeBytes, reader),
+      cancel: () => reader.cancel().catch(() => undefined),
+    };
+  }
+
   /** Every key under a prefix, following the store's continuation token to the end. */
   async list(prefix: string): Promise<readonly StorageKey[]> {
     const keys: StorageKey[] = [];
@@ -568,6 +604,7 @@ export class S3StorageAdapter implements StoragePort {
     extraHeaders: Readonly<Record<string, string>> = {},
     query: Readonly<Record<string, string>> = {},
     body?: string | Buffer,
+    signal?: AbortSignal,
   ): Promise<Response> {
     const payloadHash =
       body === undefined ? EMPTY_PAYLOAD_HASH : createHash('sha256').update(body).digest('hex');
@@ -594,6 +631,7 @@ export class S3StorageAdapter implements StoragePort {
         ...(body !== undefined && {
           body: typeof body === 'string' ? body : new Uint8Array(body),
         }),
+        ...(signal !== undefined && { signal }),
       });
     } catch (cause) {
       // A store that cannot be reached is a 503 with a retry hint, never a 500 that reads as a
@@ -644,6 +682,41 @@ export class S3StorageAdapter implements StoragePort {
         `Object storage refused to ${operation} the object (HTTP ${String(response.status)}).`,
       );
     }
+  }
+}
+
+/**
+ * A response body held to the length the store stated — more or fewer bytes are a failed read.
+ * A transport failure part-way (a reset, an abort) is a failed read too, never an object's end.
+ */
+async function* exactly(
+  sizeBytes: number,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncIterable<Uint8Array> {
+  let received = 0;
+  try {
+    for (;;) {
+      let next: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        next = await reader.read();
+      } catch (cause) {
+        throw new StorageUnavailableError('Object storage stopped sending the object.', { cause });
+      }
+      if (next.done) {
+        break;
+      }
+      received += next.value.byteLength;
+      if (received > sizeBytes) {
+        throw new StorageUnavailableError('Object storage sent more bytes than it stated.');
+      }
+      yield next.value;
+    }
+    if (received !== sizeBytes) {
+      throw new StorageUnavailableError('Object storage sent fewer bytes than it stated.');
+    }
+  } finally {
+    // Stops the transfer when the consumer leaves early; a no-op once the body has ended.
+    await reader.cancel().catch(() => undefined);
   }
 }
 

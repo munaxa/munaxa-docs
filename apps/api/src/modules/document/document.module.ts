@@ -16,6 +16,8 @@ import { DefaultDocumentNumberService } from './application/document-number.serv
 import { DocumentPreviewService } from './application/document-preview.service';
 import { DefaultDocumentService } from './application/document.service';
 import { RevisionControlService } from './application/revision-control.service';
+import { DownloadRedemptionService } from './application/download-redemption.service';
+import { DownloadLinkController } from './presentation/download-link.controller';
 import { DOCUMENT_CONFIGURATION } from './application/configuration.port';
 import { DOCUMENT_SIGNATURE_REPOSITORY, SIGNER_AUTHENTICATOR } from './application/signature.ports';
 import { DocumentSignatureService } from './application/signature.service';
@@ -121,6 +123,8 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     DocumentPreviewController,
     DocumentTemplatesController,
     DocumentSignaturesController,
+    // ADR-0026 §10: where a verified download link is redeemed.
+    DownloadLinkController,
   ],
   providers: [
     // Phase 15: three reports — the population, the same population broken down by a dimension,
@@ -147,6 +151,7 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     { provide: DOCUMENT_SERVICE, useExisting: DefaultDocumentService },
     { provide: DOCUMENT_NUMBER_SERVICE, useClass: DefaultDocumentNumberService },
     RevisionControlService,
+    DownloadRedemptionService,
     // Phase 10: the purge, implemented by the module that owns the aggregate being destroyed and
     // consumed by Retention's sweep — the same inversion as `REVISION_WRITER`, pointing the other
     // way. The folder-contents participant is the document half of a folder's delete cascade,

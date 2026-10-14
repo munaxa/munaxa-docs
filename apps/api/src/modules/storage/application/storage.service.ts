@@ -24,6 +24,7 @@ import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import {
   ContentNotScannedError,
   ContentQuarantinedError,
+  DownloadTooLargeError,
   ForbiddenError,
   NotFoundError,
   ScannerBusyError,
@@ -67,9 +68,11 @@ import {
 import {
   checkUpload,
   defaultUploadPolicy,
+  formatBytes,
   isRejection,
   narrowPolicy,
 } from '../domain/upload-policy';
+import { DOWNLOAD_LINK_PATH, encodeDownloadLinkToken } from '../domain/download-link-token';
 import {
   type CompletedUpload,
   FILE_OBJECT_REPOSITORY,
@@ -554,6 +557,117 @@ export class DefaultStorageService implements StorageService {
           },
         },
       };
+    });
+  }
+
+  /**
+   * A verified download link — ADR-0026 §10, the download-integrity proposal §3.1.
+   *
+   * Every refusal `createDownloadUrl` makes, in the same order, plus the size the verified path
+   * stages, and the same `FILE_DOWNLOAD_ISSUED` event in the same transaction. The link is the
+   * API's own (`/api/v1/downloads?token=…`): no store URL is signed, and nothing is served until
+   * the bytes have been read whole and their SHA-256 matched (`VerifiedDownloadDelivery`).
+   */
+  async createVerifiedDownloadLink(
+    fileObjectId: FileObjectId,
+    filename: string,
+    options: {
+      readonly inline?: boolean;
+      readonly documentId: string;
+      readonly revisionId: string | null;
+    },
+  ): Promise<{ url: string; expiresAt: Date }> {
+    const context = requireContext();
+    if (context.userId === null) {
+      // A link names the person it was issued to; the system has nobody to name.
+      throw new ForbiddenError('download this file');
+    }
+    const userId = context.userId;
+    return this.writer.write<{ url: string; expiresAt: Date }>(async () => {
+      const file = await this.require(fileObjectId);
+      this.refuseUnreachable(file);
+      const limit = this.config.download.maxFileBytes;
+      if (file.sizeBytes > limit) {
+        throw new DownloadTooLargeError(limit, formatBytes(limit));
+      }
+      await this.confirmStoredBytes(file);
+
+      const expiresAt = new Date(
+        this.clock.now().getTime() + this.config.download.linkTtlSeconds * 1000,
+      );
+      const inline = options.inline === true;
+      const token = encodeDownloadLinkToken(this.config.auth.accessSecret, {
+        tenantId: String(context.tenantId),
+        userId: String(userId),
+        permissionVersion: context.permissionVersion,
+        documentId: options.documentId,
+        revisionId: options.revisionId,
+        fileObjectId: String(file.id),
+        disposition: inline ? 'inline' : 'attachment',
+        filename: sanitizeFilename(filename),
+        mimeType: file.mimeType,
+        expiresAt,
+      });
+      const base = (
+        this.config.storage.publicUrl ?? `http://localhost:${String(this.config.app.port)}`
+      ).replace(/\/$/, '');
+      const url = `${base}/api/v1/${DOWNLOAD_LINK_PATH}?token=${encodeURIComponent(token)}`;
+
+      return {
+        result: { url, expiresAt },
+        change: {
+          action: StorageAudit.FILE_DOWNLOAD_ISSUED,
+          subjectType: AuditSubjectType.FILE,
+          subjectId: asId<AnyId>(fileObjectId),
+          operation: AdministrativeOperation.UPDATED,
+          after: {
+            checksumSha256: file.checksumSha256,
+            filename,
+            inline,
+            expiresAt: expiresAt.toISOString(),
+            delivery: 'VERIFIED',
+          },
+        },
+      };
+    });
+  }
+
+  async servable(fileObjectId: FileObjectId): Promise<FileObjectRecord> {
+    return this.writer.read(async () => {
+      const file = await this.require(fileObjectId);
+      this.refuseUnreachable(file);
+      return file;
+    });
+  }
+
+  async recordIntegrityFinding(
+    fileObjectId: FileObjectId,
+    status: 'MISMATCH' | 'UNREADABLE',
+    actualSha256: string | null,
+  ): Promise<void> {
+    const file = await this.writer.read(() => this.require(fileObjectId));
+    await this.quarantine(file, status, actualSha256);
+  }
+
+  async recordDownloadServed(
+    fileObjectId: FileObjectId,
+    details: { readonly sizeBytes: number; readonly verifiedAfterMs: number },
+  ): Promise<void> {
+    // `read` + `record` rather than `write`: the bytes have already left, and a tenant made
+    // read-only since must still have that fact in its trail.
+    await this.writer.read(async () => {
+      const file = await this.require(fileObjectId);
+      await this.writer.record({
+        action: StorageAudit.FILE_DOWNLOAD_SERVED,
+        subjectType: AuditSubjectType.FILE,
+        subjectId: asId<AnyId>(fileObjectId),
+        operation: AdministrativeOperation.UPDATED,
+        after: {
+          checksumSha256: file.checksumSha256,
+          sizeBytes: details.sizeBytes,
+          verifiedAfterMs: details.verifiedAfterMs,
+        },
+      });
     });
   }
 

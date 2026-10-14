@@ -248,6 +248,18 @@ beforeAll(async () => {
       signedUrlTtlSeconds: 300,
       maxUploadBytes: 2 * 1024 * 1024 * 1024,
     },
+    app: { port: 3001 },
+    auth: { accessSecret: SIGNING_SECRET },
+    // ADR-0026 §10: a document download is a verified link the API serves.
+    download: {
+      linkTtlSeconds: 60,
+      stagingDir: join(root, 'download-staging'),
+      stagingMaxBytes: 64 * 1024 * 1024,
+      maxFileBytes: 32 * 1024 * 1024,
+      maxConcurrent: 4,
+      queueTimeoutMs: 5_000,
+      minFreeBytes: 0,
+    },
     antivirus: {
       icap: null,
       maxBytes: 134_217_728,
@@ -1034,7 +1046,9 @@ describe('downloading', () => {
 
     const signed = await as(() => documents.downloadUrl(document.id, false));
     expect(signed.url).toContain('token=');
-    expect(signed.expiresAt.getTime()).toBe(FIXED_NOW.getTime() + 300_000);
+    // The verified link's own lifetime (DOWNLOAD_LINK_TTL_SECONDS), not a store URL's.
+    expect(signed.url).toContain('/api/v1/downloads?token=');
+    expect(signed.expiresAt.getTime()).toBe(FIXED_NOW.getTime() + 60_000);
 
     // Audited *before* the URL exists: a signed URL outlives the request and can be redeemed by
     // whoever holds it, so the record of who was handed one is the evidence of how bytes left.

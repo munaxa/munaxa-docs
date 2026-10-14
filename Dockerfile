@@ -141,6 +141,14 @@ COPY --from=build --chown=node:node /app/apps/api/dist           ./apps/api/dist
 COPY --from=build --chown=node:node /app/apps/api/node_modules   ./apps/api/node_modules
 COPY --from=build --chown=node:node /app/apps/api/package.json   ./apps/api/
 
+# Verified downloads' staging directory (ADR-0026 §10). Created here, owned by `node` and closed to
+# everyone else, so a named volume mounted on it starts with that owner and mode.
+USER root
+RUN mkdir -p /var/lib/munaxa-docs/download-staging \
+ && chown node:node /var/lib/munaxa-docs/download-staging \
+ && chmod 0700 /var/lib/munaxa-docs/download-staging
+USER node
+
 EXPOSE 3001
 # Liveness touches no dependency, by design: a readiness probe wired here would restart every pod
 # during a database incident and turn a degradation into an outage (`health.controller.ts`).

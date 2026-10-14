@@ -22,6 +22,7 @@ import type {
   SignedUrl,
   StorageKey,
   StoragePort,
+  StoredObjectStream,
   UploadPart,
   UploadTarget,
   UploadTargetInput,
@@ -211,6 +212,34 @@ export class LocalStorageAdapter implements StoragePort {
     }
   }
 
+  async openRead(
+    key: StorageKey,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<StoredObjectStream | null> {
+    let handle;
+    try {
+      handle = await open(this.pathFor(key), 'r');
+    } catch (cause) {
+      if (isMissing(cause)) {
+        return null;
+      }
+      throw new StorageUnavailableError('The artefact could not be read.', { cause });
+    }
+    const { size } = await handle.stat();
+    const stream = handle.createReadStream({
+      autoClose: true,
+      ...(options.signal !== undefined && { signal: options.signal }),
+    });
+    return {
+      sizeBytes: size,
+      body: exactlyFromFile(size, stream),
+      cancel: () => {
+        stream.destroy();
+        return Promise.resolve();
+      },
+    };
+  }
+
   async list(prefix: string): Promise<readonly StorageKey[]> {
     const root = this.pathFor(prefix.endsWith('/') ? prefix.slice(0, -1) : prefix);
     let entries;
@@ -325,4 +354,31 @@ export class LocalStorageAdapter implements StoragePort {
 
 function isMissing(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+/** A file's bytes held to the size it had when opened; a read error is a failed read. */
+async function* exactlyFromFile(
+  sizeBytes: number,
+  stream: AsyncIterable<Buffer> & { destroy(): void },
+): AsyncIterable<Uint8Array> {
+  let received = 0;
+  try {
+    for await (const chunk of stream) {
+      received += chunk.byteLength;
+      if (received > sizeBytes) {
+        throw new StorageUnavailableError('The artefact grew while it was read.');
+      }
+      yield chunk;
+    }
+  } catch (cause) {
+    if (cause instanceof StorageUnavailableError) {
+      throw cause;
+    }
+    throw new StorageUnavailableError('The artefact could not be read.', { cause });
+  } finally {
+    stream.destroy();
+  }
+  if (received !== sizeBytes) {
+    throw new StorageUnavailableError('The artefact shrank while it was read.');
+  }
 }

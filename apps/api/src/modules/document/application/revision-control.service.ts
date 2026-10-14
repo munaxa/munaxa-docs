@@ -612,17 +612,37 @@ export class RevisionControlService {
     inline: boolean,
   ): Promise<{ url: string; expiresAt: Date }> {
     return this.writer.read(async () => {
-      const document = await this.require(id);
-      const revision = await this.revisions.describe(id, revisionId);
-      if (revision === null) {
-        throw new NotFoundError('The requested revision');
-      }
-      const level = await this.configuration.confidentiality(document.confidentialityId);
-      if (level !== null && !level.allowDownload) {
-        throw new ForbiddenError('download this document');
-      }
-      return this.content.downloadUrl(revision.fileObjectId, revision.filename, { inline });
+      const target = await this.downloadTarget(id, revisionId);
+      return this.content.downloadLink(target.fileObjectId, target.filename, {
+        inline,
+        documentId: id,
+        revisionId,
+      });
     });
+  }
+
+  /** `revisionDownloadUrl`'s questions, asked again when its link is redeemed — ADR-0026 §10. */
+  async revisionDownloadTarget(
+    id: string,
+    revisionId: string,
+  ): Promise<{ fileObjectId: string; filename: string }> {
+    return this.writer.read(() => this.downloadTarget(id, revisionId));
+  }
+
+  private async downloadTarget(
+    id: string,
+    revisionId: string,
+  ): Promise<{ fileObjectId: string; filename: string }> {
+    const document = await this.require(id);
+    const revision = await this.revisions.describe(id, revisionId);
+    if (revision === null) {
+      throw new NotFoundError('The requested revision');
+    }
+    const level = await this.configuration.confidentiality(document.confidentialityId);
+    if (level !== null && !level.allowDownload) {
+      throw new ForbiddenError('download this document');
+    }
+    return { fileObjectId: revision.fileObjectId, filename: revision.filename };
   }
 
   // --- Internals -------------------------------------------------------------------------

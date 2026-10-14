@@ -16,6 +16,7 @@ import type {
   SignedUrl,
   StorageKey,
   StoragePort,
+  StoredObjectStream,
   UploadPart,
   UploadTarget,
   UploadTargetInput,
@@ -70,6 +71,10 @@ export class UnconfiguredStorageAdapter implements StoragePort {
   }
 
   read(_key: StorageKey): Promise<Buffer | null> {
+    return Promise.reject(this.failure());
+  }
+
+  openRead(_key: StorageKey): Promise<StoredObjectStream | null> {
     return Promise.reject(this.failure());
   }
 

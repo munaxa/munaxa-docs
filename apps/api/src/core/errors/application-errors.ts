@@ -264,6 +264,33 @@ export class ScannerBusyError extends DependencyUnavailableError {
 }
 
 /**
+ * Every verified download this process can stage is already running, or the staging disk is too
+ * full, and this one waited its bound — ADR-0026 §10. Nothing is wrong with the file, nothing was
+ * sent, and asking again shortly is the remedy (the response carries `Retry-After`).
+ */
+export class DownloadBusyError extends DependencyUnavailableError {
+  constructor() {
+    super('Download verification', { reason: 'busy' }, { reason: ErrorReason.DOWNLOAD_BUSY });
+  }
+}
+
+/**
+ * The file is larger than `DOWNLOAD_MAX_FILE_BYTES`, the most this server stages to verify —
+ * ADR-0026 §10. Refused rather than sent unverified; not retryable, so it is not a 503's sentence.
+ */
+export class DownloadTooLargeError extends DomainError {
+  /** `limit` as the person reads it (`formatBytes`), `limitBytes` for the log. */
+  constructor(limitBytes: number, limit: string) {
+    super(
+      ErrorCode.UNSUPPORTED_CONTENT,
+      'This file is too large to verify for download.',
+      { limitBytes },
+      { reason: ErrorReason.DOWNLOAD_TOO_LARGE, values: { limit } },
+    );
+  }
+}
+
+/**
  * The content is stored but not yet cleared by the malware scanner, or was cleared and failed.
  *
  * Its own code because it is its own answer: the document exists, the caller may see it, and the

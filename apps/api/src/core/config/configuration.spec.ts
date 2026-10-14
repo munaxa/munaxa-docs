@@ -425,6 +425,38 @@ describe('the antivirus driver — RC D-3', () => {
     ).toBe(true);
   });
 
+  it('sets verified downloads up with bounded staging, and refuses a file limit past it (ADR-0026 §10)', () => {
+    const config = loadConfig(productionEnv);
+    expect(config.download).toMatchObject({
+      linkTtlSeconds: 60,
+      stagingMaxBytes: 2_147_483_648,
+      maxFileBytes: 1_073_741_824,
+      maxConcurrent: 8,
+      queueTimeoutMs: 30_000,
+      minFreeBytes: 536_870_912,
+    });
+    expect(config.download.stagingDir).toMatch(/munaxa-download-staging$/u);
+    expect(
+      loadConfig({
+        ...productionEnv,
+        DOWNLOAD_STAGING_DIR: '/var/lib/munaxa-docs/download-staging',
+      }).download.stagingDir,
+    ).toBe('/var/lib/munaxa-docs/download-staging');
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        DOWNLOAD_STAGING_MAX_BYTES: '1048576',
+        DOWNLOAD_MAX_FILE_BYTES: '2097152',
+      }),
+    ).toThrowError(/DOWNLOAD_MAX_FILE_BYTES/);
+    expect(() => loadConfig({ ...productionEnv, DOWNLOAD_LINK_TTL_SECONDS: '5' })).toThrowError(
+      /DOWNLOAD_LINK_TTL_SECONDS/,
+    );
+    expect(() => loadConfig({ ...productionEnv, DOWNLOAD_MAX_CONCURRENT: '0' })).toThrowError(
+      /DOWNLOAD_MAX_CONCURRENT/,
+    );
+  });
+
   it('bounds the scan size and the scan time', () => {
     expect(() => loadConfig({ ...productionEnv, AV_ICAP_MAX_BYTES: '10' })).toThrowError(
       /AV_ICAP_MAX_BYTES/,

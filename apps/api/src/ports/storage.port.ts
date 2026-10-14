@@ -81,6 +81,20 @@ export interface BlobMetadata {
   readonly lastModifiedAt: Date;
 }
 
+/**
+ * An object's bytes as a stream — ADR-0026 §10, verified downloads.
+ *
+ * `sizeBytes` is the size the store states before a byte is read. `body` yields the object once and
+ * fails (with `StorageUnavailableError`) rather than ending early or late: a body that disagrees
+ * with the stated size is a failed read, never a shorter or longer object.
+ */
+export interface StoredObjectStream {
+  readonly sizeBytes: number;
+  readonly body: AsyncIterable<Uint8Array>;
+  /** Stops the transfer without reading on — for an object refused before its body is read. */
+  cancel(): Promise<void>;
+}
+
 export interface StoragePort {
   readonly driver: StorageDriverKey;
   createUploadTarget(input: UploadTargetInput): Promise<UploadTarget>;
@@ -122,6 +136,18 @@ export interface StoragePort {
    * the caller's to respect, since no object store enforces one on a `GET`.
    */
   read(key: StorageKey): Promise<Buffer | null>;
+
+  /**
+   * Streams an object of any size without holding it — ADR-0026 §10, verified downloads.
+   *
+   * Null when the store says there is no such object; any other failure throws. Aborting `signal`
+   * stops the transfer. The caller decides what the bytes are worth: nothing here checks them
+   * against a record.
+   */
+  openRead(
+    key: StorageKey,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<StoredObjectStream | null>;
 
   /**
    * Every key under a prefix.

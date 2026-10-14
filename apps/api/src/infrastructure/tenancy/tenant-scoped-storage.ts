@@ -13,6 +13,7 @@ import type {
   SignedUrl,
   StorageKey,
   StoragePort,
+  StoredObjectStream,
   UploadPart,
   UploadTarget,
   UploadTargetInput,
@@ -107,6 +108,13 @@ export class TenantScopedStorage implements StoragePort {
 
   async read(key: StorageKey): Promise<Buffer | null> {
     return this.inner.read(await this.scope(key));
+  }
+
+  async openRead(
+    key: StorageKey,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<StoredObjectStream | null> {
+    return this.inner.openRead(await this.scope(key), options);
   }
 
   /**

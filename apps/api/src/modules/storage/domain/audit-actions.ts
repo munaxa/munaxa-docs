@@ -16,6 +16,12 @@ export const StorageAudit = {
   FILE_UPLOADED: 'FILE_UPLOADED',
   /** A download URL was issued for a stored blob. */
   FILE_DOWNLOAD_ISSUED: 'FILE_DOWNLOAD_ISSUED',
+  /**
+   * A verified download was served: every byte, already checked against the recorded SHA-256, was
+   * handed to the connection — ADR-0026 §10. `FILE_DOWNLOAD_ISSUED` says who was given a link;
+   * this says the bytes left, and which bytes they were.
+   */
+  FILE_DOWNLOAD_SERVED: 'FILE_DOWNLOAD_SERVED',
   /** A scan verdict was recorded, clean or otherwise. */
   FILE_SCANNED: 'FILE_SCANNED',
   /**

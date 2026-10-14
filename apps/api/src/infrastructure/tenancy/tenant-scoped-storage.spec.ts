@@ -118,6 +118,10 @@ function spyAdapter(answerKey?: string): StoragePort & { keys: string[] } {
       keys.push(key);
       return Promise.resolve(null);
     },
+    openRead: (key) => {
+      keys.push(key);
+      return Promise.resolve(null);
+    },
     list: (prefix) => {
       keys.push(prefix);
       return Promise.resolve(answerKey === undefined ? [] : [answerKey]);

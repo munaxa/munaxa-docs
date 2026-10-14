@@ -84,6 +84,25 @@ $C exec api node -e "fetch('http://127.0.0.1:3001/api/health/ready').then(r=>r.t
 Rollback is the previous release's digests in `deploy.env` and `$C up -d`; migrations are never
 reversed (go-live-runbook.md §20).
 
+### Verified downloads (ADR-0026 §10)
+
+A document download no longer sends the browser to the object store.
+- The API issues a link to `/api/v1/downloads?token=…` on `STORAGE_PUBLIC_URL`, valid for 60 s.
+  Caddy routes that path to the API, as it does the preview stream.
+- When the link is followed, the API checks the person again: permission version, permissions,
+  the document's access rules, its confidentiality level, and that the file is still current.
+- It then reads the object whole into an encrypted, already-unlinked staging file on the
+  `api-download-staging` volume, hashing it as it goes.
+- It sends the file only when the size and SHA-256 equal the record. A mismatch sends no file bytes
+  and quarantines the file (409). A store that fails or flickers answers 503 with `Retry-After`,
+  and nothing is quarantined.
+- Each staging file's key exists only in the API's memory. The volume needs no backup, and the
+  API empties it at start-up.
+- Settings: `config/api.env.example`, *Verified downloads*. Design and trade-offs:
+  [`docs/reports/hetzner-download-integrity-proposal.md`](../../docs/reports/hetzner-download-integrity-proposal.md).
+
+Report, bulk and audit exports still use signed store URLs. Moving them is a separate decision.
+
 ## 5. Testing the template
 
 ```bash

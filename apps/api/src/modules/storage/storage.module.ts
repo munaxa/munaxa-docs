@@ -3,10 +3,16 @@ import { Module } from '@nestjs/common';
 import { BLOB_REAPER } from '../retention/application/ports';
 import { DefaultStorageService } from './application/storage.service';
 import {
+  DOWNLOAD_STAGING,
   FILE_OBJECT_REPOSITORY,
   STORAGE_SERVICE,
   UPLOAD_SESSION_REPOSITORY,
+  VERIFIED_DOWNLOAD_DELIVERY,
 } from './application/ports';
+import { DefaultVerifiedDownloadDelivery } from './application/verified-download.delivery';
+import { LocalDownloadStaging } from './infrastructure/download-staging';
+import { APP_CONFIG, type AppConfig } from '../../core/config';
+import { LOGGER, type Logger } from '../../core/observability/logger';
 import { PrismaFileObjectRepository } from './infrastructure/prisma-file-object.repository';
 import { PrismaUploadSessionRepository } from './infrastructure/prisma-upload-session.repository';
 import { StorageBlobReaper } from './infrastructure/blob-reaper.adapter';
@@ -45,11 +51,32 @@ import { StorageReportSource } from './infrastructure/report-source.adapter';
     { provide: FILE_OBJECT_REPOSITORY, useClass: PrismaFileObjectRepository },
     { provide: UPLOAD_SESSION_REPOSITORY, useClass: PrismaUploadSessionRepository },
     { provide: STORAGE_SERVICE, useClass: DefaultStorageService },
+    // ADR-0026 §10: verified downloads. The staging directory is created (0700) and emptied when
+    // the process starts, so nothing a crashed process staged survives it.
+    {
+      provide: DOWNLOAD_STAGING,
+      useFactory: async (config: AppConfig, logger: Logger) => {
+        const staging = new LocalDownloadStaging(config.download.stagingDir);
+        const removed = await staging.prepare();
+        if (removed > 0) {
+          logger.warn('Removed download staging files left by an earlier process', { removed });
+        }
+        return staging;
+      },
+      inject: [APP_CONFIG, LOGGER],
+    },
+    { provide: VERIFIED_DOWNLOAD_DELIVERY, useClass: DefaultVerifiedDownloadDelivery },
     // Phase 10: Retention's `BLOB_REAPER`, implemented by the module that owns the bytes — the
     // same inversion as `REVISION_WRITER`. The only code in the product that removes an object
     // from storage, and the first caller `StoragePort.delete` has had outside the upload path.
     { provide: BLOB_REAPER, useClass: StorageBlobReaper },
   ],
-  exports: [DASHBOARD_STORAGE_METRICS, REPORT_STORAGE_SOURCE, STORAGE_SERVICE, BLOB_REAPER],
+  exports: [
+    DASHBOARD_STORAGE_METRICS,
+    REPORT_STORAGE_SOURCE,
+    STORAGE_SERVICE,
+    BLOB_REAPER,
+    VERIFIED_DOWNLOAD_DELIVERY,
+  ],
 })
 export class StorageModule {}

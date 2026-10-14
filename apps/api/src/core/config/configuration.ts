@@ -1,3 +1,6 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { z } from 'zod';
 import { type ProxyTrust, ProxyTrustError, parseProxyTrust } from '@edms/utils/proxy-trust';
 
@@ -230,6 +233,28 @@ export const configSchema = z
     STORAGE_ORPHAN_GRACE_SECONDS: z.coerce.number().int().min(60).default(86_400),
     /** Report what the orphan sweep would remove, and remove nothing. */
     STORAGE_ORPHAN_SWEEP_DRY_RUN: booleanFromEnv.default(false),
+
+    // --- Verified downloads — ADR-0026 §10, docs/reports/hetzner-download-integrity-proposal.md --
+    //
+    // A document download is served by the API: the object is streamed into an encrypted staging
+    // file while it is hashed, and nothing is sent until the whole digest matches the record.
+    /** How long a download link the API issues stays redeemable. Short: it is a bearer link. */
+    DOWNLOAD_LINK_TTL_SECONDS: z.coerce.number().int().min(30).max(600).default(60),
+    /**
+     * Where staging files are written. Its own volume in production (infra/hetzner/compose.yaml):
+     * the container's /tmp is a tmpfs, which would put every staged byte in memory.
+     */
+    DOWNLOAD_STAGING_DIR: z.string().min(1).optional(),
+    /** The most staged bytes at once, across every download in this process. */
+    DOWNLOAD_STAGING_MAX_BYTES: z.coerce.number().int().min(1_048_576).default(2_147_483_648),
+    /** The largest file served through verification; a larger one is refused, never sent unverified. */
+    DOWNLOAD_MAX_FILE_BYTES: z.coerce.number().int().min(1_048_576).default(1_073_741_824),
+    /** Downloads being staged or sent at once in this process. */
+    DOWNLOAD_MAX_CONCURRENT: z.coerce.number().int().min(1).max(256).default(8),
+    /** How long a download waits for room before it is answered 503 with Retry-After. */
+    DOWNLOAD_QUEUE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(30_000),
+    /** Free space the staging file system must keep after a download's bytes are counted. */
+    DOWNLOAD_MIN_FREE_BYTES: z.coerce.number().int().min(0).default(536_870_912),
 
     SEARCH_DRIVER: z.enum(['POSTGRES', 'OPENSEARCH']).default('POSTGRES'),
     /**
@@ -667,6 +692,15 @@ export const configSchema = z
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   })
   .superRefine((config, ctx) => {
+    // --- Verified downloads: a file the limit admits must fit the staging budget ---------------
+    if (config.DOWNLOAD_MAX_FILE_BYTES > config.DOWNLOAD_STAGING_MAX_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['DOWNLOAD_MAX_FILE_BYTES'],
+        message: 'Must not exceed DOWNLOAD_STAGING_MAX_BYTES.',
+      });
+    }
+
     // --- The orphan sweep's grace, in every environment ------------------------------------
     //
     // An object younger than the longest a completion can take may be one that completion is
@@ -1123,6 +1157,16 @@ export interface AppConfig {
     readonly antivirus: RawConfig['AV_DRIVER'];
     readonly office: RawConfig['OFFICE_DRIVER'];
   };
+  /** Verified downloads — ADR-0026 §10. */
+  readonly download: {
+    readonly linkTtlSeconds: number;
+    readonly stagingDir: string;
+    readonly stagingMaxBytes: number;
+    readonly maxFileBytes: number;
+    readonly maxConcurrent: number;
+    readonly queueTimeoutMs: number;
+    readonly minFreeBytes: number;
+  };
   /** The scanner behind `AV_DRIVER` — RC D-3. `icap` is null unless the driver is `ICAP`. */
   readonly antivirus: {
     readonly icap: IcapEndpoint | null;
@@ -1365,6 +1409,15 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       mail: raw.MAIL_DRIVER,
       antivirus: raw.AV_DRIVER,
       office: raw.OFFICE_DRIVER,
+    },
+    download: {
+      linkTtlSeconds: raw.DOWNLOAD_LINK_TTL_SECONDS,
+      stagingDir: raw.DOWNLOAD_STAGING_DIR ?? join(tmpdir(), 'munaxa-download-staging'),
+      stagingMaxBytes: raw.DOWNLOAD_STAGING_MAX_BYTES,
+      maxFileBytes: raw.DOWNLOAD_MAX_FILE_BYTES,
+      maxConcurrent: raw.DOWNLOAD_MAX_CONCURRENT,
+      queueTimeoutMs: raw.DOWNLOAD_QUEUE_TIMEOUT_MS,
+      minFreeBytes: raw.DOWNLOAD_MIN_FREE_BYTES,
     },
     antivirus: {
       icap: raw.AV_ICAP_URL === undefined ? null : parseIcapUrl(raw.AV_ICAP_URL),

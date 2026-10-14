@@ -886,29 +886,49 @@ export class DefaultDocumentService {
     });
   }
 
-  /** A short-lived download URL, audited before it exists. The gate lives in Storage. */
+  /**
+   * A short-lived, verified download link, audited before it exists — ADR-0026 §10. The gate and
+   * the verification live in Storage; what may be downloaded is decided here, by `downloadTarget`,
+   * which the link's redemption asks again.
+   */
   async downloadUrl(id: string, inline: boolean): Promise<{ url: string; expiresAt: Date }> {
     return this.writer.read(async () => {
-      const document = await this.require(id, false);
-      // The *effective* content when one exists. After a check-in the latest revision is an
-      // unapproved draft, and "the published revision stays effective until the new one
-      // publishes" (`06-document-lifecycle.md` §3) applies to downloads before anything else.
-      // A draft's own bytes are reachable through the revision history endpoint, deliberately
-      // behind `document:history:view`.
-      const revision = document.currentRevision ?? document.latestRevision;
-      if (revision === null) {
-        throw new NotFoundError('The requested file');
-      }
-      const level = await this.configuration.confidentiality(document.confidentialityId);
-      if (level !== null && !level.allowDownload) {
-        // A confidentiality level subtracts and never grants: holding `document:download` is not
-        // enough if the document's own classification forbids it (`08-permission-model.md` §4).
-        throw new ForbiddenError('download this document');
-      }
-      return this.content.downloadUrl(revision.file.fileObjectId, revision.file.filename, {
+      const target = await this.downloadTarget(id);
+      return this.content.downloadLink(target.fileObjectId, target.filename, {
         inline,
+        documentId: id,
+        revisionId: null,
       });
     });
+  }
+
+  /**
+   * The file a download of this document's content serves, and its name, if the caller may download
+   * it now: the document exists for them, has content, and its confidentiality level allows
+   * download. Asked when a link is issued and again when it is redeemed.
+   */
+  async currentDownloadTarget(id: string): Promise<{ fileObjectId: string; filename: string }> {
+    return this.writer.read(() => this.downloadTarget(id));
+  }
+
+  private async downloadTarget(id: string): Promise<{ fileObjectId: string; filename: string }> {
+    const document = await this.require(id, false);
+    // The *effective* content when one exists. After a check-in the latest revision is an
+    // unapproved draft, and "the published revision stays effective until the new one
+    // publishes" (`06-document-lifecycle.md` §3) applies to downloads before anything else.
+    // A draft's own bytes are reachable through the revision history endpoint, deliberately
+    // behind `document:history:view`.
+    const revision = document.currentRevision ?? document.latestRevision;
+    if (revision === null) {
+      throw new NotFoundError('The requested file');
+    }
+    const level = await this.configuration.confidentiality(document.confidentialityId);
+    if (level !== null && !level.allowDownload) {
+      // A confidentiality level subtracts and never grants: holding `document:download` is not
+      // enough if the document's own classification forbids it (`08-permission-model.md` §4).
+      throw new ForbiddenError('download this document');
+    }
+    return { fileObjectId: revision.file.fileObjectId, filename: revision.file.filename };
   }
 
   // --- What the workflow engine asks ------------------------------------------------------
