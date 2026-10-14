@@ -1,12 +1,15 @@
 # Phase B — browser download tests on the local MinIO stack (plan)
 
-- **Status:** **Scripts prepared, not run** (`296b131`, `a66c4b8`: `infra/hetzner/testing/phase-b/`).
-  No browser automation has been run, and nothing against R2. Decided since:
-  - B-5 uses a test-only 30 s link lifetime (`compose.phase-b.yaml`).
-  - The non-ASCII file-name fix (`4b3677f`) came first, so B-3 is now a pass criterion, not a
-    finding.
-  - Downloads are now verified API links (`5ce5185`). B-7 therefore checks that no file bytes are
-    saved, and B-6e still records that a link is a bearer link for its 60 s.
+- **Status:** **Run on local MinIO, 2026-10-14** (run of record: run 3, 82 passed, 4 failed — all 4
+  product findings). Results, measurements and findings are in
+  [ADR-0026 §10](../architecture/adr/0026-hetzner-hosting-evaluation.md), "Phase B". Nothing was run
+  against R2. The plan below is kept as written; where the run differs:
+  - B-5 used a test-only 30 s link lifetime.
+  - B-3 is a pass criterion, and passed.
+  - B-7 follows verified API links.
+  - B-4c could not run, because HTML is refused at upload.
+  - B-6c used an id this tenant does not have.
+  - Step 9 (resource limits) was added.
 - **Date:** 2026-10-14
 - **Context:** [ADR-0026](../architecture/adr/0026-hetzner-hosting-evaluation.md) §10. It follows
   Phase A (API-level checks) and precedes Phase C (R2).

@@ -75,3 +75,11 @@ C is a stop-gap only.
 The report and audit export cases (B-10) check that the browser saves exactly what the store
 serves. **That is not a verification against the record**, and the Phase B results do not claim
 one.
+
+Run 3 (2026-10-14) passed both:
+- `documents.csv` (3243 bytes) and `events.jsonl` (126 941 bytes) were saved identical to the
+  stored objects.
+- Each was followed through a direct signed store path (`/munaxa-docs-test/…/evidence/…`), not
+  `/api/v1/downloads`. That confirms these routes are outside verified delivery.
+
+Bulk links were not exercised in the browser. Nothing in this section has changed in the code.

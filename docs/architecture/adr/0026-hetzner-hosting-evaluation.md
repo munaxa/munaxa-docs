@@ -5,7 +5,8 @@
   behaviours that test covers (§10, gate P-1). That test is not production readiness, and gate P-1
   is not complete. Phase A's local upload and download checks passed after five application fixes
   (§10); that is local evidence only. Document downloads are now verified before any byte is sent
-  (§10, local evidence only).
+  (§10, local evidence only). Phase B (a real browser and the download resource limits, local MinIO
+  only) has run: 82 checks passed and 4 genuine product findings remain open (§10).
 - **Date:** 2026-10-13
 - **Phase:** Hosting migration Phase 2 (foundation)
 - **Builds on:** [ADR-0015](./0015-database-per-tenant.md), [ADR-0021](./0021-multi-tenant-hosted-launch.md),
@@ -542,7 +543,7 @@ local figures, not a sizing for the production server:
 - On GitHub at `296b131`, `CI` and the MinIO stack job passed.
 
 **Still open:**
-- **Phase B** (browser) and **Phase C** (R2) have not been run.
+- **Phase C** (R2) has not been run. Phase B has; see below.
 - **Exports:** report, bulk and audit exports still use signed store URLs (300 s), outside the
   verified path.
 - **Bearer links:** a verified link can be followed by whoever holds it for 60 s, though each use
@@ -557,6 +558,103 @@ local figures, not a sizing for the production server:
 
 **Observed, not changed:** F-2 — API responses carry `X-Powered-By: Express`. Minor information
 disclosure, pre-existing, independent of hosting; noted for a later application change.
+
+### Phase B: a real browser and the download limits, local MinIO (2026-10-14)
+
+Chromium 1.62.1 (the official Playwright image) drove the real web app through the proxy, against
+the stack test's local MinIO. The test-only API ran with 30 s links; the product default stays
+60 s. Harness: `infra/hetzner/testing/phase-b/` (`aa9b067`, `ccf5046`, `0183485`). Images:
+the API with verified downloads (`5ce5185`), the web app as built for `4b3677f`. No R2, no AWS,
+no Cloudflare.
+
+**Runs.**
+- **Run 1** (development, kept stack) found harness defects, now fixed.
+- **Run 2:** the integrity links expired before they were followed. The follow step signed in
+  again and the product's sign-in rate limit held it for about 3 minutes, past the 30 s lifetime.
+  This was a harness defect. The API answered correctly ("expired"), saved no bytes and
+  quarantined nothing. Fixed in `0183485`.
+- **Run 3**, the run of record: **82 passed, 4 failed. All 4 are product findings, not harness
+  faults.** Teardown left no container, volume or sign-in state. None of the generated credentials
+  appears in 2329 log lines.
+
+**Passed (run 3).**
+- **Upload and download.**
+  - An upload through the dialog was filed and scanned CLEAN, and the recorded digest equals the
+    browser's own.
+  - Downloads were byte-for-byte identical in every case: text, PDF, 5 MiB binary, 120 MiB, the
+    uploaded file, the library row action and the revision panel.
+- **File names.** `تقرير الربع الأول.txt`, `Résumé café.txt`, `Résumé تقرير.txt` and a name with
+  quotes are all saved by Chromium under their own names (`filename*=UTF-8''`, ASCII fallback).
+- **Attachment versus inline.** An attachment is saved, not rendered. Plain text renders inline. A
+  PDF preview paints in pdf.js. HTML cannot be uploaded (422), so no inline HTML exists to run.
+- **Links.**
+  - An expired link: served inside 30 s, then a 404 page and no file.
+  - An edited token: 404, no file.
+- **Access.**
+  - A viewer without `document:download` has no button.
+  - The confidentiality level refuses with "You do not have permission".
+  - An unknown document id is not found.
+  - Signed out returns the person to sign-in.
+- **Integrity.**
+  - A swapped object, a deleted object and a quarantined record each show the 409 integrity page,
+    with **0 bytes saved**. The links were followed 1.4–3.6 s after issue, after the store change.
+  - The swapped and deleted files were quarantined MISMATCH and UNREADABLE.
+  - No `FILE_DOWNLOAD_SERVED` for any of them.
+- **Outage.**
+  - With the store stopped: no file, and not quarantined.
+  - With the store back: the same button saves the exact file.
+- **Arabic interface.** Right-to-left, and the download saves the same bytes.
+- **Exports.** The report export (`documents.csv`) and the audit export (`events.jsonl`) save
+  exactly what the store served, **through a direct signed store URL — not the verified path**
+  ([export gap](../../reports/hetzner-export-download-gap.md)).
+- **Resource limits** (no limit raised). Each answer was the exact file or a 503 with
+  `Retry-After: 30` and "Downloads are busy right now…"; none was partial or corrupt.
+
+  | Case | Result | API cgroup peak / anonymous / staged peak |
+  | --- | --- | --- |
+  | 8 × 128 MiB at once (within limits) | 8 served; slowest first byte 8.2 s, slowest whole 12.3 s | 1533 / 463 / 1024 MiB |
+  | 40 × 128 MiB at once (concurrency 8, queue 30 s) | 24 served, 16 × 503; first byte ≤ 33.5 s | 1413 / 360 / 1024 MiB |
+  | 24 × 128 MiB, test-only API with a 256 MiB staging budget | 18 served, 6 × 503 | 465 / 230 / 256 MiB |
+  | 128 MiB on a 64 MiB disk, default reserve | 503 in 51 ms, nothing staged | — |
+  | Left while verifying (150 ms) and while sending (4 MiB in) | Staging empty afterwards | — |
+  | Store killed mid-verification | 503 + Retry-After, "File storage is temporarily unavailable"; first byte 0.8 s (run 3) to 71 s (runs 1–2) | — |
+
+  - The stack's API never restarted and was never OOM-killed.
+  - Neither limits file was quarantined.
+  - `FILE_DOWNLOAD_SERVED` is 50 for 50 downloads served in full, and none for a refused,
+    interrupted or failed download.
+  - Staging was empty at the end.
+
+**Genuine findings (failed, not changed — application work for separate approval).**
+1. **Upload dialog at 1280×720.** The "Add documents" submit button is at 754–790 px, below the
+   window, in a dialog that does not scroll. It is unreachable at common laptop sizes. The upload
+   was proven at 1920×1080.
+2. **The staging disk filling part-way answers 500, not 503.** Two 48 MiB downloads on a 64 MiB
+   disk with no reserve were both refused "Something went wrong on our side", with no Retry-After.
+   No bytes were sent, the API kept running, staging was freed and nothing was quarantined. The
+   failure is safe but not reported as retryable.
+3. **Store down: no retry advice in the interface.** The web shows "A service this action needs is
+   unavailable." `toActionResult` (`apps/web/src/lib/admin/action-result.ts:39`) keeps only the
+   error code, so the API's "temporarily unavailable, try again" sentence is lost.
+4. **A quarantined file, refused before a link is issued, shows the malware-scan sentence.** In
+   Arabic: "ما زال يجري فحص هذا الملف…"; in English, "This file is still being checked for
+   malware". The page shows no quarantine warning, and its Download button stays enabled. When the
+   refusal comes after the link is followed, the 409 page has the right sentence (runs 2 and 3).
+
+**Recorded findings and limitations (not failures).**
+- A followed link downloads in a fresh context with no session: a bearer link for its lifetime,
+  re-checked against its person.
+- No read timeout on the store stream: a killed store took up to 71 s to answer 503.
+- The cgroup reaches its 1536 MiB limit through page cache (anonymous memory ≤ 463 MiB). It was not
+  OOM-killed.
+- The busy sentence is also used when the disk reserve refuses.
+- Not covered:
+  - another tenant's real document (a random id was used; tenants are separate databases);
+  - inline HTML or SVG (not accepted at upload);
+  - bulk links in the browser.
+- Console errors are the expected 404s of the expired and edited links.
+- The Arabic wording still needs native review.
+- All of this is local MinIO only. It shows nothing about R2 (Phase C, not run).
 
 **Gates before adoption:**
 
