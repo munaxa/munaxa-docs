@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { Controller, Get, Header, Inject, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 
@@ -130,6 +132,15 @@ export class PreviewStreamController {
     if (!fetched.ok) {
       return null;
     }
-    return Buffer.from(await fetched.arrayBuffer());
+    const bytes = Buffer.from(await fetched.arrayBuffer());
+    // The bytes are already here, so checking them costs a hash and no memory (ADR-0026 §10,
+    // Phase A): an artefact whose stored bytes are not the ones recorded is not served.
+    if (createHash('sha256').update(bytes).digest('hex') !== file.checksumSha256) {
+      this.logger.error('A preview artefact did not match its recorded digest; not served', {
+        fileObjectId: grant.fileObjectId,
+      });
+      return null;
+    }
+    return bytes;
   }
 }

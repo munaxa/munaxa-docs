@@ -522,6 +522,106 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
   });
 });
 
+// --- Phase A: before the verifier has run -------------------------------------------------
+
+/**
+ * ADR-0026 §10, Phase A. The gate above relies on the nightly verifier's finding, so until it ran
+ * a link was signed for an object somebody had overwritten (it served the other bytes) or deleted.
+ * The gate now asks the store itself (one HEAD) before it signs. Every case here is judged before
+ * any verifier pass: the row still says UNVERIFIED.
+ */
+describe('the download gate asks the store, not only the verifier (Phase A)', () => {
+  async function refused(fileObjectId: string, integrityStatus: string): Promise<void> {
+    const before = await downloadIssuedCount(fileObjectId);
+    await expect(
+      inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf')),
+    ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED', details: { integrityStatus } });
+    // Nothing signed, so nothing audited as issued.
+    expect(await downloadIssuedCount(fileObjectId)).toBe(before);
+  }
+
+  it('serves intact content the verifier has not reached yet', async () => {
+    const bytes = aPdf('unverified-intact');
+    const { fileObjectId } = await inAcme(() => upload(bytes));
+    expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNVERIFIED');
+    const signed = await inAcme(() =>
+      storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
+    );
+    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(bytes));
+  });
+
+  it('refuses an object overwritten in place, before any verifier pass', async () => {
+    const bytes = aPdf('overwritten');
+    const { fileObjectId } = await inAcme(() => upload(bytes));
+    const { storageKey } = await rowOf(fileObjectId);
+    await inAcme(() =>
+      scoped.put(storageKey, once(Buffer.from(`${bytes.toString()}% tampered\n`)), {
+        contentType: 'application/pdf',
+      }),
+    );
+    expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNVERIFIED');
+    await refused(fileObjectId, 'MISMATCH');
+  });
+
+  it('refuses an overwrite of the same size that brings a digest of its own', async () => {
+    const bytes = aPdf('same-size');
+    const { fileObjectId } = await inAcme(() => upload(bytes));
+    const { storageKey } = await rowOf(fileObjectId);
+    const other = Buffer.from(bytes.toString().replace('same-size', 'SAME-SIZE'));
+    expect(other.length).toBe(bytes.length);
+    // A writer who signs the new bytes' digest properly: the store accepts it, and records it.
+    const target = await inAcme(() =>
+      scoped.createUploadTarget({
+        key: storageKey,
+        contentType: 'application/pdf',
+        sizeBytes: other.length,
+        checksumSha256: sha256(other),
+        expiresInSeconds: 60,
+      }),
+    );
+    const put = await fetch(target.url, { method: 'PUT', headers: target.headers, body: other });
+    expect(put.ok).toBe(true);
+    await refused(fileObjectId, 'MISMATCH');
+  });
+
+  it('refuses an object that has gone missing, before any verifier pass', async () => {
+    const { fileObjectId } = await inAcme(() => upload(aPdf('vanished')));
+    const { storageKey } = await rowOf(fileObjectId);
+    await inAcme(() => scoped.delete(storageKey));
+    await refused(fileObjectId, 'UNREADABLE');
+  });
+
+  it('serves a streamed export at once, and refuses it once it has been rewritten', async () => {
+    const content = aPdf('streamed-export');
+    const artefact = await inAcme(() =>
+      storage.storeStreamed({
+        bundleId: uuidv7(),
+        name: 'manifest.json',
+        body: once(content),
+        mimeType: 'application/json',
+      }),
+    );
+    // A streamed (multipart) object carries no store SHA-256; its age against the row decides.
+    expect((await inAcme(() => scoped.head(artefact.storageKey)))?.checksumSha256).toBeNull();
+    const signed = await inAcme(() => storage.createDownloadUrl(artefact.id, 'manifest.json'));
+    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(
+      sha256(content),
+    );
+
+    // Recorded an hour ago, rewritten now: written after the product last vouched for it.
+    await owner.fileObject.update({
+      where: { id: String(artefact.id) },
+      data: { createdAt: new Date(Date.now() - 3_600_000) },
+    });
+    await inAcme(() =>
+      scoped.put(artefact.storageKey, once(Buffer.from('{"rewritten":true}')), {
+        contentType: 'application/json',
+      }),
+    );
+    await refused(String(artefact.id), 'MISMATCH');
+  });
+});
+
 // --- D-12 -------------------------------------------------------------------------------------
 
 describe('bytes reclaimed once can be stored again (D-12)', () => {

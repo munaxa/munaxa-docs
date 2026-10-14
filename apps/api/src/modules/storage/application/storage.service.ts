@@ -107,6 +107,9 @@ import {
  * trigger, because "enforced in the use case and in the database" is what the architecture asks for
  * and because the use case is not the only thing that ever writes these rows.
  */
+/** How far a store's clock may run ahead of ours before an object looks rewritten (see above). */
+const STORE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
 /** How long one integrity re-read may wait for scan capacity before the pass gives up. */
 const VERIFIER_CAPACITY_WAIT_MS = 10 * 60 * 1000;
 
@@ -527,6 +530,7 @@ export class DefaultStorageService implements StorageService {
     return this.writer.write<{ url: string; expiresAt: Date }>(async () => {
       const file = await this.require(fileObjectId);
       this.refuseUnreachable(file);
+      await this.confirmStoredBytes(file);
 
       const signed = await this.storage.createDownloadUrl(file.storageKey, {
         expiresInSeconds: this.config.storage.signedUrlTtlSeconds,
@@ -1148,6 +1152,51 @@ export class DefaultStorageService implements StorageService {
       this.sessions.settle(session.id, UploadSessionState.EXPIRED, null),
     );
     throw new UploadExpiredError();
+  }
+
+  /**
+   * Asks the store about the object before a link to it is signed — ADR-0026 §10, Phase A.
+   *
+   * Phase A showed the gate trusting the row: until the nightly verifier ran, a link was signed for
+   * an object somebody had overwritten (it served the other bytes) or deleted (it answered 404).
+   * One `HEAD` now stands between the row and the link, with no read of the content and no
+   * buffer — the link is signed only if the store still holds what the row describes:
+   *
+   * - **Absent** — refused.
+   * - **A different size** — refused.
+   * - **A SHA-256 recorded by the store** (every upload: the digest is signed into its PUT, and a
+   *   copy keeps it) — it must be this row's digest. An overwrite either carries its own digest,
+   *   which differs, or none, which is the next case.
+   * - **No SHA-256** (a streamed export; an object restored or rewritten by a plain write) — the
+   *   object must not have been written after the last moment the product vouched for its bytes:
+   *   the row's creation, or the verifier's last successful re-hash. A store's clock and ours may
+   *   differ, so a few minutes of skew are allowed.
+   *
+   * What it does not close: the link outlives this check by its TTL, and bytes swapped within
+   * that window would be served. A store's own record of a digest is also not a re-hash — bit
+   * rot under an intact record is the rolling verifier's to find. The refusal is not recorded
+   * here: this runs inside the caller's transaction, which a refusal rolls back, so the verifier
+   * records the finding on its next pass.
+   */
+  private async confirmStoredBytes(file: FileObjectRecord): Promise<void> {
+    const stored = await this.storage.head(file.storageKey);
+    if (stored === null) {
+      throw new ContentQuarantinedError(IntegrityStatus.UNREADABLE);
+    }
+    const vouchedAt = Math.max(
+      file.createdAt.getTime(),
+      file.integrityStatus === IntegrityStatus.VERIFIED && file.integrityCheckedAt !== null
+        ? file.integrityCheckedAt.getTime()
+        : 0,
+    );
+    const unchanged =
+      stored.sizeBytes === file.sizeBytes &&
+      (stored.checksumSha256 !== null
+        ? stored.checksumSha256 === file.checksumSha256
+        : stored.lastModifiedAt.getTime() <= vouchedAt + STORE_CLOCK_SKEW_MS);
+    if (!unchanged) {
+      throw new ContentQuarantinedError(IntegrityStatus.MISMATCH);
+    }
   }
 
   /** One prefix of the orphan sweep: list, classify, re-check, remove. */
