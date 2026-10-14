@@ -1,7 +1,17 @@
 # Proposal — verified, server-mediated downloads
 
-- **Status:** **Proposal for review. Not implemented, not approved.** No code, configuration or
-  infrastructure has been changed for it.
+- **Status:** **Implemented locally as design A** (`5ce5185`, `cdc08ec`) after the owner's approval.
+  Validated on the local MinIO stack only; not deployed, and not production readiness.
+  Measurements and results are in ADR-0026 §10, *Verified downloads*. Where the implementation
+  differs from the text below:
+  - **Path:** `/api/v1/downloads`, not `/api/v1/files/download`.
+  - **Link lifetime:** 60 s (`DOWNLOAD_LINK_TTL_SECONDS`).
+  - **Admission:** concurrency, staged bytes and a free-disk reserve (`DOWNLOAD_*`).
+  - **Staging authentication:** each 256 KiB record is authenticated (AES-256-GCM), so a staged
+    byte changed on disk is refused before it is sent.
+  - **Inline:** allowed only for PDF, raster images and plain text, under a CSP sandbox.
+  - **Re-authorization** on use checks the person's permission version, permissions, the ACL, the
+    confidentiality level and the current file.
 - **Date:** 2026-10-14
 - **Context:** [ADR-0026](../architecture/adr/0026-hetzner-hosting-evaluation.md) §10, Phase A
 - **Owner's stated preference:** downloads that pass through the API and are verified while
@@ -202,7 +212,7 @@ Integration tests against MinIO and PostgreSQL, with the staging path and the re
   should, because exports are exactly the objects that lack a store checksum.
 - Whether to keep a feature switch back to signed store URLs during roll-out.
 
-## 6. Defect found while preparing this proposal (not fixed)
+## 6. Defect found while preparing this proposal — fixed in `6973984`
 
 The integrity verifier (`StorageService.verifyIntegrity`, present since `06ab302`) quarantines in
 two situations where its own comments say it should not:

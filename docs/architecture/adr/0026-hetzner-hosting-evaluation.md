@@ -4,7 +4,8 @@
   deployed. One storage provider, Cloudflare R2, has passed the compatibility test for the
   behaviours that test covers (§10, gate P-1). That test is not production readiness, and gate P-1
   is not complete. Phase A's local upload and download checks passed after five application fixes
-  (§10); that is local evidence only.
+  (§10); that is local evidence only. Document downloads are now verified before any byte is sent
+  (§10, local evidence only).
 - **Date:** 2026-10-13
 - **Phase:** Hosting migration Phase 2 (foundation)
 - **Builds on:** [ADR-0015](./0015-database-per-tenant.md), [ADR-0021](./0021-multi-tenant-hosted-launch.md),
@@ -468,6 +469,91 @@ scanner the ICAP suite passed 10 of 10. With a scanner still starting, it failed
 
 Nothing was deployed or published, no cloud resource or DNS record was changed, and AWS was not
 accessed.
+
+### Verified downloads, and two fixes before Phase B (2026-10-14, local)
+
+**Result:** document downloads are now served by the API only after the whole file has been read
+and its SHA-256 matched the record. All stack checks and every Phase A expectation held on the
+local MinIO stack. This is **local evidence only**. It is **not production readiness**, and this
+ADR stays Proposed. Design and trade-offs:
+[`docs/reports/hetzner-download-integrity-proposal.md`](../../reports/hetzner-download-integrity-proposal.md).
+
+| Commit | Change |
+| --- | --- |
+| `6973984` | The integrity verifier quarantines only a finding: a digest mismatch, or an absence a HEAD confirms. A file over `STORAGE_INTEGRITY_MAX_BYTES`, or a read that failed (5xx, timeout, unreachable store), is recorded UNVERIFIED and never quarantined. A quarantine already in place is never released by a failed read. Before, both were quarantined as UNREADABLE (the defect present since `06ab302`) |
+| `4b3677f` | Download file names follow RFC 6266/8187: `filename*=UTF-8''…` with an ASCII fallback. CR, LF, quotes and bidirectional overrides cannot reach the header |
+| `5ce5185` | Verified downloads: an API link (`/api/v1/downloads?token=…`, 60 s) that re-authorizes the person when followed, then stages the object in an encrypted, unlinked file while hashing it, and sends nothing until it matches. Caddy route, staging volume, settings and README in the same commit |
+| `cdc08ec` | A refused link answers in the interface's language (`edms_locale` cookie) |
+| `750232a`, `a66c4b8`, `e64fc02`, `1d8e0ef`, `e605e46` | The Phase A harness for all of the above, and fixes to the harness found by running it |
+| `296b131` | Phase B browser scripts: **prepared, not run** |
+
+**Behaviour on the local stack** (API image built from `296b131`; final run, all checks passed, no
+credential in 1732 log lines):
+
+| Case | Result |
+| --- | --- |
+| Open document | Served by the API as an attachment, byte for byte |
+| Object swapped after its link was issued (same size) | 409 integrity page of 480 bytes, containing **no byte of the original or the replacement**. Quarantined MISMATCH, with `INTEGRITY_MISMATCH` in the trail and no `FILE_DOWNLOAD_SERVED` |
+| Object deleted after its link was issued | 409 and no file bytes; quarantined UNREADABLE after a confirming HEAD |
+| Store stopped when the link was followed | 503 with `Retry-After: 30`, no file bytes, nothing quarantined. Once the store was back, the same file was served byte for byte, with `FILE_DOWNLOAD_SERVED` recorded |
+| Quarantined, unscanned, confidential, no `document:download` | Refused as before; no link issued |
+| Link after 30 s (test-only lifetime); token signature or payload edited | 404 page in the interface's language; no file |
+| `Résumé تقرير.txt` | `filename*` decodes to the exact name; the ASCII fallback is `Resume _.txt` |
+| A link followed with no session | Served (FINDING): a link is a bearer link for its 60 s lifetime, re-checked against its person when followed |
+| Staging after every step | No file in the directory and none held open |
+
+**Measured on the local stack** (4 CPUs, local MinIO, API limit 1536 MiB; final run). These are
+local figures, not a sizing for the production server:
+
+| Downloads | Time to first byte | Total | API cgroup peak | of which the process's own (anonymous) | Peak staged |
+| --- | --- | --- | --- | --- | --- |
+| 1 MiB | 85 ms | 104 ms | 327 MiB | 318 MiB | — |
+| 32 MiB | 603 ms | 941 ms | 327 MiB | 319 MiB | 32 MiB |
+| 128 MiB | 1.5 s | 2.4 s | 317 MiB | 185 MiB | 128 MiB |
+| 8 × 128 MiB at once | 8.0–11.0 s | 14.7–15.6 s | 1266 MiB | 202 MiB | 1024 MiB |
+| 12 × 128 MiB at once (limit 8) | 8.4–10.5 s; the 4 that waited 17.9–18.4 s | up to 20.8 s | 1269 MiB | 220 MiB | 1024 MiB (never more than 8 staged) |
+
+- **Memory:** the process's own memory hardly moves with downloads. What grows is the page cache of
+  the staging files the API writes, and the container's cgroup counts it. The kernel reclaims it,
+  and in five runs the API was never restarted. In one run, though, the cgroup reached
+  1535 MiB of 1536 MiB, so cache pressure on the container limit is a real risk to size for.
+- **Time to first byte:** it grows with the file, because the whole file is read and checked first.
+  That is the cost of the design.
+- **Concurrency:** above `DOWNLOAD_MAX_CONCURRENT` downloads wait their turn rather than fail.
+- **Uploads,** same run: 4 and 8 concurrent ~120 MiB uploads peaked at 417 and 486 MiB (anonymous
+  408 and 476 MiB). No restart.
+
+**Other validation on these commits:**
+- Format, lint, typecheck, and every package's unit tests passed locally:
+
+  | Package | Passed |
+  | --- | --- |
+  | API | 1020 (1 skipped) |
+  | Web | 508 |
+  | Domain | 164 |
+  | i18n | 80 |
+  | Contracts | 63 |
+  | Utils | 48 |
+  | Worker | 2 |
+
+- The integration suite passed **58 of 58 files (1250 of 1250 tests) on each of three runs**.
+- Against the previous code, 7 of the 9 new verifier tests fail. Without the digest comparison,
+  the two content-tamper delivery tests fail.
+- On GitHub at `296b131`, `CI` and the MinIO stack job passed.
+
+**Still open:**
+- **Phase B** (browser) and **Phase C** (R2) have not been run.
+- **Exports:** report, bulk and audit exports still use signed store URLs (300 s), outside the
+  verified path.
+- **Bearer links:** a verified link can be followed by whoever holds it for 60 s, though each use
+  re-checks its person.
+- **Downloads go through the API:** every one now crosses the server twice, and time to first byte
+  grows with the file. Bandwidth and latency to a real store (R2 in the eastern US) are not
+  measured.
+- **Staging limits:** they are per API process, and the page cache counts against the container's
+  memory.
+- **Scanning** still holds each object whole in memory.
+- **Arabic text** needs native review.
 
 **Observed, not changed:** F-2 — API responses carry `X-Powered-By: Express`. Minor information
 disclosure, pre-existing, independent of hosting; noted for a later application change.

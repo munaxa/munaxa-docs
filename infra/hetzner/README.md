@@ -101,6 +101,12 @@ A document download no longer sends the browser to the object store.
 - Settings: `config/api.env.example`, *Verified downloads*. Design and trade-offs:
   [`docs/reports/hetzner-download-integrity-proposal.md`](../../docs/reports/hetzner-download-integrity-proposal.md).
 
+Measured locally (ADR-0026 §10):
+- 128 MiB: first byte after 1.5 s.
+- 8 × 128 MiB at once: about 15 s each, with 1 GiB staged.
+- The API process's own memory stays near 200 MiB. The page cache of the staged files counts
+  against the container's limit; size the server for it.
+
 Report, bulk and audit exports still use signed store URLs. Moving them is a separate decision.
 
 ## 5. Testing the template
@@ -134,6 +140,7 @@ backups, load, or recovery.
 | 2026-10-13 | `api`, `web` rebuilt with the F-1 Dockerfile fix; `antivirus` unchanged | **All passed** — both engines present for OpenSSL 3; migrations offline, second run a no-op; smoke 14/14; 8/8; no credential in logs. Negative control: the pre-fix image fails the same offline migration (`EAI_AGAIN binaries.prisma.sh`) |
 | 2026-10-14 | All three built in CI from `3216654` ([run 38535100979](https://github.com/munaxa/munaxa-docs/actions/runs/38535100979)) | **All passed** — the MinIO job, and the Cloudflare R2 test bucket job (§6): smoke 14/14 plus CORS; scanner verdicts confirmed in the database; 8/8; no credential in logs; 0 objects left |
 | 2026-10-14 | `api` built locally from `0a7021d` (the five Phase A fixes), `web` with the F-1 fix, `antivirus` local | **All passed**, with Phase A (below): smoke 14/14; Phase A every expectation held; 8/8; no credential in 1562 log lines. On GitHub at `41bf8dd`: `CI` and the MinIO job passed (the job's first attempt failed on a Go module download before any test; its one re-run passed) |
+| 2026-10-14 | `api` built locally from `296b131` (verified downloads, verifier and file-name fixes), `web` with the F-1 fix, `antivirus` local | **All passed**, Phase A included: tampered, deleted and unavailable objects deliver no file bytes; outage not quarantined; staging left empty; 8 × 128 MiB downloads at once in about 15 s with the API's own memory at 202 MiB (cgroup 1266 MiB with page cache); no credential in 1732 log lines. ADR-0026 §10 has the record |
 
 ### Phase A: local upload and download checks
 
