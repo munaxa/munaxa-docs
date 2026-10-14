@@ -131,9 +131,10 @@ pa_sample_stop() {
   kill "$pa_sampler" 2>/dev/null || true
   wait "$pa_sampler" 2>/dev/null || true
   pa_sampler=''
-  pa_anon_peak="$(sort -n "$pa_dir/anon.samples" | tail -1)"
   sort -n "$pa_dir/mem.samples" | tail -1
 }
+# The anonymous peak of the last sampling (read after pa_sample_stop, which runs in a subshell).
+pa_anon_peak() { sort -n "$pa_dir/anon.samples" 2>/dev/null | tail -1; }
 # Counts lines of a store listing; a prefix with nothing under it is 0, not an error.
 pa_count() { { pa_mc ls --recursive "$@" 2>/dev/null || true; } | wc -l; }
 pa_mib() { echo $(( $1 / MiB )); }
@@ -325,7 +326,7 @@ pa_load() {
   pa_sample_start || pa_fail "could not sample the API's memory"
   pa_client load "$n" || pa_fail "the $n-upload load step did not complete"
   peak="$(pa_sample_stop)"
-  pa_measure "API peak memory, $n concurrent uploads: $(pa_mib "$peak") MiB of 1536 MiB (anonymous $(pa_mib "${pa_anon_peak:-0}") MiB); wall time $(pa_q "R.find((r) => r.step === 'load$n-total')?.wallSeconds") s"
+  pa_measure "API peak memory, $n concurrent uploads: $(pa_mib "$peak") MiB of 1536 MiB (anonymous $(pa_mib "$(pa_anon_peak)") MiB); wall time $(pa_q "R.find((r) => r.step === 'load$n-total')?.wallSeconds") s"
   local ok
   ok="$(pa_q "R.filter((r) => r.step === 'load$n').every((r) => r.complete === 201 && r.scanStatus === 'CLEAN')")"
   local finished
@@ -552,7 +553,7 @@ pa_dl_measure() { # name concurrency label
   peak="$(pa_sample_stop)"
   staged="$(pa_staged_stop)"
   local m="R.filter((r) => r.step === 'dl-measure' && r.case === '$1' && r.concurrency === $2).pop()"
-  pa_measure "$3: $(pa_q "(($m).outcomes).map((o) => o.status).join(',')") | TTFB ms $(pa_q "(($m).outcomes).map((o) => o.ttfbMs).join(',')") | total ms $(pa_q "(($m).outcomes).map((o) => o.totalMs).join(',')") | wall $(pa_q "($m).wallMs") ms | API peak memory $(pa_mib "$peak") MiB (of which anonymous, i.e. not page cache: $(pa_mib "${pa_anon_peak:-0}") MiB) | peak staged $(pa_mib "${staged:-0}") MiB"
+  pa_measure "$3: $(pa_q "(($m).outcomes).map((o) => o.status).join(',')") | TTFB ms $(pa_q "(($m).outcomes).map((o) => o.ttfbMs).join(',')") | total ms $(pa_q "(($m).outcomes).map((o) => o.totalMs).join(',')") | wall $(pa_q "($m).wallMs") ms | API peak memory $(pa_mib "$peak") MiB (of which anonymous, i.e. not page cache: $(pa_mib "$(pa_anon_peak)") MiB) | peak staged $(pa_mib "${staged:-0}") MiB"
   if pa_holds "$m" "f.outcomes.every((o) => o.status === 200 && o.sameBytes === true)"; then
     pa_pass "$3: every download served the document's exact bytes"
   else
