@@ -24,7 +24,27 @@ const CONSOLE = `${OUT}/console.jsonl`;
 const MiB = 1024 * 1024;
 const DOWNLOAD_WAIT_MS = 120_000;
 
-const result = (name, facts) => console.log(`RESULT ${JSON.stringify({ case: name, ...facts })}`);
+/**
+ * A case's facts, and a screenshot of the page it ended on (screens/<case>.png) as evidence — taken
+ * before the page's context is closed (closeContext awaits it).
+ */
+const shots = [];
+let lastPage = null;
+function result(name, facts) {
+  console.log(`RESULT ${JSON.stringify({ case: name, ...facts })}`);
+  if (lastPage !== null && !lastPage.isClosed()) {
+    mkdirSync(`${OUT}/screens`, { recursive: true });
+    shots.push(
+      lastPage
+        .screenshot({ path: `${OUT}/screens/${name}.png`, fullPage: true })
+        .catch(() => undefined),
+    );
+  }
+}
+async function closeContext(context) {
+  await Promise.all(shots.splice(0));
+  await closeContext(context);
+}
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const state = () => (existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {});
@@ -195,7 +215,10 @@ async function session(email, password, { arabic = false } = {}) {
         () => true,
         () => false,
       );
-    if (signedIn) return { context, page };
+    if (signedIn) {
+      lastPage = page;
+      return { context, page };
+    }
     await sleep(30_000);
   }
   throw new Error('UI sign-in did not succeed within six minutes');
@@ -219,6 +242,7 @@ function watchConsole(page) {
  * the verified download link the browser followed, if it followed one.
  */
 async function attempt(page, action, { expectedDigest = null, timeoutMs = DOWNLOAD_WAIT_MS } = {}) {
+  lastPage = page;
   const startUrl = page.url();
   let linkResponse = null;
   const onResponse = (response) => {
@@ -283,8 +307,10 @@ async function attempt(page, action, { expectedDigest = null, timeoutMs = DOWNLO
   return facts;
 }
 
-const documentPage = (page, id) =>
-  page.goto(`${WEB}/documents/${id}`, { waitUntil: 'networkidle' });
+const documentPage = (page, id) => {
+  lastPage = page;
+  return page.goto(`${WEB}/documents/${id}`, { waitUntil: 'networkidle' });
+};
 const headerDownload = (page, name = 'Download') =>
   page.getByRole('button', { name, exact: true }).first().click();
 
@@ -546,7 +572,7 @@ const cases = {
         { expectedDigest: documents.text.digest },
       ),
     );
-    await context.close();
+    await closeContext(context);
   },
 
   /** B-3: the name Chromium saves each file under. */
@@ -568,7 +594,7 @@ const cases = {
         })),
       });
     }
-    await context.close();
+    await closeContext(context);
   },
 
   /** B-4: attachment versus inline, the PDF preview, and an HTML file that must never run. */
@@ -628,7 +654,7 @@ const cases = {
     } else {
       result('inline-html', { scriptRan: false, note: 'text/html is not accepted at upload' });
     }
-    await context.close();
+    await closeContext(context);
   },
 
   /** B-5, B-6f: a 30 s link (test-only setting) before and after expiry; an edited link. */
@@ -662,8 +688,8 @@ const cases = {
       status: bearer.status ?? null,
       outcome: bearer.downloadEvent ? 'downloaded' : `refused ${String(bearer.status)}`,
     });
-    await stranger.close();
-    await context.close();
+    await closeContext(stranger);
+    await closeContext(context);
   },
 
   /** B-6: who may download. */
@@ -678,7 +704,7 @@ const cases = {
       downloadEvent: false,
       ...(buttonAbsent ? {} : await attempt(asViewer.page, () => button.first().click())),
     });
-    await asViewer.context.close();
+    await closeContext(asViewer.context);
 
     const { context, page } = await asAdmin();
     await documentPage(page, documents.confidential.id);
@@ -701,7 +727,7 @@ const cases = {
       downloadEvent: false,
       atSignIn: new URL(page.url()).pathname.startsWith('/login'),
     });
-    await context.close();
+    await closeContext(context);
   },
 
   async 'integrity-setup'() {
@@ -729,7 +755,7 @@ const cases = {
     result('integrity-issue', {
       issued: Object.fromEntries(Object.entries(links).map(([k, v]) => [k, v !== null])),
     });
-    await context.close();
+    await closeContext(context);
   },
 
   /** B-7: follow the captured links; for the outage, use the Download button itself. */
@@ -750,7 +776,7 @@ const cases = {
       }
       result(`integrity-${name}`, await followLink(page, links[name], documents[name].digest));
     }
-    await context.close();
+    await closeContext(context);
   },
 
   /** B-9: the Arabic interface. */
@@ -768,7 +794,7 @@ const cases = {
     await documentPage(page, documents.swapped.id);
     const notices = await page.locator('[role=alert], [role=status]').allTextContents();
     result('arabic-integrity', { downloadEvent: false, message: notices.join(' | ') || null });
-    await context.close();
+    await closeContext(context);
   },
 
   /** B-10: a report export and an audit export, each opened in its own tab. */
@@ -822,7 +848,7 @@ const cases = {
       () => page.getByRole('button', { name: 'Export this range' }).click(),
       'Evidence exports',
     );
-    await context.close();
+    await closeContext(context);
   },
 
   /** Every browser console error recorded by the cases above. */

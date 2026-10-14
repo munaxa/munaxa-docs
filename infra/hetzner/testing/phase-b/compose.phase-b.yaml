@@ -34,3 +34,61 @@ services:
       - edge
       - ci-storage
     shm_size: 1g
+
+  # --- Resource limits (phase-b.sh step 9) — test-only API containers beside the stack's own --------
+  # Same image, database and store; no queue consumers, so they take no background work. No limit is
+  # RAISED anywhere: each container lowers one, so the limit can be reached with the files at hand.
+  #
+  # api-small-staging  DOWNLOAD_STAGING_MAX_BYTES (and the file limit, which must not exceed it) at
+  #                    256 MiB: two 128 MiB downloads at once, the rest wait or are refused 503.
+  api-small-staging:
+    profiles: ['test']
+    extends:
+      file: ./compose.yaml
+      service: api
+    environment:
+      QUEUE_CONSUMERS_ENABLED: 'false'
+      DOWNLOAD_LINK_TTL_SECONDS: '30'
+      DOWNLOAD_STAGING_MAX_BYTES: '268435456'
+      DOWNLOAD_MAX_FILE_BYTES: '268435456'
+    # Its own staging volume, so it never shares a directory with the stack's API.
+    volumes: !override
+      - ${DOCS_CONFIG_DIR}/tenants.json:/run/munaxa-docs/tenants.json:ro
+      - phase-b-small-staging:/var/lib/munaxa-docs/download-staging
+    networks: [edge, data, scan, ci-storage]
+  # api-tiny-disk      Staging on a 64 MiB tmpfs with the product's free-space reserve (512 MiB): the
+  #                    reserve check must refuse before a byte is staged.
+  api-tiny-disk:
+    profiles: ['test']
+    extends:
+      file: ./compose.yaml
+      service: api
+    environment:
+      QUEUE_CONSUMERS_ENABLED: 'false'
+      DOWNLOAD_LINK_TTL_SECONDS: '30'
+    volumes: !override
+      - ${DOCS_CONFIG_DIR}/tenants.json:/run/munaxa-docs/tenants.json:ro
+    tmpfs:
+      - /tmp
+      - /var/lib/munaxa-docs/download-staging:size=64m,uid=1000,gid=1000,mode=0700
+    networks: [edge, data, scan, ci-storage]
+  # api-disk-fills     The same 64 MiB disk with the reserve set to 0, so a 128 MiB download fills it
+  #                    part-way: what the API answers when staging itself fails (ENOSPC).
+  api-disk-fills:
+    profiles: ['test']
+    extends:
+      file: ./compose.yaml
+      service: api
+    environment:
+      QUEUE_CONSUMERS_ENABLED: 'false'
+      DOWNLOAD_LINK_TTL_SECONDS: '30'
+      DOWNLOAD_MIN_FREE_BYTES: '0'
+    volumes: !override
+      - ${DOCS_CONFIG_DIR}/tenants.json:/run/munaxa-docs/tenants.json:ro
+    tmpfs:
+      - /tmp
+      - /var/lib/munaxa-docs/download-staging:size=64m,uid=1000,gid=1000,mode=0700
+    networks: [edge, data, scan, ci-storage]
+
+volumes:
+  phase-b-small-staging:

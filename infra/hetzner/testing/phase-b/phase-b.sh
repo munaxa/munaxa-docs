@@ -37,7 +37,8 @@ pb_finding() { echo "FINDING  $*"; }
 pb_measure() { echo "MEASURE  $*"; }
 
 extra_cleanup() {
-  compose --profile test rm -fsv browser >/dev/null 2>&1 || true
+  compose --profile test rm -fsv browser api-small-staging api-tiny-disk api-disk-fills >/dev/null 2>&1 || true
+  if [ -n "${pb_mem_sampler:-}" ]; then kill "$pb_mem_sampler" 2>/dev/null || true; fi
 }
 
 # One browser case (or a set of them): browser.mjs in the `browser` service.
@@ -179,6 +180,193 @@ pb_expect arabic-integrity 'f.downloadEvent === false && f.message !== null' "th
 pb_finding "Arabic integrity message as shown: $(pb_q "(R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).message ?? null")"
 pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true' "a report export's tab saves exactly what the store serves (a signed store URL: exports are not on the verified path)"
 pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true' "an audit export's tab saves exactly what the store serves (a signed store URL: exports are not on the verified path)"
+
+# =================================================================================================
+step "Phase B 9 — verified downloads at and past their resource limits (no limit raised)"
+pb_limits() {
+  compose --profile test run --rm --no-deps -T browser node limits.mjs "$@" 2>&1 | tee -a "$pb_out"
+  return "${PIPESTATUS[0]}"
+}
+pb_cid() { compose ps -q "$1"; }
+pb_cgroup() {
+  local id dir
+  id="$(docker inspect -f '{{.Id}}' "$1")"
+  for dir in "/sys/fs/cgroup/memory/docker/$id" "/sys/fs/cgroup/system.slice/docker-$id.scope" \
+    "/sys/fs/cgroup/docker/$id"; do
+    [ -d "$dir" ] && { echo "$dir"; return 0; }
+  done
+  return 1
+}
+# Samples one API container every half second: cgroup usage, its anonymous memory, and the bytes of
+# staging files it holds open (read inside it; the loop ends itself on a marker in its /tmp).
+pb_sample_start() { # container
+  local dir container="$1"
+  dir="$(pb_cgroup "$container")" || { echo "no cgroup for $container"; return 1; }
+  : > "$PHASE_B_OUT/mem.samples"
+  : > "$PHASE_B_OUT/staged.samples"
+  (while :; do
+    if [ -f "$dir/memory.usage_in_bytes" ]; then u="$(cat "$dir/memory.usage_in_bytes")"; else u="$(cat "$dir/memory.current")"; fi
+    a="$(awk '$1 == "anon" || $1 == "rss" {print $2; exit}' "$dir/memory.stat")"
+    echo "$u ${a:-0}" >> "$PHASE_B_OUT/mem.samples"
+    sleep 0.5
+  done) &
+  pb_mem_sampler=$!
+  docker exec "$container" rm -f /tmp/pb-staged-stop
+  docker exec "$container" sh -c '
+    while [ ! -e /tmp/pb-staged-stop ]; do
+      s=0
+      for fd in /proc/[0-9]*/fd/*; do
+        case "$(readlink "$fd" 2>/dev/null)" in
+          /var/lib/munaxa-docs/download-staging/*) s=$((s + $(stat -L -c %s "$fd" 2>/dev/null || echo 0))) ;;
+        esac
+      done
+      echo "$s"; sleep 0.5
+    done' >> "$PHASE_B_OUT/staged.samples" 2>/dev/null &
+  pb_staged_sampler=$!
+  pb_sampled="$container"
+}
+pb_sample_stop() { # prints: peak-usage-MiB peak-anonymous-MiB peak-staged-MiB
+  kill "$pb_mem_sampler" 2>/dev/null || true
+  wait "$pb_mem_sampler" 2>/dev/null || true
+  docker exec "$pb_sampled" touch /tmp/pb-staged-stop 2>/dev/null || true
+  wait "$pb_staged_sampler" 2>/dev/null || true
+  echo "$(sort -n -k1 "$PHASE_B_OUT/mem.samples" | tail -1 | awk '{print int($1/1048576)}') \
+$(sort -n -k2 "$PHASE_B_OUT/mem.samples" | tail -1 | awk '{print int($2/1048576)}') \
+$(sort -n "$PHASE_B_OUT/staged.samples" | tail -1 | awk '{print int($1/1048576)}')"
+}
+pb_restarts() { docker inspect -f '{{.RestartCount}} {{.State.OOMKilled}} {{.State.Running}} {{.State.StartedAt}}' "$1"; }
+pb_left_in() { # container: files in the staging directory, staging files held open, tmpfs bytes used
+  docker exec "$1" sh -c '
+    n=0; for fd in /proc/[0-9]*/fd/*; do
+      case "$(readlink "$fd" 2>/dev/null)" in /var/lib/munaxa-docs/download-staging/*) n=$((n+1)) ;; esac
+    done
+    echo "$(ls -A /var/lib/munaxa-docs/download-staging | wc -l) $n $(df -P /var/lib/munaxa-docs/download-staging | awk "NR==2 {print \$3}")"'
+}
+pb_limit_case() { pb_q "R.filter((r) => r.case === '$1').pop() ?? null"; }
+pb_wait_live() {
+  for _ in $(seq 1 90); do
+    docker exec "$(pb_cid "$1")" node -e \
+      "fetch('http://127.0.0.1:3001/api/health/live').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))" \
+      >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+
+pb_limits setup || pb_fail "the 128 MiB limits document could not be set up"
+pb_limits_file="$(pb_q "(R.filter((r) => r.case === 'limits-setup').pop() ?? {}).fileObjectId ?? ''")"
+pb_api="$(pb_cid api)"
+pb_api_state="$(pb_restarts "$pb_api")"
+pb_served_before="$(pb_audits FILE_DOWNLOAD_SERVED "$pb_limits_file")"
+
+# 9a. Within the limits: 8 at once (DOWNLOAD_MAX_CONCURRENT=8, 1 GiB of the 2 GiB staging budget).
+pb_sample_start "$pb_api"
+pb_limits overflow api 8 within-limits >/dev/null || pb_fail "the within-limits downloads did not complete"
+read -r pb_u pb_a pb_s <<< "$(pb_sample_stop)"
+pb_measure "within limits (8 × 128 MiB at once): $(pb_limit_case within-limits) | API cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
+pb_expect within-limits 'f.served === 8 && f.corrupt === 0' "all 8 served byte for byte"
+
+# 9b. Past the concurrency limit: 24 at once. Each must be the exact file or a 503 with Retry-After.
+pb_sample_start "$pb_api"
+pb_limits overflow api 24 over-concurrency >/dev/null || pb_fail "the over-concurrency downloads did not complete"
+read -r pb_u pb_a pb_s <<< "$(pb_sample_stop)"
+pb_measure "past the concurrency limit (24 × 128 MiB at once): $(pb_limit_case over-concurrency) | API cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
+pb_expect over-concurrency 'f.corrupt === 0 && f.other.length === 0 && f.served + f.busy === 24' \
+  "every answer is the exact file or a retryable 503 (Retry-After: 30); none partial, none other"
+if [ "${pb_s:-0}" -le 1024 ]; then
+  pb_pass "never more than 8 × 128 MiB staged at once (peak ${pb_s} MiB)"
+else
+  pb_fail "staged ${pb_s} MiB at once, more than DOWNLOAD_MAX_CONCURRENT allows"
+fi
+
+# 9c. Past the staging budget: a test-only API whose budget is 256 MiB (two 128 MiB files).
+compose --profile test up -d --no-deps api-small-staging >/dev/null 2>&1 || pb_fail "could not start api-small-staging"
+pb_wait_live api-small-staging || pb_fail "api-small-staging did not become live"
+pb_small="$(pb_cid api-small-staging)"
+pb_sample_start "$pb_small"
+pb_limits overflow api-small-staging 8 over-staging >/dev/null || pb_fail "the over-staging downloads did not complete"
+read -r pb_u pb_a pb_s <<< "$(pb_sample_stop)"
+pb_measure "past the staging budget (8 × 128 MiB, budget 256 MiB): $(pb_limit_case over-staging) | cgroup peak ${pb_u} MiB, anonymous ${pb_a} MiB, staged ${pb_s} MiB"
+pb_expect over-staging 'f.corrupt === 0 && f.other.length === 0 && f.served + f.busy === 8' \
+  "every answer is the exact file or a retryable 503"
+if [ "${pb_s:-0}" -le 256 ]; then
+  pb_pass "never more than the 256 MiB staging budget staged (peak ${pb_s} MiB)"
+else
+  pb_fail "staged ${pb_s} MiB, more than the 256 MiB budget"
+fi
+
+# 9d. Too little staging disk, with the product's free-space reserve: refused before a byte is staged.
+compose --profile test up -d --no-deps api-tiny-disk >/dev/null 2>&1 || pb_fail "could not start api-tiny-disk"
+pb_wait_live api-tiny-disk || pb_fail "api-tiny-disk did not become live"
+pb_limits overflow api-tiny-disk 1 disk-reserve >/dev/null || pb_fail "the disk-reserve download did not complete"
+pb_expect disk-reserve 'f.busy === 1 && f.served === 0' "refused 503 with Retry-After, no file bytes"
+pb_measure "api-tiny-disk staging after: files, open, KiB used = $(pb_left_in "$(pb_cid api-tiny-disk)")"
+
+# 9e. The disk fills part-way (reserve 0, 64 MiB for a 128 MiB file): what staging failure answers.
+compose --profile test up -d --no-deps api-disk-fills >/dev/null 2>&1 || pb_fail "could not start api-disk-fills"
+pb_wait_live api-disk-fills || pb_fail "api-disk-fills did not become live"
+pb_fills="$(pb_cid api-disk-fills)"
+pb_fills_state="$(pb_restarts "$pb_fills")"
+pb_limits follow-one api-disk-fills disk-fills >/dev/null || pb_fail "the disk-fills download did not complete"
+pb_measure "disk fills part-way: $(pb_limit_case disk-fills); staging after: files, open, KiB used = $(pb_left_in "$pb_fills"); container $(pb_restarts "$pb_fills") (before: $pb_fills_state)"
+pb_expect disk-fills 'f.status !== 200 && f.disposition === null && f.bodyBytes < 4096' "no file bytes sent when staging fails"
+pb_expect disk-fills 'f.status === 503 && f.retryAfter === "30"' "answered as retryable (503 with Retry-After)"
+if [ "$(pb_restarts "$pb_fills")" = "$pb_fills_state" ] && [ "$(pb_left_in "$pb_fills" | awk '{print $1, $2, $3}')" = "0 0 0" ]; then
+  pb_pass "disk fills part-way: the API kept running and freed the staging disk"
+else
+  pb_fail "disk fills part-way: container $(pb_restarts "$pb_fills"), staging $(pb_left_in "$pb_fills")"
+fi
+
+# 9f. Downloads left part-way: nothing stays staged, and nothing is recorded as served.
+pb_limits interrupt staging >/dev/null || pb_fail "the interrupted-while-verifying case did not complete"
+sleep 3
+pb_measure "left while verifying: $(pb_limit_case interrupt-staging); staging after: files, open = $(pb_staging_left)"
+pb_limits interrupt sending >/dev/null || pb_fail "the interrupted-while-sending case did not complete"
+sleep 3
+pb_measure "left while sending: $(pb_limit_case interrupt-sending); staging after: files, open = $(pb_staging_left)"
+if [ "$(pb_staging_left)" = "0 0" ]; then
+  pb_pass "downloads left part-way leave no staging file behind"
+else
+  pb_fail "downloads left part-way left staging: $(pb_staging_left)"
+fi
+
+# 9g. The store killed while a download is being verified: retryable, nothing quarantined.
+rm -f "$PHASE_B_OUT/following.flag"
+pb_limits follow-one api store-killed >/dev/null &
+pb_follow_pid=$!
+for _ in $(seq 1 200); do [ -f "$PHASE_B_OUT/following.flag" ] && break; sleep 0.1; done
+sleep 0.4
+compose kill storage >/dev/null 2>&1 || pb_fail "could not kill the test MinIO"
+wait "$pb_follow_pid" || pb_fail "the store-killed download did not complete"
+compose start storage >/dev/null 2>&1 || pb_fail "could not start the test MinIO again"
+for _ in $(seq 1 60); do compose exec -T storage mc ready local >/dev/null 2>&1 && break; sleep 2; done
+pb_expect store-killed 'f.status === 503 && f.retryAfter === "30" && f.disposition === null' "a store lost mid-verification answers a retryable 503, with no file bytes"
+
+# 9h. After all of it: the stack's API was never restarted, the limits file never quarantined, every
+# partial attempt unrecorded as served, and staging empty.
+if [ "$(pb_restarts "$pb_api")" = "$pb_api_state" ]; then
+  pb_pass "the stack's API was not restarted or OOM-killed by any resource-limit case ($(pb_restarts "$pb_api"))"
+else
+  pb_fail "the stack's API restarted: $(pb_restarts "$pb_api") (before: $pb_api_state)"
+fi
+case "$(pb_integrity "$pb_limits_file")" in
+  UNVERIFIED | VERIFIED) pb_pass "the limits file was never quarantined ($(pb_integrity "$pb_limits_file"); INTEGRITY_MISMATCH rows: $(pb_audits INTEGRITY_MISMATCH "$pb_limits_file"))" ;;
+  *) pb_fail "the limits file was quarantined: $(pb_integrity "$pb_limits_file")" ;;
+esac
+pb_served_after="$(pb_audits FILE_DOWNLOAD_SERVED "$pb_limits_file")"
+pb_served_expected=$((pb_served_before + $(pb_q "['within-limits','over-concurrency','over-staging'].map((c) => (R.filter((r) => r.case === c).pop() ?? {}).served ?? 0).reduce((a, b) => a + b, 0)")))
+pb_measure "FILE_DOWNLOAD_SERVED for the limits file: $pb_served_after (served in full by 9a–9c: $((pb_served_expected - pb_served_before)))"
+if [ "$pb_served_after" = "$pb_served_expected" ]; then
+  pb_pass "FILE_DOWNLOAD_SERVED counts exactly the downloads served in full — none for a refused, interrupted or failed one"
+else
+  pb_fail "FILE_DOWNLOAD_SERVED $pb_served_after, expected $pb_served_expected"
+fi
+if [ "$(pb_staging_left)" = "0 0" ]; then
+  pb_pass "the stack's API staging is empty after the resource-limit cases"
+else
+  pb_fail "the stack's API staging after the resource-limit cases: $(pb_staging_left)"
+fi
+compose --profile test rm -fsv api-small-staging api-tiny-disk api-disk-fills >/dev/null 2>&1 || true
 
 # =================================================================================================
 step "Phase B — the trail and what is left"
