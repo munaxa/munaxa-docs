@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   type AnyId,
@@ -1170,5 +1170,131 @@ describe('an evidence bundle is downloaded through verified links', () => {
     await asDora(() => stack.exports.download(produced.id, 'events.csv'));
     await asDora(() => stack.exports.download(produced.id, 'events.csv'));
     expect(await issuedFor(produced.id)).toBe(2);
+  }, 120_000);
+});
+
+/**
+ * An evidence bundle is produced in bounded memory — the export design §6 d.
+ *
+ * The range used to be collected whole before either artefact was written, so a long range was
+ * held in the API's memory in full. Now it is read a batch at a time and written as it is read:
+ * these assert that writing begins after the first batch, long before the last is read, and that
+ * the two artefacts — two passes over the range — carry the same events or the export fails.
+ */
+describe('an evidence bundle is produced in bounded memory', () => {
+  it('writes rows while it is still reading the range, and both files carry the same events', async () => {
+    for (let index = 0; index < 40; index += 1) {
+      await record(`STREAM_${String(index)}`);
+    }
+    let slicesRead = 0;
+    const original = stack.repository.sliceBySequence.bind(stack.repository);
+    const slices = vi
+      .spyOn(stack.repository, 'sliceBySequence')
+      .mockImplementation(async (after, limit) => {
+        slicesRead += 1;
+        return original(after, limit);
+      });
+    const firstRowAfter: Record<string, number> = {};
+    const lastRowAfter: Record<string, number> = {};
+    const store = library.storage.storeStreamed.bind(library.storage);
+    const stored = vi.spyOn(library.storage, 'storeStreamed').mockImplementation((input) =>
+      store({
+        ...input,
+        body: (async function* () {
+          for await (const chunk of input.body) {
+            firstRowAfter[input.name] ??= slicesRead;
+            lastRowAfter[input.name] = slicesRead;
+            yield chunk;
+          }
+        })(),
+      }),
+    );
+    try {
+      const requested = await runWithContext(contextFor({ userId: asId<UserId>(uuidv7()) }), () =>
+        stack.exports.request(
+          new Date('2020-01-01T00:00:00Z'),
+          new Date('2030-01-01T00:00:00Z'),
+          {},
+        ),
+      );
+      await runWithContext(contextFor(), () => stack.exports.run(requested.id));
+      const produced = await runWithContext(contextFor(), () => stack.exports.get(requested.id));
+      expect(produced?.state).toBe(AuditExportState.COMPLETED);
+
+      // The batch size is 5 and the trail holds far more: the first row was on its way to the
+      // store after one batch, while the pass went on to read many more.
+      expect(firstRowAfter['events.jsonl']).toBe(1);
+      expect(lastRowAfter['events.jsonl']).toBeGreaterThan(8);
+      // The second pass began again from the start and wrote as it read, too.
+      expect(
+        (lastRowAfter['events.csv'] ?? 0) - (firstRowAfter['events.csv'] ?? 0),
+      ).toBeGreaterThan(8);
+
+      const jsonl = produced?.artefacts.find((artefact) => artefact.name === 'events.jsonl');
+      const csv = produced?.artefacts.find((artefact) => artefact.name === 'events.csv');
+      const owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
+      try {
+        const read = async (fileObjectId: string) => {
+          const file = await owner.fileObject.findUniqueOrThrow({ where: { id: fileObjectId } });
+          const bytes = await runWithContext(contextFor(), () =>
+            library.storagePort.read(file.storageKey as never),
+          );
+          return bytes?.toString('utf8') ?? '';
+        };
+        const jsonlIds = (await read(jsonl?.fileObjectId ?? ''))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => (JSON.parse(line) as { id: string }).id);
+        const csvLines = (await read(csv?.fileObjectId ?? '')).split(/\r?\n/u).filter(Boolean);
+        expect(jsonlIds.length).toBe(produced?.eventCount);
+        expect(csvLines.length - 1).toBe(produced?.eventCount);
+        for (const id of jsonlIds) {
+          expect(csvLines.some((line) => line.includes(id))).toBe(true);
+        }
+      } finally {
+        await owner.$disconnect();
+      }
+    } finally {
+      slices.mockRestore();
+      stored.mockRestore();
+    }
+  }, 120_000);
+
+  it('fails rather than produce two files that disagree, when the passes read different events', async () => {
+    await record('DISAGREE_ONE');
+    const original = stack.repository.sliceBySequence.bind(stack.repository);
+    let pass = 0;
+    const slices = vi
+      .spyOn(stack.repository, 'sliceBySequence')
+      .mockImplementation(async (after, limit) => {
+        const slice = await original(after, limit);
+        if (after === 0n) {
+          pass += 1;
+        }
+        // The second pass sees one event's hash differently — as if a row changed in between.
+        return pass === 2 && slice.events.length > 0
+          ? {
+              ...slice,
+              events: [{ ...slice.events[0]!, hash: 'f'.repeat(64) }, ...slice.events.slice(1)],
+            }
+          : slice;
+      });
+    try {
+      const requested = await runWithContext(contextFor({ userId: asId<UserId>(uuidv7()) }), () =>
+        stack.exports.request(
+          new Date('2020-01-01T00:00:00Z'),
+          new Date('2030-01-01T00:00:00Z'),
+          {},
+        ),
+      );
+      await expect(
+        runWithContext(contextFor(), () => stack.exports.run(requested.id)),
+      ).rejects.toThrow(/two passes over the range read different events/u);
+      const failed = await runWithContext(contextFor(), () => stack.exports.get(requested.id));
+      expect(failed?.state).toBe(AuditExportState.FAILED);
+      expect(failed?.artefacts).toEqual([]);
+    } finally {
+      slices.mockRestore();
+    }
   }, 120_000);
 });

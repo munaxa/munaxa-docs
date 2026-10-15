@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
@@ -375,37 +377,66 @@ export class AuditExportService {
   }
 
   /**
-   * Streams the rows into the bundle's artefacts and returns what was written.
+   * Streams the range into the bundle's artefacts and returns what was written.
    *
-   * The rows are read once and fanned into both artefacts, rather than read twice: a second pass
-   * over the range would produce a CSV of a *different* set of rows if anything were appended in
-   * between, and a bundle whose two files disagree is worse than one format.
+   * **Bounded memory, two passes, one set of rows.** The range is read a batch at a time
+   * (`AUDIT_EXPORT_BATCH_SIZE`) and written as it is read; nothing holds the range whole. JSONL
+   * is the first pass, which also verifies the chain and records the highest sequence it read —
+   * the *ceiling*. CSV is the second pass, which reads nothing above the ceiling: the trail is
+   * append-only and ordered by sequence, so an event appended in between is above it and
+   * excluded, and the two passes read the same rows. That is *checked*, not assumed: each pass
+   * folds every exported event's identifier and hash into a digest, and if the counts or digests
+   * differ the export fails rather than producing a bundle whose two files disagree. Nothing is
+   * dropped or cut short to save memory.
    */
   private async produce(record: AuditExportRecord) {
     // Storage owns the layout; audit names the bundle and its parts. Building the key here would
     // put the object store's shape in a second module, which is what the boundary lint forbids.
     const prefix = this.storage.evidencePrefix(record.id);
-    const collected = await this.collect(record);
 
+    const first = new RangePass();
     const jsonl = await this.write(
       record.id,
       'events.jsonl',
       'application/x-ndjson',
-      collected.rows,
+      this.walk(record, first, null),
       evidenceJsonlRow,
       null,
     );
+    const second = new RangePass();
     const csv = await this.write(
       record.id,
       'events.csv',
       'text/csv',
-      collected.rows,
+      // An empty chain set no ceiling: the second pass then reads nothing, not everything.
+      this.walk(record, second, first.ceiling ?? 0n),
       // The profile is read from configuration at the moment the bundle is produced, and it is
       // recorded on the manifest below — so a bundle always states the rule that wrote it rather
       // than leaving a reader to infer it from a release date.
       (row) => evidenceCsvRow(row, this.csvProfile()),
       evidenceCsvHeader(),
     );
+    if (second.count !== first.count || second.identity() !== first.identity()) {
+      throw new Error(
+        'The two passes over the range read different events; the bundle was not produced.',
+      );
+    }
+    const checkpoints =
+      first.firstSequence === null || first.lastSequence === null
+        ? []
+        : (await this.checkpoints.covering(first.firstSequence, first.lastSequence)).map(
+            toBundleCheckpoint,
+          );
+    const collected = {
+      firstSequence: first.firstSequence,
+      lastSequence: first.lastSequence,
+      from: first.from ?? GENESIS_HASH,
+      lastHash: first.lastHash,
+      hashVersions: [...first.hashVersions],
+      checkpoints,
+      chain: first.chain,
+      count: first.count,
+    };
 
     const manifest = buildManifest({
       exportId: record.id,
@@ -416,7 +447,7 @@ export class AuditExportService {
       from: record.from,
       to: record.to,
       filters: record.filters,
-      eventCount: collected.rows.length,
+      eventCount: collected.count,
       firstSequence: collected.firstSequence,
       lastSequence: collected.lastSequence,
       firstPreviousHash: collected.from,
@@ -460,7 +491,7 @@ export class AuditExportService {
     }
 
     return {
-      eventCount: collected.rows.length,
+      eventCount: collected.count,
       storagePrefix: prefix,
       artefacts,
       chainIntact: collected.chain.intact,
@@ -469,81 +500,55 @@ export class AuditExportService {
   }
 
   /**
-   * Reads the range, verifies it as it goes, and keeps it.
+   * The range, read a batch at a time, verified as it goes (first pass) and yielded row by row.
    *
-   * The rows *are* held here, and that is the one place this phase does not stream — see the
-   * report's cost table. Bounding it is `AUDIT_EXPORT_BATCH_SIZE` for the reads and the range the
-   * requester chose for the total; the alternative, two independent passes for two artefacts,
-   * would risk a CSV and a JSONL that disagree.
+   * Verified over the *whole* chain each batch covers, then filtered to the range: verifying only
+   * the exported rows would verify a subsequence, and a subsequence of a chain never chains — the
+   * links between the rows filtered out are missing by construction. With a `ceiling`, nothing
+   * above it is read (the second pass).
    */
-  private async collect(record: AuditExportRecord) {
-    const rows: EvidenceRow[] = [];
-    const hashVersions = new Set<number>();
+  private async *walk(
+    record: AuditExportRecord,
+    pass: RangePass,
+    ceiling: bigint | null,
+  ): AsyncIterable<EvidenceRow> {
     let cursor = 0n;
-    let intact = true;
-    let brokenAtEventId: string | null = null;
-    let reason: string | null = null;
-    let verified = 0;
-    let firstSequence: bigint | null = null;
-    let from: string | null = null;
-    let lastSequence: bigint | null = null;
-    let lastHash: string | null = null;
     let previousHash: string | null = null;
-
     for (;;) {
       const slice = await this.unitOfWork.run(() =>
         this.repository.sliceBySequence(cursor, this.config.audit.exportBatchSize),
       );
-      if (slice.events.length === 0) {
-        break;
+      const events =
+        ceiling === null ? slice.events : slice.events.filter((event) => event.sequence <= ceiling);
+      if (events.length === 0) {
+        return;
       }
-      const last = slice.events.at(-1);
+      const last = events.at(-1);
       cursor = last?.sequence ?? cursor;
-
-      // Verified over the *whole* chain the batch covers, then filtered to the range. Verifying
-      // only the exported rows would verify a subsequence, and a subsequence of a chain never
-      // chains — the links between the rows that were filtered out are missing by construction.
-      if (intact) {
-        const result = this.verification.verifyRange(slice.events, previousHash ?? slice.from);
-        verified += result.verified;
-        if (!result.intact) {
-          intact = false;
-          brokenAtEventId = result.brokenAt;
-          reason = result.reason;
+      if (ceiling === null) {
+        pass.ceiling = cursor;
+        if (pass.chain.intact) {
+          const result = this.verification.verifyRange(events, previousHash ?? slice.from);
+          pass.chain.verified += result.verified;
+          if (!result.intact) {
+            pass.chain.intact = false;
+            pass.chain.brokenAtEventId = result.brokenAt;
+            pass.chain.reason = result.reason;
+          }
         }
+        previousHash = last?.hash ?? previousHash;
       }
-      previousHash = last?.hash ?? previousHash;
-
-      for (const event of slice.events) {
+      for (const event of events) {
         if (!this.inRange(record, event)) {
           continue;
         }
-        if (firstSequence === null) {
-          firstSequence = event.sequence;
-          from = event.previousHash;
-        }
-        lastSequence = event.sequence;
-        lastHash = event.hash;
-        hashVersions.add(event.chainHashVersion);
-        rows.push(toEvidenceRow(event));
+        pass.take(event);
+        yield toEvidenceRow(event);
+      }
+      if (ceiling !== null && cursor >= ceiling) {
+        return;
       }
     }
-
-    const checkpoints =
-      firstSequence === null || lastSequence === null
-        ? []
-        : (await this.checkpoints.covering(firstSequence, lastSequence)).map(toBundleCheckpoint);
-
-    return {
-      rows,
-      hashVersions: [...hashVersions],
-      firstSequence,
-      lastSequence,
-      from: from ?? GENESIS_HASH,
-      lastHash,
-      checkpoints,
-      chain: { intact, brokenAtEventId, reason, verified },
-    };
   }
 
   /** The range and the filters, applied to one row. */
@@ -575,19 +580,18 @@ export class AuditExportService {
     exportId: AnyId,
     name: string,
     mediaType: string,
-    rows: readonly EvidenceRow[],
+    rows: AsyncIterable<EvidenceRow>,
     render: (row: EvidenceRow) => string,
     header: string | null,
   ): Promise<BundleArtefact> {
     const digest = new StreamDigest();
-    // eslint-disable-next-line @typescript-eslint/require-await -- a generator, not a task
     async function* body(): AsyncIterable<Uint8Array> {
       if (header !== null) {
         const chunk = Buffer.from(header, 'utf8');
         digest.update(chunk);
         yield new Uint8Array(chunk);
       }
-      for (const row of rows) {
+      for await (const row of rows) {
         const chunk = Buffer.from(render(row), 'utf8');
         digest.update(chunk);
         yield new Uint8Array(chunk);
@@ -693,4 +697,43 @@ function toBundleCheckpoint(checkpoint: {
 // eslint-disable-next-line @typescript-eslint/require-await -- a generator, not a task
 async function* single(content: Buffer): AsyncIterable<Uint8Array> {
   yield new Uint8Array(content);
+}
+
+/**
+ * What one pass over the range saw: enough to describe the bundle, and a digest of exactly which
+ * events it exported, so two passes can be shown to have read the same rows. Constant in size,
+ * whatever the range.
+ */
+class RangePass {
+  count = 0;
+  firstSequence: bigint | null = null;
+  lastSequence: bigint | null = null;
+  from: string | null = null;
+  lastHash: string | null = null;
+  readonly hashVersions = new Set<number>();
+  /** The highest sequence the first pass read — the bound the second pass reads up to. */
+  ceiling: bigint | null = null;
+  readonly chain: {
+    intact: boolean;
+    brokenAtEventId: string | null;
+    reason: string | null;
+    verified: number;
+  } = { intact: true, brokenAtEventId: null, reason: null, verified: 0 };
+  private readonly digest = createHash('sha256');
+
+  take(event: AuditEventRecord): void {
+    if (this.firstSequence === null) {
+      this.firstSequence = event.sequence;
+      this.from = event.previousHash;
+    }
+    this.lastSequence = event.sequence;
+    this.lastHash = event.hash;
+    this.hashVersions.add(event.chainHashVersion);
+    this.count += 1;
+    this.digest.update(`${event.id}:${event.hash}\n`);
+  }
+
+  identity(): string {
+    return this.digest.copy().digest('hex');
+  }
 }

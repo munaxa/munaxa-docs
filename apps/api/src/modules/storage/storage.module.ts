@@ -12,6 +12,7 @@ import {
   DownloadRedeemerRegistry,
 } from './application/ports';
 import { DefaultVerifiedDownloadDelivery } from './application/verified-download.delivery';
+import { DownloadLimitsCheck } from './application/download-limits.check';
 import { LocalDownloadStaging } from './infrastructure/download-staging';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import { LOGGER, type Logger } from '../../core/observability/logger';
@@ -71,6 +72,8 @@ import { StorageReportSource } from './infrastructure/report-source.adapter';
     // One registry for the whole process: each module that owns a kind of download registers its
     // redeemer here when it starts, and the redemption route dispatches on the token's kind.
     { provide: DOWNLOAD_REDEEMERS, useValue: new DownloadRedeemerRegistry() },
+    // Says at start-up which configured limits allow files no download can verify (D-7).
+    DownloadLimitsCheck,
     // Phase 10: Retention's `BLOB_REAPER`, implemented by the module that owns the bytes — the
     // same inversion as `REVISION_WRITER`. The only code in the product that removes an object
     // from storage, and the first caller `StoragePort.delete` has had outside the upload path.
