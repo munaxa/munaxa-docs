@@ -4,6 +4,10 @@
   was chosen.** Decision D-3 of ADR-0026 stays open. This note addresses R-2 of
   [the readiness report](./hetzner-test-deployment-readiness.md).
 - **Date:** 2026-10-15.
+- **Recommendation for TEST:** Hetzner Object Storage first, Scaleway as fallback, R2 not
+  recommended; and Backblaze B2 EU Central for the off-server backup copy. See
+  [the readiness report](./hetzner-test-deployment-readiness.md) §5.1 and §5.3. Still subject to
+  gate P-1 and the owner's decision.
 - **Rule:** every provider property is labelled with where it comes from:
   - **Verified (here)** means a test in this repository ran against it.
   - **Documented** means the provider's own page says so (link given; read on this date).

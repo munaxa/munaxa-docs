@@ -4,6 +4,9 @@
   deployed.** ADR-0026 §3 recommended option A; this note adds what that recommendation did not
   weigh (§2, residency), and says what must be shown before any option is chosen.
 - **Date:** 2026-10-15.
+- **Recommendation for TEST:** option C here (Caddy on the host with ACME), in
+  [the readiness report](./hetzner-test-deployment-readiness.md) §5.2. It awaits the owner's
+  acceptance (D-2); nothing is configured.
 - **What the template does today:**
   - Caddy terminates no TLS.
   - Its one published port is bound to `127.0.0.1:8080` until this decision is made

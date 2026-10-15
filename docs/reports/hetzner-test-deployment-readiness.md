@@ -5,7 +5,8 @@
     created; no secret was rotated; no image was published.
   - ADR-0026 stays **Proposed**.
   - This is **not** a statement of production readiness.
-- **Date:** 2026-10-15 (second revision, after the pre-deployment remediation).
+- **Date:** 2026-10-15 (third revision: the decision pack in §5–§10 added on top of the
+  pre-deployment remediation).
 - **Branch:** `claude/amazing-turing-09vlks`. The remediation is in the commits listed in §3.4,
   on top of `0401c21`.
 - **Rule used below:** an item is "verified" only where a run is recorded. A document or a script
@@ -110,59 +111,262 @@ was 1287; the difference is this remediation's new tests.
 9. Load and memory on the chosen server size, with clamd's reload peak.
 10. Signature refresh against real mirrors over days.
 
-## 5. Proposed TEST architecture, and cost estimate
+## 5. Decision pack for a disposable TEST environment
 
-**One server, the template unchanged:**
+Prepared on 2026-10-15 from commit `4725053`, branch `claude/amazing-turing-09vlks`. At that point:
 
-| Component | Proposal |
+- the working tree was clean;
+- CI and the Hetzner template workflow were green on that commit.
+
+**Nothing in this section has been bought, created or called.**
+
+**How facts are labelled:**
+
+| Label | Meaning |
 | --- | --- |
-| Server | Shared x86, 4 vCPU / 8 GB / 80 GB, Germany (Falkenstein or Nuremberg). The template's memory limits add up to about 7.2 GB but are ceilings: measured use is far lower apart from clamd (about 1.2 GB, twice that while reloading) |
-| Backup volume | A Hetzner Volume, 50 GB, mounted for `DOCS_BACKUP_DIR` |
-| Object storage | Per `hetzner-object-storage-options.md` §5: Hetzner Object Storage first, in a separate project, with versioning and Object Lock |
-| Off-server copy | A bucket at a different provider, written by a host timer |
-| TLS | Per `hetzner-tls-decision.md`, after the owner's answer on §2 there |
-| Monitoring | A heartbeat and uptime service on a free tier; `host-check.sh` on a 5-minute timer |
-| Mail | A sink or restricted sender for TEST |
+| **[official]** | Read on the provider's own pricing or documentation page on that date |
+| **[third-party]** | Press, comparison sites or forum posts only |
+| **[unverified]** | Not confirmed anywhere; must be checked in the console before ordering |
 
-**Recurring cost [estimate; every figure to be confirmed in the providers' consoles before
-authorization].**
+Prices exclude VAT.
 
-- Hetzner repriced its cloud servers in April and again in June 2026. Third-party reports of the
-  new prices disagree, so the ranges are wide.
-- EUR per month, before VAT.
+The **legal question** (whether a given provider, its parent company's jurisdiction or a
+sub-processor is acceptable) is the owner's, with a DPA review. The tables below give the technical
+facts only.
 
-| Item | Estimate | Basis |
+### 5.1 Off-server backup destination (D-5, R-1a)
+
+**What must be copied.** `DOCS_BACKUP_DIR` (base backups, `wal/`, dumps, each `.age` with its
+`.sha256`) is already encrypted on the server with the `age` public keys. The private identities are
+never on the server (R-1).
+
+So the destination stores ciphertext only, and **client-side encryption and key management are
+already solved and independent of the provider**. The copy is a one-way host sync (for example
+`rclone copy`, never `sync`, so a deletion on the server is not propagated) on a timer.
+
+**Requirements:**
+
+- a different provider, account and failure domain from the server;
+- an EU region;
+- a credential that can add objects but cannot delete or overwrite history;
+- versioning or Object Lock;
+- a lifecycle rule that matches the 35-day retention;
+- ordinary S3 or native reads, so a restore can be tested end to end.
+
+| | **Backblaze B2, EU Central** | **Scaleway Object Storage** (`nl-ams` / `fr-par`) | Hetzner Storage Box BX11 | Hetzner Object Storage |
+| --- | --- | --- | --- | --- |
+| Failure domain | **Separate provider and account** | **Separate provider and account** | Same provider and billing account as the server | Same provider; can be a separate project, but the same account |
+| EU region | EU Central (Amsterdam) [third-party]. Chosen at account creation, and the endpoint names it (`s3.eu-central-003…`) [unverified]. **Verify** in the console and the endpoint | Region chosen per bucket; `nl-ams`, `fr-par`, `pl-waw` [official] | FSN1 / HEL1 [third-party] | FSN1, NBG1, HEL1 [official] |
+| Encryption in transit | HTTPS | HTTPS | SFTP / SSH | HTTPS |
+| Encryption at rest | Server-side encryption available [unverified for the EU region]; irrelevant to confidentiality here because the objects are `age` ciphertext | As B2 | Provider-side [unverified] | As B2 |
+| Credential scoping | Application key restricted to one bucket, with capabilities chosen one by one [official]. **Without `deleteFiles` and `bypassGovernance`** a key can add files and hide them, but cannot remove a version [official] | IAM policies per bucket [documented, not tested] | One account per box; sub-accounts per directory [third-party]. No append-only mode | Per-project S3 keys; per-bucket policy support [unverified] |
+| Versioning / lock | Versioning always on; Object Lock offered [official]. **Availability of Object Lock in EU Central: [unverified]** | Versioning and Object Lock; Object Lock cannot be disabled once enabled [documented] | Snapshots (10 on BX11) [third-party]; a holder of the box credential can delete them | Versioning; Object Lock only at bucket creation [official] |
+| Retention | Lifecycle rules per bucket [official] | Lifecycle rules [documented] | Manual | Lifecycle (expiry) [documented] |
+| Fits the existing format | Yes: opaque files, unchanged names | Yes | Yes | Yes |
+| Full restore and PITR testable | Yes: download a base backup plus `wal/` onto a fresh volume and run backup-and-restore.md §5.2 | Yes | Yes | Yes |
+| Cost at TEST size (< 50 GB) | $6.95/TB/month, first 10 GB free; egress free up to 3× stored, then $0.01/GB; no minimum duration [official] → **under $0.50/month** | about €0.0146/GB/month Multi-AZ; requests included; 75 GB egress free [third-party] → **under €1/month** | about €3.20/month [third-party] | Covered by the object-storage base fee if that is bought anyway (§5.3) |
+
+**Recommendation: Backblaze B2, EU Central, with Scaleway as the alternative.**
+
+**Why B2:**
+
+1. It is the only candidate whose append-only credential model is documented in its own words (a
+   key without `deleteFiles` cannot destroy history).
+2. It is a different company and account from Hetzner.
+3. It is the cheapest at this size.
+
+**Why not the Storage Box or Hetzner Object Storage:**
+
+- A Hetzner account suspension, billing failure or compromise would take the server and its "off-server" copy together.
+- The Storage Box has no write-only mode either.
+
+**Verify before relying on B2:**
+
+1. The account's region is EU Central.
+2. Object Lock can be enabled on a bucket there.
+3. The DPA and the sub-processors are acceptable (owner).
+4. The free-tier and egress terms at the time of ordering.
+
+If the EU region or Object Lock cannot be confirmed, use Scaleway `nl-ams` with versioning plus
+Object Lock and a policy that denies `DeleteObject` / `DeleteObjectVersion` to the sync key.
+
+**Not built yet (needs approval):**
+
+- the sync unit and its timer (host-side, written after the account exists);
+- a host-check signal for the age of the newest object off the server.
+
+The design is in README.md §7 and does not change the template.
+
+### 5.2 TLS and privacy (D-2, R-7)
+
+`hetzner-tls-decision.md` holds the full option analysis. The task's three options map onto it as
+follows:
+
+- **A** here is that note's option C;
+- **B** is its option B;
+- **C** is its option A.
+
+| | **A. Direct TLS on the host** (Caddy, ACME) | **B. Cloudflare proxied** | **C. Cloudflare Tunnel** |
+| --- | --- | --- | --- |
+| Where TLS ends | On the Hetzner server, inside Caddy | At a Cloudflare edge data centre; re-encrypted to the origin | At a Cloudflare edge data centre; carried to `cloudflared` on the server over the tunnel |
+| Who can read documents and metadata in clear | Only the server | **Cloudflare**, at whichever edge location serves the visitor: contents, file names, URLs, cookies, IP addresses | **Cloudflare**, as in B |
+| Residency to verify | Only the server's location (DE/FI, chosen at ordering) | Where Cloudflare decrypts. Regional Services limits decryption to a region [official], but **the plan it requires is unverified** (believed Enterprise). Without it, a visitor's request may be decrypted outside the EU | As B |
+| Certificates | Caddy obtains and renews (Let's Encrypt), and must keep its state on a volume | Cloudflare edge certificate plus an origin certificate (15-year validity) | Cloudflare edge only |
+| DDoS protection | Hetzner's network-level DDoS protection only [official, scope unverified]; no WAF or CDN | Cloudflare's | Cloudflare's |
+| Origin exposure | Public IP, ports 80 and 443 open | Public IP; 443 open to Cloudflare's ranges only | **No inbound port** except SSH |
+| Firewall | 80 and 443 from anywhere; 22 from named addresses | 443 from Cloudflare's published list, which must be kept current | Inbound 22 only |
+| Client IP | The TCP peer; nothing to trust | `CF-Connecting-IP` from trusted ranges (G-5, untested) | `CF-Connecting-IP` from `cloudflared` (G-5, untested) |
+| Template changes | Caddyfile site address, `auto_https` on, publish 80/443, **a persistent volume for `/data`** (today `/data` is tmpfs, so certificates would be re-issued on every restart and could hit Let's Encrypt limits) | `trusted_proxies` and an origin certificate; publish 443 | A `cloudflared` service on the edge network; `trusted_proxies` |
+| Failure modes | ACME failure leaves the old certificate valid for weeks; renewal checked by the host check (certificate expiry within 14 days) | Cloudflare outage or misconfiguration; range-list drift | Tunnel or `cloudflared` outage; token compromise |
+| Cost | €0 | €0 (Free plan) [official]; Regional Services extra [unverified] | €0 [official] |
+
+**Recommendation: A, direct TLS on the host**, because it is the simplest option that meets
+the requirement.
+
+- **It meets the requirement.** Documents are decrypted only on the EU server. There is no
+  intermediary, so no residency claim depends on a third party's routing, and no G-5
+  header-trust chain needs testing.
+- **The trade-off: no CDN-level WAF or DDoS absorption.** For a disposable TEST with
+  synthetic data that is acceptable.
+- **For production**, the choice can be revisited once the Regional Services plan question
+  is answered. Without it, B and C have no EU-only decryption guarantee.
+
+**Changes needed after approval** (deployment configuration only; no application code):
+
+1. A Caddyfile variant with the TEST host name and `auto_https` on.
+2. A named volume for Caddy's `/data`.
+3. Ports 80 and 443 published on the server's address instead of `127.0.0.1:8080`.
+
+None is made in this revision because D-2 is not yet accepted. They belong to the same change as
+the TEST `deploy.env`.
+
+### 5.3 Object storage for documents (D-3, R-2)
+
+| | **Hetzner Object Storage** | **Scaleway** | **Cloudflare R2** |
+| --- | --- | --- | --- |
+| Region evidence | FSN1, NBG1, HEL1 [official]; no other placement | `fr-par`, `nl-ams`, `pl-waw` [official] | EU jurisdiction bucket on a separate endpoint [official]. **The only bucket tested was in ENAM, which is not EU evidence** |
+| Versioning | Yes [official] | Yes [documented] | **S3 versioning not implemented** [official compatibility table]; bucket locks only |
+| Object Lock | At bucket creation only [official] | Can be enabled later, never disabled [documented] | Bucket locks (retention rules) [official] |
+| Checksums (upload and download) | **Unknown**: gate P-1 | **Unknown**: P-1 | Partially tested in ENAM |
+| Multipart / large objects | S3 multipart [documented]; limits unverified | S3 multipart [documented] | Tested in ENAM |
+| Private access and keys | Private by default; keys per project [official] | IAM [documented] | Scoped API tokens [official] |
+| Fits verified delivery, quarantine and integrity | Expected to: the API never signs a read URL, reads through `readVerifiedSource` and checks size plus SHA-256 itself (R-9), so the store is trusted for durability only. P-1 confirms it | Same | Same |
+| Cost at TEST size | Base fee about **€4.99/month**, including 1 TB stored and 1 TB egress [third-party; the official page shows the inclusions but the figure did not render]. Billed while any bucket exists | Under €1/month [third-party] | $0.015/GB/month; Class A and B per request [official, check the current page] |
+
+**Recommendation: Hetzner Object Storage first, in a separate project, with versioning and
+Object Lock enabled at bucket creation. Scaleway is the fallback.**
+
+Why Hetzner:
+
+- an official EU location list;
+- documented versioning;
+- no third-party decryption question.
+
+The verified-read design limits what depends on the store: integrity is the API's own check.
+
+**R2 is not recommended.** Its EU evidence is untested, and it lacks versioning, so the recovery
+of an overwritten or deleted object would rest on bucket locks alone.
+
+**The store is accepted only when gate P-1 passes on it** (§6, G-7).
+
+### 5.4 TEST resource plan
+
+| Area | Plan |
+| --- | --- |
+| Server | **CX33** (shared x86, 4 vCPU, 8 GB, 80 GB disk) at FSN1 or NBG1, Ubuntu 24.04 LTS. **x86 is required**: every image is `linux/amd64` only, so the ARM CAX line does not fit. **If CX is not orderable** (hetzner.com showed "Currently not available" for a shared-resources line on 2026-10-15), use **CPX32**. Do not size down to 4 GB: the template's ceilings total about 7.2 GB, and clamd needs about 2.4 GB during a reload |
+| Headroom | CPU: 4 vCPU for a single-user TEST. Memory: about 3–4 GB used at rest (clamd about 1.2 GB), so 8 GB leaves room for the reload. Disk: the root disk holds images (about 5 GB) and `postgres-data`; the backup directory is on its own volume |
+| Volumes | **One 50 GB Hetzner Volume** mounted at `DOCS_BACKUP_DIR`. The writers refuse the database's filesystem (R-1), so it must be a separate device |
+| Placement | All services on the one host as in `compose.yaml`. PostgreSQL, Redis and the scanner stay on the `internal: true` networks with no published port |
+| Network and firewall | Hetzner Cloud Firewall: inbound TCP 22 from the administrators' named addresses only; TCP 80 and 443 from anywhere (option A); everything else denied. Outbound open (images, ACME, ClamAV mirrors, object store, B2, heartbeat) |
+| SSH and admin | Ed25519 keys, one named sudo account per administrator, no root or password log-in (host-operations §2). Rescue console as break-glass |
+| TLS and public endpoints | One host name (D-8) with an A/AAAA record to the server; `/api/health*` and `/api/metrics` stay 404 from outside (already enforced by the Caddyfile) |
+| Object storage | One Hetzner Object Storage bucket, private, versioning and Object Lock on, in a **separate** Hetzner project with its own keys |
+| Off-server backup | One B2 bucket in EU Central, Object Lock if available, lifecycle 35 days plus a margin. One application key scoped to that bucket, without `deleteFiles` or `bypassGovernance`, in `/etc/munaxa-docs/offsite.env` (0600) |
+| Monitoring and alerts | `host-check.sh` on a 5-minute systemd timer. A free-tier dead-man's switch pinged only on success (e.g. Healthchecks.io [plan terms unverified]) and an external uptime check on `/`, both alerting a named person by e-mail or push |
+| Images, deploy, rollback | A `deploy.env` naming api, web and antivirus by `@sha256:` digest from `publish-images.yml`, and Caddy and Redis by digest. `munaxa-docs-postgres` built from the release checkout with its image ID recorded (R-13). Release and rollback per host-operations §5 |
+| Secrets | Generated on the server with `openssl rand -hex 32` into `/etc/munaxa-docs` (0700/0600), copied to the password manager. The `age` identities are generated off the server and held by two people. **TEST secrets are new and never reused for production** |
+| Data | Synthetic tenants and documents only. **No production data, no real personal data** |
+| Retention and cleanup | Backups 35 days (R-1); the B2 lifecycle matches. At the end of TEST, delete in this order: server, volume, snapshots, primary IP, firewall, buckets (after the lock expires), B2 key and bucket, heartbeat and uptime checks, DNS record. Record each deletion |
+
+### 5.5 Monthly cost estimate
+
+Running continuously; EUR per month before VAT.
+
+| Item | CX33 path | CPX32 fallback | Basis |
+| --- | --- | --- | --- |
+| Server | €8.49 | €35.49 | [official], Hetzner price-adjustment page, effective 15 June 2026, DE/FI. CX availability [unverified]; a third-party report gives CX33 as €8.99 after a later change [third-party] |
+| Primary IPv4 | €0.50 | €0.50 | [third-party] |
+| Volume, 50 GB | about €2.50–3 | same | about $0.12/GB after April 2026 [third-party] |
+| Snapshot before teardown or rebuild (optional) | about €1 | about €1 | per-GB snapshot price [unverified] |
+| Object Storage base fee | €4.99 | €4.99 | [third-party] (the official page lists what is included, not the amount) |
+| B2 off-server copy, under 50 GB | under €0.50 | same | [official] B2 price list |
+| Traffic | €0 | €0 | Included server traffic and 1 TB object egress far exceed TEST use [included volumes unverified] |
+| Monitoring, uptime, ACME certificates | €0 | €0 | free tiers [plan terms unverified]; Let's Encrypt is free |
+| Hetzner server backups | not used | not used | +20 % of the server price; our backups do not depend on them |
+| **Total** | **about €17–19** | **about €44–46** | |
+
+**Effort: 2–4 working days, unchanged.** Hetzner Cloud bills hourly, so a TEST torn down
+after a week costs a fraction of the monthly figure. But the object-storage base fee and the volume
+bill while they exist.
+
+**Suggested ceiling: €60 per month for TEST**, with alerts at €30 (Hetzner and B2 both
+support usage alerts [unverified]).
+
+**What could exceed it:**
+
+- **CX unavailable, forcing CPX32.** Still under the ceiling.
+- **Upgrading to a dedicated-vCPU server.** CCX23 at €85.99 [official] would exceed it.
+  Approve separately.
+- **Hetzner's server backups**, if enabled. They are not needed.
+- **Snapshots left behind** after TEST.
+- **A second Object Storage location or project.** The base fee is per account and the
+  details are [unverified].
+- **Large synthetic uploads or load tests** pushing egress past the included volumes.
+- **Forgetting to delete** the bucket or the volume.
+
+## 6. Readiness and recovery gates (before and on TEST)
+
+**What each column means:**
+
+- **"Local"** says what has already been shown on a workstation or in CI, with no hosted
+  resource.
+- **"Hosted evidence required"** must be produced on TEST and attached to this report before
+  any data that matters (and, for G-1 to G-3, before PRE-PROD).
+- **Evidence** means command output or a console screenshot with a timestamp. A statement is
+  not evidence.
+
+| Gate | Local (already shown) | Hosted evidence required |
 | --- | --- | --- |
-| Server, 4 vCPU / 8 GB shared x86 | €10–16 | ADR-0026's €7–10, plus the 2026 increases reported for that class (about +30 % and +37 %) |
-| Primary IPv4 | €0.5–1 | — |
-| Volume, 50 GB | €2–4 | per-GB volume pricing [verify] |
-| Object storage (Hetzner base fee, 1 TB and 1 TB egress included) | €5–6.5 | product page (amount not shown there) and press or third-party figures, which conflict |
-| Off-server copy at a second provider | €0–5 | free tiers or a small bucket |
-| Monitoring, uptime, TLS (option A or C), mail sink | €0 | free tiers |
-| Hetzner server backups (optional; not a backup in our sense) | +20 % of the server | — |
-| **TEST total, running continuously** | **about €18–33 per month** | Servers bill hourly, but the volume and the object-storage base fee bill while they exist |
+| G-1 Off-server backup configured | Encrypted WAL, base backups and dumps; same-device refusal; 38/38 script tests | The B2 bucket: region shown in the console; lock and versioning settings; key capabilities listed (no `deleteFiles`, no `bypassGovernance`); one sync run; an attempted delete with the key **refused** |
+| G-2 Restore from the off-server copy | Restore from the local volume (drill) | On a scratch volume on the TEST server or a second throwaway server: download from B2 only, check `.sha256`, decrypt with an escrowed identity, restore the base and replay the WAL |
+| G-3 PITR | Shown in the drill (stopped before transaction 1056 at the target time) | The same, from the B2 copy, to a recorded target time, with a change before and after the target |
+| G-4 Tenant isolation and audit chain after restore | Shown in the drill (RLS forced, `edms_app` isolated, chain verified from genesis) | The drill's checks run against the cluster restored in G-2 and G-3 |
+| G-5 TLS and privacy decision accepted | — | D-2 signed off by the owner; certificate issued and renewed (`caddy` logs); SSL Labs-style check; HTTP→HTTPS redirect; `/api/health` 404 from outside; the sign-in rate limit sees distinct client addresses |
+| G-6 EU region verified | — | Console screenshots of the server location, the object-store location and the B2 region; the owner's DPA review recorded |
+| G-7 Object recovery and integrity (P-1) | Verified reads, quarantine on mismatch, missing object, store errors (R-9 tests against MinIO) | P-1 against the chosen store: checksum on upload and download; multipart; overwrite then restore the prior version; delete then restore; Object Lock refusal; a browser upload and a verified download end to end |
+| G-8 Monitoring and alert delivery | `host-check.sh` healthy and with a forced finding (stack test) | A forced finding pages a named person; stopping the heartbeat pages within its grace period; the uptime check fires when the proxy is stopped |
+| G-9 Scanner health and refresh | 22/22 offline (refresh failure, staleness, refusal, restart, fail-open guard) | `freshclam` succeeding against real mirrors over at least 3 days; peak memory during a reload on the chosen server; EICAR refused through the product |
+| G-10 Deploy and rollback by digest | `migrate` and `up` (stack test) | One release by digest with `RepoDigests` checked; one code-only rollback to the previous `deploy.env`; timings recorded |
+| G-11 Firewall and SSH | — | A port scan from outside shows only 22 (from the allowed address), 80 and 443; password and root log-in refused; `unattended-upgrades` active |
+| G-12 Cost and ceiling accepted | — | The owner's approval of §5.5 and the ceiling; billing alerts configured |
 
-**One-time:**
+ADR-0026 stays **Proposed** until these gates pass and their evidence has been reviewed.
 
-- No provider set-up fee is known [verify].
-- The domain already exists.
-- The one-time cost is effort, **estimated at 2–4 working days**: provisioning, the firewall,
-  P-1, the off-server copy, monitoring delivery, a rollback and a restore rehearsal.
+## 7. Test-deployment checklist
 
-## 6. Checklist for authorizing a disposable Hetzner TEST environment
+### 7.1 Decisions only the owner can take (needed before anything is created)
 
-**Decisions only the owner can take:**
+- [ ] **D-6:** spending approved, ceiling €60 per month (§5.5).
+- [ ] **D-7:** CX33, or CPX32 if CX is unavailable; FSN1 or NBG1; Ubuntu 24.04 LTS.
+- [ ] **D-2:** option A, direct TLS on the host (§5.2), or another option with its residency
+      question answered.
+- [ ] **D-3 (provisional):** Hetzner Object Storage in a separate project (§5.3).
+- [ ] **D-5:** Backblaze B2 EU Central, or Scaleway (§5.1).
+- [ ] **D-8:** the TEST host name.
+- [ ] The two holders of the backup `age` identities and of the escrow.
+- [ ] The person who receives the alerts.
 
-- [ ] D-6: spending approved for the items in §5, with a monthly ceiling.
-- [ ] D-7: server size and location.
-- [ ] D-3 (provisional): the object store to test first, in a **separate** Hetzner project.
-- [ ] D-2: TLS option, after answering `hetzner-tls-decision.md` §2 (termination by a third party
-      outside the EU, acceptable or not).
-- [ ] D-5: the provider for the off-server backup copy.
-- [ ] D-8: the TEST host name.
-- [ ] Who holds the two backup `age` identities and the key escrow (key-rotation.md §5).
-
-**Ready in the repository (verified locally):**
+### 7.2 Ready in the repository (verified locally)
 
 - [x] Encrypted WAL archiving, base backups and per-tenant dumps; PITR and a tenant restore drilled.
 - [x] Previous-key slots for all three long-lived keys; MFA recoverable with recovery codes after a
@@ -172,13 +376,108 @@ authorization].**
 - [x] Health endpoints without tenant names; the host check.
 - [x] Procedures: backup and restore §5, key rotation, monitoring, host operations, TLS options.
 
-**Before the first data that matters (on TEST):**
+### 7.3 To prepare after approval, before provisioning (repository changes, reviewed)
 
-- [ ] `munaxa-docs-postgres` published by digest (R-13), or its image ID recorded per deployment.
-- [ ] Gate P-1 passed on the chosen store; versioning restore shown.
-- [ ] The off-server copy running, and a restore **from it** performed.
-- [ ] The dead-man's switch and uptime check paging a person.
-- [ ] Firewall verified from outside; SSH keys only.
-- [ ] One rollback by digest and one host rebuild rehearsed, with timings recorded.
+- [ ] The Caddy option-A configuration: site address, persistent `/data`, ports 80 and 443 (§5.2).
+- [ ] The off-server sync unit and timer, and a host-check signal for the age of the newest object
+      off the server (§5.1).
+- [ ] The heartbeat and host-check systemd units (monitoring.md).
+- [ ] A TEST `deploy.env` with digests; `munaxa-docs-postgres` published or its ID recorded (R-13).
 
-ADR-0026 stays **Proposed** until those gates pass and their evidence has been reviewed.
+### 7.4 On TEST (gates in §6)
+
+- [ ] G-6, G-11, G-12 (location, firewall, SSH, billing alerts) — first.
+- [ ] G-10 deploy by digest; then G-5 TLS.
+- [ ] G-7 P-1 on the store.
+- [ ] G-1, then G-2, G-3, G-4 from the off-server copy.
+- [ ] G-8 alert delivery; G-9 scanner over days.
+- [ ] One host rebuild from the off-server copy, timed (the first RTO, R-15).
+
+## 8. Actions that would create billable resources
+
+None of these has been taken. Each needs the owner's explicit authorization.
+
+1. Creating the Hetzner Cloud server: hourly billing starts.
+2. Creating a primary IPv4: it bills while allocated, even when detached.
+3. Creating the 50 GB Volume.
+4. Enabling Hetzner server backups, or taking snapshots.
+5. Creating any bucket in Hetzner Object Storage: the monthly base fee starts.
+6. Creating the B2 (or Scaleway) bucket and storing data in it.
+7. Paid tiers of monitoring, uptime or mail services. The plan uses free tiers only.
+8. Registering a new domain. The plan uses a sub-domain of the existing one: a DNS record only,
+   with no charge [unverified for the registrar].
+
+**Not billable, but outward-facing (also need authorization):**
+
+- the DNS record;
+- the firewall;
+- SSH keys on the server;
+- B2 and object-store API keys;
+- the heartbeat and uptime accounts.
+
+## 9. Steps after approval (not performed)
+
+In this order, each recorded in this report with its evidence:
+
+1. **Accounts and limits.** In the Hetzner Console:
+   - create a dedicated TEST project;
+   - set a billing alert.
+
+   In Backblaze, create (or confirm) an EU Central account and set a usage cap.
+2. **Repository changes** in §7.3, reviewed and merged by the owner's normal process. Then pull the
+   images and record their digests.
+3. **Provision:**
+   - the firewall (§5.4);
+   - the server with the administrators' SSH keys;
+   - the volume, formatted and mounted at `DOCS_BACKUP_DIR`;
+   - the DNS A/AAAA record.
+4. **Host set-up** (host-operations §2–§3):
+   - the named accounts, sshd hardening and `unattended-upgrades`;
+   - Docker Engine from Docker's repository.
+5. **Secrets:**
+   - generate into `/etc/munaxa-docs`;
+   - put the `age` public keys in `backup.env`, with the identities generated off the server;
+   - write the B2 key to `offsite.env`;
+   - copy everything to the password manager.
+6. **Object store:**
+   - create the bucket with versioning and Object Lock;
+   - create its keys and put them in `api.env`;
+   - run gate P-1.
+7. **Deploy** (host-operations §5, `C="docker compose --env-file deploy.env -f infra/hetzner/compose.yaml"`):
+
+   ```
+   $C pull
+   $C --profile ops run --rm migrate
+   $C up -d
+   infra/hetzner/ops/host-check.sh
+   ```
+
+   Then create each synthetic tenant's first administrator with the `provision` service, by
+   infra/hetzner/README.md §4 (one tenant per run, `provision.env` deleted afterwards).
+
+8. **Backups:**
+   - `$C exec db-backup munaxa-backup once`;
+   - start the off-server sync timer;
+   - then gates G-1 to G-4.
+9. **Monitoring:** the timers and the heartbeat, then gate G-8.
+10. **Rollback and rebuild:** G-10 and the rebuild rehearsal.
+
+## 10. Sources (read 2026-10-15)
+
+- Hetzner Cloud price adjustment (official, server prices from 15 June 2026):
+  https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/
+- Hetzner Object Storage product page (official, inclusions, locations, versioning, Object Lock):
+  https://www.hetzner.com/storage/object-storage/
+- Hetzner Cloud page ("Currently not available" for a shared-resources line):
+  https://www.hetzner.com/cloud/
+- Backblaze B2 pricing (official): https://www.backblaze.com/cloud-storage/pricing
+- Backblaze application key capabilities (official):
+  https://www.backblaze.com/docs/cloud-storage-application-key-capabilities
+- Third-party price reports (Object Storage base fee, IPv4, volume):
+  - https://heise.de/-10189226
+  - https://findstack.com/resources/hetzner-price-increase-2026
+  - https://docs.elest.io/books/announcement/page/hetzner-price-change-notice-effective-april-1st
+  - https://privatedevops.com/news/hetzner-june-2026-cloud-price-increase-what-to-do
+- Earlier sources on Scaleway, R2 and Cloudflare Regional Services:
+  - `hetzner-object-storage-options.md`;
+  - `hetzner-tls-decision.md`.
