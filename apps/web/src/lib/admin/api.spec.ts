@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DomainError, ErrorCode } from '@edms/domain';
+import { ar } from '@edms/i18n';
 
 /**
  * The server-side API helpers every page reads through — RC validation, D-18.
@@ -20,8 +21,13 @@ const { apiFetch, redirect } = vi.hoisted(() => ({
 vi.mock('server-only', () => ({}));
 vi.mock('next/navigation', () => ({ redirect }));
 vi.mock('../api-client', () => ({ apiFetch }));
+const { currentLocale } = vi.hoisted(() => ({
+  currentLocale: vi.fn(() => Promise.resolve('en')),
+}));
+
 vi.mock('../session', () => ({
   currentSession: () => Promise.resolve({ accessToken: 'token', locale: 'en' }),
+  currentLocale,
 }));
 
 const { adminGet, adminList, adminRead, adminWrite, currentPermissions } = await import('./api');
@@ -79,5 +85,30 @@ describe('a refused session', () => {
     const result = await adminRead('/admin/folders/f-1');
     expect(result.ok).toBe(false);
     expect(redirect).not.toHaveBeenCalled();
+  });
+});
+
+describe('a refusal the API gave a reason for', () => {
+  it('is told in the person’s own language, which the API call did not carry', async () => {
+    currentLocale.mockResolvedValueOnce('ar');
+    apiFetch.mockRejectedValue(
+      new DomainError(
+        ErrorCode.DEPENDENCY_UNAVAILABLE,
+        'File storage is temporarily unavailable. Try again shortly.',
+        {},
+        { reason: 'STORAGE_UNAVAILABLE' },
+      ),
+    );
+
+    const result = await adminWrite({
+      path: '/documents/d-1/content?inline=false',
+      method: 'POST',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'DEPENDENCY_UNAVAILABLE',
+      detail: ar.errorReason.STORAGE_UNAVAILABLE,
+    });
   });
 });

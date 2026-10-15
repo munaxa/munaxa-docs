@@ -164,6 +164,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
               error.publicReason.values ?? {},
             ),
       correlationId,
+      // The reason's key too, so a client renders the same sentence in its own language: a server
+      // action calls the API without the person's locale, and `detail` is then in English.
+      ...(error.publicReason !== null && {
+        reason: error.publicReason.reason,
+        ...(error.publicReason.values !== undefined && {
+          reasonValues: { ...error.publicReason.values },
+        }),
+      }),
     };
     if (
       (error instanceof ValidationError || error instanceof NumberSeriesCollisionError) &&

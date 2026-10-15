@@ -149,5 +149,27 @@ describe('a refusal with a known cause says what it is, at the status it always 
   it('keeps the code’s own sentence for a refusal with no stated reason', () => {
     const { body } = answer(new ValidationError('internal wording'));
     expect(body).toMatchObject({ status: 422, detail: 'Some of the details are not valid.' });
+    expect(body).not.toHaveProperty('reason');
+    expect(body).not.toHaveProperty('reasonValues');
+  });
+
+  // Hetzner Phase B, findings 3 and 4: a server action calls the API without the person's locale,
+  // so `detail` arrives in English. The reason's key lets the web say the same in Arabic.
+  it('names the reason and its values, so a client can say it in its own language', () => {
+    expect(answer(new StorageUnavailableError('internal')).body).toMatchObject({
+      code: 'DEPENDENCY_UNAVAILABLE',
+      reason: 'STORAGE_UNAVAILABLE',
+    });
+    expect(
+      answer(
+        new UnsupportedContentError('x', {}, { reason: 'TOO_LARGE', values: { limit: '32 MiB' } }),
+      ).body,
+    ).toMatchObject({ reason: 'TOO_LARGE', reasonValues: { limit: '32 MiB' } });
+  });
+
+  it('tells a quarantined file apart from one still being scanned, though they share a code', () => {
+    const { body } = answer(new ContentQuarantinedError('MISMATCH'));
+    expect(body).toMatchObject({ code: 'CONTENT_NOT_SCANNED', reason: 'INTEGRITY_FAILED' });
+    expect(JSON.stringify(body)).not.toContain('MISMATCH');
   });
 });

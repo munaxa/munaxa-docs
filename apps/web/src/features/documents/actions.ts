@@ -28,6 +28,7 @@ import { MetadataDataType } from '@edms/domain';
 import { type ActionResult, succeeded, toActionResult } from '../../lib/admin/action-result';
 import { adminGet, adminList, adminOptions, adminRead, adminWrite } from '../../lib/admin/api';
 import { validated } from '../../lib/admin/validated';
+import { currentLocale } from '../../lib/session';
 import type { DocumentEditOptions, DocumentMoveOptions } from './options';
 
 /**
@@ -164,7 +165,7 @@ export async function loadEditOptions(
       })),
     });
   } catch (error) {
-    return toActionResult<DocumentEditOptions>(error);
+    return toActionResult<DocumentEditOptions>(error, await currentLocale());
   }
 }
 
@@ -194,7 +195,7 @@ export async function loadMoveOptions(
       folders: folders.data.map((folder) => ({ value: folder.id, label: folder.name })),
     });
   } catch (error) {
-    return toActionResult<DocumentMoveOptions>(error);
+    return toActionResult<DocumentMoveOptions>(error, await currentLocale());
   }
 }
 

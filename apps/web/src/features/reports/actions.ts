@@ -11,6 +11,7 @@ import {
 import { type ActionResult, succeeded, toActionResult } from '../../lib/admin/action-result';
 import { adminGet, adminWrite } from '../../lib/admin/api';
 import { validated } from '../../lib/admin/validated';
+import { currentLocale } from '../../lib/session';
 
 /**
  * The reports screen's writes — and running a report is not one of them.
@@ -47,7 +48,7 @@ export async function downloadReportExport(id: string): Promise<ActionResult<Rep
   try {
     return succeeded(await adminGet<ReportExportLink>(`/reports/exports/${id}/download`));
   } catch (error) {
-    return toActionResult<ReportExportLink>(error);
+    return toActionResult<ReportExportLink>(error, await currentLocale());
   }
 }
 

@@ -8,7 +8,7 @@ import type { Collection } from '@edms/contracts';
 import type { PermissionKey } from '@edms/domain';
 
 import { apiFetch } from '../api-client';
-import { currentSession } from '../session';
+import { currentLocale, currentSession } from '../session';
 import { SESSION_CHECK_TIMEOUT_MS, isRejection, sessionEndedPath } from '../session-check';
 import { type ActionResult, succeeded, toActionResult } from './action-result';
 import { type ListState, listQueryString } from './list-state';
@@ -160,7 +160,7 @@ export async function adminRead<TResult>(path: string): Promise<ActionResult<TRe
     if (isRejection(error)) {
       redirect(sessionEndedPath() as Route);
     }
-    return toActionResult<TResult>(error);
+    return toActionResult<TResult>(error, await currentLocale());
   }
 }
 
@@ -232,6 +232,6 @@ export async function adminWrite<TResult = void>(
     if (isRejection(error)) {
       redirect(sessionEndedPath() as Route);
     }
-    return toActionResult<TResult>(error);
+    return toActionResult<TResult>(error, await currentLocale());
   }
 }

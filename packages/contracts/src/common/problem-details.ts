@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { ErrorCode } from '@edms/domain';
+import { ErrorCode, ErrorReason } from '@edms/domain';
 
 /**
  * The error body of every failed request, shaped as RFC 7807 problem details plus the
@@ -26,6 +26,18 @@ export const problemDetailsSchema = z.object({
   detail: z.string(),
   errors: z.array(fieldErrorSchema).optional(),
   correlationId: z.string(),
+  /**
+   * The known cause behind `code`, when the server can state it safely (`ErrorReason`): what
+   * `detail` already says in the request's language, as a key a client can render in its own.
+   * Optional and additive — a client that ignores it still has `code` and `detail`, and one that
+   * does not know a newer reason drops it (`catch`) rather than refusing the whole body.
+   */
+  reason: z.nativeEnum(ErrorReason).optional().catch(undefined),
+  /** The values the reason's sentence names (a size limit, say). Never anything sensitive. */
+  reasonValues: z
+    .record(z.union([z.string(), z.number()]))
+    .optional()
+    .catch(undefined),
 });
 
 export type FieldError = z.infer<typeof fieldErrorSchema>;

@@ -84,7 +84,17 @@ function toDomainError(payload: unknown, status: number): DomainError {
   const parsed = problemDetailsSchema.safeParse(payload);
   if (parsed.success) {
     const problem: ProblemDetails = parsed.data;
-    return new DomainError(problem.code, problem.detail, { correlationId: problem.correlationId });
+    return new DomainError(
+      problem.code,
+      problem.detail,
+      { correlationId: problem.correlationId },
+      problem.reason === undefined
+        ? null
+        : {
+            reason: problem.reason,
+            ...(problem.reasonValues !== undefined && { values: problem.reasonValues }),
+          },
+    );
   }
   // An unparseable body means something between here and the API answered — a proxy, a
   // gateway, a captive portal. Reporting it as INTERNAL is honest; guessing is not.
