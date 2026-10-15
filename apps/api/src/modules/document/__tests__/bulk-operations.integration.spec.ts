@@ -43,12 +43,18 @@ import {
   type RetentionStack,
   realBulk,
   realDisposition,
+  realDownloadRedemption,
   realDocumentLibrary,
   realNotifications,
   realPermissions,
   realRetention,
 } from '../../../testing/real-collaborators';
 import { decodeTransferToken } from '../../../testing/transfer-token';
+import { grantOfLink } from '../../../testing/download-links';
+import {
+  BulkDocumentDownloadRedeemer,
+  BulkManifestDownloadRedeemer,
+} from '../application/document-download.redeemer';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
 /**
@@ -207,6 +213,10 @@ beforeAll(async () => {
     antivirus: { budgetBytes: 268_435_456, queueTimeoutMs: 60_000 },
     acl: { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 },
     mail: { webBaseUrl: 'https://docs.test' },
+    // ADR-0026 §10: a released document's download is a verified link the API serves.
+    app: { port: 3001 },
+    auth: { accessSecret: SIGNING_SECRET },
+    download: { linkTtlSeconds: 60, maxFileBytes: 32 * 1024 * 1024 },
   } as unknown as AppConfig;
 
   owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
@@ -1717,21 +1727,25 @@ describe('two deliveries of one export', () => {
 });
 
 /**
- * A bulk export's links — the two authorization defects E-1 and E-2
- * (`docs/reports/hetzner-export-verified-delivery-design.md`).
+ * A bulk export's released documents — ADR-0026 §10, the export design §3.1 and §4; the defects
+ * E-1 to E-6.
  *
- * E-1: the single download refuses a document whose confidentiality level forbids download; the
- * bulk route asked only the ACL, so selecting the document in an export released it anyway.
- * E-2: links were minted for any of the caller's own operations — any kind, any state — so the
- * applied items of a metadata change, or of an export still running, came back as download links.
+ * The export is a record; a release is a verified link issued when one item is clicked, and
+ * re-asked when it is followed. The list carries no URL, pages through every item (E-3), counts
+ * what the caller can no longer see rather than describing it, and is audited by counts alone
+ * (E-4). Membership of the export grants nothing: each link must satisfy every rule of the
+ * document's own download — reach, confidentiality (E-1), the current revision, scan, integrity,
+ * size — and the export must still be the caller's own completed export (E-2). The manifest is
+ * the requester's, refused while it names anything they can no longer see (E-6).
  *
- * Every document here has real bytes in the store, because a link is issued only after the gate
- * has confirmed them (a HEAD), and an assertion against an absent blob would be measuring the
- * quarantine path instead of the authorization one.
+ * Every document here has real bytes in the store: a link is issued only after a HEAD confirms
+ * them, and an assertion against an absent blob would be measuring that, not authorization.
  */
 describe('a bulk export releases only what the single download would', () => {
   let forbiddingLevelId: string;
   let allowingLevelId: string;
+  let redemption: ReturnType<typeof realDownloadRedemption>['redemption'];
+  const NOW = new Date(FIXED_NOW);
 
   beforeAll(async () => {
     const forbidding = await asAdmin(() =>
@@ -1752,6 +1766,15 @@ describe('a bulk export releases only what the single download would', () => {
           where: { tenantId: TENANT, code: 'INTERNAL' },
         })
       )?.id ?? '';
+    const composed = realDownloadRedemption({ unitOfWork });
+    new BulkDocumentDownloadRedeemer(
+      composed.registry,
+      bulk.acl,
+      unitOfWork,
+      bulk.exports,
+    ).onModuleInit();
+    new BulkManifestDownloadRedeemer(composed.registry, bulk.exports).onModuleInit();
+    redemption = composed.redemption;
   });
 
   /** A document whose revision's bytes really are in the store, with the given file states. */
@@ -1762,15 +1785,47 @@ describe('a bulk export releases only what the single download would', () => {
       readonly scanStatus?: string;
       readonly integrityStatus?: string;
       readonly stored?: boolean;
+      readonly folderId?: string;
     } = {},
-  ): Promise<{ documentId: string; fileObjectId: string }> {
-    const [documentId] = await seedDocuments(openFolderId, 1, prefix);
-    const bytes = Buffer.from(`%PDF-1.7\n% ${prefix} ${uuidv7()}\n%%EOF\n`);
-    const key = `bulk-links/${prefix}-${uuidv7()}.pdf`;
+  ): Promise<{ documentId: string; fileObjectId: string; storageKey: string }> {
+    const [documentId] = await seedDocuments(options.folderId ?? openFolderId, 1, prefix);
+    const { fileObjectId, storageKey, revisionId } = await revisionFor(
+      documentId ?? '',
+      prefix,
+      0,
+      'Original',
+      options,
+    );
+    await owner.document.update({
+      where: { id: documentId ?? '' },
+      data: {
+        latestRevisionId: revisionId,
+        currentRevisionId: revisionId,
+        ...(options.confidentialityId !== undefined && {
+          confidentialityId: options.confidentialityId,
+        }),
+      },
+    });
+    return { documentId: documentId ?? '', fileObjectId, storageKey };
+  }
+
+  async function revisionFor(
+    documentId: string,
+    prefix: string,
+    ordinal: number,
+    label: string,
+    options: {
+      readonly scanStatus?: string;
+      readonly integrityStatus?: string;
+      readonly stored?: boolean;
+    } = {},
+  ): Promise<{ fileObjectId: string; storageKey: string; revisionId: string }> {
+    const bytes = Buffer.from(`%PDF-1.7\n% ${prefix} ${label} ${uuidv7()}\n%%EOF\n`);
+    const storageKey = `bulk-links/${prefix}-${uuidv7()}.pdf`;
     if (options.stored !== false) {
       await asAdmin(() =>
         library.storagePort.put(
-          key as never,
+          storageKey as never,
           (async function* () {
             await Promise.resolve();
             yield bytes;
@@ -1787,7 +1842,7 @@ describe('a bulk export releases only what the single download would', () => {
         checksumSha256: createHash('sha256').update(bytes).digest('hex'),
         sizeBytes: BigInt(bytes.length),
         mimeType: 'application/pdf',
-        storageKey: key,
+        storageKey,
         storageDriver: 'LOCAL',
         scanStatus: (options.scanStatus ?? ScanStatus.CLEAN) as never,
         integrityStatus: (options.integrityStatus ?? 'UNVERIFIED') as never,
@@ -1800,188 +1855,388 @@ describe('a bulk export releases only what the single download would', () => {
       data: {
         id: revisionId,
         tenantId: TENANT,
-        documentId: documentId ?? '',
-        ordinal: 0,
-        label: 'Original',
+        documentId,
+        ordinal,
+        label,
         fileObjectId,
         filename: `${prefix}.pdf`,
         updatedAt: FIXED_NOW,
       },
     });
-    await owner.document.update({
-      where: { id: documentId ?? '' },
-      data: {
-        latestRevisionId: revisionId,
-        currentRevisionId: revisionId,
-        ...(options.confidentialityId !== undefined && {
-          confidentialityId: options.confidentialityId,
-        }),
-      },
-    });
-    return { documentId: documentId ?? '', fileObjectId };
+    return { fileObjectId, storageKey, revisionId };
   }
 
-  function issuedFor(fileObjectId: string): Promise<number> {
-    return owner.auditEvent.count({
+  const issuedFor = (fileObjectId: string) =>
+    owner.auditEvent.count({
       where: { tenantId: TENANT, action: 'FILE_DOWNLOAD_ISSUED', subjectId: fileObjectId },
     });
-  }
-
-  async function linksOf(
-    operationId: string,
-    as: <T>(work: () => Promise<T>) => Promise<T> = asAda,
-  ): Promise<{ links: readonly { documentId: string }[] | null; error: unknown }> {
-    try {
-      return { links: await as(() => bulk.exports.links(operationId)), error: null };
-    } catch (error) {
-      return { links: null, error };
-    }
-  }
 
   const notFound = { code: ErrorCode.NOT_FOUND };
 
-  it('still releases an allowed document whose bytes verify, and audits the one link', async () => {
-    const allowed = await releasable('links-allowed');
-    const exported = await asAda(() => bulk.exports.export([allowed.documentId]));
-    expect(appliedIds(exported)).toEqual([allowed.documentId]);
-
-    const { links, error } = await linksOf(exported.operationId);
-
-    expect(error).toBeNull();
-    expect(links?.map((link) => link.documentId)).toEqual([allowed.documentId]);
-    expect(await issuedFor(allowed.fileObjectId)).toBe(1);
-  });
-
-  it('never releases a document whose confidentiality level forbids download (E-1)', async () => {
-    const allowed = await releasable('links-mixed-allowed');
-    const restricted = await releasable('links-restricted', {
-      confidentialityId: forbiddingLevelId,
+  it('lists released documents without a URL, audits the opening by counts, and issues a link only on request', async () => {
+    const doc = await releasable('items-listed');
+    const exported = await asAda(() => bulk.exports.export([doc.documentId]));
+    const openedBefore = await owner.auditEvent.count({
+      where: { tenantId: TENANT, action: 'BULK_EXPORT_OPENED', subjectId: exported.operationId },
     });
 
+    const page = await asAda(() =>
+      bulk.exports.items(exported.operationId, { page: 1, pageSize: 50 }),
+    );
+
+    expect(page.tally).toMatchObject({ requested: 1, applied: 1 });
+    expect(page.data).toEqual([
+      expect.objectContaining({
+        documentId: doc.documentId,
+        exportedRevisionLabel: 'Original',
+        currentRevisionLabel: 'Original',
+        available: true,
+        unavailableReason: null,
+      }),
+    ]);
+    expect(JSON.stringify(page)).not.toMatch(/https?:\/\//u);
+    expect(await issuedFor(doc.fileObjectId)).toBe(0);
+    const opened = await owner.auditEvent.findMany({
+      where: { tenantId: TENANT, action: 'BULK_EXPORT_OPENED', subjectId: exported.operationId },
+    });
+    expect(opened).toHaveLength(openedBefore + 1);
+    expect(opened.at(-1)?.payload).toMatchObject({
+      after: { applied: 1, availableNow: 1, unavailableNow: 0, hiddenNow: 0, page: 1 },
+    });
+
+    const link = await asAda(() => bulk.exports.itemLink(exported.operationId, doc.documentId));
+    const grant = grantOfLink(link.url, SIGNING_SECRET, NOW);
+    expect(grant.subject).toEqual({
+      kind: 'BULK_DOCUMENT',
+      documentId: doc.documentId,
+      operationId: exported.operationId,
+    });
+    expect(await issuedFor(doc.fileObjectId)).toBe(1);
+    const issued = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: TENANT, action: 'FILE_DOWNLOAD_ISSUED', subjectId: doc.fileObjectId },
+    });
+    expect(issued.payload).toMatchObject({
+      after: { kind: 'BULK_DOCUMENT', bulkOperationId: exported.operationId },
+    });
+    await expect(redemption.redeem(grant, 'bulk-suite')).resolves.toMatchObject({
+      audit: { bulkOperationId: exported.operationId },
+    });
+  });
+
+  it('pages through every released item — no silent ceiling at 1,000 (E-3)', async () => {
+    const ids = await seedDocuments(openFolderId, 1_050, 'paged');
+    const operationId = uuidv7();
+    await owner.bulkOperation.create({
+      data: {
+        id: operationId,
+        tenantId: TENANT,
+        kind: 'EXPORT',
+        state: 'COMPLETED',
+        requestedById: ADA,
+        requestedAt: FIXED_NOW,
+        completedAt: FIXED_NOW,
+        parameters: {},
+        requested: 1_050,
+        applied: 1_050,
+        updatedAt: FIXED_NOW,
+      } as never,
+    });
+    await owner.bulkOperationItem.createMany({
+      data: ids.map((targetId) => ({
+        id: uuidv7(),
+        tenantId: TENANT,
+        operationId,
+        targetId,
+        outcome: 'APPLIED',
+      })) as never,
+    });
+
+    const seen = new Set<string>();
+    let total = 0;
+    for (let pageNumber = 1; pageNumber <= 20; pageNumber += 1) {
+      const page = await asAda(() =>
+        bulk.exports.items(operationId, { page: pageNumber, pageSize: 100 }),
+      );
+      total = page.meta.total;
+      for (const item of page.data) {
+        seen.add(item.documentId);
+        // No revision: listed, and said to have no content — never silently dropped.
+        expect(item).toMatchObject({ available: false, unavailableReason: 'NO_CONTENT' });
+      }
+      if (!page.meta.hasMore) {
+        break;
+      }
+    }
+    expect(total).toBe(1_050);
+    expect(seen.size).toBe(1_050);
+  }, 180_000);
+
+  it('never releases a document whose level forbids download, at export, at issue, or at redemption (E-1)', async () => {
+    const allowed = await releasable('level-allowed');
+    const restricted = await releasable('level-restricted', {
+      confidentialityId: forbiddingLevelId,
+    });
     const exported = await asAda(() =>
       bulk.exports.export([allowed.documentId, restricted.documentId]),
     );
-
-    // Refused at export time, the same answer the single download gives — and so not in the
-    // manifest, which names only applied documents.
     expect(refusedIds(exported)).toEqual([restricted.documentId]);
-    expect(appliedIds(exported)).toEqual([allowed.documentId]);
-    const { links } = await linksOf(exported.operationId);
-    expect(links?.map((link) => link.documentId)).toEqual([allowed.documentId]);
-    expect(await issuedFor(restricted.fileObjectId)).toBe(0);
-  });
+    await expect(
+      asAda(() => bulk.exports.itemLink(exported.operationId, restricted.documentId)),
+    ).rejects.toMatchObject(notFound);
 
-  it('does not release a document reclassified after the export was taken (E-1)', async () => {
-    const later = await releasable('links-reclassified');
-    const exported = await asAda(() => bulk.exports.export([later.documentId]));
-    expect(appliedIds(exported)).toEqual([later.documentId]);
-
+    // Issued while allowed, then reclassified: the list says so, issue refuses, and the link
+    // already issued refuses when followed.
+    const link = await asAda(() => bulk.exports.itemLink(exported.operationId, allowed.documentId));
+    const grant = grantOfLink(link.url, SIGNING_SECRET, NOW);
     await owner.document.update({
-      where: { id: later.documentId },
+      where: { id: allowed.documentId },
       data: { confidentialityId: forbiddingLevelId },
     });
-    const { links, error } = await linksOf(exported.operationId);
-
-    // Membership of the operation grants nothing: the level is asked again, now.
-    expect(error).toBeNull();
-    expect(links).toEqual([]);
-    expect(await issuedFor(later.fileObjectId)).toBe(0);
-
-    await owner.document.update({
-      where: { id: later.documentId },
-      data: { confidentialityId: allowingLevelId },
-    });
+    try {
+      const page = await asAda(() =>
+        bulk.exports.items(exported.operationId, { page: 1, pageSize: 50 }),
+      );
+      expect(page.data.find((item) => item.documentId === allowed.documentId)).toMatchObject({
+        available: false,
+        unavailableReason: 'NOT_PERMITTED',
+      });
+      const before = await issuedFor(allowed.fileObjectId);
+      await expect(
+        asAda(() => bulk.exports.itemLink(exported.operationId, allowed.documentId)),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      expect(await issuedFor(allowed.fileObjectId)).toBe(before);
+      await expect(redemption.redeem(grant, 'bulk-suite')).rejects.toMatchObject(notFound);
+    } finally {
+      await owner.document.update({
+        where: { id: allowed.documentId },
+        data: { confidentialityId: allowingLevelId },
+      });
+    }
+    await expect(redemption.redeem(grant, 'bulk-suite')).resolves.toBeDefined();
   });
 
-  it('gives no links for another person’s export, and says so as for a missing one (E-2)', async () => {
-    const theirs = await releasable('links-ada-own');
-    const exported = await asAda(() => bulk.exports.export([theirs.documentId]));
+  it('refuses at redemption once the document’s ACL denies download, and hides what the caller can no longer see', async () => {
+    const { libraryId } = await owner.folder.findUniqueOrThrow({ where: { id: openFolderId } });
+    const folder = await asAdmin(() =>
+      library.libraries.createFolder({
+        libraryId,
+        parentId: openFolderId,
+        name: `Soon closed ${uuidv7().slice(-6)}`,
+        inheritAcl: true,
+      }),
+    );
+    const doc = await releasable('acl-later', { folderId: folder.id });
+    const exported = await asAda(() => bulk.exports.export([doc.documentId]));
+    const link = await asAda(() => bulk.exports.itemLink(exported.operationId, doc.documentId));
+    const grant = grantOfLink(link.url, SIGNING_SECRET, NOW);
+    // The manifest is available while everything it names is still visible.
+    await expect(
+      asAda(() => bulk.exports.manifestLink(exported.operationId)),
+    ).resolves.toBeDefined();
 
-    const asBenResult = await linksOf(exported.operationId, asBen);
-    const missing = await linksOf(uuidv7(), asBen);
-
-    expect(asBenResult.error).toMatchObject(notFound);
-    expect(missing.error).toMatchObject(notFound);
-    expect((asBenResult.error as Error).message).toBe((missing.error as Error).message);
-    expect(await issuedFor(theirs.fileObjectId)).toBe(0);
-  });
-
-  it('gives no links for an identifier this tenant does not hold (E-2)', async () => {
-    const own = await releasable('links-tenant');
-    const exported = await asAda(() => bulk.exports.export([own.documentId]));
-    const elsewhere = asId<TenantId>(uuidv7());
-
-    const { error } = await runWithContext(
-      { ...contextFor(ADA, [EDITOR_ROLE]), tenantId: elsewhere },
-      () => linksOf(exported.operationId, (work) => work()),
+    await asAdmin(() =>
+      permissions.permissions.replaceFor(folderScope(folder.id), [
+        {
+          subjectType: AclSubjectType.USER,
+          subjectId: asId<AnyId>(ADA),
+          permission: Permission.DOCUMENT_VIEW,
+          effect: AclEffect.DENY,
+        },
+        {
+          subjectType: AclSubjectType.USER,
+          subjectId: asId<AnyId>(ADA),
+          permission: Permission.DOCUMENT_DOWNLOAD,
+          effect: AclEffect.DENY,
+        },
+      ]),
     );
 
-    expect(error).toMatchObject(notFound);
-    expect(await issuedFor(own.fileObjectId)).toBe(0);
+    await expect(redemption.redeem(grant, 'bulk-suite')).rejects.toMatchObject(notFound);
+    const page = await asAda(() =>
+      bulk.exports.items(exported.operationId, { page: 1, pageSize: 50 }),
+    );
+    expect(page.hidden).toBe(1);
+    expect(page.data).toEqual([]);
+    // Counted, never named: the opening's audit row carries no identifier of the hidden document.
+    const opened = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: TENANT, action: 'BULK_EXPORT_OPENED', subjectId: exported.operationId },
+      orderBy: { sequence: 'desc' },
+    });
+    expect(JSON.stringify(opened.payload)).not.toContain(doc.documentId);
+    expect(opened.payload).toMatchObject({ after: { hiddenNow: 1 } });
+    await expect(
+      asAda(() => bulk.exports.itemLink(exported.operationId, doc.documentId)),
+    ).rejects.toMatchObject(notFound);
+    // The manifest names it, so the manifest is refused now (E-6).
+    await expect(
+      asAda(() => bulk.exports.manifestLink(exported.operationId)),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('gives no links for an operation that is not an export (E-2)', async () => {
-    const document = await releasable('links-wrong-kind');
-    const exported = await asAda(() => bulk.exports.export([document.documentId]));
-    // The shape of the defect: a finished operation of another kind whose items are APPLIED.
-    for (const kind of ['METADATA', 'RESTORE', 'UPLOAD', 'APPROVAL'] as const) {
+  it('serves the current revision, labels both, and refuses a link issued before a newer one (no history bypass)', async () => {
+    const doc = await releasable('revisions');
+    const exported = await asAda(() => bulk.exports.export([doc.documentId]));
+    const before = await asAda(() => bulk.exports.itemLink(exported.operationId, doc.documentId));
+    const oldGrant = grantOfLink(before.url, SIGNING_SECRET, NOW);
+
+    const newer = await revisionFor(doc.documentId, 'revisions', 1, 'Rev 2');
+    await owner.document.update({
+      where: { id: doc.documentId },
+      data: { latestRevisionId: newer.revisionId, currentRevisionId: newer.revisionId },
+    });
+
+    const page = await asAda(() =>
+      bulk.exports.items(exported.operationId, { page: 1, pageSize: 50 }),
+    );
+    expect(page.data[0]).toMatchObject({
+      exportedRevisionLabel: 'Original',
+      currentRevisionLabel: 'Rev 2',
+    });
+    await expect(redemption.redeem(oldGrant, 'bulk-suite')).rejects.toMatchObject(notFound);
+    const after = await asAda(() => bulk.exports.itemLink(exported.operationId, doc.documentId));
+    expect(grantOfLink(after.url, SIGNING_SECRET, NOW).fileObjectId).toBe(newer.fileObjectId);
+  });
+
+  it('gives nothing for another person’s export, another kind, an unfinished one, another tenant, or a document it did not release (E-2)', async () => {
+    const doc = await releasable('e2');
+    const other = await releasable('e2-other');
+    const exported = await asAda(() => bulk.exports.export([doc.documentId]));
+    const link = await asAda(() => bulk.exports.itemLink(exported.operationId, doc.documentId));
+    const grant = grantOfLink(link.url, SIGNING_SECRET, NOW);
+
+    await expect(
+      asBen(() => bulk.exports.items(exported.operationId, { page: 1, pageSize: 50 })),
+    ).rejects.toMatchObject(notFound);
+    await expect(
+      asBen(() => bulk.exports.itemLink(exported.operationId, doc.documentId)),
+    ).rejects.toMatchObject(notFound);
+    await expect(
+      asBen(() => bulk.exports.manifestLink(exported.operationId)),
+    ).rejects.toMatchObject(notFound);
+    // Ada's link re-presented as Ben's: the export is not his.
+    await expect(redemption.redeem({ ...grant, userId: BEN }, 'bulk-suite')).rejects.toMatchObject(
+      notFound,
+    );
+    // A document the operation never released, though Ada may download it.
+    await expect(
+      asAda(() => bulk.exports.itemLink(exported.operationId, other.documentId)),
+    ).rejects.toMatchObject(notFound);
+    await expect(
+      redemption.redeem(
+        {
+          ...grant,
+          subject: {
+            kind: 'BULK_DOCUMENT' as const,
+            documentId: other.documentId,
+            operationId: exported.operationId,
+          },
+        },
+        'bulk-suite',
+      ),
+    ).rejects.toMatchObject(notFound);
+    // Another tenant presenting this tenant's identifiers.
+    await expect(
+      redemption.redeem({ ...grant, tenantId: asId<TenantId>(uuidv7()) }, 'bulk-suite'),
+    ).rejects.toMatchObject(notFound);
+
+    for (const kind of ['METADATA', 'RESTORE'] as const) {
       await owner.bulkOperation.update({ where: { id: exported.operationId }, data: { kind } });
-
-      const { error } = await linksOf(exported.operationId);
-
-      expect(error, kind).toMatchObject(notFound);
+      await expect(redemption.redeem(grant, 'bulk-suite'), kind).rejects.toMatchObject(notFound);
+      await expect(
+        asAda(() => bulk.exports.items(exported.operationId, { page: 1, pageSize: 50 })),
+      ).rejects.toMatchObject(notFound);
     }
-    expect(await issuedFor(document.fileObjectId)).toBe(0);
-  });
-
-  it('gives no links for an export that has not completed (E-2)', async () => {
-    const document = await releasable('links-unfinished');
-    const exported = await asAda(() => bulk.exports.export([document.documentId]));
-    // REQUESTED and RUNNING have not decided every item; FAILED is defined as an operation whose
-    // per-item outcomes are incomplete. Only COMPLETED is a release that has been decided.
-    for (const state of ['REQUESTED', 'RUNNING', 'FAILED'] as const) {
+    await owner.bulkOperation.update({
+      where: { id: exported.operationId },
+      data: { kind: 'EXPORT' },
+    });
+    for (const state of ['RUNNING', 'FAILED'] as const) {
       await owner.bulkOperation.update({ where: { id: exported.operationId }, data: { state } });
-
-      const { error } = await linksOf(exported.operationId);
-
-      expect(error, state).toMatchObject(notFound);
+      await expect(redemption.redeem(grant, 'bulk-suite'), state).rejects.toMatchObject(notFound);
     }
-    expect(await issuedFor(document.fileObjectId)).toBe(0);
-
     await owner.bulkOperation.update({
       where: { id: exported.operationId },
       data: { state: 'COMPLETED' },
     });
-    expect((await linksOf(exported.operationId)).links).toHaveLength(1);
+    await expect(redemption.redeem(grant, 'bulk-suite')).resolves.toBeDefined();
   });
 
   it('cannot even be handed unscanned or infected content: the database refuses the revision', async () => {
-    // The scan half of "protected" is enforced below the application: a revision may not reference
-    // a file object that is not CLEAN (a CHECK the migrations install), so no export can contain one.
     for (const scanStatus of [ScanStatus.PENDING, ScanStatus.INFECTED]) {
-      await expect(releasable(`links-${scanStatus.toLowerCase()}`, { scanStatus })).rejects.toThrow(
+      await expect(releasable(`scan-${scanStatus.toLowerCase()}`, { scanStatus })).rejects.toThrow(
         /may not reference file object .* with scan status/,
       );
     }
   });
 
-  it('keeps quarantined and missing content out, and audits only what it released', async () => {
-    const good = await releasable('links-good');
-    const mismatch = await releasable('links-mismatch', { integrityStatus: 'MISMATCH' });
-    const unreadable = await releasable('links-unreadable', { integrityStatus: 'UNREADABLE' });
-    const vanished = await releasable('links-vanished', { stored: false });
-    const all = [good, mismatch, unreadable, vanished];
+  it('says why quarantined and missing content is unavailable, issues nothing for it, and the rest still issue', async () => {
+    const good = await releasable('q-good');
+    const mismatch = await releasable('q-mismatch', { integrityStatus: 'MISMATCH' });
+    const vanished = await releasable('q-vanished', { stored: false });
+    const exported = await asAda(() =>
+      bulk.exports.export([good.documentId, mismatch.documentId, vanished.documentId]),
+    );
+    const page = await asAda(() =>
+      bulk.exports.items(exported.operationId, { page: 1, pageSize: 50 }),
+    );
+    expect(page.data.find((item) => item.documentId === mismatch.documentId)).toMatchObject({
+      available: false,
+      unavailableReason: 'INTEGRITY_FAILED',
+    });
 
-    const exported = await asAda(() => bulk.exports.export(all.map((doc) => doc.documentId)));
-    const { links, error } = await linksOf(exported.operationId);
-
-    // The request answers rather than failing on the first refused file, so no row is written for
-    // a link the caller never received.
-    expect(error).toBeNull();
-    expect(links?.map((link) => link.documentId)).toEqual([good.documentId]);
-    expect(await issuedFor(good.fileObjectId)).toBe(1);
-    for (const refused of [mismatch, unreadable, vanished]) {
+    for (const refused of [mismatch, vanished]) {
+      await expect(
+        asAda(() => bulk.exports.itemLink(exported.operationId, refused.documentId)),
+      ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
       expect(await issuedFor(refused.fileObjectId)).toBe(0);
     }
+    await asAda(() => bulk.exports.itemLink(exported.operationId, good.documentId));
+    expect(await issuedFor(good.fileObjectId)).toBe(1);
+  });
+
+  it('hands the requester a manifest with counts and only released documents, through a verified link', async () => {
+    const allowed = await releasable('manifest-allowed');
+    const restricted = await releasable('manifest-restricted', {
+      confidentialityId: forbiddingLevelId,
+    });
+    const exported = await asAda(() =>
+      bulk.exports.export([allowed.documentId, restricted.documentId]),
+    );
+    const link = await asAda(() => bulk.exports.manifestLink(exported.operationId));
+    const grant = grantOfLink(link.url, SIGNING_SECRET, NOW);
+    expect(grant).toMatchObject({
+      subject: { kind: 'BULK_MANIFEST', operationId: exported.operationId },
+      mimeType: 'application/json',
+      filename: `bulk-export-${exported.operationId}.json`,
+    });
+    await expect(redemption.redeem(grant, 'bulk-suite')).resolves.toMatchObject({
+      audit: { bulkOperationId: exported.operationId },
+    });
+
+    const operation = await owner.bulkOperation.findUniqueOrThrow({
+      where: { id: exported.operationId },
+    });
+    const file = await owner.fileObject.findUniqueOrThrow({
+      where: { id: operation.fileObjectId ?? '' },
+    });
+    const bytes = await asAdmin(() => library.storagePort.read(file.storageKey as never));
+    const manifest = JSON.parse(bytes?.toString('utf8') ?? '{}') as {
+      includedCount: number;
+      refusedCount: number;
+      documents: { documentId: string }[];
+    };
+    expect(manifest.includedCount).toBe(1);
+    expect(manifest.refusedCount).toBe(1);
+    expect(manifest.documents.map((entry) => entry.documentId)).toEqual([allowed.documentId]);
+    expect(JSON.stringify(manifest)).not.toContain(restricted.documentId);
+    expect(JSON.stringify(manifest)).not.toMatch(/https?:\/\//u);
+
+    // A manifest link names only its own export's manifest.
+    await expect(
+      redemption.redeem({ ...grant, fileObjectId: allowed.fileObjectId }, 'bulk-suite'),
+    ).rejects.toMatchObject(notFound);
+    await expect(
+      redemption.redeem({ ...grant, filename: 'other.json' }, 'bulk-suite'),
+    ).rejects.toMatchObject(notFound);
   });
 });

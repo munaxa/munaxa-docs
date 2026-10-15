@@ -1,7 +1,8 @@
 'use server';
 
 import {
-  type BulkExportLinks,
+  type BulkExportItems,
+  type BulkExportLink,
   type BulkOperationResult,
   bulkExportSchema,
   bulkMetadataSchema,
@@ -51,13 +52,35 @@ export async function bulkExport(
 }
 
 /**
- * The signed links for a completed export.
- *
- * A second call rather than part of the export's answer, mirroring the API's own split: the export
- * is the *record* of a release having been decided, and a link is the release happening. Minting
- * durable links when the export ran would let somebody whose access was revoked afterwards still
- * take the content, so they are minted per request against the caller's reach as it stands now.
+ * A completed export's released documents, a page at a time, as the caller may see them now. No
+ * URL in it: a link is a release happening, issued when one item is clicked (below).
  */
-export async function bulkExportLinks(operationId: string): Promise<ActionResult<BulkExportLinks>> {
-  return adminRead<BulkExportLinks>(`/documents/bulk/${operationId}/links`);
+export async function bulkExportItems(
+  operationId: string,
+  page: number,
+): Promise<ActionResult<BulkExportItems>> {
+  return adminRead<BulkExportItems>(
+    `/documents/bulk/${encodeURIComponent(operationId)}/items?page=${String(page)}&pageSize=50`,
+  );
+}
+
+/** A verified download link for one released document, issued as it is clicked. */
+export async function bulkExportItemLink(
+  operationId: string,
+  documentId: string,
+): Promise<ActionResult<BulkExportLink>> {
+  return adminWrite<BulkExportLink>({
+    path: `/documents/bulk/${encodeURIComponent(operationId)}/items/${encodeURIComponent(documentId)}/link`,
+    method: 'POST',
+  });
+}
+
+/** A verified download link for the export's manifest — the requester's own. */
+export async function bulkExportManifestLink(
+  operationId: string,
+): Promise<ActionResult<BulkExportLink>> {
+  return adminWrite<BulkExportLink>({
+    path: `/documents/bulk/${encodeURIComponent(operationId)}/manifest/link`,
+    method: 'POST',
+  });
 }

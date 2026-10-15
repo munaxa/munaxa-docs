@@ -4,7 +4,7 @@ import { ALL_BULK_OPERATION_KINDS, type BulkOperationKindKey } from '@edms/domai
 
 import { isoDateTimeSchema, uuidSchema } from '../common/identifiers';
 import { nameSchema } from '../admin/record';
-import { pageQuerySchema } from '../common/pagination';
+import { pageMetaSchema, pageQuerySchema } from '../common/pagination';
 import { metadataInputSchema } from './document';
 
 /**
@@ -141,18 +141,62 @@ export const bulkOperationSchema = z.object({
   error: z.string().nullable(),
 });
 
-/** One signed link per released document — a bulk export's deliverable, minted per request. */
+/**
+ * A verified download link, issued when one item (or the manifest) is clicked — ADR-0026 §10, the
+ * export design §3.1. An API link (`/api/v1/downloads`), never a store URL, re-authorized when it
+ * is followed.
+ */
 export const bulkExportLinkSchema = z.object({
-  documentId: uuidSchema,
+  documentId: uuidSchema.nullable(),
   filename: z.string(),
   url: z.string(),
   expiresAt: isoDateTimeSchema,
 });
 
-export const bulkExportLinksSchema = z.object({
-  operationId: uuidSchema,
-  links: z.array(bulkExportLinkSchema),
+/**
+ * Why a released document cannot be downloaded *now* — said only as far as the caller may know:
+ * `NOT_PERMITTED` covers a withdrawn permission, an ACL change and a confidentiality level that
+ * forbids download alike, and never says which.
+ */
+export const bulkExportUnavailableSchema = z.enum([
+  'NOT_PERMITTED',
+  'NO_CONTENT',
+  'SCAN_PENDING',
+  'SCAN_FAILED',
+  'INTEGRITY_FAILED',
+  'TOO_LARGE',
+]);
+
+/** One released document of a completed export, as the caller may see it now. No URL. */
+export const bulkExportItemSchema = z.object({
+  documentId: uuidSchema,
+  documentNumber: z.string().nullable(),
+  title: z.string(),
+  filename: z.string().nullable(),
+  sizeBytes: z.number().int().nonnegative().nullable(),
+  /** The revision the export released, when it recorded one (exports made before it did: null). */
+  exportedRevisionLabel: z.string().nullable(),
+  /** The revision a download serves now — the document's current effective one. */
+  currentRevisionLabel: z.string().nullable(),
+  available: z.boolean(),
+  unavailableReason: bulkExportUnavailableSchema.nullable(),
 });
+
+/**
+ * A page of an export's released documents. `tally` is the operation's own (included = applied;
+ * refused = refused + blocked + failed). `hidden` counts the documents on this page the caller can
+ * no longer see — counted, never described.
+ */
+export const bulkExportItemsSchema = z.object({
+  operationId: uuidSchema,
+  tally: bulkTallySchema,
+  hidden: z.number().int().nonnegative(),
+  manifestAvailable: z.boolean(),
+  data: z.array(bulkExportItemSchema),
+  meta: pageMetaSchema,
+});
+
+export const bulkExportItemsQuerySchema = pageQuerySchema;
 
 export const bulkOperationListQuerySchema = pageQuerySchema;
 
@@ -164,5 +208,8 @@ export type BulkApprovalBody = z.infer<typeof bulkApprovalSchema>;
 export type BulkOperationResult = z.infer<typeof bulkOperationResultSchema>;
 export type BulkOperationView = z.infer<typeof bulkOperationSchema>;
 export type BulkItemResultView = z.infer<typeof bulkItemResultSchema>;
-export type BulkExportLinks = z.infer<typeof bulkExportLinksSchema>;
+export type BulkExportLink = z.infer<typeof bulkExportLinkSchema>;
+export type BulkExportItem = z.infer<typeof bulkExportItemSchema>;
+export type BulkExportItems = z.infer<typeof bulkExportItemsSchema>;
+export type BulkExportUnavailable = z.infer<typeof bulkExportUnavailableSchema>;
 export type BulkTallyView = z.infer<typeof bulkTallySchema>;

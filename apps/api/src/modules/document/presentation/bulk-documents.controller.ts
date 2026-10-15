@@ -2,13 +2,15 @@ import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 
 import {
   type BulkExportBody,
-  type BulkExportLinks,
+  type BulkExportItems,
+  type BulkExportLink,
   type BulkMetadataBody,
   type BulkOperationResult,
   type BulkOperationView,
   type BulkRestoreBody,
   type BulkUploadBody,
   type Collection,
+  bulkExportItemsQuerySchema,
   bulkExportSchema,
   bulkMetadataSchema,
   bulkOperationListQuerySchema,
@@ -16,6 +18,7 @@ import {
   bulkUploadSchema,
 } from '@edms/contracts';
 import { Permission, type UserId, asId } from '@edms/domain';
+import { normalizePageRequest } from '@edms/utils';
 
 import type { BulkOperationRecord, BulkResult } from '../../../core/bulk';
 import { BULK_OPERATION_REPOSITORY, type BulkOperationRepository } from '../../../core/bulk';
@@ -115,26 +118,64 @@ export class BulkDocumentsController {
   }
 
   /**
-   * The signed links for a completed export.
-   *
-   * A separate request rather than part of the export's response, and deliberately: a link is a
-   * release happening, while the export is the record of one having been decided. Minting durable
-   * links at export time would let somebody whose access was revoked an hour later still take the
-   * content, so they are minted here, per request, against the caller's reach as it stands now.
+   * A completed export's released documents, a page at a time, as the caller may see them now —
+   * ADR-0026 §10, the export design §3.1. **No URL** is in it: a release is a link issued when one
+   * item is clicked, below. Paged, so every item is reachable however many were exported.
+   * Audited as `BULK_EXPORT_OPENED`, counts only.
    */
-  @Get(':id/links')
+  @Get(':id/items')
   @RequirePermission(Permission.DOCUMENT_DOWNLOAD)
-  async links(@Param('id') id: string): Promise<BulkExportLinks> {
-    await this.requireOwnOperation(id);
-    const links = await this.exports.links(id);
+  async items(
+    @Param('id') id: string,
+    @Query(new ZodValidationPipe(bulkExportItemsQuerySchema))
+    query: ReturnType<typeof bulkExportItemsQuerySchema.parse>,
+  ): Promise<BulkExportItems> {
+    const page = await this.exports.items(identifier(id), normalizePageRequest(query));
     return {
-      operationId: id,
-      links: links.map((link) => ({
-        documentId: link.documentId,
-        filename: link.filename,
-        url: link.url,
-        expiresAt: link.expiresAt.toISOString(),
-      })),
+      operationId: page.operationId,
+      tally: page.tally,
+      hidden: page.hidden,
+      manifestAvailable: page.manifestAvailable,
+      data: page.data.map((item) => ({ ...item })),
+      meta: page.meta,
+    };
+  }
+
+  /**
+   * A verified download link for one released document, issued as it is clicked and re-checked
+   * in full: the export's own, released by it, and every rule of the document's own download.
+   *
+   * A `POST`, as for an evidence bundle: issuing a link writes `FILE_DOWNLOAD_ISSUED`, and a `GET`
+   * a browser might prefetch would write it for a request nobody made.
+   */
+  @Post(':id/items/:documentId/link')
+  @RequirePermission(Permission.DOCUMENT_DOWNLOAD)
+  async itemLink(
+    @Param('id') id: string,
+    @Param('documentId') documentId: string,
+  ): Promise<BulkExportLink> {
+    const link = await this.exports.itemLink(identifier(id), identifier(documentId));
+    return {
+      documentId: link.documentId,
+      filename: link.filename,
+      url: link.url,
+      expiresAt: link.expiresAt.toISOString(),
+    };
+  }
+
+  /**
+   * A verified download link for the export's manifest — its requester's, refused while it names
+   * any document they can no longer see (the export design §4).
+   */
+  @Post(':id/manifest/link')
+  @RequirePermission(Permission.DOCUMENT_DOWNLOAD)
+  async manifestLink(@Param('id') id: string): Promise<BulkExportLink> {
+    const link = await this.exports.manifestLink(identifier(id));
+    return {
+      documentId: null,
+      filename: link.filename,
+      url: link.url,
+      expiresAt: link.expiresAt.toISOString(),
     };
   }
 
@@ -212,4 +253,15 @@ function toView(record: BulkOperationRecord): BulkOperationView {
     sha256: record.sha256,
     error: record.error,
   };
+}
+
+/**
+ * An identifier from the path, or the same 404 as an identifier that names nothing — so a
+ * malformed one is neither a different answer nor a query the database has to reject.
+ */
+function identifier(value: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)) {
+    throw new NotFoundError('The requested bulk export');
+  }
+  return value.toLowerCase();
 }

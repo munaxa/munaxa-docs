@@ -1,14 +1,19 @@
 'use client';
 
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 
 import { Badge, Button, Dialog, Select, useToast } from '@munaxa/ui';
 
-import type { BulkOperationResult } from '@edms/contracts';
+import type { BulkExportItems, BulkOperationResult } from '@edms/contracts';
 
 import { useTranslate } from '../../app/providers';
 import type { Choice } from '../admin-shared';
-import { bulkExportLinks, bulkSetMetadata } from './bulk-actions';
+import {
+  bulkExportItemLink,
+  bulkExportItems,
+  bulkExportManifestLink,
+  bulkSetMetadata,
+} from './bulk-actions';
 
 /**
  * What a bulk operation did, per object.
@@ -32,22 +37,9 @@ export function BulkResultDialog({
   readonly onClose: () => void;
 }): ReactNode {
   const translate = useTranslate();
-  const toast = useToast();
-  const [links, setLinks] = useState<
-    readonly { documentId: string; filename: string; url: string }[]
-  >([]);
+  const [showReleased, setShowReleased] = useState(false);
 
   const notApplied = result.items.filter((item) => item.outcome !== 'APPLIED');
-
-  const fetchLinks = (): void => {
-    void bulkExportLinks(result.operationId).then((answer) => {
-      if (!answer.ok) {
-        toast.error(answer.detail ?? translate(`error.${answer.code}`));
-        return;
-      }
-      setLinks(answer.value.links);
-    });
-  };
 
   return (
     <Dialog open onClose={onClose} title={translate('bulk.result.title')}>
@@ -89,25 +81,23 @@ export function BulkResultDialog({
           </ul>
         )}
 
-        {/* An export's deliverable. Fetched on request rather than with the result, because a
-            signed link *is* a release happening and minting forty of them for a dialogue nobody
-            scrolls would write forty audit rows for links nobody used. */}
+        {/* An export's deliverable: its released documents, listed without a single URL. A link
+            is a release happening, so each is issued when its own button is clicked, re-checked
+            in full, and followed by navigation — never a column of links that expire unseen. */}
         {result.kind === 'EXPORT' && result.tally.applied > 0 && (
           <div className="flex flex-col gap-2">
-            {links.length === 0 ? (
-              <Button type="button" variant="secondary" onClick={fetchLinks}>
+            {showReleased ? (
+              <ReleasedDocuments operationId={result.operationId} />
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setShowReleased(true);
+                }}
+              >
                 {translate('bulk.result.links')}
               </Button>
-            ) : (
-              <ul className="flex flex-col gap-1 text-sm">
-                {links.map((link) => (
-                  <li key={link.documentId}>
-                    <a className="underline" href={link.url}>
-                      {link.filename}
-                    </a>
-                  </li>
-                ))}
-              </ul>
             )}
           </div>
         )}
@@ -119,6 +109,150 @@ export function BulkResultDialog({
         </div>
       </div>
     </Dialog>
+  );
+}
+
+/**
+ * A completed export's released documents, a page at a time — ADR-0026 §10, the export design §3.1.
+ *
+ * What the API answers is what the person may know *now*: each document they can still see, with
+ * the revision the export released beside the one a download serves, and — when it cannot be
+ * downloaded — why, in words that never say more than they may know. Documents they can no longer
+ * see are a count. Each Download issues its own verified link and navigates to it.
+ */
+function ReleasedDocuments({ operationId }: { readonly operationId: string }): ReactNode {
+  const translate = useTranslate();
+  const toast = useToast();
+  const [page, setPage] = useState(1);
+  const [listing, setListing] = useState<BulkExportItems | null>(null);
+
+  // The latest toast and translate, read when an answer arrives — so the fetch depends on what it
+  // asks for (the operation and the page) and nothing a re-render may hand out anew.
+  const say = useRef({ toast, translate });
+  say.current = { toast, translate };
+
+  useEffect(() => {
+    let current = true;
+    void bulkExportItems(operationId, page).then((answer) => {
+      if (!current) {
+        return;
+      }
+      if (!answer.ok) {
+        say.current.toast.error(answer.detail ?? say.current.translate(`error.${answer.code}`));
+        return;
+      }
+      setListing(answer.value);
+    });
+    return () => {
+      current = false;
+    };
+  }, [operationId, page]);
+
+  const follow = (answer: Awaited<ReturnType<typeof bulkExportItemLink>>): void => {
+    if (!answer.ok) {
+      toast.error(answer.detail ?? translate(`error.${answer.code}`));
+      return;
+    }
+    // Navigation, as a document's own download: the answer is an attachment, so the page stays.
+    window.location.assign(answer.value.url);
+  };
+
+  if (listing === null) {
+    return null;
+  }
+  const refused = listing.tally.refused + listing.tally.blocked + listing.tally.failed;
+  return (
+    <section aria-label={translate('bulk.result.exported.title')} className="flex flex-col gap-2">
+      <p className="text-sm">
+        {translate('bulk.result.exported.counts', {
+          included: listing.tally.applied,
+          refused,
+        })}
+      </p>
+      {listing.hidden > 0 && (
+        <p className="text-muted-foreground text-sm">
+          {translate('bulk.result.exported.hidden', { count: listing.hidden })}
+        </p>
+      )}
+      <ul className="flex flex-col gap-2 text-sm">
+        {listing.data.map((item) => (
+          <li key={item.documentId} className="flex flex-wrap items-center justify-between gap-2">
+            <span className="min-w-0">
+              <span className="font-medium">{item.documentNumber ?? item.title}</span>
+              {item.currentRevisionLabel !== null && (
+                <span className="text-muted-foreground ms-2 text-xs">
+                  {item.exportedRevisionLabel !== null &&
+                  item.exportedRevisionLabel !== item.currentRevisionLabel
+                    ? translate('bulk.result.exported.revisions', {
+                        exported: item.exportedRevisionLabel,
+                        current: item.currentRevisionLabel,
+                      })
+                    : translate('bulk.result.exported.current', {
+                        current: item.currentRevisionLabel,
+                      })}
+                </span>
+              )}
+            </span>
+            {item.available ? (
+              <Button
+                type="button"
+                variant="ghost"
+                aria-label={translate('bulk.result.exported.download', {
+                  name: item.filename ?? item.title,
+                })}
+                onClick={() => {
+                  void bulkExportItemLink(operationId, item.documentId).then(follow);
+                }}
+              >
+                <span dir="auto">{item.filename ?? item.title}</span>
+              </Button>
+            ) : (
+              <Badge tone="muted">
+                {translate(
+                  `bulk.result.exported.unavailable.${item.unavailableReason ?? 'NOT_PERMITTED'}`,
+                )}
+              </Badge>
+            )}
+          </li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={page === 1}
+            onClick={() => {
+              setPage(page - 1);
+            }}
+          >
+            {translate('bulk.result.exported.previous')}
+          </Button>
+          <span className="text-xs">{translate('bulk.result.exported.page', { page })}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={!listing.meta.hasMore}
+            onClick={() => {
+              setPage(page + 1);
+            }}
+          >
+            {translate('bulk.result.exported.next')}
+          </Button>
+        </span>
+        {listing.manifestAvailable && (
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              void bulkExportManifestLink(operationId).then(follow);
+            }}
+          >
+            {translate('bulk.result.exported.manifest')}
+          </Button>
+        )}
+      </div>
+    </section>
   );
 }
 

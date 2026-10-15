@@ -401,7 +401,8 @@ export class DefaultBulkExecutor implements BulkExecutor {
           // told the caller the object exists *and* that a rule hides it — RC validation, D-16.
           return unreachable(targetId);
         }
-        await plan.apply(targetId);
+        const answer = await plan.apply(targetId);
+        const detail = answer === undefined ? null : answer.detail;
         // **The item row commits with the mutation** — Phase 6.2, and the whole of why a
         // redelivered job cannot apply anything twice.
         //
@@ -420,14 +421,14 @@ export class DefaultBulkExecutor implements BulkExecutor {
           targetId,
           outcome: BulkItemOutcome.APPLIED,
           errorCode: null,
-          detail: null,
+          detail,
         });
         applied = true;
         return {
           targetId,
           outcome: BulkItemOutcome.APPLIED as BulkItemOutcomeKey,
           errorCode: null,
-          detail: null,
+          detail,
         };
       });
       if (applied) {

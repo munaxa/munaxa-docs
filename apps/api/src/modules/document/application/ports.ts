@@ -533,7 +533,19 @@ export interface DocumentContentGate {
   downloadLink(
     fileObjectId: string,
     filename: string,
-    options: { inline?: boolean; documentId: string; revisionId: string | null },
+    options: {
+      inline?: boolean;
+      documentId: string;
+      revisionId: string | null;
+      /** A bulk export that released the document: the link then names it, for redemption. */
+      operationId?: string;
+    },
+  ): Promise<{ url: string; expiresAt: Date }>;
+  /** A verified link for a bulk export's manifest — the export design §4. */
+  manifestLink(
+    fileObjectId: string,
+    filename: string,
+    operationId: string,
   ): Promise<{ url: string; expiresAt: Date }>;
 }
 

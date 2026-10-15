@@ -16,7 +16,11 @@ import { DefaultDocumentNumberService } from './application/document-number.serv
 import { DocumentPreviewService } from './application/document-preview.service';
 import { DefaultDocumentService } from './application/document.service';
 import { RevisionControlService } from './application/revision-control.service';
-import { DocumentDownloadRedeemer } from './application/document-download.redeemer';
+import {
+  BulkDocumentDownloadRedeemer,
+  BulkManifestDownloadRedeemer,
+  DocumentDownloadRedeemer,
+} from './application/document-download.redeemer';
 import { DownloadRedemptionService } from './application/download-redemption.service';
 import { DownloadLinkController } from './presentation/download-link.controller';
 import { DOCUMENT_CONFIGURATION } from './application/configuration.port';
@@ -154,6 +158,8 @@ import { DocumentReportSource } from './infrastructure/report-source.adapter';
     RevisionControlService,
     DownloadRedemptionService,
     DocumentDownloadRedeemer,
+    BulkDocumentDownloadRedeemer,
+    BulkManifestDownloadRedeemer,
     // Phase 10: the purge, implemented by the module that owns the aggregate being destroyed and
     // consumed by Retention's sweep — the same inversion as `REVISION_WRITER`, pointing the other
     // way. The folder-contents participant is the document half of a folder's delete cascade,

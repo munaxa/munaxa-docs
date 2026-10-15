@@ -308,30 +308,37 @@ export class PrismaBulkOperationRepository implements BulkOperationRepository {
     return toPage(rows.map(toRecord), total, page);
   }
 
-  async itemsOf(operationId: string, page: PageRequest): Promise<Page<BulkItemResult>> {
+  async itemsOf(
+    operationId: string,
+    page: PageRequest,
+    filter: { readonly outcome?: BulkItemOutcomeKey } = {},
+  ): Promise<Page<BulkItemResult>> {
     const tx = requireTransaction();
-    const where = { tenantId: this.tenantId(), operationId };
+    const where = {
+      tenantId: this.tenantId(),
+      operationId,
+      ...(filter.outcome === undefined ? {} : { outcome: filter.outcome }),
+    };
     const [rows, total] = await Promise.all([
       tx.bulkOperationItem.findMany({
         where,
         // By outcome first, so the refusals and blocks — the rows somebody opened this screen to
-        // read — are the first page rather than scattered through the applied ones.
+        // read — are the first page rather than scattered through the applied ones. The target
+        // breaks ties, so a page is stable however often it is asked for.
         orderBy: [{ outcome: 'asc' }, { targetId: 'asc' }],
         skip: skipFor(page),
         take: page.pageSize,
       }),
       tx.bulkOperationItem.count({ where }),
     ]);
-    return toPage(
-      rows.map((row) => ({
-        targetId: row.targetId,
-        outcome: row.outcome,
-        errorCode: row.errorCode as ErrorCodeKey | null,
-        detail: row.detail,
-      })),
-      total,
-      page,
-    );
+    return toPage(rows.map(toItem), total, page);
+  }
+
+  async itemOf(operationId: string, targetId: string): Promise<BulkItemResult | null> {
+    const row = await requireTransaction().bulkOperationItem.findFirst({
+      where: { tenantId: this.tenantId(), operationId, targetId },
+    });
+    return row === null ? null : toItem(row);
   }
 
   private tenantId(): string {
@@ -380,5 +387,19 @@ function toRecord(row: BulkRow): BulkOperationRecord {
     startedAt: row.startedAt,
     completedAt: row.completedAt,
     error: row.error,
+  };
+}
+
+function toItem(row: {
+  targetId: string;
+  outcome: string;
+  errorCode: string | null;
+  detail: string | null;
+}): BulkItemResult {
+  return {
+    targetId: row.targetId,
+    outcome: row.outcome as BulkItemOutcomeKey,
+    errorCode: row.errorCode as ErrorCodeKey | null,
+    detail: row.detail,
   };
 }

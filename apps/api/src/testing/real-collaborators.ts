@@ -2329,7 +2329,7 @@ export function realBulk(options: {
    */
   readonly beforeAuthorityRead?: (userId: string) => Promise<void>;
 }): BulkStack {
-  const { stamps, audit, outbox } = realWriteStack(options.clock, options.unitOfWork);
+  const { stamps, audit, outbox, writer } = realWriteStack(options.clock, options.unitOfWork);
   const acl = realAclResolver(options);
   const operations = options.operations ?? new PrismaBulkOperationRepository(stamps);
   // Phase 6.2: the registry the modules fill. Real rather than a double — what the suites assert
@@ -2372,6 +2372,8 @@ export function realBulk(options: {
         get: () => Promise.reject(new Error('the bulk export does not read users')),
       } as unknown as UserAdminService,
     ),
+    options.config,
+    writer,
   );
   // The container calls these at `onModuleInit`; a suite that skipped them would have an executor
   // that cannot build any plan at all.

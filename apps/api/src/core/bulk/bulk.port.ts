@@ -67,8 +67,13 @@ export interface BulkPlan {
    * not reach this" is the same answer whether the row is absent or invisible.
    */
   resolveScope(targetId: string): Promise<ScopeRef | null>;
-  /** The module's own single-object use case. Throws a `DomainError` to refuse this one object. */
-  apply(targetId: string): Promise<void>;
+  /**
+   * The module's own single-object use case. Throws a `DomainError` to refuse this one object.
+   *
+   * May answer a `detail` to keep on the object's `APPLIED` row — a bulk export records which
+   * revision it released, so a later reader can tell "exported Rev 2" from "current Rev 3".
+   */
+  apply(targetId: string): Promise<void | { readonly detail: string }>;
   /**
    * What the operation does once, after its objects — Phase 6.2, and only `EXPORT` has one.
    *
@@ -282,5 +287,12 @@ export interface BulkOperationRepository {
   }): Promise<{ readonly displacedFileObjectId: string | null }>;
   findById(id: string): Promise<BulkOperationRecord | null>;
   listFor(requestedById: UserId, page: PageRequest): Promise<Page<BulkOperationRecord>>;
-  itemsOf(operationId: string, page: PageRequest): Promise<Page<BulkItemResult>>;
+  /** A page of the operation's items; only those with `outcome` when it is given. */
+  itemsOf(
+    operationId: string,
+    page: PageRequest,
+    filter?: { readonly outcome?: BulkItemOutcomeKey },
+  ): Promise<Page<BulkItemResult>>;
+  /** One object's outcome in the operation, or null when the operation never named it. */
+  itemOf(operationId: string, targetId: string): Promise<BulkItemResult | null>;
 }

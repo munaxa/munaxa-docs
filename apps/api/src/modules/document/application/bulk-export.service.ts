@@ -2,31 +2,45 @@ import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 
 import {
   type AnyId,
+  AuditSubjectType,
   BulkItemOutcome,
   BulkOperationKind,
   BulkOperationState,
   type DocumentId,
   DomainError,
   ErrorCode,
+  IntegrityStatus,
   Permission,
+  type PermissionKey,
+  ScanStatus,
   ScopeType,
   type ScopeRef,
   asId,
+  isReachableFile,
   normaliseTargets,
 } from '@edms/domain';
+import type { Page, PageRequest } from '@edms/utils';
 
 import {
   BULK_EXECUTOR,
   BULK_OPERATION_REPOSITORY,
   BULK_PLAN_REGISTRY,
+  BulkAudit,
   type BulkExecutor,
+  type BulkOperationRecord,
   type BulkOperationRepository,
   type BulkPlan,
   type BulkPlanRegistry,
   type BulkResult,
 } from '../../../core/bulk';
 import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
-import { NotFoundError, ValidationError } from '../../../core/errors/application-errors';
+import { APP_CONFIG, type AppConfig } from '../../../core/config';
+import {
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from '../../../core/errors/application-errors';
+import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import {
@@ -92,6 +106,8 @@ export class BulkExportService implements OnModuleInit {
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
     @Inject(DOCUMENT_CONFIGURATION) private readonly configuration: DocumentConfiguration,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly writer: AdministeredWriter,
   ) {}
 
   /**
@@ -156,7 +172,11 @@ export class BulkExportService implements OnModuleInit {
         }
         // Read, and refused above if there is nothing to release. The row itself is re-read in
         // `finalise` from the applied targets rather than carried here, because a closure does not
-        // survive the queue.
+        // survive the queue. What *is* kept is which revision this release named, on the item's
+        // own row, so the export's list can say "exported Rev 2, current Rev 3" later.
+        return {
+          detail: JSON.stringify({ revisionId: revision.id, revisionLabel: revision.label }),
+        };
       },
       finalise: async (operationId, appliedTargetIds) => {
         const released: DocumentRow[] = [];
@@ -167,7 +187,11 @@ export class BulkExportService implements OnModuleInit {
           }
         }
         if (released.length > 0) {
-          await this.attachManifest(asId<AnyId>(operationId), released);
+          const tally = await this.unitOfWork.run(() => this.operations.tallyOf(operationId));
+          await this.attachManifest(asId<AnyId>(operationId), released, {
+            requested: tally.requested,
+            applied: tally.applied,
+          });
         }
       },
     };
@@ -188,10 +212,15 @@ export class BulkExportService implements OnModuleInit {
   private async attachManifest(
     operationId: AnyId,
     released: readonly DocumentRow[],
+    counts: { readonly requested: number; readonly applied: number },
   ): Promise<void> {
     const body = {
       operationId: operationId as string,
       documentCount: released.length,
+      // Counted, never named: a document that was not released is not in this file at all, and
+      // "how many were left out" is the most a recipient may learn about it.
+      includedCount: released.length,
+      refusedCount: Math.max(0, counts.requested - counts.applied),
       documents: released.map((row) => {
         const revision = row.currentRevision ?? row.latestRevision;
         return {
@@ -243,69 +272,165 @@ export class BulkExportService implements OnModuleInit {
   }
 
   /**
-   * The signed links for a completed export, re-checked against the caller's reach *now*.
+   * A page of a completed export's released documents, as the caller may see them **now** — the
+   * export design §3.1. No URL: a link is issued only when one item is clicked (`itemLink`).
    *
-   * Not at export time, and this is the decision worth stating: an export is a record of what was
-   * released, and a link is a release happening. Issuing durable links at export time would make a
-   * caller whose access was revoked an hour later still able to take the content, which is exactly
-   * what an EDMS must not allow. So the record is permanent and the links are minted per request,
-   * through the same per-object reach the export itself used.
+   * Paged (E-3: there is no silent 1,000-item ceiling), and each item re-asked: a document the
+   * caller can no longer *view* is counted in `hidden` and never described; one they can view but
+   * no longer download says why, as far as they may know (`NOT_PERMITTED` for a withdrawn
+   * permission, an ACL change and a confidentiality level alike). Membership of the export grants
+   * nothing.
+   *
+   * Audited once per request as `BULK_EXPORT_OPENED`, with counts only — never the identity of an
+   * item the caller can no longer see.
    */
-  async links(
-    operationId: string,
-  ): Promise<readonly { documentId: string; filename: string; url: string; expiresAt: Date }[]> {
-    await this.requireCompletedOwnExport(operationId);
-    const items = await this.unitOfWork.run(() =>
-      this.operations.itemsOf(operationId, { page: 1, pageSize: 1_000 }),
+  async items(operationId: string, page: PageRequest): Promise<BulkExportItemsPage> {
+    const operation = await this.requireCompletedOwnExport(operationId);
+    const pageRequest = { page: page.page, pageSize: Math.min(page.pageSize, 100) };
+    const applied = await this.unitOfWork.run(() =>
+      this.operations.itemsOf(operationId, pageRequest, { outcome: BulkItemOutcome.APPLIED }),
     );
-    const links: { documentId: string; filename: string; url: string; expiresAt: Date }[] = [];
-    for (const item of items.data) {
-      if (item.outcome !== BulkItemOutcome.APPLIED) {
-        continue;
-      }
+    const data: BulkExportItemView[] = [];
+    let hidden = 0;
+    for (const item of applied.data) {
       const row = await this.rowOf(item.targetId);
-      const revision = row?.currentRevision ?? row?.latestRevision ?? null;
-      if (row === null || revision === null) {
+      if (row === null || !(await this.reaches(row.id, Permission.DOCUMENT_VIEW))) {
+        hidden += 1;
         continue;
       }
-      // The reach question, asked again, now. `findById` is not ACL-filtered — Phase 14 put the
-      // predicate in `whereFor`, which lists rather than fetches — so a link minted without this
-      // would be a link minted for whoever holds the operation identifier.
-      const decision = await this.unitOfWork.run(() =>
-        this.acl.resolve(
-          this.subject(),
-          { type: ScopeType.DOCUMENT, id: asId<AnyId>(row.id) },
-          Permission.DOCUMENT_DOWNLOAD,
-        ),
-      );
-      if (!decision.allowed) {
-        continue;
-      }
-      // And the level, asked now too: a document reclassified since the export was taken is not
-      // released by a list made before. Membership of the operation grants nothing (E-1).
-      if (!(await this.levelAllowsDownload(row.confidentialityId))) {
-        continue;
-      }
-      let signed: { url: string; expiresAt: Date };
-      try {
-        signed = await this.content.downloadUrl(revision.file.fileObjectId, revision.file.filename);
-      } catch (error) {
-        // Unscanned, infected or quarantined content is refused by the gate before anything is
-        // issued or audited. Leaving that one document out — as for reach — rather than failing
-        // the request keeps every `FILE_DOWNLOAD_ISSUED` row matched by a link the caller received.
-        if (error instanceof DomainError && error.code === ErrorCode.CONTENT_NOT_SCANNED) {
-          continue;
-        }
-        throw error;
-      }
-      links.push({
+      const exported = exportedRevisionOf(item.detail);
+      const current = row.currentRevision ?? row.latestRevision;
+      data.push({
         documentId: row.id,
-        filename: revision.file.filename,
-        url: signed.url,
-        expiresAt: signed.expiresAt,
+        documentNumber: row.documentNumber,
+        title: row.title,
+        filename: current?.file.filename ?? null,
+        sizeBytes: current?.file.sizeBytes ?? null,
+        exportedRevisionLabel: exported?.revisionLabel ?? null,
+        currentRevisionLabel: current?.label ?? null,
+        ...(await this.availability(row)),
       });
     }
-    return links;
+
+    await this.writer.read(() =>
+      this.writer.record({
+        action: BulkAudit.BULK_EXPORT_OPENED,
+        subjectType: AuditSubjectType.BULK_OPERATION,
+        subjectId: asId<AnyId>(operationId),
+        operation: AdministrativeOperation.UPDATED,
+        after: {
+          page: pageRequest.page,
+          applied: applied.meta.total,
+          availableNow: data.filter((entry) => entry.available).length,
+          unavailableNow: data.filter((entry) => !entry.available).length,
+          hiddenNow: hidden,
+        },
+      }),
+    );
+
+    return {
+      operationId,
+      tally: operation.tally,
+      hidden,
+      manifestAvailable: operation.fileObjectId !== null,
+      data,
+      meta: applied.meta,
+    };
+  }
+
+  /**
+   * A verified download link for one released document, issued when it is clicked — never before.
+   *
+   * Every question is asked again, as for a document's own download: the export is the caller's
+   * own, `EXPORT` and `COMPLETED`; the document is one it released (membership is required, and
+   * grants nothing); the caller reaches it for `document:download`; its confidentiality level
+   * allows download; and Storage's own checks (scan, integrity, size, the store's HEAD). The link
+   * serves the document's **current** effective revision — the single download's rule — and names
+   * the export, so its redemption re-asks the export's questions too. `FILE_DOWNLOAD_ISSUED` is
+   * written only with the link it describes.
+   */
+  async itemLink(
+    operationId: string,
+    documentId: string,
+  ): Promise<{
+    readonly documentId: string;
+    readonly filename: string;
+    readonly url: string;
+    readonly expiresAt: Date;
+  }> {
+    await this.requireCompletedOwnExport(operationId);
+    const target = await this.releasedTarget(operationId, documentId, 'issue');
+    const link = await this.content.downloadLink(target.fileObjectId, target.filename, {
+      documentId,
+      revisionId: null,
+      operationId,
+    });
+    return { documentId, filename: target.filename, url: link.url, expiresAt: link.expiresAt };
+  }
+
+  /**
+   * A verified download link for the export's manifest — the requester's, and only while it names
+   * nothing they can no longer see (the export design §4).
+   *
+   * The manifest names documents. A document reclassified or moved out of the requester's reach
+   * after the export would still be named in a file handed over later, and a stored file cannot be
+   * re-checked the way a link can. So it is refused (403) as soon as **any** document the export
+   * released is no longer viewable by the requester; the per-item list still shows what they may
+   * see.
+   */
+  async manifestLink(
+    operationId: string,
+  ): Promise<{ readonly filename: string; readonly url: string; readonly expiresAt: Date }> {
+    const operation = await this.requireCompletedOwnExport(operationId);
+    if (operation.fileObjectId === null) {
+      throw new NotFoundError('The requested bulk export');
+    }
+    await this.refuseWhenManifestNamesHidden(operationId);
+    const filename = manifestNameFor(operationId);
+    const link = await this.content.manifestLink(operation.fileObjectId, filename, operationId);
+    return { filename, url: link.url, expiresAt: link.expiresAt };
+  }
+
+  /**
+   * Redemption of a released document's link: the export's half (the document's own questions —
+   * permission, ACL — are asked by the redeemer before this). Own, `EXPORT`, `COMPLETED`, released
+   * by it, level allows, and the link's file is still the document's current file.
+   */
+  async redeemItemDownload(
+    documentId: string,
+    operationId: string,
+    fileObjectId: string,
+  ): Promise<void> {
+    await this.requireCompletedOwnExport(operationId);
+    const target = await this.releasedTarget(operationId, documentId, 'redeem');
+    if (target.fileObjectId !== fileObjectId) {
+      throw new NotFoundError('the document’s content changed since it was issued');
+    }
+  }
+
+  /** Redemption of a manifest link: the issuing checks again, and the file is still the manifest. */
+  async redeemManifestDownload(
+    operationId: string,
+    fileObjectId: string,
+    filename: string,
+    mimeType: string,
+  ): Promise<void> {
+    const operation = await this.requireCompletedOwnExport(operationId);
+    if (
+      operation.fileObjectId !== fileObjectId ||
+      filename !== manifestNameFor(operationId) ||
+      mimeType !== MANIFEST_MEDIA_TYPE
+    ) {
+      throw new NotFoundError('the link does not describe this export’s manifest');
+    }
+    try {
+      await this.refuseWhenManifestNamesHidden(operationId);
+    } catch (error) {
+      if (error instanceof DomainError && error.code === ErrorCode.FORBIDDEN) {
+        throw new NotFoundError('the manifest names documents the person can no longer see');
+      }
+      throw error;
+    }
   }
 
   /**
@@ -321,7 +446,7 @@ export class BulkExportService implements OnModuleInit {
    * All of them answer the same `404`, as the controller's own check does: "not yours", "not an
    * export" and "not finished" must not be a probe for which identifiers exist.
    */
-  private async requireCompletedOwnExport(operationId: string): Promise<void> {
+  private async requireCompletedOwnExport(operationId: string): Promise<BulkOperationRecord> {
     const { userId } = requireContext();
     const operation = await this.unitOfWork.run(() => this.operations.findById(operationId));
     if (
@@ -333,6 +458,114 @@ export class BulkExportService implements OnModuleInit {
     ) {
       throw new NotFoundError('The requested bulk export');
     }
+    return operation;
+  }
+
+  /**
+   * The file a download of a released document serves now: released by this export, reachable by
+   * the caller for `document:download`, with content, at a level that allows download. The same
+   * target the single download serves (`DefaultDocumentService.downloadTarget`).
+   */
+  private async releasedTarget(
+    operationId: string,
+    documentId: string,
+    moment: 'issue' | 'redeem',
+  ): Promise<{ readonly fileObjectId: string; readonly filename: string }> {
+    const item = await this.unitOfWork.run(() => this.operations.itemOf(operationId, documentId));
+    if (item === null || item.outcome !== BulkItemOutcome.APPLIED) {
+      throw new NotFoundError('The requested document');
+    }
+    const row = await this.rowOf(documentId);
+    if (row === null || !(await this.reaches(row.id, Permission.DOCUMENT_DOWNLOAD))) {
+      throw new NotFoundError('The requested document');
+    }
+    const revision = row.currentRevision ?? row.latestRevision;
+    if (revision === null) {
+      throw new NotFoundError('The requested file');
+    }
+    if (moment === 'redeem') {
+      if (!(await this.levelAllowsDownload(row.confidentialityId))) {
+        throw new NotFoundError('the document’s level no longer allows download');
+      }
+    } else {
+      await this.unitOfWork.run(() =>
+        refuseWhereLevelForbidsDownload(this.configuration, row.confidentialityId),
+      );
+    }
+    return { fileObjectId: revision.file.fileObjectId, filename: revision.file.filename };
+  }
+
+  /** Whether a released document may be downloaded now, and if not, why — as far as may be said. */
+  private async availability(row: DocumentRow): Promise<{
+    readonly available: boolean;
+    readonly unavailableReason: BulkExportUnavailableKey | null;
+  }> {
+    const no = (reason: BulkExportUnavailableKey) =>
+      ({ available: false, unavailableReason: reason }) as const;
+    // The tenant-wide `document:download` is the route's own guard; what varies per item is the
+    // document's reach and its level.
+    if (
+      !(await this.reaches(row.id, Permission.DOCUMENT_DOWNLOAD)) ||
+      !(await this.levelAllowsDownload(row.confidentialityId))
+    ) {
+      return no('NOT_PERMITTED');
+    }
+    const revision = row.currentRevision ?? row.latestRevision;
+    if (revision === null) {
+      return no('NO_CONTENT');
+    }
+    const file = revision.file;
+    if (
+      file.integrityStatus === IntegrityStatus.MISMATCH ||
+      file.integrityStatus === IntegrityStatus.UNREADABLE
+    ) {
+      return no('INTEGRITY_FAILED');
+    }
+    if (file.scanStatus === ScanStatus.PENDING) {
+      return no('SCAN_PENDING');
+    }
+    if (!isReachableFile(file)) {
+      return no('SCAN_FAILED');
+    }
+    if (file.sizeBytes > this.config.download.maxFileBytes) {
+      return no('TOO_LARGE');
+    }
+    return { available: true, unavailableReason: null };
+  }
+
+  /** 403 when any document the export released is no longer viewable by the caller. Paged. */
+  private async refuseWhenManifestNamesHidden(operationId: string): Promise<void> {
+    for (let page = 1; ; page += 1) {
+      const batch = await this.unitOfWork.run(() =>
+        this.operations.itemsOf(
+          operationId,
+          { page, pageSize: 200 },
+          { outcome: BulkItemOutcome.APPLIED },
+        ),
+      );
+      for (const item of batch.data) {
+        const row = await this.rowOf(item.targetId);
+        if (row === null || !(await this.reaches(row.id, Permission.DOCUMENT_VIEW))) {
+          throw new ForbiddenError(
+            'download this manifest: it names documents you can no longer see',
+          );
+        }
+      }
+      if (!batch.meta.hasMore) {
+        return;
+      }
+    }
+  }
+
+  private async reaches(documentId: string, permission: PermissionKey): Promise<boolean> {
+    const decision = await this.unitOfWork.run(() =>
+      this.acl.resolve(
+        this.subject(),
+        { type: ScopeType.DOCUMENT, id: asId<AnyId>(documentId) },
+        permission,
+      ),
+    );
+    return decision.allowed;
   }
 
   private async levelAllowsDownload(confidentialityId: string): Promise<boolean> {
@@ -362,4 +595,57 @@ export class BulkExportService implements OnModuleInit {
   private rowOf(id: string): Promise<DocumentRow | null> {
     return this.unitOfWork.run(() => this.documents.findById(asId<DocumentId>(id), false));
   }
+}
+
+/** The manifest's media type and download name: fixed, so a link cannot name anything else. */
+export const MANIFEST_MEDIA_TYPE = 'application/json';
+
+export function manifestNameFor(operationId: string): string {
+  return `bulk-export-${operationId}.json`;
+}
+
+/** The revision an export's `APPLIED` row says it released; null for rows written before it did. */
+function exportedRevisionOf(
+  detail: string | null,
+): { readonly revisionId: string; readonly revisionLabel: string } | null {
+  if (detail === null) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(detail) as { revisionId?: unknown; revisionLabel?: unknown };
+    return typeof parsed.revisionId === 'string' && typeof parsed.revisionLabel === 'string'
+      ? { revisionId: parsed.revisionId, revisionLabel: parsed.revisionLabel }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export type BulkExportUnavailableKey =
+  | 'NOT_PERMITTED'
+  | 'NO_CONTENT'
+  | 'SCAN_PENDING'
+  | 'SCAN_FAILED'
+  | 'INTEGRITY_FAILED'
+  | 'TOO_LARGE';
+
+export interface BulkExportItemView {
+  readonly documentId: string;
+  readonly documentNumber: string | null;
+  readonly title: string;
+  readonly filename: string | null;
+  readonly sizeBytes: number | null;
+  readonly exportedRevisionLabel: string | null;
+  readonly currentRevisionLabel: string | null;
+  readonly available: boolean;
+  readonly unavailableReason: BulkExportUnavailableKey | null;
+}
+
+export interface BulkExportItemsPage {
+  readonly operationId: string;
+  readonly tally: BulkOperationRecord['tally'];
+  readonly hidden: number;
+  readonly manifestAvailable: boolean;
+  readonly data: readonly BulkExportItemView[];
+  readonly meta: Page<BulkExportItemView>['meta'];
 }

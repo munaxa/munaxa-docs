@@ -14,6 +14,7 @@ import {
   type DownloadRedeemerRegistry,
   type RedeemedDownload,
 } from '../../storage/application/ports';
+import { BulkExportService } from './bulk-export.service';
 import { DefaultDocumentService } from './document.service';
 import { RevisionControlService } from './revision-control.service';
 
@@ -100,5 +101,75 @@ export async function requireDocumentReach(
     if (!decision.allowed) {
       throw new NotFoundError('the document’s access control no longer allows it');
     }
+  }
+}
+
+/**
+ * A document released by a bulk export — every rule of the document's own link, and the export's
+ * on top: the export is still the person's own `EXPORT`, `COMPLETED`, and released this document.
+ * Membership is required and grants nothing; the document's own questions are what allow it.
+ */
+@Injectable()
+export class BulkDocumentDownloadRedeemer
+  implements DownloadRedeemer<typeof DownloadLinkKind.BULK_DOCUMENT>, OnModuleInit
+{
+  readonly kind = DownloadLinkKind.BULK_DOCUMENT;
+
+  constructor(
+    @Inject(DOWNLOAD_REDEEMERS) private readonly registry: DownloadRedeemerRegistry,
+    @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
+    @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
+    private readonly exports: BulkExportService,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.register(this);
+  }
+
+  async redeem(
+    grant: DownloadLinkGrantOf<typeof DownloadLinkKind.BULK_DOCUMENT>,
+  ): Promise<RedeemedDownload> {
+    const { documentId, operationId } = grant.subject;
+    await requireDocumentReach(this.acl, this.unitOfWork, documentId, [
+      Permission.DOCUMENT_DOWNLOAD,
+    ]);
+    await this.exports.redeemItemDownload(documentId, operationId, grant.fileObjectId);
+    return { audit: { bulkOperationId: operationId } };
+  }
+}
+
+/**
+ * A bulk export's manifest: the requester's own completed export, the file still its manifest, and
+ * every document it released still viewable by them — otherwise refused, never served.
+ */
+@Injectable()
+export class BulkManifestDownloadRedeemer
+  implements DownloadRedeemer<typeof DownloadLinkKind.BULK_MANIFEST>, OnModuleInit
+{
+  readonly kind = DownloadLinkKind.BULK_MANIFEST;
+
+  constructor(
+    @Inject(DOWNLOAD_REDEEMERS) private readonly registry: DownloadRedeemerRegistry,
+    private readonly exports: BulkExportService,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.register(this);
+  }
+
+  async redeem(
+    grant: DownloadLinkGrantOf<typeof DownloadLinkKind.BULK_MANIFEST>,
+  ): Promise<RedeemedDownload> {
+    if (!requireContext().permissions.includes(Permission.DOCUMENT_DOWNLOAD)) {
+      throw new NotFoundError('the person no longer holds document:download');
+    }
+    const { operationId } = grant.subject;
+    await this.exports.redeemManifestDownload(
+      operationId,
+      grant.fileObjectId,
+      grant.filename,
+      grant.mimeType,
+    );
+    return { audit: { bulkOperationId: operationId } };
   }
 }

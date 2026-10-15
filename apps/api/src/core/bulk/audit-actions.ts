@@ -26,6 +26,13 @@ export const BulkAudit = {
    * and the tally — never the identifier list, which is `bulk_operation_item` (13 §3).
    */
   BULK_OPERATION: 'BULK_OPERATION',
+  /**
+   * A completed export's list of released documents was opened — the export design §5. Counts
+   * only (applied, available now, unavailable now, hidden now, the page): never the identity of a
+   * document the caller can no longer see. Nothing is released by it; each release is its own
+   * `FILE_DOWNLOAD_ISSUED`, written with the link it describes.
+   */
+  BULK_EXPORT_OPENED: 'BULK_EXPORT_OPENED',
 } as const;
 
 export type BulkAuditAction = (typeof BulkAudit)[keyof typeof BulkAudit];

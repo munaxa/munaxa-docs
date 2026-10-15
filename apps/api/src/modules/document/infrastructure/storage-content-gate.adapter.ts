@@ -79,15 +79,43 @@ export class StorageContentGateAdapter implements DocumentContentGate {
   downloadLink(
     fileObjectId: string,
     filename: string,
-    options: { inline?: boolean; documentId: string; revisionId: string | null },
+    options: {
+      inline?: boolean;
+      documentId: string;
+      revisionId: string | null;
+      operationId?: string;
+    },
   ): Promise<{ url: string; expiresAt: Date }> {
     return this.storage.createVerifiedDownloadLink(asId<FileObjectId>(fileObjectId), filename, {
       ...(options.inline !== undefined && { inline: options.inline }),
-      subject: {
-        kind: DownloadLinkKind.DOCUMENT,
-        documentId: options.documentId,
-        revisionId: options.revisionId,
-      },
+      ...(options.operationId === undefined
+        ? {
+            subject: {
+              kind: DownloadLinkKind.DOCUMENT,
+              documentId: options.documentId,
+              revisionId: options.revisionId,
+            },
+          }
+        : {
+            subject: {
+              kind: DownloadLinkKind.BULK_DOCUMENT,
+              documentId: options.documentId,
+              operationId: options.operationId,
+            },
+            audit: { bulkOperationId: options.operationId },
+          }),
+    });
+  }
+
+  manifestLink(
+    fileObjectId: string,
+    filename: string,
+    operationId: string,
+  ): Promise<{ url: string; expiresAt: Date }> {
+    return this.storage.createVerifiedDownloadLink(asId<FileObjectId>(fileObjectId), filename, {
+      subject: { kind: DownloadLinkKind.BULK_MANIFEST, operationId },
+      mimeType: 'application/json',
+      audit: { bulkOperationId: operationId },
     });
   }
 }
