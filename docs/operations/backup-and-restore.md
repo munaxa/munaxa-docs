@@ -203,7 +203,8 @@ works rather than that it will finish in two hours.
 ## 5. The Hetzner template's backups (R-1)
 
 **Status:** implemented in `infra/hetzner/` and drilled **locally** with disposable data (§5.4).
-Not run on Hetzner. The off-server copy is not built.
+Not run on Hetzner. The off-server copy (§5.5) is built and tested **against a local MinIO
+stand-in only**; no provider account, bucket or key exists.
 
 ### 5.1 What is taken, and where it goes
 
@@ -212,7 +213,7 @@ Not run on Hetzner. The off-server copy is not built.
 | Cluster WAL | `archive_command` → `munaxa-archive-wal`, every segment, forced at least every `archive_timeout` (300 s) when there are writes | `age`, public-key, at write | Back to the oldest kept base backup | ≤ 5 min on the server |
 | Cluster base backup | `pg_basebackup -Ft -X fetch --manifest-checksums=SHA256`, nightly (`db-backup`) | `age` | 35 days, newest 2 always kept | — |
 | Each tenant database | `pg_dump --format=custom` as `edms_backup`, nightly, plus roles without passwords | `age` | 35 days, newest 2 always kept | The dump's time |
-| Off-server copy | **Not built**: a host sync of the (already encrypted) backup volume to another provider (infra/hetzner/README.md §7) | inherited | provider's | Until built: the last manual copy |
+| Off-server copy | `offsite` job (§5.5): every new file copied to a bucket at another provider every 15 minutes, read back and verified; never deletes | inherited (the files are already `age` ciphertext) | the provider's lifecycle rule (§5.5) | ≤ 15 min plus the WAL timeout, for the loss of the whole server |
 
 **Where:**
 
@@ -299,10 +300,73 @@ Then:
 
 The drill's results, with timings, are in the readiness report.
 
+Since the off-server copy was built, the drill also copies everything to the stand-in remote (the
+test MinIO), fetches it back **from the remote alone** into an empty volume, and runs the same
+point-in-time recovery from that copy, with every check above (step 6).
+
 **It does not prove:**
 
 - anything about Hetzner's disks or a Hetzner Volume;
-- the off-server copy;
+- the off-server copy at a real provider (region, Object Lock, the key's permissions, egress);
 - a restore at production size, so no RTO;
 - §3's condition 3 (checkpoints in object storage) and condition 4 (blob re-hash). Those belong
   to the object-storage restore, which depends on the provider (D-3).
+
+### 5.5 The off-server copy
+
+**What it is.** `infra/hetzner/offsite/offsite.sh`, run as the `offsite` service (profile `ops`) by
+`ops/systemd/munaxa-offsite.timer` every 15 minutes, on the pinned rclone image. It copies the
+backup volume — already `age` ciphertext — to a bucket at **another provider** (proposed: Backblaze
+B2 EU Central, Scaleway as the alternative; neither verified, see the readiness report §5.1).
+
+**What it guarantees, and how:**
+
+| Property | How |
+| --- | --- |
+| No key that decrypts anything leaves the offline holders | It copies ciphertext; it refuses to run with an `age` identity in its environment |
+| It cannot damage the backups | The volume is mounted read-only; it refuses a writable mount |
+| It never deletes or overwrites | `rclone copy --immutable` only, never `sync`, `move`, `purge` or `delete`; an object that exists with other content is a reported problem, never replaced. The credential is meant to lack delete rights too, and the provider's versioning or Object Lock to keep history regardless |
+| A half-uploaded backup is never a recovery point | An S3 object exists only once its upload completes. Then every new file is read back: the size from the listing, the provider's MD5 when it has one (an ETag is not an MD5 for multipart uploads, so absence is not treated as a mismatch), and by default the SHA-256 of the bytes downloaded again. Only verified files are recorded, in a run manifest (`manifests/`); a base backup or dump set gets its `COMPLETE` marker — listing every file's size and SHA-256 — only after all its files are verified. `fetch` uses only marked backups and listed WAL, and checks every byte it downloads |
+| Interrupted, failed or duplicate runs are safe | A lock lets one run at a time (a second exits doing nothing). A failed or interrupted run leaves files unverified; the next run re-verifies what arrived (no re-upload of identical content) and sends the rest |
+| A damaged local file is not spread | A base backup or dump file that no longer matches the digest written beside it is refused and reported |
+| Failures are seen | Every run — even one with nothing new to send — confirms that the remote answers and still holds the newest base backup it marked complete; otherwise the run fails. `offsite.prom` (last success, last run, pending files, newest complete base backup); `ops/host-check.sh` reports a failed run, no copy in 2 h, or no complete base backup on the remote |
+
+**Retention on the remote.** The job never deletes; retention is the provider's lifecycle rule,
+set in the console when the bucket is created:
+
+- keep every object version for **at least 35 days** (the backup retention) **plus a margin** —
+  45 days is proposed — so the oldest local base backup still has its remote copy and WAL;
+- with Object Lock (if the provider offers it in the chosen region): a default retention of the
+  same length in governance mode, so not even a full credential can remove a version early;
+- abort unfinished multipart uploads after 1 day.
+
+Cost grows with the retention: at TEST size (under 50 GB) it is negligible (readiness report §5.5).
+
+**Recovering from the off-server copy** (the server is lost; readiness gates G-2, G-3):
+
+```bash
+# On a new host, with offsite.env and an EMPTY directory owned by uid 70. No backup volume needed.
+docker run --rm --user 70:70 --read-only --tmpfs /tmp --env-file /etc/munaxa-docs/offsite.env   -e HOME=/tmp -v "$PWD/infra/hetzner/offsite/offsite.sh:/opt/munaxa/offsite.sh:ro"   -v /mnt/recovered-backups:/restore --entrypoint /bin/sh "$DOCS_OFFSITE_IMAGE"   /opt/munaxa/offsite.sh fetch /restore            # or: fetch /restore <base backup stamp>
+# It prints which complete base backup it fetched and how many WAL files; every byte matched.
+# Then §5.2 with DOCS_BACKUP_DIR=/mnt/recovered-backups (the same layout), and §5.3 for a tenant.
+```
+
+`list-remote` shows the complete recovery points without downloading anything.
+
+**When a run reports a problem:**
+
+- *the remote is unreachable*: nothing to do on the server; the next run catches up. Investigate if
+  it lasts (provider status, the key, egress).
+- *a different object already under a backup's name*: the remote object is not what this server
+  wrote. Treat as an incident (another writer, or a damaged upload). The file is not marked; with a
+  **separate, privileged** credential, examine the object's versions in the console before removing
+  the bad one. Never give the copy job's own key that right.
+- *a local file does not match its recorded digest*: the backup volume is damaged. Take a new
+  backup (`munaxa-backup once`) and check the disk.
+
+**Tested** (`infra/hetzner/testing/offsite/test-offsite.sh`, against MinIO): configuration
+refusals, first copy, multipart verification, idempotent and concurrent runs, an outage with and
+without new files and the catch-up, an interrupted run, a foreign object, recovery by `fetch` (newest and named), refusal of a
+backup altered on the remote, the key's refused delete, local pruning not propagated, a damaged
+local file refused, and no secret in any output. The stack-test drill (§5.4 step 6) recovers a
+cluster from the fetched copy. **Not tested:** any real provider.

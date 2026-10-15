@@ -45,13 +45,26 @@ services:
       - ${DOCS_CONFIG_DIR}/minio.env
     # The bucket the API's STORAGE_BUCKET names, with versioning on, as the production store must
     # have (backup-and-restore.md §1). The alias comes from the environment, not a config file.
+    #
+    # Also the stand-in for the OFF-SERVER backup bucket (README.md §7): a second, versioned bucket and
+    # a credential that may list, read and add objects there but never delete one — the shape the
+    # real provider's key must have. It proves the copy job against MinIO only.
     entrypoint:
       - sh
       - -c
       - >-
         export MC_HOST_t="http://$$MINIO_ROOT_USER:$$MINIO_ROOT_PASSWORD@storage:9000" &&
         mc mb --ignore-existing t/munaxa-docs-test &&
-        mc version enable t/munaxa-docs-test
+        mc version enable t/munaxa-docs-test &&
+        mc mb --ignore-existing t/munaxa-docs-offsite-test &&
+        mc version enable t/munaxa-docs-offsite-test &&
+        printf '%s' '{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Action":["s3:ListBucket","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::munaxa-docs-offsite-test"]},
+        {"Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::munaxa-docs-offsite-test/*"]}]}'
+        > /tmp/offsite-policy.json &&
+        mc admin user add t "$$OFFSITE_TEST_KEY_ID" "$$OFFSITE_TEST_SECRET" &&
+        mc admin policy create t offsite-append /tmp/offsite-policy.json &&
+        mc admin policy attach t offsite-append --user "$$OFFSITE_TEST_KEY_ID"
     networks:
       - ci-storage
     depends_on:
@@ -76,6 +89,13 @@ services:
     depends_on:
       storage:
         condition: service_healthy
+
+  # The off-server copy reaches the stand-in bucket on the test network (a real deployment reaches
+  # its provider over offsite-egress).
+  offsite:
+    networks:
+      - offsite-egress
+      - ci-storage
 
   # The backup scripts refuse a backup volume on the database's own filesystem. A CI runner has one
   # disk, so the stack test relaxes that unless STACKTEST_BACKUP_DIR names a separate filesystem

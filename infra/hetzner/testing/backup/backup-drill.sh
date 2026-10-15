@@ -21,6 +21,10 @@
 #  4. Recovery to the end of the archive: A and B are both present.
 #  5. One tenant's encrypted dump is restored beside the others under a new name (§2.1) and holds
 #     what the source held at the dump.
+#  6. The off-server copy: the backups are copied to the stand-in remote (the test MinIO), fetched
+#     back from the remote ALONE into an empty directory — as on a new host after the server is
+#     lost — and point-in-time recovery to the same target runs from that copy, with every check of
+#     step 3 (README.md §7; backup-and-restore.md §5.4).
 #  Timings are printed; they are a laptop's, not an RTO.
 
 drill_run="drill-$(openssl rand -hex 4)"
@@ -38,8 +42,8 @@ drill_check() {
 }
 
 extra_cleanup() {
-  docker rm -f "$drill_run-pitr" "$drill_run-latest" >/dev/null 2>&1 || true
-  docker volume rm "$drill_run-pitr" "$drill_run-latest" >/dev/null 2>&1 || true
+  docker rm -f "$drill_run-pitr" "$drill_run-latest" "$drill_run-offsite" >/dev/null 2>&1 || true
+  docker volume rm "$drill_run-pitr" "$drill_run-latest" "$drill_run-offsite" "$drill_run-fetched" >/dev/null 2>&1 || true
   docker network rm "$drill_net" >/dev/null 2>&1 || true
 }
 
@@ -89,19 +93,20 @@ done
 echo "target time $target_time; WAL archived through $archived (switched at $switched)"
 drill_check "the WAL holding both changes is archived" "$([ ! "$archived" \< "$switched" ] && echo yes)" yes
 
-# A recovered cluster in its own container, on its own internal network, from the backup volume.
+# A recovered cluster in its own container, on its own internal network, from the backup volume —
+# or from RECOVER_SOURCE (a directory or volume in the same layout, such as a fetched off-server copy).
 docker network create --internal "$drill_net" >/dev/null
 recover() {
-  local name="$1" target="$2" started
+  local name="$1" target="$2" started source="${RECOVER_SOURCE:-$DOCS_BACKUP_DIR}"
   started="$(date +%s)"
   docker volume create "$name" >/dev/null
   # As root only to read this run's identity and hand it to the postgres user inside the volume;
   # the identity never leaves this run's private config directory otherwise.
-  docker run --rm --user 0 --network none -v "$name:/restore" -v "$DOCS_BACKUP_DIR:/backup:ro" \
+  docker run --rm --user 0 --network none -v "$name:/restore" -v "$source:/backup:ro" \
     -v "$config/backup-identity.txt:/run/identity:ro" --entrypoint sh "$DOCS_POSTGRES_IMAGE" -ec '
       install -o 70 -g 70 -m 0400 /run/identity /restore/identity
       chown 70:70 /restore'
-  docker run --rm --user 70:70 --network none -v "$name:/restore" -v "$DOCS_BACKUP_DIR:/backup:ro" \
+  docker run --rm --user 70:70 --network none -v "$name:/restore" -v "$source:/backup:ro" \
     -e BACKUP_AGE_IDENTITY_FILE=/restore/identity "$DOCS_POSTGRES_IMAGE" \
     munaxa-backup restore-base "$base_name" /restore/data
   # Recovery settings. The archive is mounted read-only and archiving is off in the recovered
@@ -117,7 +122,7 @@ recover() {
       } >> /restore/data/postgresql.auto.conf
       touch /restore/data/recovery.signal'
   docker run -d --name "$name" --user 70:70 --network "$drill_net" -v "$name:/restore" \
-    -v "$DOCS_BACKUP_DIR/wal:/backup/wal:ro" --entrypoint postgres "$DOCS_POSTGRES_IMAGE" \
+    -v "$source:/backup:ro" --entrypoint postgres "$DOCS_POSTGRES_IMAGE" \
     -D /restore/data >/dev/null
   for _ in $(seq 1 120); do
     [ "$(docker exec "$name" psql -U postgres -tAc 'SELECT pg_is_in_recovery()' 2>/dev/null)" = "f" ] && break
@@ -216,6 +221,25 @@ drill_check "dump: the restored copy keeps row-level security forced on every te
   "$(recovered_sql "$drill_run-pitr" edms_acme_restored <<<"$tenant_tables_without_forced_rls_sql")" 0
 drill_check "dump: the audit hash chain of the restored copy verifies from genesis" \
   "$(verify_chain "$drill_run-pitr" edms_acme_restored | sed -n 's/^intact=\([a-z]*\).*/\1/p')" true
+
+step "Backup drill 6: recovery from the off-server copy alone"
+# The copy job as the host timer runs it, now that step 1's base backup and step 2's WAL exist.
+compose --profile ops run --rm offsite sync
+# The fetch is what a new host does: the rclone image, the copy credential and the remote — no
+# backup volume mounted at all. Every byte it writes is checked against the digests recorded when
+# the file was verified on the remote.
+docker volume create "$drill_run-fetched" >/dev/null
+docker run --rm --user 0 --network none -v "$drill_run-fetched:/restore" --entrypoint sh \
+  "$DOCS_POSTGRES_IMAGE" -c 'chown 70:70 /restore && chmod 0700 /restore'
+offsite_image="$(sed -n 's/.*DOCS_OFFSITE_IMAGE:-\([^}]*\)}.*/\1/p' "$template/compose.yaml")"
+fetch_started="$(date +%s)"
+docker run --rm --user 70:70 --read-only --tmpfs /tmp --network "${DOCS_PROJECT_NAME}_ci-storage" \
+  --env-file "$config/offsite.env" -e HOME=/tmp -v "$template/offsite/offsite.sh:/opt/munaxa/offsite.sh:ro" \
+  -v "$drill_run-fetched:/restore" --entrypoint /bin/sh "$offsite_image" \
+  /opt/munaxa/offsite.sh fetch /restore "$base_name"
+echo "fetched in $(($(date +%s) - fetch_started)) s"
+RECOVER_SOURCE="$drill_run-fetched" recover "$drill_run-offsite" "$target_time"
+check_recovered "$drill_run-offsite" "PITR from the off-server copy" f
 
 if [ "$drill_failures" -eq 0 ]; then
   echo "PASS  backup drill: every expectation held"

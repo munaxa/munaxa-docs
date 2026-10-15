@@ -19,8 +19,9 @@
 # and does nothing (`apps/worker/src/main.ts`), and it is not published (`publish-images.yml`).
 # Object storage and mail are external services, configured in config/api.env.
 #
-# `db-admin`, `migrate` and `provision` (profile `ops`) are one-off operator commands, never started
-# by `up`. See README.md §4.
+# `db-admin`, `migrate`, `provision` and `offsite` (profile `ops`) are one-off operator commands,
+# never started by `up`. See README.md §4; `offsite` is the off-server backup copy, run by a host
+# timer (README.md §7).
 #
 # ## Networks
 #
@@ -28,6 +29,7 @@
 #   data      api, postgres, redis            internal: no egress, nothing published
 #   scan      api, antivirus                  internal: ICAP is plaintext, so only the API reaches it
 #   scanner-egress  antivirus                 egress for signature downloads, and nothing else on it
+#   offsite-egress  offsite                   egress to the off-server backup bucket, nothing else on it
 #
 # Fixed subnets and fixed proxy/web addresses, because TRUST_PROXY and WEB_TRUST_PROXY name the hops
 # in front of each service by address (docs/operations/deployment.md §3.1); `true`/`*` are refused.
@@ -333,6 +335,39 @@ services:
 
   # --- One-off operator commands (profile `ops`; README.md §4) -----------------------------------
 
+  # The off-server copy of the encrypted backups (R-1a; README.md §7). Started by the host timer
+  # (ops/systemd/munaxa-offsite.timer) as `$C --profile ops run --rm offsite sync`, never by `up`.
+  # It reads the backup volume READ-ONLY, so it cannot damage what it copies, and it never deletes
+  # or overwrites on the remote (offsite/offsite.sh). It holds no key that can decrypt anything.
+  offsite:
+    profiles: ['ops']
+    # rclone, pinned by digest (the multi-architecture index of 1.71.1).
+    image: ${DOCS_OFFSITE_IMAGE:-rclone/rclone:1.71.1@sha256:d5971950c2b370fb04dd3292541b5bda6d9103143fd7e345aeb435a399388afc}
+    <<: *hardening
+    # The backup volume belongs to uid 70 (the PostgreSQL image's user), mode 0700.
+    user: '70:70'
+    read_only: true
+    tmpfs:
+      - /tmp
+    entrypoint: ['/bin/sh', '/opt/munaxa/offsite.sh']
+    command: ['sync']
+    env_file:
+      # The remote, the bucket, and a credential that can add objects but not delete them.
+      - ${DOCS_CONFIG_DIR}/offsite.env
+    environment:
+      BACKUP_DIR: /backup
+      OFFSITE_STATE_DIR: /state
+      HOME: /tmp
+    volumes:
+      - ./offsite/offsite.sh:/opt/munaxa/offsite.sh:ro
+      - ${DOCS_BACKUP_DIR}:/backup:ro
+      # Its own state and status file, read by ops/host-check.sh on the host. uid 70, mode 0700.
+      - ${DOCS_OFFSITE_STATE_DIR:-/var/lib/munaxa-docs/offsite}:/state
+    networks:
+      - offsite-egress
+    mem_limit: 256m
+    logging: *logging
+
   db-admin:
     profiles: ['ops']
     image: ${DOCS_POSTGRES_IMAGE:-munaxa-docs-postgres:16.10}
@@ -420,6 +455,10 @@ networks:
     ipam:
       config:
         - subnet: 172.28.13.0/24
+  offsite-egress:
+    ipam:
+      config:
+        - subnet: 172.28.14.0/24
 
 volumes:
   api-download-staging:
