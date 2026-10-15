@@ -1359,6 +1359,8 @@ export const en = {
       failed: 'The export could not be requested.',
       none: 'No exports yet',
       download: 'Download',
+      downloadArtefact: 'Download {name}',
+      tooLarge: '{name} is too large to download. Narrow the range, or ask an administrator.',
       events: plural({
         one: '{count} event',
         other: '{count} events',

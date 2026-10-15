@@ -199,8 +199,8 @@ pb_expect arabic-integrity 'f.clicked === false || /سلامة/.test(f.message ?
   "a quarantined file, in Arabic: a refusal, if one is reached, names the integrity check"
 pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true && /^\/api\/v1\/downloads/.test(f.link ?? "") && f.tabOpened !== true' \
   "a report export saves the verified file through /api/v1/downloads, with no popup (export design §3.2)"
-pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true && !/^\/api\/v1\/downloads/.test(f.link ?? "")' \
-  "an audit export saves exactly what the store served, through a direct signed store URL (NOT the verified path)"
+pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true && /^\/api\/v1\/downloads/.test(f.link ?? "") && f.tabOpened !== true' \
+  "an audit artefact saves the verified file through /api/v1/downloads, one click per artefact, with no popup (export design §3.3)"
 
 # =================================================================================================
 step "Phase B 9 — verified downloads at and past their resource limits (no limit raised)"

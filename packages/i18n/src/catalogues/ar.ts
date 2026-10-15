@@ -1338,6 +1338,8 @@ export const ar: Catalogue = {
       failed: 'تعذّر طلب التصدير.',
       none: 'لا توجد عمليات تصدير بعد',
       download: 'تنزيل',
+      downloadArtefact: 'تنزيل {name}',
+      tooLarge: 'الملف {name} أكبر من أن يُنزَّل. ضيّق النطاق أو تواصل مع المسؤول.',
       events: plural({
         zero: '{count} أحداث',
         one: '{count} حدث',

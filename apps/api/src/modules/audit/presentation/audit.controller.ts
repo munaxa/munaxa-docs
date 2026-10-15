@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query } from '@nestjs/common';
 
 import {
   type AuditActions,
@@ -17,6 +17,7 @@ import { type AnyId, type AuditSubjectTypeKey, Permission, type UserId, asId } f
 import { normalizePageRequest } from '@edms/utils';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import { NotFoundError } from '../../../core/errors/application-errors';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { AuditExportService } from '../application/audit-export.service';
@@ -47,6 +48,7 @@ export class AuditController {
   constructor(
     private readonly read: AuditReadService,
     private readonly exports: AuditExportService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   /**
@@ -104,7 +106,7 @@ export class AuditController {
     @Query(new ZodValidationPipe(auditTimelineQuerySchema)) query: AuditTimelineQuery,
   ): Promise<{ data: WireAuditExport[]; meta: AuditPage['meta'] }> {
     const page = await this.exports.list(normalizePageRequest(query));
-    return { data: page.data.map(toExport), meta: page.meta };
+    return { data: page.data.map((record) => this.toExport(record)), meta: page.meta };
   }
 
   /** 202: the bundle is produced on the lane, not in this request. */
@@ -121,7 +123,9 @@ export class AuditController {
         filters[key] = value;
       }
     }
-    return toExport(await this.exports.request(new Date(body.from), new Date(body.to), filters));
+    return this.toExport(
+      await this.exports.request(new Date(body.from), new Date(body.to), filters),
+    );
   }
 
   @Get('exports/:id')
@@ -131,11 +135,13 @@ export class AuditController {
     if (record === null) {
       throw new NotFoundError('The requested resource');
     }
-    return toExport(record);
+    return this.toExport(record);
   }
 
   /**
-   * The signed URLs for a completed bundle.
+   * Verified download links for a completed bundle: every artefact, all or nothing, or with
+   * `?artefact=` the one named — what the screen asks for, one click per file, so no browser
+   * blocks the second of several downloads started at once (E-12).
    *
    * A `POST` rather than a `GET`, because issuing a capability that outlives the request is a
    * change to the world: it writes `BULK_DOWNLOAD` and a `FILE_DOWNLOAD_ISSUED` per artefact, and
@@ -144,14 +150,45 @@ export class AuditController {
    */
   @Post('exports/:id/download')
   @RequirePermission(Permission.AUDIT_EXPORT)
-  async download(@Param('id') id: string): Promise<AuditExportDownload> {
-    const links = await this.exports.download(asId<AnyId>(id));
+  async download(
+    @Param('id') id: string,
+    @Query('artefact') artefact: string | undefined,
+  ): Promise<AuditExportDownload> {
+    if (artefact !== undefined && !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(artefact)) {
+      throw new NotFoundError('The requested resource');
+    }
+    const links = await this.exports.download(asId<AnyId>(id), artefact ?? null);
     return {
       data: links.map((link) => ({
         name: link.name,
         url: link.url,
         expiresAt: link.expiresAt.toISOString(),
       })),
+    };
+  }
+
+  /** The wire shape, with whether each artefact is small enough to verify for download. */
+  private toExport(record: AuditExportRecord): WireAuditExport {
+    return {
+      id: record.id,
+      state: record.state,
+      from: record.from.toISOString(),
+      to: record.to.toISOString(),
+      filters: record.filters,
+      requestedById: record.requestedById,
+      requestedAt: record.requestedAt.toISOString(),
+      eventCount: record.eventCount,
+      artefacts: record.artefacts.map((artefact) => ({
+        name: artefact.name,
+        mediaType: artefact.mediaType,
+        sizeBytes: artefact.sizeBytes,
+        sha256: artefact.sha256,
+        // Said on the row rather than discovered by a refused click; never an unverified link.
+        tooLargeToDownload: artefact.sizeBytes > this.config.download.maxFileBytes,
+      })),
+      chainIntact: record.chainIntact,
+      completedAt: record.completedAt?.toISOString() ?? null,
+      error: record.error,
     };
   }
 }
@@ -182,27 +219,5 @@ function toEntry(event: AuditEventRecord): WireAuditEntry {
     // in an evidence export, which is where an investigation reads them; putting them on a screen
     // that anyone with `document:history:view` can open would publish one colleague's address to
     // another for no question either of them is asking.
-  };
-}
-
-function toExport(record: AuditExportRecord): WireAuditExport {
-  return {
-    id: record.id,
-    state: record.state,
-    from: record.from.toISOString(),
-    to: record.to.toISOString(),
-    filters: record.filters,
-    requestedById: record.requestedById,
-    requestedAt: record.requestedAt.toISOString(),
-    eventCount: record.eventCount,
-    artefacts: record.artefacts.map((artefact) => ({
-      name: artefact.name,
-      mediaType: artefact.mediaType,
-      sizeBytes: artefact.sizeBytes,
-      sha256: artefact.sha256,
-    })),
-    chainIntact: record.chainIntact,
-    completedAt: record.completedAt?.toISOString() ?? null,
-    error: record.error,
   };
 }

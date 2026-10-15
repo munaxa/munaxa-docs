@@ -38,8 +38,12 @@ import {
   realAuditStack,
   realDisposition,
   realDocumentLibrary,
+  realDownloadRedemption,
   realRetention,
 } from '../../../testing/real-collaborators';
+import { seedRoleGrant } from '../../../testing/acl-seed';
+import { grantOfLink } from '../../../testing/download-links';
+import { AuditArtefactRedeemer } from '../application/audit-artefact.redeemer';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { toChainLink } from '../application/audit-verification.service';
 import { AuditExportState } from '../application/ports';
@@ -70,6 +74,7 @@ const APP_URL = process.env['DATABASE_URL'] ?? '';
 const TENANT = asId<TenantId>(uuidv7());
 const SLUG = `audit9-${Date.now()}`;
 const CHECKPOINT_SECRET = 'phase-9-checkpoint-secret-at-least-32';
+const LINK_SECRET = 'an-audit-suite-download-link-secret-32';
 
 const clock = new FakeClock(new Date('2026-01-01T00:00:00Z'));
 /** A day later, for the one collaborator that has to run after the blob grace period. */
@@ -155,6 +160,10 @@ beforeAll(async () => {
       queueTimeoutMs: 60_000,
     },
     providers: { antivirus: 'NONE' },
+    // ADR-0026 §10: an evidence artefact's download is a verified link the API serves.
+    app: { port: 3001 },
+    auth: { accessSecret: LINK_SECRET },
+    download: { linkTtlSeconds: 60, maxFileBytes: 32 * 1024 * 1024 },
     audit: {
       readBufferSize: 1_000,
       readBufferMax: 10_000,
@@ -885,5 +894,281 @@ describe('a completed evidence bundle and the blob reaper', () => {
     } finally {
       await owner.$disconnect();
     }
+  }, 120_000);
+});
+
+/**
+ * An evidence bundle's verified download links — ADR-0026 §10, the export design §3.3.
+ *
+ * Issued all or nothing (E-5), one verified link per artefact the API serves, never a store URL;
+ * each re-asked when it is followed: the person, `audit:export` held now, the export still
+ * `COMPLETED`, and the artefact the link names still the export's own, with its file, name and
+ * media type. Any holder of `audit:export` may take any completed bundle — the policy as it was.
+ *
+ * Two bundles of the same range and filters write byte-identical `events.jsonl` and `events.csv`,
+ * which content addressing stores once (E-9). Each export's record is still the authority on its
+ * own artefacts; the shared blob decides nothing but whether its bytes are intact.
+ */
+describe('an evidence bundle is downloaded through verified links', () => {
+  const DORA = asId<UserId>(uuidv7());
+  const AUDITOR_ROLE = uuidv7();
+  let owner: PrismaClient;
+  let redemption: ReturnType<typeof realDownloadRedemption>['redemption'];
+  const asDora = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext(
+      contextFor({
+        userId: DORA,
+        roles: [AUDITOR_ROLE],
+        permissions: [Permission.AUDIT_EXPORT],
+        permissionVersion: 1,
+      }),
+      work,
+    );
+
+  beforeAll(async () => {
+    owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
+    await owner.user.create({
+      data: {
+        id: DORA,
+        tenantId: TENANT,
+        email: `${DORA}@audit.test`,
+        emailNormalized: `${DORA}@audit.test`,
+        displayName: 'dora',
+        status: 'ACTIVE',
+        updatedAt: new Date('2026-01-01T00:00:00Z'),
+      },
+    });
+    await seedRoleGrant(owner, {
+      tenantId: TENANT,
+      roleId: AUDITOR_ROLE,
+      key: 'AUDITOR',
+      userIds: [DORA],
+      permissions: [Permission.AUDIT_EXPORT, Permission.AUDIT_VIEW],
+      now: new Date('2026-01-01T00:00:00Z'),
+    });
+    const composed = realDownloadRedemption({ unitOfWork });
+    new AuditArtefactRedeemer(composed.registry, stack.exports).onModuleInit();
+    redemption = composed.redemption;
+  });
+
+  afterAll(async () => {
+    await owner.$disconnect();
+  });
+
+  /** A completed bundle of the given range, produced by the lane's own `run`. */
+  async function bundle(from = '2020-01-01T00:00:00Z', to = '2030-01-01T00:00:00Z') {
+    const requested = await asDora(() => stack.exports.request(new Date(from), new Date(to), {}));
+    await runWithContext(contextFor(), () => stack.exports.run(requested.id));
+    const produced = await runWithContext(contextFor(), () => stack.exports.get(requested.id));
+    expect(produced?.state).toBe(AuditExportState.COMPLETED);
+    return produced!;
+  }
+
+  const count = (action: string, filter: Record<string, unknown> = {}) =>
+    owner.auditEvent.count({ where: { tenantId: TENANT, action, ...filter } });
+
+  const issuedFor = (exportId: string) =>
+    owner.auditEvent.count({
+      where: {
+        tenantId: TENANT,
+        action: 'FILE_DOWNLOAD_ISSUED',
+        payload: { path: ['after', 'auditExportId'], equals: exportId },
+      },
+    });
+
+  it('issues one verified link per artefact, all in one transaction with BULK_DOWNLOAD, and redeems each as its artefact', async () => {
+    const produced = await bundle();
+    const bulkBefore = await count('BULK_DOWNLOAD');
+
+    const links = await asDora(() => stack.exports.download(produced.id));
+
+    expect(links.map((link) => link.name).sort()).toEqual(
+      produced.artefacts.map((artefact) => artefact.name).sort(),
+    );
+    expect(await issuedFor(produced.id)).toBe(produced.artefacts.length);
+    expect(await count('BULK_DOWNLOAD')).toBe(bulkBefore + 1);
+    for (const link of links) {
+      const artefact = produced.artefacts.find((candidate) => candidate.name === link.name)!;
+      const grant = grantOfLink(link.url, LINK_SECRET, new Date('2026-01-01T00:00:00Z'));
+      expect(grant).toMatchObject({
+        userId: DORA,
+        subject: { kind: 'AUDIT_ARTEFACT', exportId: produced.id, artefact: artefact.name },
+        fileObjectId: artefact.fileObjectId,
+        mimeType: artefact.mediaType,
+        filename: artefact.name,
+      });
+      await expect(redemption.redeem(grant, 'audit-suite')).resolves.toMatchObject({
+        audit: { auditExportId: produced.id, artefact: artefact.name },
+      });
+    }
+  }, 120_000);
+
+  it('issues a single artefact on request, and says only that one was handed out', async () => {
+    const produced = await bundle();
+    const links = await asDora(() => stack.exports.download(produced.id, 'events.csv'));
+    expect(links.map((link) => link.name)).toEqual(['events.csv']);
+    expect(await issuedFor(produced.id)).toBe(1);
+    const row = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: TENANT, action: 'BULK_DOWNLOAD', subjectId: produced.id },
+    });
+    expect(row.payload).toMatchObject({
+      after: { artefacts: ['events.csv'], delivery: 'VERIFIED' },
+    });
+    await expect(
+      asDora(() => stack.exports.download(produced.id, 'nothing.txt')),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  }, 120_000);
+
+  it('issues nothing at all when one artefact is refused, and records nothing (E-5)', async () => {
+    const produced = await bundle();
+    const manifest = produced.artefacts.find((artefact) => artefact.name === 'manifest.json')!;
+    const bulkBefore = await count('BULK_DOWNLOAD', { subjectId: produced.id });
+    await owner.fileObject.update({
+      where: { id: manifest.fileObjectId },
+      data: { integrityStatus: 'MISMATCH' },
+    });
+
+    await expect(asDora(() => stack.exports.download(produced.id))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
+    // Not even the artefacts checked before the refused one: the transaction took them back.
+    expect(await issuedFor(produced.id)).toBe(0);
+    expect(await count('BULK_DOWNLOAD', { subjectId: produced.id })).toBe(bulkBefore);
+
+    // Another artefact of the same bundle is still its own download.
+    await asDora(() => stack.exports.download(produced.id, 'events.csv'));
+    expect(await issuedFor(produced.id)).toBe(1);
+  }, 120_000);
+
+  it('issues nothing when an artefact’s object is missing from the store', async () => {
+    const produced = await bundle('2019-01-01T00:00:00Z', '2030-02-01T00:00:00Z');
+    const csv = produced.artefacts.find((artefact) => artefact.name === 'events.csv')!;
+    await runWithContext(contextFor(), () => library.storagePort.delete(csv.storageKey as never));
+
+    await expect(asDora(() => stack.exports.download(produced.id))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
+    expect(await issuedFor(produced.id)).toBe(0);
+  }, 120_000);
+
+  it('refuses at redemption once audit:export is withdrawn, or the person’s permissions moved', async () => {
+    const produced = await bundle();
+    const [link] = await asDora(() => stack.exports.download(produced.id, 'events.jsonl'));
+    const grant = grantOfLink(link!.url, LINK_SECRET, new Date('2026-01-01T00:00:00Z'));
+
+    await owner.userRole.deleteMany({ where: { userId: DORA, roleId: AUDITOR_ROLE } });
+    await expect(redemption.redeem(grant, 'audit-suite')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await owner.userRole.create({
+      data: { tenantId: TENANT, userId: DORA, roleId: AUDITOR_ROLE, assignedAt: new Date() },
+    });
+    await redemption.redeem(grant, 'audit-suite');
+
+    await owner.user.update({ where: { id: DORA }, data: { permissionVersion: 2 } });
+    await expect(redemption.redeem(grant, 'audit-suite')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await owner.user.update({ where: { id: DORA }, data: { permissionVersion: 1 } });
+  }, 120_000);
+
+  it('refuses a link whose artefact, file, name or media type is not the export’s own, and one of another kind', async () => {
+    const produced = await bundle();
+    const [link] = await asDora(() => stack.exports.download(produced.id, 'events.jsonl'));
+    const grant = grantOfLink(link!.url, LINK_SECRET, new Date('2026-01-01T00:00:00Z'));
+    const manifest = produced.artefacts.find((artefact) => artefact.name === 'manifest.json')!;
+    const refused = [
+      // Another artefact's name over this artefact's file: the substitution a shared blob invites.
+      { ...grant, subject: { ...grant.subject, artefact: 'manifest.json' } },
+      // This artefact's name over another artefact's file.
+      { ...grant, fileObjectId: manifest.fileObjectId },
+      { ...grant, filename: 'events.html' },
+      { ...grant, mimeType: 'text/html' },
+      { ...grant, subject: { ...grant.subject, exportId: uuidv7() } },
+      { ...grant, subject: { kind: 'REPORT_EXPORT' as const, exportId: produced.id } },
+      { ...grant, tenantId: asId<TenantId>(uuidv7()) },
+    ];
+    for (const candidate of refused) {
+      await expect(
+        redemption.redeem(candidate, 'audit-suite'),
+        JSON.stringify(candidate.subject),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    }
+  }, 120_000);
+
+  it('keeps each export the authority on its own artefacts when two share a blob (E-9)', async () => {
+    // A range with no events in it: both bundles' event files are byte-identical, and stored once.
+    const first = await bundle('2001-01-01T00:00:00Z', '2001-01-02T00:00:00Z');
+    const second = await bundle('2001-01-01T00:00:00Z', '2001-01-02T00:00:00Z');
+    const jsonlOf = (record: typeof first) =>
+      record.artefacts.find((artefact) => artefact.name === 'events.jsonl')!;
+    const manifestOf = (record: typeof first) =>
+      record.artefacts.find((artefact) => artefact.name === 'manifest.json')!;
+    expect(jsonlOf(first).fileObjectId).toBe(jsonlOf(second).fileObjectId);
+    // The manifests name their own export, so they are not shared.
+    expect(manifestOf(first).fileObjectId).not.toBe(manifestOf(second).fileObjectId);
+
+    const [link] = await asDora(() => stack.exports.download(first.id, 'events.jsonl'));
+    const grant = grantOfLink(link!.url, LINK_SECRET, new Date('2026-01-01T00:00:00Z'));
+    // The same file under the second export's name is answered by the second export's record.
+    await expect(
+      redemption.redeem(
+        {
+          ...grant,
+          subject: {
+            kind: 'AUDIT_ARTEFACT' as const,
+            exportId: String(second.id),
+            artefact: 'events.jsonl',
+          },
+        },
+        'audit-suite',
+      ),
+    ).resolves.toMatchObject({ audit: { auditExportId: second.id, artefact: 'events.jsonl' } });
+
+    // The second export failing takes nothing from the first.
+    await owner.auditExport.update({ where: { id: second.id }, data: { state: 'FAILED' } });
+    await expect(
+      redemption.redeem(
+        {
+          ...grant,
+          subject: {
+            kind: 'AUDIT_ARTEFACT' as const,
+            exportId: String(second.id),
+            artefact: 'events.jsonl',
+          },
+        },
+        'audit-suite',
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(redemption.redeem(grant, 'audit-suite')).resolves.toMatchObject({
+      audit: { auditExportId: first.id },
+    });
+
+    // A finding about the shared bytes is about every export that holds them — the same object —
+    // and about nothing else: each bundle's own manifest is still its own, and still served.
+    await owner.fileObject.update({
+      where: { id: jsonlOf(first).fileObjectId },
+      data: { integrityStatus: 'MISMATCH' },
+    });
+    await expect(redemption.redeem(grant, 'audit-suite')).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
+    await expect(
+      asDora(() => stack.exports.download(first.id, 'events.jsonl')),
+    ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+    await expect(
+      asDora(() => stack.exports.download(first.id, 'manifest.json')),
+    ).resolves.toHaveLength(1);
+    await owner.fileObject.update({
+      where: { id: jsonlOf(first).fileObjectId },
+      data: { integrityStatus: 'UNVERIFIED' },
+    });
+  }, 120_000);
+
+  it('records every repeated download as its own issuance', async () => {
+    const produced = await bundle();
+    await asDora(() => stack.exports.download(produced.id, 'events.csv'));
+    await asDora(() => stack.exports.download(produced.id, 'events.csv'));
+    expect(await issuedFor(produced.id)).toBe(2);
   }, 120_000);
 });

@@ -11,7 +11,7 @@ import {
  */
 export function grantOfLink(url: string, secret: string, now: Date): DownloadLinkGrant {
   const parsed = new URL(url);
-  if (parsed.pathname !== '/api/v1/downloads') {
+  if (!parsed.pathname.endsWith('/api/v1/downloads')) {
     throw new Error(`Not a verified download link: ${parsed.pathname}`);
   }
   const decoded = decodeDownloadLinkToken(secret, parsed.searchParams.get('token') ?? '', now);

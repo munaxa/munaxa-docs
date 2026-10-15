@@ -27,9 +27,16 @@ export async function requestAuditExport(input: unknown): Promise<ActionResult<A
   );
 }
 
-export async function downloadAuditExport(id: string): Promise<ActionResult<AuditExportDownload>> {
+/**
+ * A verified download link for one artefact of a bundle — the one the person clicked. One link per
+ * click, so a browser never has to start several downloads from one gesture (and block the rest).
+ */
+export async function downloadAuditArtefact(
+  id: string,
+  artefact: string,
+): Promise<ActionResult<AuditExportDownload>> {
   return adminWrite<AuditExportDownload>({
-    path: `/audit/exports/${id}/download`,
+    path: `/audit/exports/${encodeURIComponent(id)}/download?artefact=${encodeURIComponent(artefact)}`,
     method: 'POST',
   });
 }

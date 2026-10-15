@@ -135,6 +135,8 @@ export interface AuditExportArtefactView {
   readonly sizeBytes: number;
   /** The digest of the bytes as written — what the manifest asserts and a verifier recomputes. */
   readonly sha256: string;
+  /** Larger than a download can be verified at (`DOWNLOAD_MAX_FILE_BYTES`): no link is issued. */
+  readonly tooLargeToDownload: boolean;
 }
 
 export interface AuditExport {

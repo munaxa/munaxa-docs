@@ -4,6 +4,7 @@ import { ACTIVITY_READER } from '../../core/activity/activity.port';
 import { AUDIT_WRITER } from '../../core/audit/audit-writer.port';
 import { READ_AUDIT_BUFFER } from '../../core/audit/read-audit.port';
 import { StorageModule } from '../storage/storage.module';
+import { AuditArtefactRedeemer } from './application/audit-artefact.redeemer';
 import { AuditExportService } from './application/audit-export.service';
 import { AuditReadService } from './application/audit-read.service';
 import { AuditVerificationService } from './application/audit-verification.service';
@@ -77,6 +78,8 @@ import { AuditReportSource } from './infrastructure/report-source.adapter';
     AuditReadService,
     AuditVerificationService,
     AuditExportService,
+    // The `AUDIT_ARTEFACT` kind of verified download link is redeemed here, by Audit's rules.
+    AuditArtefactRedeemer,
     DefaultAuditService,
     { provide: AUDIT_SERVICE, useExisting: DefaultAuditService },
     AuditLaneConsumer,

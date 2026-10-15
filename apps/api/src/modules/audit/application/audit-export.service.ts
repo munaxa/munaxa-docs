@@ -5,6 +5,7 @@ import {
   AuditOutcome,
   AuditSubjectType,
   type FileObjectId,
+  Permission,
   QueueName,
   type UserId,
   asId,
@@ -21,7 +22,13 @@ import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { QUEUE_PORT, type QueuePort } from '../../../ports/queue.port';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/application/ports';
+import {
+  DownloadLinkKind,
+  type DownloadLinkGrantOf,
+  type RedeemedDownload,
+  STORAGE_SERVICE,
+  type StorageService,
+} from '../../storage/application/ports';
 import { AuditAudit } from '../domain/audit-actions';
 import { auditExportReadyEvent } from '../domain/events';
 import {
@@ -177,50 +184,116 @@ export class AuditExportService {
   }
 
   /**
-   * Issues the signed URLs for a completed bundle, and audits the issuance.
+   * Issues verified download links for a completed bundle — every artefact, or the one named — and
+   * audits the issuance. ADR-0026 §10, the export design §3.3.
    *
-   * Audited before the URLs are returned, for the reason `FILE_DOWNLOAD_ISSUED` is: a signed URL
-   * outlives the request that produced it and can be redeemed by whoever holds it.
+   * **All or nothing, in one transaction.** Each artefact is checked as Storage checks any link
+   * (servable, the download size limit, the store's HEAD) and its `FILE_DOWNLOAD_ISSUED` row is
+   * written in the same transaction as `BULK_DOWNLOAD`. If any artefact is refused — quarantined,
+   * missing, too large — or the store cannot be asked, the transaction rolls back: no row records a
+   * link that was never returned, and no partial bundle is handed out (E-5). The checks are store
+   * reads, which no transaction spans; what is atomic is the record and the answer, and they agree.
+   *
+   * **Policy kept:** any holder of `audit:export` may take any completed bundle in the tenant, as
+   * before. The links are verified links the API serves (`AUDIT_ARTEFACT` kind), never store URLs,
+   * and each is re-authorized when it is followed (`redeemArtefactDownload`).
    */
-  async download(id: AnyId): Promise<readonly { name: string; url: string; expiresAt: Date }[]> {
+  async download(
+    id: AnyId,
+    artefact: string | null = null,
+  ): Promise<readonly { name: string; url: string; expiresAt: Date }[]> {
     const record = await this.get(id);
     if (record === null || record.state !== AuditExportState.COMPLETED) {
       throw new NotFoundError('The requested resource');
     }
-
-    const links: { name: string; url: string; expiresAt: Date }[] = [];
-    for (const artefact of record.artefacts) {
-      // Through Storage's own audited path, so each artefact also gets its
-      // `FILE_DOWNLOAD_ISSUED` row. Signing here instead would be a second place that obligation
-      // has to be remembered, and the second place is the one that gets forgotten.
-      const signed = await this.storage.createDownloadUrl(
-        asId(artefact.fileObjectId),
-        artefact.name,
-      );
-      links.push({ name: artefact.name, url: signed.url, expiresAt: signed.expiresAt });
+    const chosen =
+      artefact === null
+        ? record.artefacts
+        : record.artefacts.filter((candidate) => candidate.name === artefact);
+    if (chosen.length === 0) {
+      throw new NotFoundError('The requested resource');
     }
 
-    await this.writer.write<void>(() =>
-      Promise.resolve({
-        result: undefined,
-        change: {
-          action: AuditAudit.BULK_DOWNLOAD,
-          subjectType: AuditSubjectType.EXPORT,
-          subjectId: id,
-          operation: AdministrativeOperation.UPDATED,
-          after: {
-            artefacts: record.artefacts.map((artefact) => artefact.name),
-            eventCount: record.eventCount,
-            // The digests, so the trail records *which* bytes were handed over rather than
-            // merely that some were.
-            sha256: Object.fromEntries(
-              record.artefacts.map((artefact) => [artefact.name, artefact.sha256]),
-            ),
+    return this.unitOfWork.run(async () => {
+      const links: { name: string; url: string; expiresAt: Date }[] = [];
+      for (const part of chosen) {
+        // Through Storage's own audited path, so each artefact gets its `FILE_DOWNLOAD_ISSUED`
+        // row — joined to this transaction, so it stands or falls with the rest of the bundle.
+        const link = await this.storage.createVerifiedDownloadLink(
+          asId(part.fileObjectId),
+          part.name,
+          {
+            subject: {
+              kind: DownloadLinkKind.AUDIT_ARTEFACT,
+              exportId: String(record.id),
+              artefact: part.name,
+            },
+            // The artefact's own type: its blob may be shared with another export's (E-8, E-9).
+            mimeType: part.mediaType,
+            audit: { auditExportId: String(record.id), artefact: part.name },
           },
-        },
-      }),
-    );
-    return links;
+        );
+        links.push({ name: part.name, url: link.url, expiresAt: link.expiresAt });
+      }
+
+      await this.writer.write<void>(() =>
+        Promise.resolve({
+          result: undefined,
+          change: {
+            action: AuditAudit.BULK_DOWNLOAD,
+            subjectType: AuditSubjectType.EXPORT,
+            subjectId: id,
+            operation: AdministrativeOperation.UPDATED,
+            after: {
+              artefacts: chosen.map((part) => part.name),
+              eventCount: record.eventCount,
+              // The digests, so the trail records *which* bytes were handed over rather than
+              // merely that some were.
+              sha256: Object.fromEntries(chosen.map((part) => [part.name, part.sha256])),
+              delivery: 'VERIFIED',
+            },
+          },
+        }),
+      );
+      return links;
+    });
+  }
+
+  /**
+   * Whether an audit artefact's download link may still be used, by the person in the current
+   * context, now — the redemption half of `download`.
+   *
+   * `audit:export`, held now; the export, in this tenant, still `COMPLETED`; the artefact the link
+   * names, in that export's own list, pointing at the link's file, with the link's name and media
+   * type; and that file's digest is the one the export recorded for the artefact — what the bytes
+   * are then verified against. The export record is the authority on all of it, never the blob,
+   * which another export may share (E-9). Everything but yes is `NotFoundError`.
+   */
+  async redeemArtefactDownload(
+    grant: DownloadLinkGrantOf<typeof DownloadLinkKind.AUDIT_ARTEFACT>,
+  ): Promise<RedeemedDownload> {
+    if (!requireContext().permissions.includes(Permission.AUDIT_EXPORT)) {
+      throw new NotFoundError('the person no longer holds audit:export');
+    }
+    const record = await this.get(asId<AnyId>(grant.subject.exportId));
+    if (record === null || record.state !== AuditExportState.COMPLETED) {
+      throw new NotFoundError('the export is not this tenant’s, or not finished');
+    }
+    const part = record.artefacts.find((candidate) => candidate.name === grant.subject.artefact);
+    if (
+      part === undefined ||
+      part.fileObjectId !== grant.fileObjectId ||
+      part.name !== grant.filename ||
+      part.mediaType !== grant.mimeType
+    ) {
+      throw new NotFoundError('the link does not describe an artefact of this export');
+    }
+    // Quarantined refuses here (409) exactly as delivery would.
+    const file = await this.storage.servable(asId(part.fileObjectId));
+    if (file.checksumSha256 !== part.sha256) {
+      throw new NotFoundError('the artefact’s recorded digest is not its file’s');
+    }
+    return { audit: { auditExportId: String(record.id), artefact: part.name } };
   }
 
   /**

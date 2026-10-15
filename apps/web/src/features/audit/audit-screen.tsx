@@ -25,7 +25,7 @@ import type { AuditEntry, AuditExport, AuditPage } from '@edms/contracts';
 import type { MessageKey } from '@edms/i18n';
 
 import { useTranslate } from '../../app/providers';
-import { downloadAuditExport, requestAuditExport } from './actions';
+import { downloadAuditArtefact, requestAuditExport } from './actions';
 
 /**
  * The audit search — `13-audit-architecture.md` §6's "filterable by actor, action, target, date,
@@ -93,17 +93,16 @@ export function AuditScreen({
     toast.error(result.detail ?? translate('audit.export.failed'));
   };
 
-  const takeBundle = async (id: string): Promise<void> => {
-    const result = await downloadAuditExport(id);
-    if (!result.ok) {
-      toast.error(result.detail ?? translate('audit.export.failed'));
+  const takeArtefact = async (id: string, name: string): Promise<void> => {
+    const result = await downloadAuditArtefact(id, name);
+    const link = result.ok ? result.value.data[0] : undefined;
+    if (link === undefined) {
+      toast.error((result.ok ? null : result.detail) ?? translate('audit.export.failed'));
       return;
     }
-    // One tab per artefact. The bundle is a prefix rather than an archive — see the export
-    // service for why — so "download the bundle" is three signed links, and each is audited.
-    for (const link of result.value.data) {
-      window.open(link.url, '_blank', 'noopener,noreferrer');
-    }
+    // A navigation to the verified download: the answer is an attachment, so this page stays and
+    // there is no popup to block. One artefact per click, so none is silently lost (E-12).
+    window.location.assign(link.url);
   };
 
   return (
@@ -248,15 +247,32 @@ export function AuditScreen({
                         {bundle.chainIntact === false && (
                           <Badge tone="danger">{translate('audit.export.chainBroken')}</Badge>
                         )}
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          onClick={() => {
-                            void takeBundle(bundle.id);
-                          }}
-                        >
-                          {translate('audit.export.download')}
-                        </Button>
+                        {/*
+                          One button per artefact, each issuing its own verified link when it is
+                          clicked: a bundle is several files, and a browser allows one download per
+                          gesture. Too large to verify is said, not offered.
+                        */}
+                        {bundle.artefacts.map((artefact) =>
+                          artefact.tooLargeToDownload ? (
+                            <Badge key={artefact.name} tone="warning">
+                              {translate('audit.export.tooLarge', { name: artefact.name })}
+                            </Badge>
+                          ) : (
+                            <Button
+                              key={artefact.name}
+                              type="button"
+                              variant="ghost"
+                              aria-label={translate('audit.export.downloadArtefact', {
+                                name: artefact.name,
+                              })}
+                              onClick={() => {
+                                void takeArtefact(bundle.id, artefact.name);
+                              }}
+                            >
+                              <span dir="ltr">{artefact.name}</span>
+                            </Button>
+                          ),
+                        )}
                       </>
                     )}
                     {bundle.error !== null && (
