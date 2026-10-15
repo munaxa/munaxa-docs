@@ -1,0 +1,49 @@
+# Munaxa Docs: the routing rules every proxy configuration shares, imported by `Caddyfile` (plain
+# HTTP behind the TLS decision) and `Caddyfile.tls` (direct TLS on the host, ADR-0026 option C).
+# One copy, so the two cannot drift: what is public, what is refused, and what is never logged.
+#
+# Routing is ADR-0024 §2.3's rule, unchanged by the move off AWS:
+#
+#   /api/v1/preview/stream*  -> the API   (browsers load previews from STORAGE_PUBLIC_URL + this path)
+#   /api/v1/downloads*       -> the API   (verified download links, STORAGE_PUBLIC_URL + this path:
+#                                           served only after the file's SHA-256 matched, ADR-0026 §10)
+#   any other /api/*          -> 404       (the health routes and /api/metrics are never public)
+#   everything else           -> the web   (the web server calls the API server-side)
+(munaxa_routes) {
+	@preview path /api/v1/preview/stream*
+	handle @preview {
+		reverse_proxy api:3001
+	}
+
+	# A verified download answers only once the whole file is staged and its SHA-256 matched, so the
+	# first byte can take as long as reading the file from the store. Caddy sets no response timeout
+	# by default, and none is set here. Responses are streamed as the API writes them.
+	@download path /api/v1/downloads /api/v1/downloads/*
+	handle @download {
+		reverse_proxy api:3001 {
+			flush_interval -1
+		}
+	}
+
+	@api path /api /api/*
+	handle @api {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	# A verified download link and a preview stream carry their capability in `?token=`: a bearer
+	# credential for its lifetime. The access log keeps the request, never the token. Caddy already
+	# leaves Cookie and Authorization headers out of its log by default.
+	log {
+		output stdout
+		format filter {
+			request>uri query {
+				replace token REDACTED
+			}
+			wrap json
+		}
+	}
+}

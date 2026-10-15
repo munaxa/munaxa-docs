@@ -1,0 +1,42 @@
+# Munaxa Docs: direct TLS on the host (ADR-0026 TLS option C; the readiness report's recommendation
+# for TEST, §5.2) — used ONLY through compose.tls.yaml, which mounts it in place of Caddyfile.
+#
+# Caddy terminates TLS itself, on this server: documents are decrypted nowhere else. It obtains and
+# renews the certificate for DOCS_PUBLIC_HOSTNAME from DOCS_ACME_CA (Let's Encrypt by default) with
+# the HTTP-01 or TLS-ALPN-01 challenge, so before the first start (hetzner-host-operations.md §7):
+#   - the host name's A/AAAA record points at this server;
+#   - ports 80 and 443 are open to the internet in the Hetzner Cloud Firewall;
+#   - /data is the persistent volume compose.tls.yaml gives it (certificates, the ACME account and
+#     renewal state survive restarts; on tmpfs every restart would request a new certificate and
+#     soon hit the CA's rate limits).
+# Renewal is automatic, about 30 days before expiry; ops/host-check.sh reports a certificate with
+# fewer than TLS_MIN_DAYS (14) left.
+#
+# The client address: browsers connect to Caddy directly, so the TCP peer is the client and nothing
+# is trusted from a header (Docker's published ports keep the source address). Caddy passes it on
+# in X-Forwarded-For, which the web and API trust only from this proxy's fixed address.
+{
+	# No admin API: nothing in this deployment reconfigures the proxy at runtime.
+	admin off
+	email {$DOCS_ACME_EMAIL}
+	acme_ca {$DOCS_ACME_CA}
+	servers {
+		# HTTP/1.1 and HTTP/2 over TCP only; HTTP/3 would need UDP 443 open as well.
+		protocols h1 h2
+	}
+}
+
+import /etc/caddy/routes.caddy
+
+# The one public site. Plain HTTP on port 80 only redirects here (and answers ACME challenges).
+{$DOCS_PUBLIC_HOSTNAME} {
+	# Six months; no includeSubDomains or preload, which would bind names this deployment does not own.
+	header Strict-Transport-Security "max-age=15552000"
+	import munaxa_routes
+}
+
+# The container's own health check. Bound to the loopback interface inside the container and never
+# published, so it is not reachable from the internet or from the other containers.
+http://127.0.0.1:8081 {
+	respond "ok" 200
+}

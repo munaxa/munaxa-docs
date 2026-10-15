@@ -69,6 +69,7 @@ services:
       - /config
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/routes.caddy:/etc/caddy/routes.caddy:ro
     ports:
       # The only published port. 127.0.0.1 until the TLS decision (ADR-0026 §11) says what connects
       # to it; never 0.0.0.0 without a firewall that admits only that component.

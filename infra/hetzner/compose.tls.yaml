@@ -1,0 +1,41 @@
+# DIRECT TLS ON THE HOST — ADR-0026 TLS option C, the readiness report's recommendation for TEST (§5.2).
+# NOT YET USED ANYWHERE: the TLS decision (D-2) awaits the owner. An overlay, so the base template
+# keeps its 127.0.0.1-only default:
+#
+#   docker compose --env-file deploy.env -f infra/hetzner/compose.yaml -f infra/hetzner/compose.tls.yaml up -d
+#
+# What it changes, for the proxy only:
+#   - Caddyfile.tls in place of Caddyfile: automatic HTTPS for DOCS_PUBLIC_HOSTNAME, HTTP → HTTPS;
+#   - ports 80 and 443 published, and nothing else (the base 127.0.0.1:8080 is removed);
+#   - a persistent volume for Caddy's /data (certificates, ACME account, renewal state).
+# PostgreSQL, Redis and the scanner keep no published port and stay on internal networks.
+#
+# Required in deploy.env (Compose refuses to start without them; placeholders only in the example):
+#   DOCS_PUBLIC_HOSTNAME   the TEST host name, e.g. a name under the existing domain
+#   DOCS_ACME_EMAIL        the ACME account's contact address
+# Optional:
+#   DOCS_ACME_CA           default Let's Encrypt production; its staging directory
+#                          (https://acme-staging-v02.api.letsencrypt.org/directory) for a first dry run
+#   DOCS_PUBLIC_BIND       the host address to publish on (default every address)
+# ops/check-deploy-env.sh checks these before anything starts.
+
+services:
+  proxy:
+    environment:
+      DOCS_PUBLIC_HOSTNAME: ${DOCS_PUBLIC_HOSTNAME:?set DOCS_PUBLIC_HOSTNAME in deploy.env (the TEST host name)}
+      DOCS_ACME_EMAIL: ${DOCS_ACME_EMAIL:?set DOCS_ACME_EMAIL in deploy.env (the ACME account contact)}
+      DOCS_ACME_CA: ${DOCS_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes: !override
+      - ./Caddyfile.tls:/etc/caddy/Caddyfile:ro
+      - ./caddy/routes.caddy:/etc/caddy/routes.caddy:ro
+      - caddy-data:/data
+    # /data is the volume above now; /config (Caddy's autosave of the running configuration) stays
+    # in memory: nothing reads it back, because the admin API is off.
+    tmpfs: !override
+      - /config
+    ports: !override
+      - '${DOCS_PUBLIC_BIND:-0.0.0.0}:80:80'
+      - '${DOCS_PUBLIC_BIND:-0.0.0.0}:443:443'
+
+volumes:
+  caddy-data:
