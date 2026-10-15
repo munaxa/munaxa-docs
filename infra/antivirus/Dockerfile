@@ -3,7 +3,8 @@
 # ../docker-compose.yml; it is what the API's `AV_DRIVER=ICAP` adapter is validated against.
 #
 # Signatures are not baked in: `freshclam` fetches ClamAV's official databases when the container
-# starts, into the `antivirus-signatures` volume, so a stale image never scans with stale signatures.
+# starts, into the `antivirus-signatures` volume, so a stale image never scans with stale signatures,
+# and `munaxa-scanner-watch` refreshes them every hour after that (R-10).
 FROM ubuntu:24.04
 
 RUN apt-get update \
@@ -15,10 +16,11 @@ COPY clamd.conf /etc/munaxa-antivirus/clamd.conf
 COPY c-icap.conf /etc/munaxa-antivirus/c-icap.conf
 COPY entrypoint.sh /usr/local/bin/munaxa-antivirus
 COPY has-signatures.sh /usr/local/bin/has-signatures
+COPY scanner-watch.sh /usr/local/bin/munaxa-scanner-watch
 # Inside the container the ICAP port faces the compose network rather than loopback. The runtime
 # directories belong to `clamav`, the account the container runs as (below).
 RUN sed -i 's/^Port 127.0.0.1:1344$/Port 0.0.0.0:1344/' /etc/munaxa-antivirus/c-icap.conf \
- && chmod 755 /usr/local/bin/munaxa-antivirus /usr/local/bin/has-signatures \
+ && chmod 755 /usr/local/bin/munaxa-antivirus /usr/local/bin/has-signatures /usr/local/bin/munaxa-scanner-watch \
  && mkdir -p /var/run/clamav /var/run/c-icap /var/log/c-icap \
  && chown clamav:clamav /var/run/clamav /var/run/c-icap /var/log/c-icap \
  && test "$(id -u clamav):$(id -g clamav)" = "101:102"

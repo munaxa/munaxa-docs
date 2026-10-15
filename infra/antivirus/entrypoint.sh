@@ -1,5 +1,5 @@
 #!/bin/sh
-# Signatures, then the engine, then the ICAP front end in the foreground.
+# Signatures, then the engine and its watch, then the ICAP front end in the foreground.
 set -eu
 # Runtime files left by an unclean stop (a killed container, a host or daemon restart) — STG-9.
 # c-icap refuses to start while its PidFile exists ("c-icap server already running!") and exits 0,
@@ -14,13 +14,19 @@ rm -f /var/run/c-icap/c-icap.pid /var/run/c-icap/c-icap.ctl /var/run/clamav/clam
 if [ ! -w /var/lib/clamav ]; then
   echo "/var/lib/clamav is not writable by $(id -un) ($(id -u):$(id -g)); signatures cannot be updated" >&2
 fi
-if ! freshclam --stdout; then
-  if /usr/local/bin/has-signatures /var/lib/clamav; then
-    echo "freshclam failed; scanning with the signatures already in the volume" >&2
-  else
-    echo "freshclam failed and there are no signatures: refusing to start a scanner that detects nothing" >&2
-    exit 1
-  fi
+if freshclam --stdout; then
+  munaxa-scanner-watch record-refresh
+elif /usr/local/bin/has-signatures /var/lib/clamav; then
+  echo "freshclam failed; scanning with the signatures already in the volume" >&2
+else
+  echo "freshclam failed and there are no signatures: refusing to start a scanner that detects nothing" >&2
+  exit 1
 fi
-clamd -c /etc/munaxa-antivirus/clamd.conf
+# The engine, answering, BEFORE the ICAP server: c-icap started without a reachable engine answers
+# 204 for everything (scanner-watch.sh, the fail-open guard). If the signatures are past
+# SIGNATURE_REFUSE_AGE_HOURS this waits, with nothing listening, until a refresh succeeds. Then the
+# watch that refreshes signatures, restarts a dead engine, reports staleness and guards against a
+# fail-open answer (R-10).
+munaxa-scanner-watch start
+munaxa-scanner-watch run &
 exec c-icap -N -f /etc/munaxa-antivirus/c-icap.conf

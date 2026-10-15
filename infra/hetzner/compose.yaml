@@ -184,13 +184,19 @@ services:
     networks:
       - scan
       - scanner-egress
+    environment:
+      # Signature refresh and staleness (infra/antivirus/scanner-watch.sh; R-10). Unhealthy past the
+      # first, and scans REFUSED past the second (0 = never), until a refresh succeeds.
+      SIGNATURE_REFRESH_INTERVAL_SECONDS: ${DOCS_SIGNATURE_REFRESH_INTERVAL_SECONDS:-3600}
+      SIGNATURE_MAX_AGE_HOURS: ${DOCS_SIGNATURE_MAX_AGE_HOURS:-72}
+      SIGNATURE_REFUSE_AGE_HOURS: ${DOCS_SIGNATURE_REFUSE_AGE_HOURS:-168}
     healthcheck:
       # A real scan through the engine, not an ICAP ping: c-icap answers OPTIONS with clamd dead.
-      # The same check as infra/docker-compose.yml.
+      # Then the signatures' age: a scanner that scans with stale signatures is reported unhealthy.
       test:
         [
           'CMD-SHELL',
-          'c-icap-client -i 127.0.0.1 -p 1344 -s avscan -f /etc/hostname -resp http://probe/ -v 2>&1 | grep -q "ICAP/1.0 204"',
+          'c-icap-client -i 127.0.0.1 -p 1344 -s avscan -f /etc/hostname -resp http://probe/ -v 2>&1 | grep -q "ICAP/1.0 204" && munaxa-scanner-watch check',
         ]
       interval: 30s
       timeout: 10s

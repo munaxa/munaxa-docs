@@ -88,7 +88,40 @@ describe('entrypoint.sh clears stale runtime files before starting the daemons',
     const path = declared(file, directive);
     const removal = entrypoint.search(new RegExp(`^rm -f .*${path.replaceAll('.', '\\.')}`, 'm'));
     expect(removal).toBeGreaterThan(-1);
-    expect(removal).toBeLessThan(entrypoint.indexOf('clamd -c'));
+    // The engine is started by the watch since R-10 (`munaxa-scanner-watch start`).
+    expect(removal).toBeLessThan(entrypoint.indexOf('munaxa-scanner-watch start'));
     expect(removal).toBeLessThan(entrypoint.indexOf('exec c-icap'));
+  });
+});
+
+/**
+ * c-icap is never started before the engine answers — R-10, found by test-scanner-watch.sh.
+ *
+ * c-icap's virus_scan registers its clamd engine when it starts. If clamd is not answering then,
+ * every file — EICAR included — is answered "204, unmodified" ("Antivirus engine is not available,
+ * allow 204"), and the API counts a 204 as clean. The entrypoint therefore starts c-icap only after
+ * `munaxa-scanner-watch start` has returned, and `start` returns only once clamd answers PING.
+ */
+describe('entrypoint.sh starts the ICAP server only after the engine answers', () => {
+  const entrypoint = readFileSync(resolve(IMAGE, 'entrypoint.sh'), 'utf8');
+  const watch = readFileSync(resolve(IMAGE, 'scanner-watch.sh'), 'utf8');
+
+  it('starts the engine through the watch before exec c-icap, and nowhere starts c-icap earlier', () => {
+    const start = entrypoint.indexOf('munaxa-scanner-watch start');
+    expect(start).toBeGreaterThan(-1);
+    expect(start).toBeLessThan(entrypoint.indexOf('exec c-icap'));
+    expect(entrypoint.match(/c-icap -N/g)).toHaveLength(1);
+  });
+
+  it('returns from start only once clamd answers PING, and exits otherwise', () => {
+    const body = watch.slice(watch.indexOf('start() {'), watch.indexOf('case "${1:-}" in'));
+    expect(body).toContain('engine_answers && return 0');
+    expect(body).toContain('exit 1');
+    expect(watch).toContain('zPING');
+  });
+
+  it('guards every tick against EICAR answered 204, by stopping the ICAP server', () => {
+    expect(watch).toMatch(/while true; do\n\s+sleep "\$interval"\n\s+guard_fail_open/);
+    expect(watch).toContain('kill 1');
   });
 });
