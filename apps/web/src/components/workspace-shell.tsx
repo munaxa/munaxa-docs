@@ -583,15 +583,23 @@ function GlobalSearch(): ReactNode {
     const onKeyDown = (event: KeyboardEvent): void => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        input.current?.focus();
-        input.current?.select();
+        // Below `lg` the box is not drawn — a tablet's top bar has no room for it beside the rail
+        // and the account controls — so the shortcut goes to the search screen instead of focusing
+        // nothing.
+        const form = input.current?.closest('form');
+        if (input.current === null || !form || getComputedStyle(form).display === 'none') {
+          router.push('/search');
+          return;
+        }
+        input.current.focus();
+        input.current.select();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, []);
+  }, [router]);
 
   const shortcut =
     typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
@@ -602,7 +610,7 @@ function GlobalSearch(): ReactNode {
     <form
       role="search"
       aria-label={translate('nav.globalSearch')}
-      className="relative ms-2 hidden max-w-[460px] min-w-60 flex-1 sm:block"
+      className="relative ms-2 hidden max-w-[460px] min-w-60 flex-1 lg:block"
       onSubmit={(event) => {
         event.preventDefault();
         const query = new FormData(event.currentTarget).get('q');

@@ -111,7 +111,7 @@ describe('search bar in the running application', () => {
     await page.waitForFunction(() => document.readyState === 'complete');
 
     const measured = await page.evaluate(() => {
-      const field = document.querySelector('input[name="q"]');
+      const field = document.querySelector('main input[name="q"]'); // `main`: the top bar carries a workspace search box of its own (Docs v2), with the same name.
       const form = field?.closest('form');
       const submit = form?.querySelector('button[type="submit"]');
       if (!(field instanceof HTMLElement) || !(submit instanceof HTMLElement) || form === null) {
@@ -230,7 +230,7 @@ describe('search bar in the running application', () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${WEB_URL}/search`, { waitUntil: 'networkidle' });
 
-    await page.getByRole('searchbox').fill(fixture.documentNumber);
+    await page.getByRole('main').getByRole('searchbox').fill(fixture.documentNumber);
     await page.getByRole('button', { name: en.search.submit, exact: true }).click();
     await page.waitForURL((url) => url.searchParams.get('q') === fixture.documentNumber, {
       timeout: 30_000,
@@ -376,7 +376,7 @@ describe('search bar in the running application', () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoPopulated(page, fixture.documentNumber);
 
-    await page.getByRole('searchbox').focus();
+    await page.getByRole('main').getByRole('searchbox').focus();
 
     const reached = { submit: false, facet: false, result: false, outlined: false };
     for (let step = 0; step < 40; step += 1) {
