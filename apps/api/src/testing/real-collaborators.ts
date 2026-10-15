@@ -2331,6 +2331,16 @@ export function realBulk(options: {
     new StorageContentGateAdapter(options.library.storage),
     options.unitOfWork,
     acl,
+    // The real adapter over the library's own configuration service, so a confidentiality level a
+    // suite sets is the one the export reads. `confidentiality` never asks the user directory; a
+    // directory that throws says so if that ever changes.
+    new AdministrationConfigurationAdapter(
+      options.library.configuration,
+      realOrganizationService(),
+      {
+        get: () => Promise.reject(new Error('the bulk export does not read users')),
+      } as unknown as UserAdminService,
+    ),
   );
   // The container calls these at `onModuleInit`; a suite that skipped them would have an executor
   // that cannot build any plan at all.

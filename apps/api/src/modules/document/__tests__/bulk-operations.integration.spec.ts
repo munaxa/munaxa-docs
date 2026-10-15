@@ -1715,3 +1715,273 @@ describe('two deliveries of one export', () => {
     ).toBe(1);
   }, 60_000);
 });
+
+/**
+ * A bulk export's links — the two authorization defects E-1 and E-2
+ * (`docs/reports/hetzner-export-verified-delivery-design.md`).
+ *
+ * E-1: the single download refuses a document whose confidentiality level forbids download; the
+ * bulk route asked only the ACL, so selecting the document in an export released it anyway.
+ * E-2: links were minted for any of the caller's own operations — any kind, any state — so the
+ * applied items of a metadata change, or of an export still running, came back as download links.
+ *
+ * Every document here has real bytes in the store, because a link is issued only after the gate
+ * has confirmed them (a HEAD), and an assertion against an absent blob would be measuring the
+ * quarantine path instead of the authorization one.
+ */
+describe('a bulk export releases only what the single download would', () => {
+  let forbiddingLevelId: string;
+  let allowingLevelId: string;
+
+  beforeAll(async () => {
+    const forbidding = await asAdmin(() =>
+      library.configuration.createConfidentiality({
+        code: 'NODL',
+        name: 'Restricted — no download',
+        rank: 9,
+        allowDownload: false,
+        allowPrint: false,
+        watermark: false,
+        requireReason: false,
+      }),
+    );
+    forbiddingLevelId = forbidding.id;
+    allowingLevelId =
+      (
+        await owner.confidentialityLevel.findFirst({
+          where: { tenantId: TENANT, code: 'INTERNAL' },
+        })
+      )?.id ?? '';
+  });
+
+  /** A document whose revision's bytes really are in the store, with the given file states. */
+  async function releasable(
+    prefix: string,
+    options: {
+      readonly confidentialityId?: string;
+      readonly scanStatus?: string;
+      readonly integrityStatus?: string;
+      readonly stored?: boolean;
+    } = {},
+  ): Promise<{ documentId: string; fileObjectId: string }> {
+    const [documentId] = await seedDocuments(openFolderId, 1, prefix);
+    const bytes = Buffer.from(`%PDF-1.7\n% ${prefix} ${uuidv7()}\n%%EOF\n`);
+    const key = `bulk-links/${prefix}-${uuidv7()}.pdf`;
+    if (options.stored !== false) {
+      await asAdmin(() =>
+        library.storagePort.put(
+          key as never,
+          (async function* () {
+            await Promise.resolve();
+            yield bytes;
+          })(),
+          { contentType: 'application/pdf' },
+        ),
+      );
+    }
+    const fileObjectId = uuidv7();
+    await owner.fileObject.create({
+      data: {
+        id: fileObjectId,
+        tenantId: TENANT,
+        checksumSha256: createHash('sha256').update(bytes).digest('hex'),
+        sizeBytes: BigInt(bytes.length),
+        mimeType: 'application/pdf',
+        storageKey: key,
+        storageDriver: 'LOCAL',
+        scanStatus: (options.scanStatus ?? ScanStatus.CLEAN) as never,
+        integrityStatus: (options.integrityStatus ?? 'UNVERIFIED') as never,
+        refCount: 1,
+        updatedAt: FIXED_NOW,
+      },
+    });
+    const revisionId = uuidv7();
+    await owner.documentRevision.create({
+      data: {
+        id: revisionId,
+        tenantId: TENANT,
+        documentId: documentId ?? '',
+        ordinal: 0,
+        label: 'Original',
+        fileObjectId,
+        filename: `${prefix}.pdf`,
+        updatedAt: FIXED_NOW,
+      },
+    });
+    await owner.document.update({
+      where: { id: documentId ?? '' },
+      data: {
+        latestRevisionId: revisionId,
+        currentRevisionId: revisionId,
+        ...(options.confidentialityId !== undefined && {
+          confidentialityId: options.confidentialityId,
+        }),
+      },
+    });
+    return { documentId: documentId ?? '', fileObjectId };
+  }
+
+  function issuedFor(fileObjectId: string): Promise<number> {
+    return owner.auditEvent.count({
+      where: { tenantId: TENANT, action: 'FILE_DOWNLOAD_ISSUED', subjectId: fileObjectId },
+    });
+  }
+
+  async function linksOf(
+    operationId: string,
+    as: <T>(work: () => Promise<T>) => Promise<T> = asAda,
+  ): Promise<{ links: readonly { documentId: string }[] | null; error: unknown }> {
+    try {
+      return { links: await as(() => bulk.exports.links(operationId)), error: null };
+    } catch (error) {
+      return { links: null, error };
+    }
+  }
+
+  const notFound = { code: ErrorCode.NOT_FOUND };
+
+  it('still releases an allowed document whose bytes verify, and audits the one link', async () => {
+    const allowed = await releasable('links-allowed');
+    const exported = await asAda(() => bulk.exports.export([allowed.documentId]));
+    expect(appliedIds(exported)).toEqual([allowed.documentId]);
+
+    const { links, error } = await linksOf(exported.operationId);
+
+    expect(error).toBeNull();
+    expect(links?.map((link) => link.documentId)).toEqual([allowed.documentId]);
+    expect(await issuedFor(allowed.fileObjectId)).toBe(1);
+  });
+
+  it('never releases a document whose confidentiality level forbids download (E-1)', async () => {
+    const allowed = await releasable('links-mixed-allowed');
+    const restricted = await releasable('links-restricted', {
+      confidentialityId: forbiddingLevelId,
+    });
+
+    const exported = await asAda(() =>
+      bulk.exports.export([allowed.documentId, restricted.documentId]),
+    );
+
+    // Refused at export time, the same answer the single download gives — and so not in the
+    // manifest, which names only applied documents.
+    expect(refusedIds(exported)).toEqual([restricted.documentId]);
+    expect(appliedIds(exported)).toEqual([allowed.documentId]);
+    const { links } = await linksOf(exported.operationId);
+    expect(links?.map((link) => link.documentId)).toEqual([allowed.documentId]);
+    expect(await issuedFor(restricted.fileObjectId)).toBe(0);
+  });
+
+  it('does not release a document reclassified after the export was taken (E-1)', async () => {
+    const later = await releasable('links-reclassified');
+    const exported = await asAda(() => bulk.exports.export([later.documentId]));
+    expect(appliedIds(exported)).toEqual([later.documentId]);
+
+    await owner.document.update({
+      where: { id: later.documentId },
+      data: { confidentialityId: forbiddingLevelId },
+    });
+    const { links, error } = await linksOf(exported.operationId);
+
+    // Membership of the operation grants nothing: the level is asked again, now.
+    expect(error).toBeNull();
+    expect(links).toEqual([]);
+    expect(await issuedFor(later.fileObjectId)).toBe(0);
+
+    await owner.document.update({
+      where: { id: later.documentId },
+      data: { confidentialityId: allowingLevelId },
+    });
+  });
+
+  it('gives no links for another person’s export, and says so as for a missing one (E-2)', async () => {
+    const theirs = await releasable('links-ada-own');
+    const exported = await asAda(() => bulk.exports.export([theirs.documentId]));
+
+    const asBenResult = await linksOf(exported.operationId, asBen);
+    const missing = await linksOf(uuidv7(), asBen);
+
+    expect(asBenResult.error).toMatchObject(notFound);
+    expect(missing.error).toMatchObject(notFound);
+    expect((asBenResult.error as Error).message).toBe((missing.error as Error).message);
+    expect(await issuedFor(theirs.fileObjectId)).toBe(0);
+  });
+
+  it('gives no links for an identifier this tenant does not hold (E-2)', async () => {
+    const own = await releasable('links-tenant');
+    const exported = await asAda(() => bulk.exports.export([own.documentId]));
+    const elsewhere = asId<TenantId>(uuidv7());
+
+    const { error } = await runWithContext(
+      { ...contextFor(ADA, [EDITOR_ROLE]), tenantId: elsewhere },
+      () => linksOf(exported.operationId, (work) => work()),
+    );
+
+    expect(error).toMatchObject(notFound);
+    expect(await issuedFor(own.fileObjectId)).toBe(0);
+  });
+
+  it('gives no links for an operation that is not an export (E-2)', async () => {
+    const document = await releasable('links-wrong-kind');
+    const exported = await asAda(() => bulk.exports.export([document.documentId]));
+    // The shape of the defect: a finished operation of another kind whose items are APPLIED.
+    for (const kind of ['METADATA', 'RESTORE', 'UPLOAD', 'APPROVAL'] as const) {
+      await owner.bulkOperation.update({ where: { id: exported.operationId }, data: { kind } });
+
+      const { error } = await linksOf(exported.operationId);
+
+      expect(error, kind).toMatchObject(notFound);
+    }
+    expect(await issuedFor(document.fileObjectId)).toBe(0);
+  });
+
+  it('gives no links for an export that has not completed (E-2)', async () => {
+    const document = await releasable('links-unfinished');
+    const exported = await asAda(() => bulk.exports.export([document.documentId]));
+    // REQUESTED and RUNNING have not decided every item; FAILED is defined as an operation whose
+    // per-item outcomes are incomplete. Only COMPLETED is a release that has been decided.
+    for (const state of ['REQUESTED', 'RUNNING', 'FAILED'] as const) {
+      await owner.bulkOperation.update({ where: { id: exported.operationId }, data: { state } });
+
+      const { error } = await linksOf(exported.operationId);
+
+      expect(error, state).toMatchObject(notFound);
+    }
+    expect(await issuedFor(document.fileObjectId)).toBe(0);
+
+    await owner.bulkOperation.update({
+      where: { id: exported.operationId },
+      data: { state: 'COMPLETED' },
+    });
+    expect((await linksOf(exported.operationId)).links).toHaveLength(1);
+  });
+
+  it('cannot even be handed unscanned or infected content: the database refuses the revision', async () => {
+    // The scan half of "protected" is enforced below the application: a revision may not reference
+    // a file object that is not CLEAN (a CHECK the migrations install), so no export can contain one.
+    for (const scanStatus of [ScanStatus.PENDING, ScanStatus.INFECTED]) {
+      await expect(releasable(`links-${scanStatus.toLowerCase()}`, { scanStatus })).rejects.toThrow(
+        /may not reference file object .* with scan status/,
+      );
+    }
+  });
+
+  it('keeps quarantined and missing content out, and audits only what it released', async () => {
+    const good = await releasable('links-good');
+    const mismatch = await releasable('links-mismatch', { integrityStatus: 'MISMATCH' });
+    const unreadable = await releasable('links-unreadable', { integrityStatus: 'UNREADABLE' });
+    const vanished = await releasable('links-vanished', { stored: false });
+    const all = [good, mismatch, unreadable, vanished];
+
+    const exported = await asAda(() => bulk.exports.export(all.map((doc) => doc.documentId)));
+    const { links, error } = await linksOf(exported.operationId);
+
+    // The request answers rather than failing on the first refused file, so no row is written for
+    // a link the caller never received.
+    expect(error).toBeNull();
+    expect(links?.map((link) => link.documentId)).toEqual([good.documentId]);
+    expect(await issuedFor(good.fileObjectId)).toBe(1);
+    for (const refused of [mismatch, unreadable, vanished]) {
+      expect(await issuedFor(refused.fileObjectId)).toBe(0);
+    }
+  });
+});

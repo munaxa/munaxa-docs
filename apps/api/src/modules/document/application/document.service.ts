@@ -94,6 +94,7 @@ import {
   type DocumentConfiguration,
   type DocumentTypePolicy,
 } from './configuration.port';
+import { refuseWhereLevelForbidsDownload } from './download-confidentiality';
 import { DOCUMENT_PLACEMENT, type DocumentPlacement } from './placement.port';
 import { DOCUMENT_THUMBNAILER, type DocumentThumbnailer } from './thumbnail.port';
 
@@ -922,12 +923,7 @@ export class DefaultDocumentService {
     if (revision === null) {
       throw new NotFoundError('The requested file');
     }
-    const level = await this.configuration.confidentiality(document.confidentialityId);
-    if (level !== null && !level.allowDownload) {
-      // A confidentiality level subtracts and never grants: holding `document:download` is not
-      // enough if the document's own classification forbids it (`08-permission-model.md` §4).
-      throw new ForbiddenError('download this document');
-    }
+    await refuseWhereLevelForbidsDownload(this.configuration, document.confidentialityId);
     return { fileObjectId: revision.file.fileObjectId, filename: revision.file.filename };
   }
 

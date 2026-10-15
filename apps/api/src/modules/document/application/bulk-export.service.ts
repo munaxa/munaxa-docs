@@ -4,7 +4,10 @@ import {
   type AnyId,
   BulkItemOutcome,
   BulkOperationKind,
+  BulkOperationState,
   type DocumentId,
+  DomainError,
+  ErrorCode,
   Permission,
   ScopeType,
   type ScopeRef,
@@ -33,6 +36,8 @@ import {
   type DocumentRepository,
   type DocumentRow,
 } from './ports';
+import { DOCUMENT_CONFIGURATION, type DocumentConfiguration } from './configuration.port';
+import { refuseWhereLevelForbidsDownload } from './download-confidentiality';
 
 /**
  * Bulk export — the third export mechanism in this product, and the one that had to argue for
@@ -86,6 +91,7 @@ export class BulkExportService implements OnModuleInit {
     @Inject(DOCUMENT_CONTENT_GATE) private readonly content: DocumentContentGate,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
+    @Inject(DOCUMENT_CONFIGURATION) private readonly configuration: DocumentConfiguration,
   ) {}
 
   /**
@@ -133,6 +139,10 @@ export class BulkExportService implements OnModuleInit {
         if (row === null) {
           throw new NotFoundError('The requested document');
         }
+        // The same rule the single download applies: a level that forbids download refuses it, and
+        // being one of many selected documents changes nothing. `ForbiddenError`, so the executor
+        // records it as `REFUSED` (a reach answer) and the manifest does not name the document.
+        await refuseWhereLevelForbidsDownload(this.configuration, row.confidentialityId);
         const revision = row.currentRevision ?? row.latestRevision;
         if (revision === null) {
           // A document with no revision has no content. `BLOCKED` rather than `REFUSED`, which is
@@ -244,6 +254,7 @@ export class BulkExportService implements OnModuleInit {
   async links(
     operationId: string,
   ): Promise<readonly { documentId: string; filename: string; url: string; expiresAt: Date }[]> {
+    await this.requireCompletedOwnExport(operationId);
     const items = await this.unitOfWork.run(() =>
       this.operations.itemsOf(operationId, { page: 1, pageSize: 1_000 }),
     );
@@ -270,10 +281,23 @@ export class BulkExportService implements OnModuleInit {
       if (!decision.allowed) {
         continue;
       }
-      const signed = await this.content.downloadUrl(
-        revision.file.fileObjectId,
-        revision.file.filename,
-      );
+      // And the level, asked now too: a document reclassified since the export was taken is not
+      // released by a list made before. Membership of the operation grants nothing (E-1).
+      if (!(await this.levelAllowsDownload(row.confidentialityId))) {
+        continue;
+      }
+      let signed: { url: string; expiresAt: Date };
+      try {
+        signed = await this.content.downloadUrl(revision.file.fileObjectId, revision.file.filename);
+      } catch (error) {
+        // Unscanned, infected or quarantined content is refused by the gate before anything is
+        // issued or audited. Leaving that one document out — as for reach — rather than failing
+        // the request keeps every `FILE_DOWNLOAD_ISSUED` row matched by a link the caller received.
+        if (error instanceof DomainError && error.code === ErrorCode.CONTENT_NOT_SCANNED) {
+          continue;
+        }
+        throw error;
+      }
       links.push({
         documentId: row.id,
         filename: revision.file.filename,
@@ -282,6 +306,47 @@ export class BulkExportService implements OnModuleInit {
       });
     }
     return links;
+  }
+
+  /**
+   * The operation, if it is the caller's own **export** and has **finished** (E-2).
+   *
+   * Links are the release of an export's results, so nothing else qualifies:
+   * - another person's operation, or an identifier this tenant's database does not hold;
+   * - an operation of another kind (UPLOAD, METADATA, APPROVAL, RESTORE), whose applied items were
+   *   never decided as releases;
+   * - an export not yet `COMPLETED` — `REQUESTED` or `RUNNING` has not decided every item, and
+   *   `FAILED` is defined as one whose per-item outcomes are incomplete (`BulkOperationState`).
+   *
+   * All of them answer the same `404`, as the controller's own check does: "not yours", "not an
+   * export" and "not finished" must not be a probe for which identifiers exist.
+   */
+  private async requireCompletedOwnExport(operationId: string): Promise<void> {
+    const { userId } = requireContext();
+    const operation = await this.unitOfWork.run(() => this.operations.findById(operationId));
+    if (
+      operation === null ||
+      userId === null ||
+      (operation.requestedById as string) !== userId ||
+      operation.kind !== BulkOperationKind.EXPORT ||
+      operation.state !== BulkOperationState.COMPLETED
+    ) {
+      throw new NotFoundError('The requested bulk export');
+    }
+  }
+
+  private async levelAllowsDownload(confidentialityId: string): Promise<boolean> {
+    try {
+      await this.unitOfWork.run(() =>
+        refuseWhereLevelForbidsDownload(this.configuration, confidentialityId),
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof DomainError && error.code === ErrorCode.FORBIDDEN) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   private subject(): Parameters<AclResolver['resolve']>[0] {
