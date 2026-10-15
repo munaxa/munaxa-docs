@@ -47,6 +47,7 @@ import { AuditArtefactRedeemer } from '../application/audit-artefact.redeemer';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { toChainLink } from '../application/audit-verification.service';
 import { AuditExportState } from '../application/ports';
+import { StorageCheckpointStore } from '../infrastructure/storage-checkpoint.store';
 import { verifyManifestSignature } from '../domain/evidence-bundle';
 
 /**
@@ -169,6 +170,7 @@ beforeAll(async () => {
       readBufferMax: 10_000,
       readFlushIntervalMs: 3_600_000,
       checkpointSecret: CHECKPOINT_SECRET,
+      previousCheckpointSecrets: [],
       verifyBatchSize: 5,
       verifyMaxEvents: 10_000,
       exportBatchSize: 5,
@@ -284,6 +286,31 @@ describe('the chain, verified against what the database actually holds', () => {
     expect(stack.checkpoints.isAuthentic({ ...authentic, sequence: 99n })).toBe(false);
     expect(stack.checkpoints.isAuthentic({ ...authentic, hash: 'f'.repeat(64) })).toBe(false);
     expect(stack.checkpoints.isAuthentic(authentic)).toBe(true);
+  });
+
+  it('still accepts a checkpoint signed before a key rotation while the old key is held', async () => {
+    // R-5 of the Hetzner readiness report. A checkpoint names no key, so each held key is tried;
+    // the old key is held for reading only. Without it the checkpoint is ignored — verification
+    // then starts further back, which is safe and loses only the shortcut.
+    const authentic = await runWithContext(contextFor(), () => stack.checkpoints.latest());
+    if (authentic === null) {
+      throw new Error('A checkpoint was expected from the passes above.');
+    }
+    const ROTATED = 'the-checkpoint-key-after-the-rotation-2222';
+    const storeWith = (previousCheckpointSecrets: readonly string[]): StorageCheckpointStore =>
+      new StorageCheckpointStore(
+        library.storagePort,
+        {
+          ...config,
+          audit: { ...config.audit, checkpointSecret: ROTATED, previousCheckpointSecrets },
+        },
+        { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as never,
+      );
+
+    expect(storeWith([]).isAuthentic(authentic)).toBe(false);
+    expect(storeWith([CHECKPOINT_SECRET]).isAuthentic(authentic)).toBe(true);
+    // Holding the old key does not make a forgery pass.
+    expect(storeWith([CHECKPOINT_SECRET]).isAuthentic({ ...authentic, sequence: 99n })).toBe(false);
   });
 
   it('refuses an update or a delete, even for the owner — so tampering cannot be staged', async () => {

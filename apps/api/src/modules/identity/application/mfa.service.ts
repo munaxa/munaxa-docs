@@ -148,6 +148,11 @@ export class DefaultMfaService implements MfaService {
       if (enrolment.confirmedAt !== null) {
         throw new ForbiddenError('That authenticator is already confirmed.');
       }
+      if (enrolment.secret === null) {
+        // Sealed under a key this deployment no longer holds, between `begin` and here. Nothing
+        // is owed yet, so the way out is to begin again, which replaces this row.
+        throw new ForbiddenError('This enrolment can no longer be completed. Start it again.');
+      }
       const step = verifyTotp(enrolment.secret, code, {
         step: this.currentStep(),
         digits: this.config.mfa.totpDigits,
@@ -210,6 +215,10 @@ export class DefaultMfaService implements MfaService {
       if (enrolment.failedAttempts >= this.config.mfa.maxFailedAttempts) {
         await this.recordFailure(userId, 'LOCKED');
         return false;
+      }
+
+      if (enrolment.secret === null) {
+        return this.challengeWithoutSecret(userId, enrolment.id, code);
       }
 
       const step = verifyTotp(enrolment.secret, code, {
@@ -277,6 +286,39 @@ export class DefaultMfaService implements MfaService {
   }
 
   // --- Internals ---------------------------------------------------------------------------
+
+  /**
+   * A challenge whose authenticator secret no held key opens — a sealing key replaced without
+   * being kept, or lost (`docs/operations/key-rotation.md` §3–§4).
+   *
+   * Fails closed for authenticator codes: there is nothing to check one against, so none passes.
+   * A recovery code still proves the factor — it is hashed, not sealed, and independent of the
+   * key — and that is the documented way back in: sign in with one, remove the factor, enrol
+   * again. Every refusal is audited as `SEALING_KEY_NOT_HELD`, which is what tells an operator that
+   * the fix is the configuration rather than the person.
+   *
+   * A code shaped like an authenticator code does not count toward the lock. It can never succeed
+   * here, so counting it protects nothing — and the lock also refuses recovery codes, so counting
+   * it would turn a configuration fault into a permanent lock-out for somebody typing what their
+   * app shows. Anything else counts, so recovery codes cannot be guessed without limit.
+   */
+  private async challengeWithoutSecret(
+    userId: UserId,
+    enrolmentId: AnyId,
+    code: string,
+  ): Promise<boolean> {
+    if (await this.tryRecoveryCode(enrolmentId, code)) {
+      return true;
+    }
+    const authenticatorShaped = new RegExp(`^\\d{${String(this.config.mfa.totpDigits)}}$`).test(
+      code.trim(),
+    );
+    if (!authenticatorShaped) {
+      await this.enrolments.recordFailure(enrolmentId);
+    }
+    await this.recordFailure(userId, 'SEALING_KEY_NOT_HELD');
+    return false;
+  }
 
   /**
    * A recovery code, spent.

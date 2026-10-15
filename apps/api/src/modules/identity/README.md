@@ -279,8 +279,10 @@ moment the plaintext and a proof of it exist together — a deploy-time pass wou
 authenticator secrets unsealed in one process, which is the exposure sealing exists to prevent. The
 consequences are stated rather than hidden: a rotation never completes for an account nobody signs
 into, so the old key is discarded when an operator is willing to force re-enrolment for whoever is
-left; and removing a key that rows are still sealed under produces an error naming the variable
-rather than a failed sign-in that looks like a wrong code.
+left. Since the 2026-10-15 amendment to ADR-0020 the dedicated key rotates too: earlier values go in
+`MFA_TOTP_SEALING_PREVIOUS_KEYS`, and a row no held key opens fails closed for authenticator codes,
+still accepts recovery codes, and is audited as `MFA_FAILED` with reason `SEALING_KEY_NOT_HELD`
+([key-rotation.md](../../../../../docs/operations/key-rotation.md)).
 [ADR-0020](../../../../../docs/architecture/adr/0020-key-management-and-rotation.md) argues why the
 deployment's secret store *is* the key management service Phase 14's report asked for, and why a
 port with four adapters would have added an abstraction in front of a boundary the platform already

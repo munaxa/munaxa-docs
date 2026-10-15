@@ -113,6 +113,10 @@ process.env['TENANT_CATALOGUE'] = JSON.stringify({
  * behaviour, and a suite that quietly supplied the key through the environment would hide which.
  */
 process.env['SIGNATURE_WITNESS_SECRET'] = 'a-phase-6-6a-witness-secret-of-at-least-32';
+// A rotated deployment: an earlier witness key is still held for verification. Every signature
+// below must still be witnessed with the CURRENT key — the HMAC assertions recompute it with
+// SIGNATURE_WITNESS_SECRET — so holding a previous key never changes which key signs.
+process.env['SIGNATURE_WITNESS_PREVIOUS_SECRETS'] = 'an-earlier-witness-secret-held-for-verifying';
 
 let app: INestApplication;
 let baseUrl: string;

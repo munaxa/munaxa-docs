@@ -624,3 +624,81 @@ describe('describing which tenants this deployment serves', () => {
     expect(config.audit.checkpointSecret).toBeNull();
   });
 });
+
+/**
+ * Previous values of the three long-lived secrets — R-3, R-4, R-5 of the Hetzner readiness report;
+ * `docs/operations/key-rotation.md`.
+ */
+describe('rotated secrets', () => {
+  const PREVIOUS = [
+    ['MFA_TOTP_SEALING_PREVIOUS_KEYS', 'MFA_TOTP_SEALING_KEY'],
+    ['AUDIT_CHECKPOINT_PREVIOUS_SECRETS', 'AUDIT_CHECKPOINT_SECRET'],
+    ['SIGNATURE_WITNESS_PREVIOUS_SECRETS', 'SIGNATURE_WITNESS_SECRET'],
+  ] as const;
+  const older = 'o'.repeat(32);
+  const oldest = 'p'.repeat(40);
+
+  /** The message a refusal carries, so a test can check it never echoes a value. */
+  function refusal(env: NodeJS.ProcessEnv): string {
+    try {
+      loadConfig(env);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigurationError);
+      return (error as Error).message;
+    }
+    throw new Error('Expected the configuration to be refused.');
+  }
+
+  it('holds none unless told to', () => {
+    const config = loadConfig({ ...productionEnv });
+    expect(config.mfa.previousSealingKeys).toEqual([]);
+    expect(config.audit.previousCheckpointSecrets).toEqual([]);
+    expect(config.signature.previousWitnessSecrets).toEqual([]);
+  });
+
+  it('reads a comma-separated list, trimming spaces and empty entries', () => {
+    const config = loadConfig({
+      ...productionEnv,
+      MFA_TOTP_SEALING_PREVIOUS_KEYS: ` ${older} , ${oldest},`,
+      AUDIT_CHECKPOINT_PREVIOUS_SECRETS: older,
+      SIGNATURE_WITNESS_PREVIOUS_SECRETS: `${older},${oldest}`,
+    });
+    expect(config.mfa.previousSealingKeys).toEqual([older, oldest]);
+    expect(config.audit.previousCheckpointSecrets).toEqual([older]);
+    expect(config.signature.previousWitnessSecrets).toEqual([older, oldest]);
+    // The current values are untouched by the previous ones.
+    expect(config.mfa.sealingKey).toBe('m'.repeat(32));
+  });
+
+  it.each(PREVIOUS)('refuses %s without a current value', (previous, current) => {
+    const env: NodeJS.ProcessEnv = { ...baseEnv, [previous]: older };
+    delete env[current];
+    expect(refusal(env)).toContain(`${previous}: Previous values need ${current} to be set.`);
+  });
+
+  it.each(PREVIOUS)('refuses %s repeating the current value', (previous, current) => {
+    const message = refusal({ ...productionEnv, [previous]: `${older},${productionEnv[current]}` });
+    expect(message).toContain(`${previous}: Must not repeat ${current}.`);
+    expect(message).not.toContain(productionEnv[current]);
+  });
+
+  it.each(PREVIOUS)('refuses %s naming one value twice', (previous) => {
+    expect(refusal({ ...productionEnv, [previous]: `${older},${older}` })).toContain(
+      `${previous}: Each previous value must appear once.`,
+    );
+  });
+
+  it.each(PREVIOUS)('refuses a short value in %s without echoing it', (previous) => {
+    const short = 'too-short-to-be-a-key';
+    const message = refusal({ ...productionEnv, [previous]: short });
+    expect(message).toContain(previous);
+    expect(message).not.toContain(short);
+  });
+
+  it('holds at most eight', () => {
+    const nine = Array.from({ length: 9 }, (_, index) => String(index).repeat(32)).join(',');
+    expect(refusal({ ...productionEnv, SIGNATURE_WITNESS_PREVIOUS_SECRETS: nine })).toContain(
+      'At most eight previous values are held.',
+    );
+  });
+});

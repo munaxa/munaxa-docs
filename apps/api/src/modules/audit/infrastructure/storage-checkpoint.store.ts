@@ -99,14 +99,26 @@ export class StorageCheckpointStore implements AuditCheckpointStore {
     return checkpoints;
   }
 
+  /**
+   * Whether a checkpoint was signed by a key this deployment holds: the current one, or a previous
+   * one kept after a rotation (`AUDIT_CHECKPOINT_PREVIOUS_SECRETS`). A checkpoint carries no key
+   * name, so each held key is tried; there are at most nine, and an HMAC is cheap.
+   *
+   * Without the previous keys a rotation does not make anything pass that should fail: a checkpoint
+   * that no longer authenticates is ignored and verification starts further back. They keep the
+   * old checkpoints usable as the evidence they were written to be.
+   */
   isAuthentic(checkpoint: AuditCheckpoint): boolean {
-    const secret = this.config.audit.checkpointSecret;
-    if (secret === null) {
+    const current = this.config.audit.checkpointSecret;
+    if (current === null) {
       return false;
     }
-    const expected = createHmac('sha256', secret).update(material(checkpoint), 'utf8').digest();
     const given = Buffer.from(checkpoint.signature, 'hex');
-    return given.length === expected.length && timingSafeEqual(given, expected);
+    const body = material(checkpoint);
+    return [current, ...this.config.audit.previousCheckpointSecrets].some((secret) => {
+      const expected = createHmac('sha256', secret).update(body, 'utf8').digest();
+      return given.length === expected.length && timingSafeEqual(given, expected);
+    });
   }
 
   /**

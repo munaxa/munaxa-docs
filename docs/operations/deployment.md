@@ -239,9 +239,12 @@ Rotation is per key and the keys have deliberately different clocks
 | Key | Rotating it costs | Procedure |
 | --- | --- | --- |
 | `JWT_ACCESS_SECRET` | Every live session ends | Roll it, accept the sign-ins |
-| `MFA_TOTP_SEALING_KEY` | Nothing visible | Set the new key; enrolments re-seal as people next prove a code. Keep the old value out of the environment only once every active enrolment has been used — a row sealed under a key you have removed is one nothing can read, and the error names the variable |
-| `AUDIT_CHECKPOINT_SECRET` | Old checkpoints stop verifying under the new key | Roll it after a verification pass has caught up, and keep the old key with the archived checkpoints |
-| `SIGNATURE_WITNESS_SECRET` | **The expensive one.** A signature must go on verifying for the record's retention period — seven years, often more | Do not roll it casually. The key identifier is derived from the key, so signatures made under the old one keep naming it; a deployment that rolls it must keep every prior key for as long as it keeps the records |
+| `MFA_TOTP_SEALING_KEY` | Nothing visible | Move the old value to `MFA_TOTP_SEALING_PREVIOUS_KEYS` and set the new key; enrolments re-seal as people next prove a code. A row sealed under a key that is in neither variable fails closed for authenticator codes (recovery codes still work), is audited as `SEALING_KEY_NOT_HELD`, and is unchanged — restoring the key restores it |
+| `AUDIT_CHECKPOINT_SECRET` | Nothing, if the old key is kept | Move the old value to `AUDIT_CHECKPOINT_PREVIOUS_SECRETS`, set the new key; old checkpoints still authenticate, new ones use the new key. Without the old key, verification ignores the old checkpoints and starts further back |
+| `SIGNATURE_WITNESS_SECRET` | **The expensive one.** A signature must go on verifying for the record's retention period — seven years, often more | Do not roll it casually. Move the old value to `SIGNATURE_WITNESS_PREVIOUS_SECRETS` and keep it there for as long as the records it signed are retained; a signature is verified with the key its row names |
+
+The full procedure, including a failed rotation, rollback and a lost key, is
+[key-rotation.md](./key-rotation.md).
 
 ## 5. Health, and what each probe is for
 

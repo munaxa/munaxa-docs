@@ -74,8 +74,13 @@ type SealVersionKey = (typeof SealVersion)[keyof typeof SealVersion];
 
 @Injectable()
 export class PrismaMfaRepository implements MfaRepository {
-  /** Every key this deployment can unseal with, by version. */
-  private readonly keys: ReadonlyMap<SealVersionKey, Buffer>;
+  /** Phase 14's key, derived from the token secret: unseals every `v1` row. */
+  private readonly v1Key: Buffer;
+  /**
+   * The deployment's own keys, current first, then each previous one (`v2`). A `v2` value does
+   * not name which of them sealed it; the authenticated cipher does — a wrong key fails the tag.
+   */
+  private readonly v2Keys: readonly Buffer[];
   /** The one new seals are written under. */
   private readonly currentVersion: SealVersionKey;
 
@@ -83,21 +88,20 @@ export class PrismaMfaRepository implements MfaRepository {
     @Inject(APP_CONFIG) config: AppConfig,
     private readonly stamps: RecordStamps,
   ) {
-    const keys = new Map<SealVersionKey, Buffer>();
     // Phase 14's key. Derived rather than the secret itself, and kept so that upgrading to this
     // version reads every enrolment already in the database.
-    keys.set(
-      SealVersion.V1,
-      createHash('sha256').update(`munaxa-docs:mfa-secret:${config.auth.accessSecret}`).digest(),
-    );
+    this.v1Key = createHash('sha256')
+      .update(`munaxa-docs:mfa-secret:${config.auth.accessSecret}`)
+      .digest();
     const dedicated = config.mfa.sealingKey;
-    if (dedicated !== null) {
-      keys.set(
-        SealVersion.V2,
-        createHash('sha256').update(`munaxa-docs:mfa-secret:v2:${dedicated}`).digest(),
-      );
-    }
-    this.keys = keys;
+    // Previous keys only beside a current one (the configuration refuses them alone), so a
+    // deployment can never seal under a key it was told is retired.
+    this.v2Keys =
+      dedicated === null
+        ? []
+        : [dedicated, ...config.mfa.previousSealingKeys].map((key) =>
+            createHash('sha256').update(`munaxa-docs:mfa-secret:v2:${key}`).digest(),
+          );
     this.currentVersion = dedicated === null ? SealVersion.V1 : SealVersion.V2;
   }
 
@@ -105,17 +109,22 @@ export class PrismaMfaRepository implements MfaRepository {
     const row = await requireTransaction().mfaEnrolment.findFirst({
       where: { userId, tenantId: requireContext().tenantId },
     });
-    return row === null
-      ? null
-      : {
-          id: asId<AnyId>(row.id),
-          userId,
-          secret: this.unseal(row.secret),
-          staleSeal: versionOf(row.secret) !== this.currentVersion,
-          confirmedAt: row.confirmedAt,
-          lastStep: row.lastStep === null ? null : Number(row.lastStep),
-          failedAttempts: row.failedAttempts,
-        };
+    if (row === null) {
+      return null;
+    }
+    const unsealed = this.unseal(row.secret);
+    return {
+      id: asId<AnyId>(row.id),
+      userId,
+      // Null when no held key opens it; the service then accepts only a recovery code.
+      secret: unsealed?.secret ?? null,
+      // Sealed under an older version, or under a previous key of this one: either way it is
+      // re-sealed under the current key the next time its owner proves a code.
+      staleSeal: unsealed !== null && !unsealed.underCurrentKey,
+      confirmedAt: row.confirmedAt,
+      lastStep: row.lastStep === null ? null : Number(row.lastStep),
+      failedAttempts: row.failedAttempts,
+    };
   }
 
   async startEnrolment(userId: UserId, secret: string): Promise<AnyId> {
@@ -292,7 +301,10 @@ export class PrismaMfaRepository implements MfaRepository {
    * so this change is invisible until an operator opts into rotation.
    */
   private seal(secret: string): string {
-    const key = this.keyFor(this.currentVersion);
+    const key = this.currentVersion === SealVersion.V1 ? this.v1Key : this.v2Keys[0];
+    if (key === undefined) {
+      throw new Error('No sealing key is configured.');
+    }
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, nonce);
     const sealed = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
@@ -306,36 +318,58 @@ export class PrismaMfaRepository implements MfaRepository {
       : [this.currentVersion, ...parts].join('.');
   }
 
-  private unseal(stored: string): string {
+  /**
+   * The plaintext and whether the key that opened it is the one new seals use — or null when no
+   * key this deployment holds opens it.
+   *
+   * A `v2` value is tried against the current key first, then each previous key: GCM's tag
+   * rejects every key but the one that sealed it (a wrong key passing is a 2^-128 event), so the
+   * first key that opens it is the key that sealed it. Nothing is written here; a row no held key
+   * opens stays exactly as it is, readable again once its key is restored.
+   *
+   * Null rather than an exception, since the key-rotation work (R-4): an exception here made every
+   * read of the enrolment fail — including the one that decides whether a factor is owed at
+   * sign-in — so a lost key locked its people out with no way back, recovery codes included. The
+   * service turns null into "only a recovery code proves this", and audits each refusal with the
+   * reason `SEALING_KEY_NOT_HELD`, which is the operator's signal.
+   */
+  private unseal(
+    stored: string,
+  ): { readonly secret: string; readonly underCurrentKey: boolean } | null {
     const parts = stored.split('.');
     const version = versionOf(stored);
     const [nonce, sealed, tag] = version === SealVersion.V1 ? parts : parts.slice(1);
     if (nonce === undefined || sealed === undefined || tag === undefined) {
+      // Not a key question: the column holds something this product never wrote.
       throw new Error('The stored authenticator secret is not in the sealed format.');
     }
-    const decipher = createDecipheriv(
-      'aes-256-gcm',
-      this.keyFor(version),
-      Buffer.from(nonce, 'base64'),
-    );
-    decipher.setAuthTag(Buffer.from(tag, 'base64'));
-    return Buffer.concat([
-      decipher.update(Buffer.from(sealed, 'base64')),
-      decipher.final(),
-    ]).toString('utf8');
-  }
+    const open = (key: Buffer): string | null => {
+      try {
+        const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(nonce, 'base64'));
+        decipher.setAuthTag(Buffer.from(tag, 'base64'));
+        return Buffer.concat([
+          decipher.update(Buffer.from(sealed, 'base64')),
+          decipher.final(),
+        ]).toString('utf8');
+      } catch {
+        // The tag did not authenticate under this key.
+        return null;
+      }
+    };
 
-  private keyFor(version: SealVersionKey): Buffer {
-    const key = this.keys.get(version);
-    if (key === undefined) {
-      // Reachable exactly one way: a deployment that had `MFA_TOTP_SEALING_KEY` and removed it,
-      // leaving rows nothing can read. Naming the variable is the only useful thing to say, and
-      // saying it beats an authentication failure that looks like a wrong code.
-      throw new Error(
-        `An authenticator secret was sealed under ${version}, which this deployment has no key for. Restore MFA_TOTP_SEALING_KEY.`,
-      );
+    if (version === SealVersion.V1) {
+      const secret = open(this.v1Key);
+      return secret === null
+        ? null
+        : { secret, underCurrentKey: this.currentVersion === SealVersion.V1 };
     }
-    return key;
+    for (const [index, key] of this.v2Keys.entries()) {
+      const secret = open(key);
+      if (secret !== null) {
+        return { secret, underCurrentKey: index === 0 };
+      }
+    }
+    return null;
   }
 }
 

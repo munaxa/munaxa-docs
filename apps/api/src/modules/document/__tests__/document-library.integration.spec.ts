@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1688,7 +1688,10 @@ describe('a signature addressed under another document', () => {
       realDocumentSignatures({
         clock,
         unitOfWork: uow,
-        verifying: { storage, config: { ...appConfig, signature: { witnessSecret: null } } },
+        verifying: {
+          storage,
+          config: { ...appConfig, signature: { witnessSecret: null, previousWitnessSecrets: [] } },
+        },
       }).service,
     );
   }
@@ -1728,5 +1731,131 @@ describe('a signature addressed under another document', () => {
       controller().withdraw(own.documentId, own.signatureId, { reason: 'Signed in error' }),
     );
     expect(withdrawn.withdrawnReason).toBe('Signed in error');
+  });
+});
+
+/**
+ * A rotated witness key — R-3 of the Hetzner readiness report; `docs/operations/key-rotation.md`.
+ *
+ * A signature names the key that witnessed it by a digest of that key. Before this, `verify` held
+ * only the current key, so the first rotation turned every earlier signature into "key not held by
+ * this deployment" for good. A previous key is now held for verification only.
+ */
+describe('verifying signatures across a witness key rotation', () => {
+  const OLD_KEY = 'the-witness-key-before-the-rotation-000000';
+  const NEW_KEY = 'the-witness-key-after-the-rotation-1111111';
+  const keyIdOf = (key: string): string =>
+    createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
+
+  async function signedUnder(
+    key: string,
+    tamper = false,
+  ): Promise<{ documentId: string; signatureId: string }> {
+    const document = await createDocument();
+    const { latestRevisionId } = await owner.document.findUniqueOrThrow({
+      where: { id: document.id },
+      select: { latestRevisionId: true },
+    });
+    const statementBody = `munaxa-docs-signature/v1\ndocument:${document.id}\n`;
+    const signatureId = uuidv7();
+    await owner.documentSignature.create({
+      data: {
+        id: signatureId,
+        tenantId: TENANT,
+        documentId: document.id,
+        revisionId: latestRevisionId ?? '',
+        signerUserId: ALICE,
+        purpose: 'APPROVAL',
+        contentSha256: 'digest',
+        // A tampered row keeps the witness of the original body.
+        statementBody: tamper ? `${statementBody}altered\n` : statementBody,
+        signature: createHmac('sha256', key).update(statementBody, 'utf8').digest('hex'),
+        algorithm: 'HMAC-SHA256',
+        keyId: keyIdOf(key),
+        signedAt: FIXED_NOW,
+        reauthenticated: true,
+      },
+    });
+    return { documentId: document.id, signatureId };
+  }
+
+  function verifierHolding(
+    witnessSecret: string | null,
+    previousWitnessSecrets: readonly string[],
+  ): DocumentSignaturesController {
+    return new DocumentSignaturesController(
+      realDocumentSignatures({
+        clock,
+        unitOfWork: uow,
+        verifying: {
+          storage,
+          config: { ...appConfig, signature: { witnessSecret, previousWitnessSecrets } },
+        },
+      }).service,
+    );
+  }
+
+  it('verifies a signature under the key that is current', async () => {
+    const own = await signedUnder(OLD_KEY);
+    const result = await as(() =>
+      verifierHolding(OLD_KEY, []).verify(own.documentId, own.signatureId),
+    );
+    expect(result.signatureValid).toBe(true);
+    expect(result.witnessedBy).toBe(`munaxa-docs:${keyIdOf(OLD_KEY)}`);
+  });
+
+  it('cannot verify it after a rotation that dropped the old key, and says why', async () => {
+    // The failed rotation: the old key was replaced rather than kept. Nothing is changed or
+    // deleted — the row is simply unverifiable until the key is restored.
+    const own = await signedUnder(OLD_KEY);
+    const result = await as(() =>
+      verifierHolding(NEW_KEY, []).verify(own.documentId, own.signatureId),
+    );
+    expect(result.signatureValid).toBe(false);
+    expect(result.witnessedBy).toBe(
+      `munaxa-docs:${keyIdOf(OLD_KEY)} (key not held by this deployment)`,
+    );
+  });
+
+  it('verifies it again once the old key is held as a previous key — the recovery', async () => {
+    const own = await signedUnder(OLD_KEY);
+    const result = await as(() =>
+      verifierHolding(NEW_KEY, [OLD_KEY]).verify(own.documentId, own.signatureId),
+    );
+    expect(result.signatureValid).toBe(true);
+    expect(result.witnessedBy).toBe(`munaxa-docs:${keyIdOf(OLD_KEY)}`);
+  });
+
+  it('verifies signatures under the old and the new key side by side', async () => {
+    const before = await signedUnder(OLD_KEY);
+    const after = await signedUnder(NEW_KEY);
+    const verifier = verifierHolding(NEW_KEY, [OLD_KEY]);
+    const results = await as(async () => [
+      await verifier.verify(before.documentId, before.signatureId),
+      await verifier.verify(after.documentId, after.signatureId),
+    ]);
+    expect(results.map((result) => result.signatureValid)).toEqual([true, true]);
+  });
+
+  it('does not let a previous key vouch for an altered row', async () => {
+    const altered = await signedUnder(OLD_KEY, true);
+    const result = await as(() =>
+      verifierHolding(NEW_KEY, [OLD_KEY]).verify(altered.documentId, altered.signatureId),
+    );
+    expect(result.signatureValid).toBe(false);
+  });
+
+  it('does not let one key verify a row another key witnessed', async () => {
+    // A row claiming the new key's identifier but witnessed with the old key fails: the key is
+    // chosen by the identifier, never by trying each.
+    const own = await signedUnder(OLD_KEY);
+    await owner.documentSignature.update({
+      where: { id: own.signatureId },
+      data: { keyId: keyIdOf(NEW_KEY) },
+    });
+    const result = await as(() =>
+      verifierHolding(NEW_KEY, [OLD_KEY]).verify(own.documentId, own.signatureId),
+    );
+    expect(result.signatureValid).toBe(false);
   });
 });

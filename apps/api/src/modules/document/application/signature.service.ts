@@ -402,12 +402,12 @@ export class DocumentSignatureService {
   }> {
     return this.writer.read(async () => {
       const record = await this.requireSignatureOf(documentId, signatureId);
-      const secret = this.config.signature.witnessSecret;
-      const currentKeyId = secret === null ? null : keyIdFor(secret);
+      // The key the row names, if this deployment still holds it — current or previous. A row
+      // names its key by a digest of it, so a previous key verifies exactly the signatures it
+      // made and nothing else (`docs/operations/key-rotation.md`).
+      const secret = heldWitnessKeys(this.config).get(record.keyId) ?? null;
       const signatureValid =
-        secret !== null &&
-        currentKeyId === record.keyId &&
-        verifyWitness(record.statementBody, record.signature, secret);
+        secret !== null && verifyWitness(record.statementBody, record.signature, secret);
 
       const revision = await this.revisions.describe(record.documentId, record.revisionId);
       const currentDigest =
@@ -423,7 +423,7 @@ export class DocumentSignatureService {
         // this deployment no longer holds is named as the row recorded it, so a verification that
         // cannot check says *why*.
         witnessedBy:
-          currentKeyId === record.keyId
+          secret !== null
             ? `munaxa-docs:${record.keyId}`
             : `munaxa-docs:${record.keyId} (key not held by this deployment)`,
       };
@@ -621,6 +621,25 @@ function verifyWitness(body: string, signature: string, secret: string): boolean
  */
 function keyIdFor(secret: string): string {
   return createHash('sha256').update(secret, 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
+ * Every witness key this deployment holds, by identifier: the current one and each previous one.
+ *
+ * Only `sign` chooses a key, and it always takes the current one; this map is for reading. Two
+ * configured values with one identifier would need a SHA-256 prefix collision, and the current key
+ * is entered last so it would win.
+ */
+function heldWitnessKeys(config: AppConfig): ReadonlyMap<string, string> {
+  const held = new Map<string, string>();
+  for (const previous of config.signature.previousWitnessSecrets) {
+    held.set(keyIdFor(previous), previous);
+  }
+  const current = config.signature.witnessSecret;
+  if (current !== null) {
+    held.set(keyIdFor(current), current);
+  }
+  return held;
 }
 
 /** Kept beside the statement version so a reader sees both in one place. */

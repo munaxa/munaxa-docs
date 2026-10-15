@@ -111,3 +111,25 @@ usable second factors, and a key the database can read is a key in the dump.
   sealing key can unseal the secrets, and it could mint access tokens directly. What it buys is
   unchanged from Phase 14: a backup, a replica, a dump handed to a support engineer or a `SELECT`
   through an injection carries no usable second factors — now with a rotation story behind it.
+
+## Amendment (2026-10-15): previous-key slots, and a lost key that is not an outage
+
+Recorded by the Hetzner pre-deployment remediation (R-3, R-4, R-5 of
+`docs/reports/hetzner-test-deployment-readiness.md`). The decision above stands; three gaps in how
+it was built are closed. Procedure: [key-rotation.md](../../operations/key-rotation.md).
+
+1. **The dedicated keys had no slot for a previous value.** `v2` existed for the move from the
+   derived key, but replacing `MFA_TOTP_SEALING_KEY` itself made every `v2` row unreadable, and the
+   witness verification compared only the current `SIGNATURE_WITNESS_SECRET` — so the first rotation
+   of either was the mass invalidation this ADR set out to prevent. `MFA_TOTP_SEALING_PREVIOUS_KEYS`,
+   `SIGNATURE_WITNESS_PREVIOUS_SECRETS` and `AUDIT_CHECKPOINT_PREVIOUS_SECRETS` hold earlier values
+   for reading only. The `v2` format is unchanged — the GCM tag identifies the key — so a rollback
+   still reads what was sealed.
+2. **"Removing a key produces an error naming the variable" was true, and too strong.** The read
+   that threw is also the one that decides at sign-in whether a factor is owed, so every person
+   sealed under a missing key was locked out, recovery codes included. An unopenable row now means
+   "only a recovery code proves this factor": authenticator codes fail closed, are audited as
+   `MFA_FAILED` with reason `SEALING_KEY_NOT_HELD` (the operator's signal, replacing the error), and
+   do not count toward the lock.
+3. **Checkpoints** authenticate under any held key; a rotation no longer discards them as evidence.
+

@@ -35,6 +35,34 @@ const booleanFromEnv = z
   .transform((value) => value === 'true')
   .or(z.boolean());
 
+/**
+ * Earlier values of a secret, kept so what they protected stays readable after a rotation
+ * (ADR-0020; `docs/operations/key-rotation.md`).
+ *
+ * A comma-separated list in one variable, because every value this product generates for a secret
+ * (`openssl rand -hex 32` / `-base64 32`) contains no comma and no whitespace. Each value must be
+ * as long as the current secret has to be; at most eight are held, which is several years of
+ * yearly rotations and still a bounded number of trial verifications. Duplicates and a value equal
+ * to the current secret are refused in the schema's refinement below, where the current one is
+ * visible.
+ */
+const previousSecretsSchema = z
+  .string()
+  .optional()
+  .transform((value) =>
+    value === undefined
+      ? []
+      : value
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0),
+  )
+  .pipe(
+    z
+      .array(z.string().min(32, 'Each previous value must be at least 32 characters.'))
+      .max(8, 'At most eight previous values are held.'),
+  );
+
 export const configSchema = z
   .object({
     NODE_ENV: environmentSchema.default('development'),
@@ -332,6 +360,14 @@ export const configSchema = z
      * as it did, and a production deployment states the key it is willing to be held to.
      */
     MFA_TOTP_SEALING_KEY: z.string().min(32).optional(),
+    /**
+     * Sealing keys this deployment used before `MFA_TOTP_SEALING_KEY` — a rotation's other half.
+     * Rows sealed under one are still unsealed (the authenticated cipher says which key fits) and
+     * are re-sealed under the current key the next time their owner proves a code. Removing a value
+     * that rows are still sealed under fails closed for those people, with an error naming this
+     * variable (`docs/operations/key-rotation.md` §3).
+     */
+    MFA_TOTP_SEALING_PREVIOUS_KEYS: previousSecretsSchema,
     OCR_DRIVER: z.enum(['NONE', 'TESSERACT', 'HOSTED']).default('NONE'),
     /** Where the `TESSERACT` driver finds its binary. A path, so an installer can pin one. */
     OCR_TESSERACT_PATH: z.string().default('tesseract'),
@@ -494,6 +530,12 @@ export const configSchema = z
      * says so rather than writing an unsigned one.
      */
     AUDIT_CHECKPOINT_SECRET: z.string().min(32).optional(),
+    /**
+     * Checkpoint keys this deployment used before `AUDIT_CHECKPOINT_SECRET`. A checkpoint signed
+     * under one still authenticates, so a verification resumes from it rather than from genesis.
+     * New checkpoints are always signed with the current key.
+     */
+    AUDIT_CHECKPOINT_PREVIOUS_SECRETS: previousSecretsSchema,
 
     /**
      * The key the server witnesses an electronic signature with — Phase 16, ADR-0017.
@@ -515,6 +557,13 @@ export const configSchema = z
      * a signature nothing witnessed is a row that looks identical to one that was.
      */
     SIGNATURE_WITNESS_SECRET: z.string().min(32).optional(),
+    /**
+     * Witness keys this deployment used before `SIGNATURE_WITNESS_SECRET`. A signature names the
+     * key that witnessed it, and is verified with that key for as long as it is held here — so a
+     * witness key, once used, is kept for the retention period of what it signed. New signatures
+     * are always witnessed with the current key.
+     */
+    SIGNATURE_WITNESS_PREVIOUS_SECRETS: previousSecretsSchema,
 
     /** Events read per pass while verifying, and the ceiling on one pass's work. */
     AUDIT_VERIFY_BATCH_SIZE: z.coerce.number().int().min(100).max(100_000).default(5_000),
@@ -956,6 +1005,55 @@ export const configSchema = z
       });
     }
 
+    // --- Rotated secrets: a previous value is distinct, and only beside a current one ----------
+    for (const [previousName, previous, currentName, current] of [
+      [
+        'MFA_TOTP_SEALING_PREVIOUS_KEYS',
+        config.MFA_TOTP_SEALING_PREVIOUS_KEYS,
+        'MFA_TOTP_SEALING_KEY',
+        config.MFA_TOTP_SEALING_KEY,
+      ],
+      [
+        'AUDIT_CHECKPOINT_PREVIOUS_SECRETS',
+        config.AUDIT_CHECKPOINT_PREVIOUS_SECRETS,
+        'AUDIT_CHECKPOINT_SECRET',
+        config.AUDIT_CHECKPOINT_SECRET,
+      ],
+      [
+        'SIGNATURE_WITNESS_PREVIOUS_SECRETS',
+        config.SIGNATURE_WITNESS_PREVIOUS_SECRETS,
+        'SIGNATURE_WITNESS_SECRET',
+        config.SIGNATURE_WITNESS_SECRET,
+      ],
+    ] as const) {
+      if (previous.length === 0) {
+        continue;
+      }
+      // The messages name variables, never values (`loadConfig`).
+      if (current === undefined) {
+        // A rotation always has a current key; previous values alone would read old data and
+        // write new data under nothing this deployment was told to use.
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [previousName],
+          message: `Previous values need ${currentName} to be set.`,
+        });
+      } else if (previous.includes(current)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [previousName],
+          message: `Must not repeat ${currentName}.`,
+        });
+      }
+      if (new Set(previous).size !== previous.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [previousName],
+          message: 'Each previous value must appear once.',
+        });
+      }
+    }
+
     if (config.NODE_ENV !== 'production') {
       return;
     }
@@ -1220,6 +1318,8 @@ export interface AppConfig {
     readonly maxFailedAttempts: number;
     /** Null in a deployment that keeps Phase 14's derived key; required in production. */
     readonly sealingKey: string | null;
+    /** Earlier sealing keys, still unsealed and never sealed with. Empty unless rotated. */
+    readonly previousSealingKeys: readonly string[];
   };
   readonly office: {
     readonly libreofficePath: string;
@@ -1231,6 +1331,8 @@ export interface AppConfig {
     readonly readFlushIntervalMs: number;
     /** Null in a deployment that has not been given one; no key, no checkpoint. */
     readonly checkpointSecret: string | null;
+    /** Earlier checkpoint keys, still accepted when reading a checkpoint back, never signed with. */
+    readonly previousCheckpointSecrets: readonly string[];
     readonly verifyBatchSize: number;
     readonly verifyMaxEvents: number;
     readonly exportBatchSize: number;
@@ -1240,6 +1342,8 @@ export interface AppConfig {
   /** The signature witness — Phase 16, ADR-0017. Null in a deployment without a key. */
   readonly signature: {
     readonly witnessSecret: string | null;
+    /** Earlier witness keys, still verified with and never signed with. Empty unless rotated. */
+    readonly previousWitnessSecrets: readonly string[];
   };
   /** What a report export is bounded by (`docs/architecture/19-performance-and-scalability.md`). */
   readonly reporting: {
@@ -1390,6 +1494,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       readBufferMax: Math.max(raw.AUDIT_READ_BUFFER_MAX, raw.AUDIT_READ_BUFFER_SIZE),
       readFlushIntervalMs: raw.AUDIT_READ_FLUSH_INTERVAL_MS,
       checkpointSecret: raw.AUDIT_CHECKPOINT_SECRET ?? null,
+      previousCheckpointSecrets: raw.AUDIT_CHECKPOINT_PREVIOUS_SECRETS,
       verifyBatchSize: raw.AUDIT_VERIFY_BATCH_SIZE,
       verifyMaxEvents: raw.AUDIT_VERIFY_MAX_EVENTS,
       exportBatchSize: raw.AUDIT_EXPORT_BATCH_SIZE,
@@ -1397,6 +1502,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     signature: {
       witnessSecret: raw.SIGNATURE_WITNESS_SECRET ?? null,
+      previousWitnessSecrets: raw.SIGNATURE_WITNESS_PREVIOUS_SECRETS,
     },
     reporting: {
       exportBatchSize: raw.REPORTING_EXPORT_BATCH_SIZE,
@@ -1467,6 +1573,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       recoveryCodeCount: raw.MFA_RECOVERY_CODE_COUNT,
       maxFailedAttempts: raw.MFA_MAX_FAILED_ATTEMPTS,
       sealingKey: raw.MFA_TOTP_SEALING_KEY ?? null,
+      previousSealingKeys: raw.MFA_TOTP_SEALING_PREVIOUS_KEYS,
     },
     office: {
       libreofficePath: raw.OFFICE_LIBREOFFICE_PATH,

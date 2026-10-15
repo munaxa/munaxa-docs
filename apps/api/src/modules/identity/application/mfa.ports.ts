@@ -13,8 +13,16 @@ export const MFA_SERVICE = Symbol('MfaService');
 export interface MfaEnrolmentRecord {
   readonly id: AnyId;
   readonly userId: UserId;
-  /** Sealed at rest; the service unseals it and nothing above the service sees it. */
-  readonly secret: string;
+  /**
+   * Sealed at rest; the service unseals it and nothing above the service sees it.
+   *
+   * Null when no key this deployment holds opens it — a sealing key replaced without being kept
+   * as a previous key, or lost (`docs/operations/key-rotation.md` §3–§4). The enrolment still
+   * exists and is still owed: no authenticator code can be checked against it, recovery codes
+   * (hashed, independent of the key) still work, and the row is left exactly as it is so restoring
+   * the key restores it.
+   */
+  readonly secret: string | null;
   /**
    * True when the row was sealed under a key this deployment no longer seals with — Phase 18.
    *

@@ -58,6 +58,8 @@ const config = {
     totpSkewSteps: 1,
     recoveryCodeCount: 4,
     maxFailedAttempts: 3,
+    sealingKey: null,
+    previousSealingKeys: [],
   },
 } as unknown as AppConfig;
 
@@ -313,15 +315,182 @@ describe('rotating the authenticator sealing key', () => {
     expect((await storedSecret()).startsWith('v2.')).toBe(true);
   });
 
-  it('refuses to guess when the key that sealed a row is gone', async () => {
-    // The one failure this rotation can produce, and it must not look like a wrong code: an
-    // operator who removed the variable gets an error naming it.
+  it('refuses to guess when the key that sealed a row is gone, and says why in the trail', async () => {
+    // The one failure this rotation can produce. The code is refused (nothing can be checked
+    // against a secret nobody can open), the row is untouched, and the refusal is audited with a
+    // reason an operator can act on rather than as a wrong code.
     now = new Date(now.getTime() + 60_000);
     const withoutKey = serviceSealingWith(null);
+    const sealed = await storedSecret();
 
-    await expect(
-      asBob(() => withoutKey.challenge(BOB, totpCode(secret, step(), 6))),
-    ).rejects.toThrowError(/MFA_TOTP_SEALING_KEY/);
+    expect(await asBob(() => withoutKey.challenge(BOB, totpCode(secret, step(), 6)))).toBe(false);
+    expect(await storedSecret()).toBe(sealed);
+    expect(await failureReasonsFor(BOB)).toContain('SEALING_KEY_NOT_HELD');
+  });
+});
+
+/**
+ * Rotating the dedicated key itself — R-4 of the Hetzner readiness report;
+ * `docs/operations/key-rotation.md`.
+ *
+ * Phase 18 made the move from the derived key to `MFA_TOTP_SEALING_KEY` survivable, but the
+ * dedicated key had no slot for a previous value: replacing it made every `v2` row unreadable.
+ * `MFA_TOTP_SEALING_PREVIOUS_KEYS` is that slot. The `v2` format is unchanged, so a rollback to a
+ * build without it still reads every row sealed under the key it is given.
+ */
+describe('rotating the dedicated sealing key', () => {
+  const KEY_A = 'the-first-dedicated-sealing-key-aaaaaaaa';
+  const KEY_B = 'the-second-dedicated-sealing-key-bbbbbbb';
+  const KEY_C = 'an-unrelated-sealing-key-ccccccccccccccc';
+  const DANA = asId<UserId>(uuidv7());
+  const EMIL = asId<UserId>(uuidv7());
+  const people = [
+    { id: DANA, email: `${DANA}@mfa.test`, name: 'Dana' },
+    { id: EMIL, email: `${EMIL}@mfa.test`, name: 'Emil' },
+  ];
+  const secrets = new Map<UserId, string>();
+
+  const asUser = <T>(userId: UserId, work: () => Promise<T>): Promise<T> =>
+    runWithContext({ ...context, userId }, work);
+
+  function serviceSealingWith(
+    sealingKey: string,
+    previousSealingKeys: readonly string[],
+  ): DefaultMfaService {
+    const rotated = {
+      ...config,
+      mfa: { ...config.mfa, sealingKey, previousSealingKeys },
+    } as unknown as AppConfig;
+    return new DefaultMfaService(
+      new PrismaMfaRepository(rotated, new RecordStamps(clock)),
+      new PrismaSessionRepository(clock),
+      realAuditWriter(clock, unitOfWork),
+      unitOfWork,
+      clock,
+      rotated,
+    );
+  }
+
+  const storedSecret = async (userId: UserId): Promise<string> =>
+    (
+      await owner.mfaEnrolment.findFirstOrThrow({
+        where: { tenantId: TENANT, userId },
+        select: { secret: true },
+      })
+    ).secret;
+
+  /** The next authenticator step, so no two proofs in this block replay one another. */
+  async function prove(service: DefaultMfaService, userId: UserId): Promise<boolean> {
+    now = new Date(now.getTime() + 60_000);
+    return asUser(userId, () =>
+      service.challenge(userId, totpCode(secrets.get(userId) ?? '', step(), 6)),
+    );
+  }
+
+  beforeAll(async () => {
+    for (const person of people) {
+      await owner.user.create({
+        data: {
+          id: person.id,
+          tenantId: TENANT,
+          email: person.email,
+          emailNormalized: person.email,
+          displayName: person.name,
+          status: 'ACTIVE',
+          updatedAt: new Date(now),
+        },
+      });
+    }
+    // Both enrol under key A — the deployment before the rotation.
+    const before = serviceSealingWith(KEY_A, []);
+    for (const person of people) {
+      const secret = (await asUser(person.id, () => before.begin(person.id, person.email))).secret;
+      secrets.set(person.id, secret);
+      await asUser(person.id, () => before.confirm(person.id, totpCode(secret, step(), 6)));
+    }
+  });
+
+  it('fails closed, and says why in the trail, when the key it replaced is not kept', async () => {
+    // The failed rotation: B replaced A outright. The code is refused, the refusal is audited
+    // with a reason an operator can act on, and the row is left exactly as it was.
+    const sealedUnderA = await storedSecret(DANA);
+    expect(await prove(serviceSealingWith(KEY_B, []), DANA)).toBe(false);
+    // A key that never sealed anything does not open it either.
+    expect(await prove(serviceSealingWith(KEY_B, [KEY_C]), DANA)).toBe(false);
+    expect(await storedSecret(DANA)).toBe(sealedUnderA);
+    expect(await failureReasonsFor(DANA)).toEqual(['SEALING_KEY_NOT_HELD', 'SEALING_KEY_NOT_HELD']);
+    // Neither counted toward the lock: no authenticator code could have passed.
+    expect(await failedAttemptsOf(DANA)).toBe(0);
+  });
+
+  it('reads a row sealed under the previous key once that key is kept — the recovery', async () => {
+    expect(await prove(serviceSealingWith(KEY_B, [KEY_A]), DANA)).toBe(true);
+  });
+
+  it('re-seals that row under the new key, still in the v2 format', async () => {
+    const stored = await storedSecret(DANA);
+    expect(stored.startsWith('v2.')).toBe(true);
+    // Proof it is under B now: a deployment holding only B opens it.
+    expect(await prove(serviceSealingWith(KEY_B, []), DANA)).toBe(true);
+    // …and one holding only A does not.
+    expect(await prove(serviceSealingWith(KEY_A, []), DANA)).toBe(false);
+  });
+
+  it('reads both keys side by side while a rotation is in progress', async () => {
+    // Dana's row is under B; Emil has not signed in since the rotation, so his is still under A.
+    const sealedUnderA = await storedSecret(EMIL);
+    const mixed = serviceSealingWith(KEY_B, [KEY_A]);
+    expect(await prove(mixed, DANA)).toBe(true);
+    expect(await prove(mixed, EMIL)).toBe(true);
+    expect(await storedSecret(EMIL)).not.toBe(sealedUnderA);
+  });
+
+  it('leaves the row under the current key alone when it is read again', async () => {
+    const stored = await storedSecret(EMIL);
+    expect(await prove(serviceSealingWith(KEY_B, [KEY_A]), EMIL)).toBe(true);
+    expect(await storedSecret(EMIL)).toBe(stored);
+  });
+
+  it('lets a person back in with a recovery code when the key is lost, and enrol again', async () => {
+    // A lost key (§4 of key-rotation.md): nothing holds the key Fran's secret was sealed under.
+    const FRAN = asId<UserId>(uuidv7());
+    await owner.user.create({
+      data: {
+        id: FRAN,
+        tenantId: TENANT,
+        email: `${FRAN}@mfa.test`,
+        emailNormalized: `${FRAN}@mfa.test`,
+        displayName: 'Fran',
+        status: 'ACTIVE',
+        updatedAt: new Date(now),
+      },
+    });
+    const before = serviceSealingWith(KEY_A, []);
+    const offer = await asUser(FRAN, () => before.begin(FRAN, `${FRAN}@mfa.test`));
+    secrets.set(FRAN, offer.secret);
+    const { recoveryCodes } = await asUser(FRAN, () =>
+      before.confirm(FRAN, totpCode(offer.secret, step(), 6)),
+    );
+
+    const lost = serviceSealingWith(KEY_C, []);
+    // The factor is still owed — a lost key must not switch MFA off — and asking does not fail.
+    expect(await asUser(FRAN, () => lost.isRequired(FRAN))).toBe(true);
+    // What the app shows is refused, and typing it again and again does not lock her out.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect(await prove(lost, FRAN)).toBe(false);
+    }
+    expect(await failedAttemptsOf(FRAN)).toBe(0);
+    // A wrong recovery code does count, so the codes cannot be guessed without limit.
+    expect(await asUser(FRAN, () => lost.challenge(FRAN, 'AAAAA-AAAAA'))).toBe(false);
+    expect(await failedAttemptsOf(FRAN)).toBe(1);
+    // A real recovery code proves the factor.
+    expect(await asUser(FRAN, () => lost.challenge(FRAN, recoveryCodes[0] ?? ''))).toBe(true);
+    // And from there she removes the unreadable factor and enrols under the new key.
+    await asUser(FRAN, () => lost.remove(FRAN));
+    const again = await asUser(FRAN, () => lost.begin(FRAN, `${FRAN}@mfa.test`));
+    secrets.set(FRAN, again.secret);
+    await asUser(FRAN, () => lost.confirm(FRAN, totpCode(again.secret, step(), 6)));
+    expect(await prove(lost, FRAN)).toBe(true);
   });
 });
 
@@ -656,6 +825,25 @@ describe('one recovery code, one door, however many challenges hold it', () => {
 });
 
 /** Fixture read of the trail; the audit read side has its own suite. */
+/** The reasons of every `MFA_FAILED` recorded for one person, oldest first. */
+async function failureReasonsFor(userId: UserId): Promise<readonly string[]> {
+  const rows = await owner.auditEvent.findMany({
+    where: { tenantId: TENANT, action: 'MFA_FAILED', subjectId: userId },
+    orderBy: { sequence: 'asc' },
+    select: { payload: true },
+  });
+  return rows.map((row) => String((row.payload as { reason?: unknown }).reason));
+}
+
+async function failedAttemptsOf(userId: UserId): Promise<number> {
+  return (
+    await owner.mfaEnrolment.findFirstOrThrow({
+      where: { tenantId: TENANT, userId },
+      select: { failedAttempts: true },
+    })
+  ).failedAttempts;
+}
+
 async function trailActions(): Promise<readonly string[]> {
   const rows = await owner.auditEvent.findMany({
     where: { tenantId: TENANT },
