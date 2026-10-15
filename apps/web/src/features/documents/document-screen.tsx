@@ -432,16 +432,29 @@ export function DocumentScreen({
         stays on Overview, beside the properties a signature attests to.
       */}
       <Tabs value={tab} onValueChange={setTab} variant="underline">
-        <TabsList aria-label={translate('documents.tab.label')}>
-          <TabsTrigger value="overview">{translate('documents.tab.overview')}</TabsTrigger>
+        {/* Scrolls rather than wraps on a phone: four section names do not fit 320px, and a
+            wrapped tab row loses the rule its selected bar sits on. */}
+        <TabsList
+          aria-label={translate('documents.tab.label')}
+          className="overflow-x-auto overflow-y-hidden"
+        >
+          <TabsTrigger value="overview" className="shrink-0 whitespace-nowrap">
+            {translate('documents.tab.overview')}
+          </TabsTrigger>
           {approvals !== undefined && (
-            <TabsTrigger value="approvals">{translate('documents.tab.approvals')}</TabsTrigger>
+            <TabsTrigger value="approvals" className="shrink-0 whitespace-nowrap">
+              {translate('documents.tab.approvals')}
+            </TabsTrigger>
           )}
           {revisions !== undefined && (
-            <TabsTrigger value="revisions">{translate('documents.tab.revisions')}</TabsTrigger>
+            <TabsTrigger value="revisions" className="shrink-0 whitespace-nowrap">
+              {translate('documents.tab.revisions')}
+            </TabsTrigger>
           )}
           {audit !== undefined && (
-            <TabsTrigger value="history">{translate('documents.tab.history')}</TabsTrigger>
+            <TabsTrigger value="history" className="shrink-0 whitespace-nowrap">
+              {translate('documents.tab.history')}
+            </TabsTrigger>
           )}
         </TabsList>
         <TabsContent value="overview" className="flex flex-col gap-4 pt-4">

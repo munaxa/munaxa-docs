@@ -704,7 +704,9 @@ describe('search as each role that can open it', () => {
         // A caption nobody can act on is decoration. Pressing the bucket narrows the search, and
         // the value behind it is still the identifier — the label changed nothing about the filter.
         await gotoPopulated(page, fixture.documentNumber);
-        const buckets = page.locator('aside button[aria-pressed]');
+        // An unpicked value — not "All", which leads every facet (Docs v2), is pressed while nothing
+        // is picked, and clears rather than filters.
+        const buckets = page.locator('aside button[aria-pressed="false"]');
         if ((await buckets.count()) === 0) {
           return;
         }
