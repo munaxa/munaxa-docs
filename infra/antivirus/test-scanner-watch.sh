@@ -132,8 +132,13 @@ if wait_until "the watch to restart the engine" 240 clean_is_204 "$container"; t
 else
   fail "the engine was not restarted"
 fi
-docker logs "$container" 2>&1 | grep -q "the engine was not running: starting it" && pass "the restart is logged" ||
+if wait_until "the restart to be logged" 60 log_has "$container" "the engine was not running: starting it"; then
+  pass "the restart is logged"
+else
   fail "the restart is not logged"
+  # What the watch did say, so a failure on a CI runner can be diagnosed from its log alone.
+  docker logs "$container" 2>&1 | grep 'munaxa-scanner-watch' | tail -n 10 | sed 's/^/  /'
+fi
 docker rm -f "$container" >/dev/null
 
 echo
