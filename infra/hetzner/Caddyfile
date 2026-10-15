@@ -53,9 +53,17 @@
 		reverse_proxy web:3000
 	}
 
+	# A verified download link and a preview stream carry their capability in `?token=`: a bearer
+	# credential for its lifetime. The access log keeps the request, never the token. Caddy already
+	# leaves Cookie and Authorization headers out of its log by default.
 	log {
 		output stdout
-		format json
+		format filter {
+			request>uri query {
+				replace token REDACTED
+			}
+			wrap json
+		}
 	}
 }
 

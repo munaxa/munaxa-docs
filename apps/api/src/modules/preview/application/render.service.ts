@@ -291,7 +291,7 @@ export class PreviewRenderService {
    */
   private async fetchSource(fileObjectId: FileObjectId, mimeType: string): Promise<Buffer> {
     const extension = formatFor(mimeType)?.extensions[0] ?? '';
-    const signed = await this.storage.createDownloadUrl(fileObjectId, `source${extension}`, {
+    const signed = await this.storage.createInternalReadUrl(fileObjectId, `source${extension}`, {
       inline: true,
     });
     const response = await fetch(signed.url);

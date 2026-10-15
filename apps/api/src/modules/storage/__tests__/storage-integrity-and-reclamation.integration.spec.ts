@@ -391,7 +391,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('VERIFIED');
 
     const signed = await inAcme(() =>
-      storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
+      storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
     );
     const served = Buffer.from(await (await fetch(signed.url)).arrayBuffer());
     expect(sha256(served)).toBe(sha256(bytes));
@@ -414,7 +414,9 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
 
     const before = await downloadIssuedCount(fileObjectId);
     await expect(
-      inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf')),
+      inAcme(() =>
+        storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
+      ),
     ).rejects.toMatchObject({
       code: 'CONTENT_NOT_SCANNED',
       details: { integrityStatus: 'MISMATCH' },
@@ -438,7 +440,9 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
 
     const before = await downloadIssuedCount(fileObjectId);
     await expect(
-      inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf')),
+      inAcme(() =>
+        storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
+      ),
     ).rejects.toMatchObject({
       code: 'CONTENT_NOT_SCANNED',
       details: { integrityStatus: 'UNREADABLE' },
@@ -457,7 +461,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     await inAcme(() => unitOfWork.run(() => storage.reference(artefact.id)));
     await verify(String(artefact.id));
 
-    const signed = await inAcme(() => storage.createDownloadUrl(artefact.id, 'export.pdf'));
+    const signed = await inAcme(() => storage.createInternalReadUrl(artefact.id, 'export.pdf'));
     expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(
       sha256(content),
     );
@@ -469,7 +473,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     );
     await verify(String(artefact.id));
     await expect(
-      inAcme(() => storage.createDownloadUrl(artefact.id, 'export.pdf')),
+      inAcme(() => storage.createInternalReadUrl(artefact.id, 'export.pdf')),
     ).rejects.toMatchObject({
       code: 'CONTENT_NOT_SCANNED',
       details: { integrityStatus: 'MISMATCH' },
@@ -484,7 +488,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
       expect(row.scanStatus).toBe('SKIPPED');
       expect(row.derived).toBe(false);
       await expect(
-        inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'x.pdf')),
+        inAcme(() => storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'x.pdf')),
       ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED', details: { scanStatus: 'SKIPPED' } });
       expect(await reachable(fileObjectId)).toBe(false);
     } finally {
@@ -504,7 +508,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     );
     await verify(fileObjectId);
     await expect(
-      inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'p.pdf')),
+      inAcme(() => storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'p.pdf')),
     ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
 
     // Restored from backup, and the verifier re-reads it: now, and only now, it is served again.
@@ -512,7 +516,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     await verify(fileObjectId);
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('VERIFIED');
     const signed = await inAcme(() =>
-      storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'p.pdf'),
+      storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'p.pdf'),
     );
     expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(bytes));
   });
@@ -520,7 +524,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
   it('never resolves another tenant’s blob, quarantined or not', async () => {
     const { fileObjectId } = await inAcme(() => upload(aPdf('acme-only')));
     await expect(
-      inOther(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'x.pdf')),
+      inOther(() => storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'x.pdf')),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(await reachable(fileObjectId, inOther)).toBe(false);
   });
@@ -649,7 +653,7 @@ describe('the integrity verifier quarantines a finding, never a failure to look 
     expect(await findingsFor(id)).toEqual([0, 0]);
     expect(await reachable(id)).toBe(true);
     const signed = await inAcme(() =>
-      storage.createDownloadUrl(asId<FileObjectId>(id), 'large.pdf'),
+      storage.createInternalReadUrl(asId<FileObjectId>(id), 'large.pdf'),
     );
     expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(large));
   });
@@ -721,7 +725,7 @@ describe('the integrity verifier quarantines a finding, never a failure to look 
       after: { integrityStatus: 'UNREADABLE', actualSha256: null },
     });
     await expect(
-      inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(id), 'p.pdf')),
+      inAcme(() => storage.createInternalReadUrl(asId<FileObjectId>(id), 'p.pdf')),
     ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
   });
 
@@ -792,7 +796,9 @@ describe('the download gate asks the store, not only the verifier (Phase A)', ()
   async function refused(fileObjectId: string, integrityStatus: string): Promise<void> {
     const before = await downloadIssuedCount(fileObjectId);
     await expect(
-      inAcme(() => storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf')),
+      inAcme(() =>
+        storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
+      ),
     ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED', details: { integrityStatus } });
     // Nothing signed, so nothing audited as issued.
     expect(await downloadIssuedCount(fileObjectId)).toBe(before);
@@ -803,7 +809,7 @@ describe('the download gate asks the store, not only the verifier (Phase A)', ()
     const { fileObjectId } = await inAcme(() => upload(bytes));
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNVERIFIED');
     const signed = await inAcme(() =>
-      storage.createDownloadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
+      storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
     );
     expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(bytes));
   });
@@ -861,7 +867,7 @@ describe('the download gate asks the store, not only the verifier (Phase A)', ()
     );
     // A streamed (multipart) object carries no store SHA-256; its age against the row decides.
     expect((await inAcme(() => scoped.head(artefact.storageKey)))?.checksumSha256).toBeNull();
-    const signed = await inAcme(() => storage.createDownloadUrl(artefact.id, 'manifest.json'));
+    const signed = await inAcme(() => storage.createInternalReadUrl(artefact.id, 'manifest.json'));
     expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(
       sha256(content),
     );
@@ -943,7 +949,7 @@ describe('bytes reclaimed once can be stored again (D-12)', () => {
     // The renewed blob is a first-class blob: served, verified, deduplicated onto.
     await verify(again.fileObjectId);
     const signed = await inAcme(() =>
-      storage.createDownloadUrl(asId<FileObjectId>(again.fileObjectId), 'form.pdf'),
+      storage.createInternalReadUrl(asId<FileObjectId>(again.fileObjectId), 'form.pdf'),
     );
     expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(bytes));
     expect(await inAcme(() => upload(bytes))).toMatchObject({

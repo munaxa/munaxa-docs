@@ -212,7 +212,14 @@ export interface StorageService {
 
   abandonUploadSession(id: UploadSessionId): Promise<void>;
 
-  createDownloadUrl(
+  /**
+   * A short-lived store URL **for the API's own reads** — the preview pipeline fetching a source
+   * to render, rasterise or OCR. Never handed to a person: every download a person receives is a
+   * verified link (`createVerifiedDownloadLink`), and `signed-url-callers.spec.ts` fails the build
+   * if anything outside the pipeline calls this. Same refusals (scan, integrity, HEAD) and the
+   * same `FILE_DOWNLOAD_ISSUED` row as before.
+   */
+  createInternalReadUrl(
     fileObjectId: FileObjectId,
     filename: string,
     options?: { inline?: boolean },
@@ -221,7 +228,7 @@ export interface StorageService {
   /**
    * A verified download link — ADR-0026 §10, the download-integrity proposal §3.1.
    *
-   * The same refusals as `createDownloadUrl` (scan, integrity, the store's HEAD), plus the size
+   * The same refusals as `createInternalReadUrl` (scan, integrity, the store's HEAD), plus the size
    * the verified path accepts, and the same `FILE_DOWNLOAD_ISSUED` event. The link names the
    * person in the current context, their permission version, and the document (and revision) it
    * is for, so its redemption can ask every question again. Nothing is signed by the store: the
@@ -272,7 +279,7 @@ export interface StorageService {
   /**
    * The gate: content is unreachable until its scan verdict is CLEAN (or, for a file the product
    * generated, `SKIPPED` by construction) — and, since Phase 18, only while the rolling verifier
-   * has not found its bytes changed or missing. The same predicate `createDownloadUrl` refuses on;
+   * has not found its bytes changed or missing. The same predicate the issuing paths refuse on;
    * a door that signs bytes on the raw port asks this first.
    */
   isReachable(fileObjectId: FileObjectId): Promise<boolean>;

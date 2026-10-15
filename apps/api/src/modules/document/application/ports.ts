@@ -520,11 +520,6 @@ export interface DocumentContentGate {
   }>;
   reference(fileObjectId: string): Promise<void>;
   dereference(fileObjectId: string): Promise<void>;
-  downloadUrl(
-    fileObjectId: string,
-    filename: string,
-    options?: { inline?: boolean },
-  ): Promise<{ url: string; expiresAt: Date }>;
   /**
    * A verified download link for a person — ADR-0026 §10. The API serves the bytes, after reading
    * them whole and matching their SHA-256; the link names the document (and revision) so its

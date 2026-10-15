@@ -153,10 +153,11 @@ export class ReportingController {
   }
 
   /**
-   * A signed URL for a completed export.
+   * A verified download link for a completed export (ADR-0026 §10) — served by the API, never a
+   * store URL.
    *
-   * Audited by Storage as it is issued — `createDownloadUrl` writes `FILE_DOWNLOAD_ISSUED`, which
-   * is already the row for "a signed URL for these bytes was handed to somebody". This phase adds
+   * Audited by Storage as it is issued — `createVerifiedDownloadLink` writes `FILE_DOWNLOAD_ISSUED`,
+   * which is already the row for "a link to these bytes was handed to somebody". This phase adds
    * no second action for it: 13 §2 gives Reporting exactly one row, and it is spent on the export.
    */
   @Get('exports/:id/download')

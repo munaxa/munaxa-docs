@@ -19,9 +19,9 @@
  * **And no second action for taking the file.** Phase 9 wrote `BULK_DOWNLOAD` beside
  * `AUDIT_EXPORTED` because an evidence bundle is three artefacts signed as a set, and handing them
  * over is a distinct compliance fact. A report export is one file stored as one `file_object`, and
- * `FILE_DOWNLOAD_ISSUED` — written by Storage's own `createDownloadUrl`, which this phase goes
- * through rather than around — is already the row for "a signed URL for these bytes was issued to
- * somebody". Adding a second would give one act two names in the trail, which 13 §2's reconciliation
+ * `FILE_DOWNLOAD_ISSUED` — written by Storage's own `createVerifiedDownloadLink`, which this
+ * phase goes through rather than around — is already the row for "a link to these bytes was issued
+ * to somebody". Adding a second would give one act two names in the trail, which 13 §2's reconciliation
  * exists to prevent.
  */
 export const ReportingAudit = {

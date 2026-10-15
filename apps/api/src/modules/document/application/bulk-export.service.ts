@@ -72,16 +72,16 @@ import { refuseWhereLevelForbidsDownload } from './download-confidentiality';
  *
  * ## What it therefore produces, and why that is stronger than an archive
  *
- * A **manifest and a signed link per document**, exactly as Phase 9's evidence bundle produces
+ * A **manifest and a verified link per document**, issued when it is clicked, exactly as Phase 9's evidence bundle produces
  * three artefacts and three links rather than one ZIP. That is not a limitation worked around; it
  * is the better answer for this product, for two reasons.
  *
- * The first is compliance. Every byte still leaves through `createDownloadUrl`, so every document
- * released writes its own `FILE_DOWNLOAD_ISSUED`. A ZIP would produce **one** audit row for five
+ * The first is compliance. Every byte leaves through a verified link (`itemLink`, ADR-0026 §10),
+ * issued when that one document is clicked, so every document released writes its own
+ * `FILE_DOWNLOAD_ISSUED`. A ZIP would produce **one** audit row for five
  * hundred documents leaving the building, and "which of these did they actually take" would become
- * unanswerable — in an EDMS, that is the wrong trade at any price. `BULK_DOWNLOAD` is written once
- * for the act, beside the per-document rows, which is precisely the pairing 13 §2 already has for
- * an evidence bundle.
+ * unanswerable — in an EDMS, that is the wrong trade at any price. Opening the list of released
+ * documents writes one `BULK_EXPORT_OPENED`, with counts only, beside the per-document rows.
  *
  * The second is storage. An archive would copy every document's bytes into a second object,
  * turning a deduplicated store into one holding N extra copies for the length of the grace period

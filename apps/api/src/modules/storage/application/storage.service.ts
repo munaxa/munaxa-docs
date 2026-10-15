@@ -530,7 +530,7 @@ export class DefaultStorageService implements StorageService {
    * window in which one exists and nothing says so is exactly where a failure would hide
    * (`11-storage-architecture.md` §5).
    */
-  async createDownloadUrl(
+  async createInternalReadUrl(
     fileObjectId: FileObjectId,
     filename: string,
     options: { inline?: boolean } = {},
@@ -567,7 +567,7 @@ export class DefaultStorageService implements StorageService {
   /**
    * A verified download link — ADR-0026 §10, the download-integrity proposal §3.1.
    *
-   * Every refusal `createDownloadUrl` makes, in the same order, plus the size the verified path
+   * Every refusal `createInternalReadUrl` makes, in the same order, plus the size the verified path
    * stages, and the same `FILE_DOWNLOAD_ISSUED` event in the same transaction. The link is the
    * API's own (`/api/v1/downloads?token=…`): no store URL is signed, and nothing is served until
    * the bytes have been read whole and their SHA-256 matched (`VerifiedDownloadDelivery`).

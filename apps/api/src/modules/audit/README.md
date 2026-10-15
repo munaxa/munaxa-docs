@@ -5,7 +5,7 @@
 | | |
 | --- | --- |
 | **Owns** | AuditEvent, the hash chain, the read path, verification, evidence export |
-| **Depends on** | Storage (bytes for a bundle, signed URLs), Library (through `ACL_RESOLVER`) |
+| **Depends on** | Storage (bytes for a bundle, verified download links), Library (through `ACL_RESOLVER`) |
 | **Binds in core** | `AUDIT_WRITER` and `READ_AUDIT_BUFFER` — it owns the chain, so it owns the only two ways to append to it. |
 
 ## Layers

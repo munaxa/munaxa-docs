@@ -79,7 +79,7 @@ import {
  * in-memory hold the `audit.export` lane's description forbids — or hand-rolling a stored-entry
  * archive writer, which is a format implementation nobody asked for. So the bundle is a prefix
  * containing `events.jsonl`, `events.csv` and `manifest.json`, the manifest is its entry point,
- * and the download endpoint issues one signed URL per artefact. The auditor gets three links
+ * and the download endpoint issues one verified link per artefact (ADR-0026 §10). The auditor gets three links
  * instead of one; the product does not gain an archive format to maintain.
  *
  * ## What streams and what does not

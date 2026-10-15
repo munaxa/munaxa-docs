@@ -35,7 +35,7 @@ export async function requestReportExport(
 }
 
 /**
- * The signed URL for a completed export.
+ * The verified download link for a completed export (ADR-0026 §10).
  *
  * A `GET` on the API, because it creates no job — but a server *action* here rather than an anchor
  * in the page, because the access token lives in an `httpOnly` cookie and never reaches client

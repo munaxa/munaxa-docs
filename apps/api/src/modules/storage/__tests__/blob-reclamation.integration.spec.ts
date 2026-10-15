@@ -406,7 +406,8 @@ describe('who may be handed a download link', () => {
     });
     return asId<FileObjectId>(id);
   }
-  const link = (id: FileObjectId) => asTenant(() => storage.createDownloadUrl(id, 'export.csv'));
+  const link = (id: FileObjectId) =>
+    asTenant(() => storage.createInternalReadUrl(id, 'export.csv'));
 
   it('signs a product-generated file stored derived and SKIPPED', async () => {
     await expect(link(await aFile(true, 'SKIPPED'))).resolves.toMatchObject({

@@ -200,8 +200,8 @@ export interface BundleArtefact {
   /**
    * The `file_object` row the artefact was stored as.
    *
-   * Carried so the download goes through Storage's own audited `createDownloadUrl` rather than a
-   * second signing path beside it — which would be a second place `FILE_DOWNLOAD_ISSUED` has to
+   * Carried so the download goes through Storage's own audited `createVerifiedDownloadLink` rather
+   * than a second path beside it — which would be a second place `FILE_DOWNLOAD_ISSUED` has to
    * be remembered. Deliberately absent from the manifest: it is an internal identifier and says
    * nothing to an auditor verifying digests.
    */

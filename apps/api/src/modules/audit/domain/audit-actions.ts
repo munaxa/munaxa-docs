@@ -22,7 +22,7 @@ export const AuditAudit = {
    */
   AUDIT_EXPORTED: 'AUDIT_EXPORTED',
   /**
-   * A bundle's artefacts were handed to somebody as signed URLs.
+   * A bundle's artefacts were handed to somebody as verified download links.
    *
    * Distinct from `AUDIT_EXPORTED` because producing evidence and *taking* it are two acts, and
    * the second can happen repeatedly, days later, by whoever holds the link. The trail records

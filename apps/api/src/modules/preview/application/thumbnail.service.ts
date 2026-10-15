@@ -132,7 +132,7 @@ export class ThumbnailService implements DocumentThumbnailer {
    * exercises is the one that breaks silently when a driver is added.
    */
   private async fetch(fileObjectId: string): Promise<Buffer | null> {
-    const signed = await this.storage.createDownloadUrl(
+    const signed = await this.storage.createInternalReadUrl(
       asId<FileObjectId>(fileObjectId),
       'source.png',
       { inline: true },
