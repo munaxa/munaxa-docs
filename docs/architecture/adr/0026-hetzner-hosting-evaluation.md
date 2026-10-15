@@ -6,7 +6,9 @@
   is not complete. Phase A's local upload and download checks passed after five application fixes
   (§10); that is local evidence only. Document downloads are now verified before any byte is sent
   (§10, local evidence only). Phase B (a real browser and the download resource limits, local MinIO
-  only) has run: 82 checks passed and 4 genuine product findings remain open (§10).
+  only) has run: 82 checks passed and 4 genuine product findings were found (§10). Those four
+  are fixed on a separate branch, awaiting review; Phase B on that branch passes 88 of 88, local
+  MinIO only (§10).
 - **Date:** 2026-10-13
 - **Phase:** Hosting migration Phase 2 (foundation)
 - **Builds on:** [ADR-0015](./0015-database-per-tenant.md), [ADR-0021](./0021-multi-tenant-hosted-launch.md),
@@ -655,6 +657,60 @@ no Cloudflare.
 - Console errors are the expected 404s of the expired and edited links.
 - The Arabic wording still needs native review.
 - All of this is local MinIO only. It shows nothing about R2 (Phase C, not run).
+
+### Phase B findings fixed, awaiting review (2026-10-15, local)
+
+These fixes are on branch `claude/amazing-turing-09vlks`. That branch is the Hetzner branch with
+`main` merged in (Docs v2 design, #137, `@munaxa/platform` 1.7.0). **Not merged, not deployed.**
+
+| Finding | Fix | Commit |
+| --- | --- | --- |
+| 1. The upload dialog's submit button cannot be reached at 1280×720 | `FormDialog` caps the panel at the window height and scrolls inside it (every form dialog) | `5f05333` |
+| 2. A staging disk filling part-way answers 500 | `ENOSPC`/`EDQUOT` while staging answers `DOWNLOAD_BUSY` 503 + Retry-After. Nothing quarantined; other errors still propagate | `5bf578d` |
+| 3. Store down: no retry advice in the interface | The API sends the stated `reason` beside `detail` (additive, optional). The web keeps it and translates it into the person's locale | `ad361b8`, `e3bfe61` |
+| 4. A quarantined file shows the malware sentence and an enabled Download | `reachable` = scanned CLEAN **and** integrity servable (the download gate's own rule); a document file now carries `integrityStatus`. The page shows the integrity sentence | `ad361b8`, `97356d8` |
+
+Authorization, integrity verification, audit events and every upload and download limit are
+unchanged.
+
+**Regression tests:**
+- unit: domain `isReachableFile`; web `toActionResult`, `apiFetch` and the record page in English
+  and Arabic; API exception filter;
+- integration: five staging cases in `verified-download.integration.spec.ts`. On the old code, four
+  of the five fail;
+- end-to-end: `upload-dialog-viewport.e2e.spec.ts` at 1280×720, 1366×768 and 1280×720 in Arabic.
+  It fails on the old dialog, where the panel sits 50–79 px above the window.
+
+**Validation:**
+- unit tests pass, including web 540 and API 1024;
+- integration 58/58 files, 1255 tests;
+- all five end-to-end shards locally, 237 tests;
+- GitHub CI on `ca7ec10` (every code fix) and the Hetzner template workflow both pass.
+
+**Phase B, run 5 of record** (local MinIO only), with images built locally from the branch:
+- **88 passed, 0 failed.**
+- The 1280×720 submit button sits at 643–679 px.
+- Disk fills: two × 503 with Retry-After.
+- Store down: "File storage is temporarily unavailable. Try again shortly."
+- Quarantined file in Arabic: warned before any click, Download disabled.
+- No restart and no out-of-memory kill.
+- Memory peaks: 1535 / 493 MiB (8 × 128 MiB) and 1425 / 373 MiB (40 × 128 MiB).
+- Staging stayed within its budgets.
+- No credential in 2591 log lines.
+- Teardown left nothing behind.
+
+Run 4 failed only on three harness selectors that the redesign had changed. They were fixed in
+`908518f`.
+
+**Still open:**
+- The export routes. Their design is in
+  [`hetzner-export-verified-delivery-design.md`](../../reports/hetzner-export-verified-delivery-design.md).
+  It records two authorization defects in the bulk link route: **E-1**, no confidentiality-level
+  check; **E-2**, no check of the operation's kind or state.
+- Bearer links.
+- No read timeout on the store stream.
+- Page cache against the container limit.
+- Phase C (R2), which has not been run.
 
 **Gates before adoption:**
 

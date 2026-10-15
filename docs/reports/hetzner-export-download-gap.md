@@ -83,3 +83,14 @@ Run 3 (2026-10-14) passed both:
   `/api/v1/downloads`. That confirms these routes are outside verified delivery.
 
 Bulk links were not exercised in the browser. Nothing in this section has changed in the code.
+
+## 5. Design and defects found since (2026-10-15)
+
+The design for moving these routes onto verified delivery is
+[`hetzner-export-verified-delivery-design.md`](hetzner-export-verified-delivery-design.md). It is
+not implemented. Inspecting the routes found defects not listed above, most importantly:
+- **E-1:** bulk links skip the confidentiality level's `allowDownload`, which the ordinary door
+  enforces;
+- **E-2:** bulk links check neither the operation's kind nor its state.
+
+Both are recorded there for a separate fix.
