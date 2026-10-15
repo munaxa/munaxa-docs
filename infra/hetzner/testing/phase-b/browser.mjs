@@ -967,6 +967,80 @@ const cases = {
     await closeContext(context);
   },
 
+  /**
+   * A bulk export's released documents (export design §3.1, §4): listed without a URL, each
+   * downloaded through its own verified link when clicked, a quarantined one withheld with its
+   * reason, and the manifest downloaded through its own link. Run after step 7 quarantined
+   * "swapped".
+   */
+  async bulk() {
+    const { library, documents } = state();
+    const { context, page } = await asAdmin({ viewport: { width: 1280, height: 720 } });
+    lastPage = page;
+    const popups = [];
+    context.on('page', (popup) => popups.push(popup));
+    await page.goto(`${WEB}/documents?libraryId=${library.id}&folderId=${library.folderId}`, {
+      waitUntil: 'networkidle',
+    });
+    for (const key of ['text', 'pdf', 'swapped']) {
+      await page
+        .getByRole('row')
+        .filter({ hasText: documents[key].title })
+        .getByRole('checkbox')
+        .first()
+        .check();
+    }
+    await page.getByRole('button', { name: 'Export', exact: true }).first().click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: 'Show the released documents' }).click();
+    const released = dialog.getByRole('region', { name: 'Released documents' });
+    await released.waitFor({ timeout: 30_000 });
+    const listedText = (await released.textContent()) ?? '';
+    const textDownload = await attempt(
+      page,
+      () => released.getByRole('button', { name: `Download ${documents.text.filename}` }).click(),
+      { expectedDigest: documents.text.digest },
+    );
+    let manifest = { downloadEvent: false };
+    const manifestButton = released.getByRole('button', { name: 'Download the manifest' });
+    if ((await manifestButton.count()) > 0) {
+      const download = page.waitForEvent('download', { timeout: 30_000 }).catch(() => null);
+      await manifestButton.click();
+      const got = await download;
+      if (got !== null) {
+        const saved = `${OUT}/bulk-manifest.json`;
+        await got.saveAs(saved);
+        let parsed = null;
+        try {
+          parsed = JSON.parse(readFileSync(saved, 'utf8'));
+        } catch {
+          parsed = null;
+        }
+        manifest = {
+          downloadEvent: true,
+          link: pathOnly(got.url()),
+          includedCount: parsed?.includedCount ?? null,
+          refusedCount: parsed?.refusedCount ?? null,
+          documents: (parsed?.documents ?? []).map((entry) => entry.documentId),
+          containsUrl: /https?:\/\//u.test(readFileSync(saved, 'utf8')),
+        };
+      }
+    }
+    result('bulk-export', {
+      listed: listedText.includes(documents.text.filename),
+      listedHasUrl: /https?:\/\//u.test(listedText),
+      swappedWithheld:
+        (await released
+          .getByRole('button', { name: `Download ${documents.swapped.filename}` })
+          .count()) === 0,
+      swappedReason: /integrity check/u.test(listedText),
+      text: textDownload,
+      manifest,
+      popups: popups.length,
+    });
+    await closeContext(context);
+  },
+
   /** Every browser console error recorded by the cases above. */
   async console() {
     const lines = existsSync(CONSOLE)

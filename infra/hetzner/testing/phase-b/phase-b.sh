@@ -188,7 +188,7 @@ pb_browser integrity-follow unavailable-again || pb_fail "the retry after the ou
 pb_expect integrity-unavailable-again 'f.downloadEvent === true && f.sameBytes === true' "with the store back, the same action saves the exact file"
 
 step "Phase B 8 — the Arabic interface (B-9) and the exports (B-10)"
-pb_browser arabic exports || pb_fail "the Arabic and export cases did not complete"
+pb_browser arabic exports bulk || pb_fail "the Arabic, export and bulk cases did not complete"
 pb_expect arabic-download 'f.downloadEvent === true && f.sameBytes === true && f.dir === "rtl"' "an Arabic, right-to-left interface downloads the same bytes"
 pb_expect arabic-integrity 'f.downloadEvent === false && f.savedBytes === 0' "a quarantined file, in Arabic: no file saved"
 pb_expect arabic-integrity '/سلامة/.test(f.warnedBeforeClick ?? "")' \
@@ -201,6 +201,15 @@ pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true && 
   "a report export saves the verified file through /api/v1/downloads, with no popup (export design §3.2)"
 pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true && /^\/api\/v1\/downloads/.test(f.link ?? "") && f.tabOpened !== true' \
   "an audit artefact saves the verified file through /api/v1/downloads, one click per artefact, with no popup (export design §3.3)"
+
+pb_expect bulk-export 'f.listed === true && f.listedHasUrl === false' \
+  "a bulk export lists its released documents with no URL in the list (export design §3.1)"
+pb_expect bulk-export 'f.text.downloadEvent === true && f.text.sameBytes === true && f.popups === 0' \
+  "a released document downloads byte for byte through its own verified link, at 1280×720, no popup"
+pb_expect bulk-export 'f.swappedWithheld === true && f.swappedReason === true' \
+  "a quarantined released document is withheld, and the list says it failed its integrity check"
+pb_expect bulk-export 'f.manifest.downloadEvent === true && /^\/api\/v1\/downloads/.test(f.manifest.link ?? "") && f.manifest.containsUrl === false && typeof f.manifest.includedCount === "number"' \
+  "the manifest downloads through a verified link, with counts and no links in it (export design §4)"
 
 # =================================================================================================
 step "Phase B 9 — verified downloads at and past their resource limits (no limit raised)"
