@@ -72,7 +72,11 @@ import {
   isRejection,
   narrowPolicy,
 } from '../domain/upload-policy';
-import { DOWNLOAD_LINK_PATH, encodeDownloadLinkToken } from '../domain/download-link-token';
+import {
+  DOWNLOAD_LINK_PATH,
+  type DownloadLinkSubject,
+  encodeDownloadLinkToken,
+} from '../domain/download-link-token';
 import {
   type CompletedUpload,
   FILE_OBJECT_REPOSITORY,
@@ -573,8 +577,9 @@ export class DefaultStorageService implements StorageService {
     filename: string,
     options: {
       readonly inline?: boolean;
-      readonly documentId: string;
-      readonly revisionId: string | null;
+      readonly subject: DownloadLinkSubject;
+      readonly mimeType?: string;
+      readonly audit?: Readonly<Record<string, string>>;
     },
   ): Promise<{ url: string; expiresAt: Date }> {
     const context = requireContext();
@@ -600,12 +605,13 @@ export class DefaultStorageService implements StorageService {
         tenantId: String(context.tenantId),
         userId: String(userId),
         permissionVersion: context.permissionVersion,
-        documentId: options.documentId,
-        revisionId: options.revisionId,
+        subject: options.subject,
         fileObjectId: String(file.id),
         disposition: inline ? 'inline' : 'attachment',
         filename: sanitizeFilename(filename),
-        mimeType: file.mimeType,
+        // The object's own type when it has one: a deduplicated blob carries whichever export
+        // wrote it first, which is not necessarily this one's format (E-8).
+        mimeType: options.mimeType ?? file.mimeType,
         expiresAt,
       });
       const base = (
@@ -621,11 +627,14 @@ export class DefaultStorageService implements StorageService {
           subjectId: asId<AnyId>(fileObjectId),
           operation: AdministrativeOperation.UPDATED,
           after: {
+            // Correlation first, so nothing a caller names can overwrite the facts below.
+            ...options.audit,
             checksumSha256: file.checksumSha256,
             filename,
             inline,
             expiresAt: expiresAt.toISOString(),
             delivery: 'VERIFIED',
+            kind: options.subject.kind,
           },
         },
       };
@@ -651,7 +660,11 @@ export class DefaultStorageService implements StorageService {
 
   async recordDownloadServed(
     fileObjectId: FileObjectId,
-    details: { readonly sizeBytes: number; readonly verifiedAfterMs: number },
+    details: {
+      readonly sizeBytes: number;
+      readonly verifiedAfterMs: number;
+      readonly audit?: Readonly<Record<string, string>>;
+    },
   ): Promise<void> {
     // `read` + `record` rather than `write`: the bytes have already left, and a tenant made
     // read-only since must still have that fact in its trail.
@@ -663,6 +676,8 @@ export class DefaultStorageService implements StorageService {
         subjectId: asId<AnyId>(fileObjectId),
         operation: AdministrativeOperation.UPDATED,
         after: {
+          // Correlation first, so nothing a redeemer names can overwrite the facts below.
+          ...details.audit,
           checksumSha256: file.checksumSha256,
           sizeBytes: details.sizeBytes,
           verifiedAfterMs: details.verifiedAfterMs,

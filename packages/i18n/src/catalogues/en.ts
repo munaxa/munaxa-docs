@@ -1946,7 +1946,7 @@ export const en = {
     DOWNLOAD_TOO_LARGE:
       'This file is larger than the {limit} that can be checked for download. Ask an administrator.',
     DOWNLOAD_LINK_INVALID:
-      'This download link has expired or is no longer valid. Go back to the document and download it again.',
+      'This download link has expired or is no longer valid. Go back and download it again.',
   },
   /**
    * Reports — Phase 15.

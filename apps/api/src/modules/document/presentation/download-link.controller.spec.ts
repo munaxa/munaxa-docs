@@ -36,8 +36,11 @@ const GRANT: DownloadLinkGrant = {
   tenantId: '0199f5a1-5a9e-7000-8000-00000000a001',
   userId: '0199f5a1-5a9e-7000-8000-00000000b001',
   permissionVersion: 1,
-  documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
-  revisionId: null,
+  subject: {
+    kind: 'DOCUMENT',
+    documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
+    revisionId: null,
+  },
   fileObjectId: '0199f5a1-5a9e-7000-8000-00000000f001',
   disposition: 'attachment',
   filename: 'تقرير الربع.pdf',
@@ -50,7 +53,7 @@ let server: Server | null = null;
 
 interface Behaviour {
   grant?: DownloadLinkGrant | null;
-  redeem?: () => Promise<RequestContext>;
+  redeem?: () => Promise<{ context: RequestContext; audit: Record<string, string> }>;
   deliver?: (send: (download: VerifiedDownload) => Promise<void>) => Promise<void>;
 }
 
@@ -73,9 +76,12 @@ async function serve(behaviour: Behaviour = {}) {
       redeem: () =>
         behaviour.redeem?.() ??
         Promise.resolve({
-          tenantId: asId<TenantId>(GRANT.tenantId),
-          userId: GRANT.userId,
-        } as unknown as RequestContext),
+          context: {
+            tenantId: asId<TenantId>(GRANT.tenantId),
+            userId: GRANT.userId,
+          } as unknown as RequestContext,
+          audit: {},
+        }),
     } as unknown as DownloadRedemptionService,
     { warn: () => undefined, info: () => undefined, error: () => undefined } as unknown as Logger,
   );
@@ -111,6 +117,34 @@ afterEach(async () => {
 });
 
 describe('a verified download link, followed by a browser', () => {
+  it('serves an export with the media type its link names, and records what it was released as', async () => {
+    const { url, served } = await serve({
+      grant: {
+        ...GRANT,
+        subject: { kind: 'REPORT_EXPORT', exportId: '0199f5a1-5a9e-7000-8000-00000000c0e1' },
+        filename: 'documents.csv',
+        mimeType: 'text/csv; charset=utf-8',
+      },
+      redeem: () =>
+        Promise.resolve({
+          context: { tenantId: asId<TenantId>(GRANT.tenantId) } as unknown as RequestContext,
+          audit: { reportExportId: '0199f5a1-5a9e-7000-8000-00000000c0e1' },
+        }),
+    });
+    const response = await fetch(`${url}?token=good`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+    expect(response.headers.get('content-disposition')).toContain('attachment;');
+    await response.arrayBuffer();
+    expect(served).toEqual([
+      {
+        sizeBytes: CONTENT.length,
+        verifiedAfterMs: 5,
+        audit: { reportExportId: '0199f5a1-5a9e-7000-8000-00000000c0e1' },
+      },
+    ]);
+  });
+
   it('sends the verified bytes as an RFC 6266 attachment, private and never cached', async () => {
     const { url, served } = await serve();
     const response = await fetch(`${url}?token=good`);
@@ -125,7 +159,7 @@ describe('a verified download link, followed by a browser', () => {
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(response.headers.get('content-security-policy')).toContain('sandbox');
-    expect(served).toEqual([{ sizeBytes: CONTENT.length, verifiedAfterMs: 5 }]);
+    expect(served).toEqual([{ sizeBytes: CONTENT.length, verifiedAfterMs: 5, audit: {} }]);
   });
 
   it('serves inline only the types a browser cannot run, and an attachment for the rest', async () => {

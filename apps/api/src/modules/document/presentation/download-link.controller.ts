@@ -79,7 +79,7 @@ export class DownloadLinkController {
 
     const fileObjectId = asId<FileObjectId>(grant.fileObjectId);
     try {
-      const context = await this.redemption.redeem(grant, correlationIdOf(request));
+      const { context, audit } = await this.redemption.redeem(grant, correlationIdOf(request));
       await runWithContext(context, () =>
         this.delivery.deliver(
           fileObjectId,
@@ -89,6 +89,7 @@ export class DownloadLinkController {
               await this.storage.recordDownloadServed(fileObjectId, {
                 sizeBytes: verified.sizeBytes,
                 verifiedAfterMs: verified.verifiedAfterMs,
+                audit,
               });
             }
           },

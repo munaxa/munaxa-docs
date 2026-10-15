@@ -2,7 +2,11 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { type FileObjectId, asId } from '@edms/domain';
 
-import { STORAGE_SERVICE, type StorageService } from '../../storage/application/ports';
+import {
+  DownloadLinkKind,
+  STORAGE_SERVICE,
+  type StorageService,
+} from '../../storage/application/ports';
 import type { AttachableFile, DocumentContentGate } from '../application/ports';
 
 /**
@@ -77,10 +81,13 @@ export class StorageContentGateAdapter implements DocumentContentGate {
     filename: string,
     options: { inline?: boolean; documentId: string; revisionId: string | null },
   ): Promise<{ url: string; expiresAt: Date }> {
-    return this.storage.createVerifiedDownloadLink(
-      asId<FileObjectId>(fileObjectId),
-      filename,
-      options,
-    );
+    return this.storage.createVerifiedDownloadLink(asId<FileObjectId>(fileObjectId), filename, {
+      ...(options.inline !== undefined && { inline: options.inline }),
+      subject: {
+        kind: DownloadLinkKind.DOCUMENT,
+        documentId: options.documentId,
+        revisionId: options.revisionId,
+      },
+    });
   }
 }

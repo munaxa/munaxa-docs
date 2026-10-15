@@ -1,4 +1,4 @@
-import type { DownloadLinkGrant } from '../domain/download-link-token';
+import type { DownloadLinkGrant, DownloadLinkSubject } from '../domain/download-link-token';
 import type {
   FileObjectId,
   IntegrityStatusKey,
@@ -232,8 +232,16 @@ export interface StorageService {
     filename: string,
     options: {
       readonly inline?: boolean;
-      readonly documentId: string;
-      readonly revisionId: string | null;
+      /** What the link is for — the kind and its identifiers, re-asked at redemption. */
+      readonly subject: DownloadLinkSubject;
+      /**
+       * The media type to serve, from the object's own record (an export's format, an artefact's
+       * type). Omitted only for a document, whose blob is its own. Never taken from a blob several
+       * exports may share (E-8).
+       */
+      readonly mimeType?: string;
+      /** Correlation fields recorded on `FILE_DOWNLOAD_ISSUED` (an export or operation id). */
+      readonly audit?: Readonly<Record<string, string>>;
     },
   ): Promise<{ url: string; expiresAt: Date }>;
 
@@ -253,7 +261,12 @@ export interface StorageService {
   /** `FILE_DOWNLOAD_SERVED`: every verified byte was handed to the connection. */
   recordDownloadServed(
     fileObjectId: FileObjectId,
-    details: { readonly sizeBytes: number; readonly verifiedAfterMs: number },
+    details: {
+      readonly sizeBytes: number;
+      readonly verifiedAfterMs: number;
+      /** The redeemer's correlation fields, so the row names what the bytes were released as. */
+      readonly audit?: Readonly<Record<string, string>>;
+    },
   ): Promise<void>;
 
   /**
@@ -378,7 +391,20 @@ export interface VerifiedDownload {
   readonly verifiedAfterMs: number;
 }
 
-export { DOWNLOAD_LINK_PATH, type DownloadLinkGrant } from '../domain/download-link-token';
+export {
+  DOWNLOAD_LINK_PATH,
+  DownloadLinkKind,
+  type DownloadLinkGrant,
+  type DownloadLinkGrantOf,
+  type DownloadLinkKindKey,
+  type DownloadLinkSubject,
+} from '../domain/download-link-token';
+export {
+  DOWNLOAD_REDEEMERS,
+  type DownloadRedeemer,
+  DownloadRedeemerRegistry,
+  type RedeemedDownload,
+} from './download-redeemers';
 
 export interface VerifiedDownloadDelivery {
   /** The grant a link's token carries, if it is genuine and unexpired. Authorizes nothing. */

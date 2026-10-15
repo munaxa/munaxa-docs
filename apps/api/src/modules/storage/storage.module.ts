@@ -8,6 +8,8 @@ import {
   STORAGE_SERVICE,
   UPLOAD_SESSION_REPOSITORY,
   VERIFIED_DOWNLOAD_DELIVERY,
+  DOWNLOAD_REDEEMERS,
+  DownloadRedeemerRegistry,
 } from './application/ports';
 import { DefaultVerifiedDownloadDelivery } from './application/verified-download.delivery';
 import { LocalDownloadStaging } from './infrastructure/download-staging';
@@ -66,6 +68,9 @@ import { StorageReportSource } from './infrastructure/report-source.adapter';
       inject: [APP_CONFIG, LOGGER],
     },
     { provide: VERIFIED_DOWNLOAD_DELIVERY, useClass: DefaultVerifiedDownloadDelivery },
+    // One registry for the whole process: each module that owns a kind of download registers its
+    // redeemer here when it starts, and the redemption route dispatches on the token's kind.
+    { provide: DOWNLOAD_REDEEMERS, useValue: new DownloadRedeemerRegistry() },
     // Phase 10: Retention's `BLOB_REAPER`, implemented by the module that owns the bytes — the
     // same inversion as `REVISION_WRITER`. The only code in the product that removes an object
     // from storage, and the first caller `StoragePort.delete` has had outside the upload path.
@@ -77,6 +82,7 @@ import { StorageReportSource } from './infrastructure/report-source.adapter';
     STORAGE_SERVICE,
     BLOB_REAPER,
     VERIFIED_DOWNLOAD_DELIVERY,
+    DOWNLOAD_REDEEMERS,
   ],
 })
 export class StorageModule {}

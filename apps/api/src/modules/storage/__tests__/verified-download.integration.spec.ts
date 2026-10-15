@@ -760,8 +760,11 @@ describe('issuing and recording a verified download', () => {
 
     const link = await inAcme(() =>
       storage.createVerifiedDownloadLink(asId<FileObjectId>(id), 'تقرير.pdf', {
-        documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
-        revisionId: null,
+        subject: {
+          kind: 'DOCUMENT',
+          documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
+          revisionId: null,
+        },
       }),
     );
 
@@ -771,8 +774,11 @@ describe('issuing and recording a verified download', () => {
       tenantId: String(ACME),
       userId: String(ALICE),
       permissionVersion: 3,
-      documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
-      revisionId: null,
+      subject: {
+        kind: 'DOCUMENT',
+        documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
+        revisionId: null,
+      },
       fileObjectId: id,
       disposition: 'attachment',
       filename: 'تقرير.pdf',
@@ -781,7 +787,7 @@ describe('issuing and recording a verified download', () => {
       where: { tenantId: ACME, action: 'FILE_DOWNLOAD_ISSUED', subjectId: id },
     });
     expect(issued.actorId).toBe(String(ALICE));
-    expect(issued.payload).toMatchObject({ after: { delivery: 'VERIFIED' } });
+    expect(issued.payload).toMatchObject({ after: { delivery: 'VERIFIED', kind: 'DOCUMENT' } });
   });
 
   it('issues no link for the system, which has nobody to name', async () => {
@@ -789,8 +795,11 @@ describe('issuing and recording a verified download', () => {
     await expect(
       runWithContext({ ...aliceContext(), userId: null }, () =>
         storage.createVerifiedDownloadLink(asId<FileObjectId>(id), 'p.pdf', {
-          documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
-          revisionId: null,
+          subject: {
+            kind: 'DOCUMENT',
+            documentId: '0199f5a1-5a9e-7000-8000-00000000d001',
+            revisionId: null,
+          },
         }),
       ),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
