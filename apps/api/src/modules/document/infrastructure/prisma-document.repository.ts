@@ -435,6 +435,20 @@ export class PrismaDocumentRepository implements DocumentRepository {
    * A metrics adapter with its own `where` object would have been four lines shorter and one
    * release away from disagreeing.
    */
+  async countVisible(ids: readonly DocumentId[]): Promise<number> {
+    if (ids.length === 0) {
+      return 0;
+    }
+    return requireTransaction().document.count({
+      where: {
+        tenantId: this.tenantId(),
+        id: { in: [...ids] },
+        deletedAt: null,
+        ...(await this.visibilityCondition()),
+      },
+    });
+  }
+
   async whereFor(request: DocumentListRequest): Promise<Prisma.DocumentWhereInput> {
     const tenantId = this.tenantId();
     const subtree =

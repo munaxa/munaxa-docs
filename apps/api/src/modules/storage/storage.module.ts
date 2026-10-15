@@ -69,9 +69,11 @@ import { StorageReportSource } from './infrastructure/report-source.adapter';
       inject: [APP_CONFIG, LOGGER],
     },
     { provide: VERIFIED_DOWNLOAD_DELIVERY, useClass: DefaultVerifiedDownloadDelivery },
-    // One registry for the whole process: each module that owns a kind of download registers its
+    // One registry per application: each module that owns a kind of download registers its
     // redeemer here when it starts, and the redemption route dispatches on the token's kind.
-    { provide: DOWNLOAD_REDEEMERS, useValue: new DownloadRedeemerRegistry() },
+    // A factory, not a value: a value is created once when this file loads and would be shared by
+    // every application booted in the process, so a second boot would find its kinds taken.
+    { provide: DOWNLOAD_REDEEMERS, useFactory: () => new DownloadRedeemerRegistry() },
     // Says at start-up which configured limits allow files no download can verify (D-7).
     DownloadLimitsCheck,
     // Phase 10: Retention's `BLOB_REAPER`, implemented by the module that owns the bytes — the

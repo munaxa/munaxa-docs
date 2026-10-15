@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
 import { Settings } from '@edms/domain';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   AclEffect,
@@ -2193,6 +2193,23 @@ describe('a bulk export releases only what the single download would', () => {
     await asAda(() => bulk.exports.itemLink(exported.operationId, good.documentId));
     expect(await issuedFor(good.fileObjectId)).toBe(1);
   });
+
+  it('checks a manifest’s documents in batches, not one resolution per document (review D-1)', async () => {
+    const ids = await seedExportable(25, 'manifest-scale');
+    const exported = await asAda(() => bulk.exports.export(ids));
+    expect(appliedIds(exported)).toHaveLength(25);
+    const resolve = vi.spyOn(bulk.acl, 'resolve');
+    try {
+      const link = await asAda(() => bulk.exports.manifestLink(exported.operationId));
+      // The visibility of all twenty-five is one counted query through the list's predicate.
+      expect(resolve).not.toHaveBeenCalled();
+      resolve.mockClear();
+      await redemption.redeem(grantOfLink(link.url, SIGNING_SECRET, NOW), 'bulk-suite');
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+    }
+  }, 60_000);
 
   it('hands the requester a manifest with counts and only released documents, through a verified link', async () => {
     const allowed = await releasable('manifest-allowed');

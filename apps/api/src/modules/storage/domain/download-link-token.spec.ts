@@ -238,6 +238,13 @@ describe('the link kinds', () => {
     }
   });
 
+  it('accepts identifiers in either case, as the tenant catalogue does', () => {
+    const upper = { ...GRANT, tenantId: GRANT.tenantId.toUpperCase() };
+    expect(decodeDownloadLinkToken(SECRET, encodeDownloadLinkToken(SECRET, upper), NOW)).toEqual({
+      grant: upper,
+    });
+  });
+
   it('expires every kind on the same clock', () => {
     for (const [, subject] of KINDS) {
       const token = encodeDownloadLinkToken(SECRET, { ...GRANT, subject });

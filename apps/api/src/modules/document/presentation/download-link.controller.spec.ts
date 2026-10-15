@@ -177,6 +177,16 @@ describe('a verified download link, followed by a browser', () => {
     expect(html.headers.get('content-disposition')?.startsWith('attachment;')).toBe(true);
     expect(html.headers.get('content-type')).toBe('application/octet-stream');
     await html.arrayBuffer();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    server = null;
+
+    // A type with parameters is judged on the type: never sent as something a browser would run.
+    const withCharset = await serve({
+      grant: { ...GRANT, mimeType: 'text/html; charset=utf-8', filename: 'x.html' },
+    });
+    const parametered = await fetch(`${withCharset.url}?token=good`);
+    expect(parametered.headers.get('content-type')).toBe('application/octet-stream');
+    await parametered.arrayBuffer();
   });
 
   it.each([

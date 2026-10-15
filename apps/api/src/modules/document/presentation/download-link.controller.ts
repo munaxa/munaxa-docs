@@ -211,10 +211,14 @@ const INLINE_SAFE = new Set([
   'text/plain',
 ]);
 
-/** An attachment's type: as recorded, unless it is one a browser would run. */
+/**
+ * An attachment's type: as recorded, unless it is one a browser would run — judged on the type
+ * itself, so `text/html; charset=utf-8` is caught as `text/html` is.
+ */
 function contentTypeFor(mimeType: string): string {
+  const type = (mimeType.split(';')[0] ?? '').trim();
   return /^(text\/html|application\/xhtml\+xml|image\/svg\+xml|text\/xml|application\/xml)$/iu.test(
-    mimeType,
+    type,
   )
     ? 'application/octet-stream'
     : mimeType;

@@ -36,6 +36,15 @@ export const RATE_LIMIT_RULES: readonly RateLimitRule[] = Object.freeze([
    * credential material ever reaches the key.
    */
   { name: 'document.sign', windowSeconds: 900, limit: 5, by: ['tenant', 'identity'] },
+  /**
+   * Following a verified download link — export design §2.2, and the security review's D-1.
+   *
+   * The route is public (a navigation carries no bearer token), so the identity-keyed default
+   * never applied, and each use re-runs its redeemer's database checks — for a bulk export's
+   * manifest, a check over every document it released. Keyed by address, generous enough for an
+   * office behind one, and tight enough that one 60-second token cannot be replayed into load.
+   */
+  { name: 'download.redeem', windowSeconds: 60, limit: 240, by: ['ip'] },
   { name: 'default', windowSeconds: 60, limit: 300, by: ['identity'] },
 ]);
 
@@ -68,6 +77,7 @@ export const ROUTE_RULES: readonly RouteRule[] = Object.freeze([
     credentialSensitive: true,
   },
   { method: 'GET', pattern: /^\/search$/, rule: 'search', credentialSensitive: false },
+  { method: 'GET', pattern: /^\/downloads$/, rule: 'download.redeem', credentialSensitive: false },
   { method: 'POST', pattern: /^\/uploads$/, rule: 'upload.presign', credentialSensitive: false },
   {
     method: 'GET',

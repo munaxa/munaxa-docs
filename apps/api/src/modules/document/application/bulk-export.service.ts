@@ -533,23 +533,28 @@ export class BulkExportService implements OnModuleInit {
     return { available: true, unavailableReason: null };
   }
 
-  /** 403 when any document the export released is no longer viewable by the caller. Paged. */
+  /**
+   * 403 when any document the export released is no longer viewable by the caller.
+   *
+   * Asked of the database in batches through the list's own ACL predicate — one count per 500
+   * documents — rather than a resolution per document: this runs at issue and again on every use
+   * of the link, and an export may hold thousands of documents.
+   */
   private async refuseWhenManifestNamesHidden(operationId: string): Promise<void> {
     for (let page = 1; ; page += 1) {
       const batch = await this.unitOfWork.run(() =>
         this.operations.itemsOf(
           operationId,
-          { page, pageSize: 200 },
+          { page, pageSize: 500 },
           { outcome: BulkItemOutcome.APPLIED },
         ),
       );
-      for (const item of batch.data) {
-        const row = await this.rowOf(item.targetId);
-        if (row === null || !(await this.reaches(row.id, Permission.DOCUMENT_VIEW))) {
-          throw new ForbiddenError(
-            'download this manifest: it names documents you can no longer see',
-          );
-        }
+      const ids = batch.data.map((item) => asId<DocumentId>(item.targetId));
+      const visible = await this.unitOfWork.run(() => this.documents.countVisible(ids));
+      if (visible !== ids.length) {
+        throw new ForbiddenError(
+          'download this manifest: it names documents you can no longer see',
+        );
       }
       if (!batch.meta.hasMore) {
         return;

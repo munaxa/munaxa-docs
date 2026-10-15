@@ -183,6 +183,12 @@ export interface NewDocument {
 
 export interface DocumentRepository {
   findById(id: DocumentId, includeDeleted: boolean): Promise<DocumentRow | null>;
+  /**
+   * How many of `ids` are live documents the caller in context may view — one query, through the
+   * same ACL predicate a list uses. For a check over many documents at once (a bulk export's
+   * manifest), which per-document resolution would turn into a transaction per document.
+   */
+  countVisible(ids: readonly DocumentId[]): Promise<number>;
   list(request: DocumentListRequest): Promise<Page<DocumentRow>>;
   insert(document: NewDocument): Promise<void>;
   update(

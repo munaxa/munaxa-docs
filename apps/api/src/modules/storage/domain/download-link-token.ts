@@ -93,7 +93,7 @@ export type DownloadLinkRejection = 'MALFORMED' | 'EXPIRED' | 'BAD_SIGNATURE';
 
 const SEPARATOR = '.';
 const PURPOSE = 'munaxa.download.link';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 /** An audit artefact's name: `events.jsonl`, `events.csv`, `manifest.json`, `manifest.sig`. */
 const ARTEFACT = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 
