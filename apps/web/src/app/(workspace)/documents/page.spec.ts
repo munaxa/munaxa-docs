@@ -36,7 +36,8 @@ import { MAXIMUM_FOLDER_DEPTH } from '../../../features/documents/folder-recover
  * because the assertions read `mock.calls` — an untyped `vi.fn()` makes every recorded argument
  * `any`, which is the one thing a test about *which paths were requested* cannot afford.
  */
-const { adminAccess, adminOptions, adminList, adminRead } = vi.hoisted(() => ({
+const { adminAccess, adminOptions, adminList, adminRead, currentUserId } = vi.hoisted(() => ({
+  currentUserId: vi.fn(() => Promise.resolve<string | null>('me-1')),
   adminAccess:
     vi.fn<
       (
@@ -67,7 +68,13 @@ const { adminAccess, adminOptions, adminList, adminRead } = vi.hoisted(() => ({
     vi.fn<(path: string) => Promise<{ ok: true; value: unknown } | { ok: false; code: string }>>(),
 }));
 
-vi.mock('../../../lib/admin/api', () => ({ adminAccess, adminOptions, adminList, adminRead }));
+vi.mock('../../../lib/admin/api', () => ({
+  adminAccess,
+  adminOptions,
+  adminList,
+  adminRead,
+  currentUserId,
+}));
 
 // Neither is rendered — the page is called as a function and the element it returns is inspected
 // rather than mounted — but mocking them keeps the client component and the platform out of a node
@@ -603,5 +610,36 @@ describe('refusals are not hidden', () => {
     adminList.mockResolvedValue({ data: [], meta: { total: 0, hasMore: false } });
 
     await expect(DocumentsPage({ searchParams: Promise.resolve({}) })).rejects.toThrow('Forbidden');
+  });
+});
+
+/**
+ * Docs v2's filter chips and owner line — each read only by a caller who may read its list.
+ *
+ * The chips for type and confidentiality need the configuration catalogue, and the owner line needs
+ * the directory; both are permission-gated reads, and both refusals are thrown on this page on
+ * purpose. So they are asked of the grants, and a caller without them gets the Status chip and the
+ * folder name instead — never a 403.
+ */
+describe('the filter chips and the owner line', () => {
+  it('offers type and confidentiality chips to a caller who may read the configuration', async () => {
+    const requested = await requestsFor([...AUDITOR, Permission.CONFIGURATION_VIEW]);
+    expect(requested).toContain('/configuration/document-types');
+    expect(requested).toContain('/configuration/confidentiality-levels');
+    expect(handedOver['filterOptions']).toMatchObject({ currentUserId: 'me-1' });
+    expect((handedOver['filterOptions'] as { types: unknown }).types).not.toBeNull();
+  });
+
+  it('withholds them, without asking, from a caller who may not', async () => {
+    const requested = await requestsFor([...AUDITOR]);
+    expect(requested).not.toContain('/configuration/document-types');
+    expect(handedOver['filterOptions']).toMatchObject({ types: null, confidentiality: null });
+  });
+
+  it('names owners only for a caller who may read the directory', async () => {
+    expect(await requestsFor([...AUDITOR])).not.toContain('/directory/people');
+    expect(await requestsFor([...AUDITOR, Permission.DIRECTORY_VIEW])).toContain(
+      '/directory/people',
+    );
   });
 });

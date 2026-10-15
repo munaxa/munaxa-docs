@@ -59,24 +59,45 @@ async function token(): Promise<string> {
  * layout and its child are two renders of one request — two calls to `/auth/me` for one page load
  * would also open the window where they disagree.
  */
-export const currentPermissions = cache(async (): Promise<readonly PermissionKey[]> => {
-  try {
-    const me = await apiFetch<{ readonly permissions: readonly PermissionKey[] }>({
-      path: '/auth/me',
-      accessToken: await token(),
-      // The same question the workspace layout asks, so the same bound.
-      signal: AbortSignal.timeout(SESSION_CHECK_TIMEOUT_MS),
-    });
-    return me.permissions;
-  } catch (error) {
-    if (isRejection(error)) {
-      redirect(sessionEndedPath() as Route);
+const currentMe = cache(
+  async (): Promise<{
+    readonly userId: string | null;
+    readonly permissions: readonly PermissionKey[];
+  }> => {
+    try {
+      const me = await apiFetch<{
+        readonly userId?: string | null;
+        readonly permissions: readonly PermissionKey[];
+      }>({
+        path: '/auth/me',
+        accessToken: await token(),
+        // The same question the workspace layout asks, so the same bound.
+        signal: AbortSignal.timeout(SESSION_CHECK_TIMEOUT_MS),
+      });
+      return { userId: me.userId ?? null, permissions: me.permissions };
+    } catch (error) {
+      if (isRejection(error)) {
+        redirect(sessionEndedPath() as Route);
+      }
+      // Anything else — the API down, a gateway in the way — is not a permission decision. Reporting
+      // no permissions would render every screen as an empty shell, which reads as "you lost access".
+      throw error;
     }
-    // Anything else — the API down, a gateway in the way — is not a permission decision. Reporting
-    // no permissions would render every screen as an empty shell, which reads as "you lost access".
-    throw error;
-  }
-});
+  },
+);
+
+export const currentPermissions = cache(
+  async (): Promise<readonly PermissionKey[]> => (await currentMe()).permissions,
+);
+
+/**
+ * Who is asking — Docs v2's "Owner · Me" filter needs the caller's own id to put in the URL.
+ *
+ * The same cached `/auth/me` read as `currentPermissions`, so a page that asks both makes one
+ * request. `null` when the session has no user behind it (an API client), in which case "Me" means
+ * nobody and the filter is not offered.
+ */
+export const currentUserId = cache(async (): Promise<string | null> => (await currentMe()).userId);
 
 /**
  * Whether this caller may administer an area, and what else they hold.

@@ -15,6 +15,10 @@ import {
   Panel,
   formatFileSize,
   useToast,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
 } from '@munaxa/ui';
 import { EllipsisVertical, FileText, ListTree } from '@munaxa/icons';
 
@@ -145,6 +149,7 @@ export function DocumentScreen({
    * `loadShippedTemplate`'s on the notification templates screen: await the server action, then
    * open; a refusal becomes a message and the dialogue simply does not open.
    */
+  const [tab, setTab] = useState('overview');
   const [editing, setEditing] = useState<DocumentEditOptions | null>(null);
   const [moving, setMoving] = useState<DocumentMoveOptions | null>(null);
   const [numbering, setNumbering] = useState(false);
@@ -419,101 +424,137 @@ export function DocumentScreen({
         <Alert tone="warning">{translate(`documents.scan.${file.scanStatus}`)}</Alert>
       )}
 
-      {preview}
-
       {/*
-        `gap-4`, not `gap-6` — Phase 7.2. Every section on this page is now a `Panel` with its own
-        border and its own rule under its title, so the structure is drawn by the panels rather than
-        by the space between them. Twenty-four pixels between bordered regions read as four
-        disconnected objects; sixteen reads as one record with four parts.
+        The record in sections — Docs v2. Overview, Approvals, Revisions, History: the page used to be
+        every section stacked, so the approval record and the revision timeline were a long scroll
+        below the fold of a document whose properties fit on one screen. Each section is still the
+        owning feature's own slot, rendered exactly as before; only where it sits changed. Signing
+        stays on Overview, beside the properties a signature attests to.
       */}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Panel
-          className="lg:col-span-2"
-          title={
-            <span className="flex items-center gap-2">
-              <ListTree className="size-4 opacity-70" aria-hidden />
-              {translate('documents.section.properties')}
-            </span>
-          }
-        >
-          <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
-            {/*
-              The number, the revision and the pending marker moved to the identity block at the top
-              of the page — Phase 7. They are what identifies a controlled record, and restating them
-              here as the first of six equal properties was the clearest symptom of a page with no
-              primary tier. Everything below is genuinely secondary: it describes the record rather
-              than naming it.
-            */}
-            <Property label={translate('documents.field.category')} value={document.categoryName} />
-            <Property
-              label={translate('documents.field.description')}
-              value={document.description}
-            />
-            <Property
-              label={translate('documents.field.revision')}
-              value={effectiveRevision?.label ?? null}
-            />
-          </dl>
-
-          {document.metadata.length > 0 && (
-            <>
-              <h3 className="text-muted-foreground mt-6 text-xs font-semibold tracking-wide uppercase">
-                {translate('documents.section.metadata')}
-              </h3>
-              <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
-                {document.metadata.map((entry) => (
-                  <Property
-                    key={entry.fieldId}
-                    label={entry.name}
-                    value={renderValue(entry.value)}
-                  />
-                ))}
-              </dl>
-            </>
+      <Tabs value={tab} onValueChange={setTab} variant="underline">
+        <TabsList aria-label={translate('documents.tab.label')}>
+          <TabsTrigger value="overview">{translate('documents.tab.overview')}</TabsTrigger>
+          {approvals !== undefined && (
+            <TabsTrigger value="approvals">{translate('documents.tab.approvals')}</TabsTrigger>
           )}
-        </Panel>
+          {revisions !== undefined && (
+            <TabsTrigger value="revisions">{translate('documents.tab.revisions')}</TabsTrigger>
+          )}
+          {audit !== undefined && (
+            <TabsTrigger value="history">{translate('documents.tab.history')}</TabsTrigger>
+          )}
+        </TabsList>
+        <TabsContent value="overview" className="flex flex-col gap-4 pt-4">
+          {preview}
 
-        <Panel
-          title={
-            <span className="flex items-center gap-2">
-              <FileText className="size-4 opacity-70" aria-hidden />
-              {translate('documents.section.file')}
-            </span>
-          }
-        >
-          {file === null ? (
-            <p className="text-muted-foreground text-sm">{translate('documents.file.none')}</p>
-          ) : (
-            <dl className="flex flex-col gap-2">
-              <Property label={translate('documents.file.name')} value={file.filename} />
-              <Property
-                label={translate('documents.file.format')}
-                value={formatFor(file.mimeType)?.label ?? file.mimeType}
-              />
-              <Property
-                label={translate('documents.file.size')}
-                value={formatFileSize(file.sizeBytes)}
-              />
-              <Property
-                label={translate('documents.file.scan')}
-                value={translate(`documents.scanStatus.${file.scanStatus}`)}
-              />
-              {/*
-                The digest, in full — and since Phase 7.1 actually in full, wrapping across lines in
-                a monospaced face rather than being cut off by a `truncate` the original comment did
-                not know was there. A hexadecimal digest read in a fixed-width face is one somebody
-                can compare against another by eye, which is the only way this value is ever used.
+          {/*
+          `gap-4`, not `gap-6` — Phase 7.2. Every section on this page is now a `Panel` with its own
+          border and its own rule under its title, so the structure is drawn by the panels rather than
+          by the space between them. Twenty-four pixels between bordered regions read as four
+          disconnected objects; sixteen reads as one record with four parts.
+        */}
+          <div className="grid gap-4 lg:grid-cols-3">
+            <Panel
+              className="lg:col-span-2"
+              title={
+                <span className="flex items-center gap-2">
+                  <ListTree className="size-4 opacity-70" aria-hidden />
+                  {translate('documents.section.properties')}
+                </span>
+              }
+            >
+              <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                {/*
+                The number, the revision and the pending marker moved to the identity block at the top
+                of the page — Phase 7. They are what identifies a controlled record, and restating them
+                here as the first of six equal properties was the clearest symptom of a page with no
+                primary tier. Everything below is genuinely secondary: it describes the record rather
+                than naming it.
               */}
-              <Property
-                label={translate('documents.file.checksum')}
-                value={file.checksumSha256}
-                wrap
-              />
-            </dl>
-          )}
-        </Panel>
-      </div>
+                <Property
+                  label={translate('documents.field.category')}
+                  value={document.categoryName}
+                />
+                <Property
+                  label={translate('documents.field.description')}
+                  value={document.description}
+                />
+                <Property
+                  label={translate('documents.field.revision')}
+                  value={effectiveRevision?.label ?? null}
+                />
+              </dl>
+
+              {document.metadata.length > 0 && (
+                <>
+                  <h3 className="text-muted-foreground mt-6 text-xs font-semibold tracking-wide uppercase">
+                    {translate('documents.section.metadata')}
+                  </h3>
+                  <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                    {document.metadata.map((entry) => (
+                      <Property
+                        key={entry.fieldId}
+                        label={entry.name}
+                        value={renderValue(entry.value)}
+                      />
+                    ))}
+                  </dl>
+                </>
+              )}
+            </Panel>
+
+            <Panel
+              title={
+                <span className="flex items-center gap-2">
+                  <FileText className="size-4 opacity-70" aria-hidden />
+                  {translate('documents.section.file')}
+                </span>
+              }
+            >
+              {file === null ? (
+                <p className="text-muted-foreground text-sm">{translate('documents.file.none')}</p>
+              ) : (
+                <dl className="flex flex-col gap-2">
+                  <Property label={translate('documents.file.name')} value={file.filename} />
+                  <Property
+                    label={translate('documents.file.format')}
+                    value={formatFor(file.mimeType)?.label ?? file.mimeType}
+                  />
+                  <Property
+                    label={translate('documents.file.size')}
+                    value={formatFileSize(file.sizeBytes)}
+                  />
+                  <Property
+                    label={translate('documents.file.scan')}
+                    value={translate(`documents.scanStatus.${file.scanStatus}`)}
+                  />
+                  {/*
+                  The digest, in full — and since Phase 7.1 actually in full, wrapping across lines in
+                  a monospaced face rather than being cut off by a `truncate` the original comment did
+                  not know was there. A hexadecimal digest read in a fixed-width face is one somebody
+                  can compare against another by eye, which is the only way this value is ever used.
+                */}
+                  <Property
+                    label={translate('documents.file.checksum')}
+                    value={file.checksumSha256}
+                    wrap
+                  />
+                </dl>
+              )}
+            </Panel>
+          </div>
+          {signatures}
+        </TabsContent>
+        <TabsContent value="approvals" className="pt-4">
+          {approvals}
+        </TabsContent>
+        <TabsContent value="revisions" className="pt-4">
+          {revisions}
+        </TabsContent>
+        <TabsContent value="history" className="pt-4">
+          {audit}
+        </TabsContent>
+      </Tabs>
 
       {editing !== null && (
         <FormDialog
@@ -643,14 +684,6 @@ export function DocumentScreen({
           />
         </FormDialog>
       )}
-
-      {approvals}
-
-      {revisions}
-
-      {signatures}
-
-      {audit}
 
       <p>
         <Button

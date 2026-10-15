@@ -40,6 +40,11 @@ export function AdminSectionNav({ sections }: { sections: readonly AdminSection[
     <SidebarNav
       groups={groups}
       label={translate('admin.sectionNav')}
+      // Docs v2: the current section on the accent surface with a leading bar, like the workspace
+      // rail, and a rule between the groups — asked for in review, because six groups of small
+      // headings read as one long list without it.
+      variant="indicator"
+      dividers
       renderLink={({ href, className, children, ...rest }) => (
         // The platform hands `href` back as a plain string; the destinations were typed on the way
         // in (`lib/admin/sections.ts`), which is where a route that does not exist is caught.

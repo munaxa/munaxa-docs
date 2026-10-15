@@ -19,7 +19,13 @@ import {
 } from '../../../features/documents/documents-view';
 import { recoverSelectedFolderChain } from '../../../features/documents/folder-recovery';
 import { LibraryScreen } from '../../../features/documents/library-screen';
-import { adminAccess, adminList, adminOptions, adminRead } from '../../../lib/admin/api';
+import {
+  adminAccess,
+  adminList,
+  adminOptions,
+  adminRead,
+  currentUserId,
+} from '../../../lib/admin/api';
 import { type RawSearchParams, readListState } from '../../../lib/admin/list-state';
 import { DOCUMENT_FILTER_KEYS, DOCUMENT_SORT_FIELDS } from '../../../lib/admin/list-keys';
 
@@ -77,6 +83,14 @@ export default async function DocumentsPage({
    * fetching a tenant's classification vocabulary to fill in a form that has no field for it.
    */
   const opensUpload = canCreate;
+  /*
+   * Docs v2's filter chips and owner line. Each one reads a list that is permission-gated in its own
+   * right — the configuration catalogue and the directory — so each is offered only to a caller who
+   * may read what it needs. Asked of the grants, not discovered by catching a 403, because a refused
+   * read here is thrown on purpose (see below).
+   */
+  const filtersByConfiguration = access.permissions.includes(Permission.CONFIGURATION_VIEW);
+  const namesOwners = access.permissions.includes(Permission.DIRECTORY_VIEW);
   const opensBulkMetadata = canBulk.edit;
 
   /**
@@ -112,8 +126,8 @@ export default async function DocumentsPage({
    * is a real authorization problem and an empty dropdown would be the page lying about what the
    * tenant has configured.
    */
-  const [types, categories, levels] = await Promise.all([
-    opensUpload
+  const [types, categories, levels, me] = await Promise.all([
+    opensUpload || filtersByConfiguration
       ? adminOptions<DocumentTypeOption>('/configuration/document-types', 'name', {
           // A *new* document may only be filed as a live type. The properties form asks without
           // this filter, because a document may already carry one that has since been retired.
@@ -123,9 +137,10 @@ export default async function DocumentsPage({
     opensUpload || opensBulkMetadata
       ? adminOptions<CategoryOption>('/configuration/categories', 'path')
       : Promise.resolve({ data: [] as CategoryOption[] }),
-    opensUpload
+    opensUpload || filtersByConfiguration
       ? adminOptions<ConfidentialityOption>('/configuration/confidentiality-levels', 'name')
       : Promise.resolve({ data: [] as ConfidentialityOption[] }),
+    currentUserId(),
   ]);
 
   /**
@@ -138,14 +153,16 @@ export default async function DocumentsPage({
    * the *configuration* says whether the dialogue has a control that needs a directory.
    *
    * Which means the common case reaches `/directory` not at all, and the narrowest read in the
-   * product stays unread until a tenant configures something that needs it.
+   * product stays unread until a tenant configures something that needs it — or, since Docs v2, the
+   * caller holds `directory:view`, in which case the same list names each document's owner in the
+   * library and its detail panel.
    */
   const fieldTypes = new Set(
     types.data.flatMap((type) => type.fields.map((field) => field.dataType)),
   );
 
   const [users, departments] = await Promise.all([
-    fieldTypes.has(MetadataDataType.USER)
+    fieldTypes.has(MetadataDataType.USER) || namesOwners
       ? adminOptions<PersonOption>('/directory/people', 'displayName')
       : Promise.resolve({ data: [] as PersonOption[] }),
     fieldTypes.has(MetadataDataType.DEPARTMENT)
@@ -313,6 +330,18 @@ export default async function DocumentsPage({
         value: department.id,
         label: department.name,
       }))}
+      filterOptions={{
+        types: filtersByConfiguration
+          ? types.data.map((type) => ({ value: type.id, label: type.name }))
+          : null,
+        confidentiality: filtersByConfiguration
+          ? levels.data.map((level) => ({ value: level.id, label: level.name }))
+          : null,
+        currentUserId: me,
+      }}
+      ownerNames={
+        namesOwners ? Object.fromEntries(users.data.map((user) => [user.id, user.displayName])) : {}
+      }
       canCreate={canCreate}
       // 16 §5's *"bulk actions gated by `capabilities`"*, resolved on the server from the caller's
       // own grants. The tenant-wide floor only: whether they reach a *particular* document is the

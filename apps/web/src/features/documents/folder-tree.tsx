@@ -2,12 +2,20 @@
 
 import type { Route } from 'next';
 import Link from 'next/link';
-import { Fragment, type ReactNode, useMemo, useState } from 'react';
+import { Fragment, type ReactNode, useId, useMemo, useState } from 'react';
 
-import { Badge, Section, Separator, Stack, Surface, TreeView } from '@munaxa/ui';
-// `Library` is also a contract type in this file, and `FolderTree` is this module's own component —
-// both icons are aliased so the names cannot collide.
-import { FolderTree as FolderTreeIcon, Library as LibraryIcon, Star } from '@munaxa/icons';
+import {
+  Badge,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  Overline,
+  Separator,
+  TreeView,
+} from '@munaxa/ui';
+// `Folder` is also a contract type in this file — the icon is aliased so the names cannot collide.
+import { ChevronDown, Clock, Folder as FolderIcon, Star } from '@munaxa/icons';
 
 import type { Folder, Library } from '@edms/contracts';
 
@@ -16,20 +24,32 @@ import type { DocumentsView } from './documents-view';
 import { folderTrail } from './folder-trail';
 
 /**
- * A group's heading: its glyph, then its name.
+ * One labelled group of the rail — Docs v2.
  *
- * The icon is `aria-hidden`, so the region's accessible name is the words alone — which is what it
- * was when each group was a `Panel`, and what the tests assert. `size-4` is the platform's own icon
- * size, used here as it is in the rest of this product rather than scaled to the heading.
+ * Small capitals above the group rather than a display-size heading with a glyph: the rail is a
+ * column of mostly-text rows, and the approved design lets the rows carry the weight. It is still a
+ * named region with an `h2`, so a screen reader walking regions or headings finds the same three
+ * groups it always did, by the same names.
  */
-function heading(icon: ReactNode, label: string): ReactNode {
+function Group({ title, children }: { readonly title: string; readonly children: ReactNode }) {
+  const id = useId();
   return (
-    <span className="flex items-center gap-2">
-      {icon}
-      {label}
-    </span>
+    <section aria-labelledby={id} className="flex flex-col gap-1.5">
+      <Overline as="h2" id={id} className="ps-2">
+        {title}
+      </Overline>
+      {children}
+    </section>
   );
 }
+
+/**
+ * Where a row in the rail is the current place: the accent surface and a brand bar on its leading
+ * edge, the same treatment the workspace rail gives the current page. Keyed on `aria-current`, so
+ * the style cannot disagree with what assistive technology is told.
+ */
+const RAIL_ROW =
+  'flex items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-[current]:bg-accent aria-[current]:font-semibold aria-[current]:text-foreground aria-[current]:shadow-[inset_2px_0_0_var(--primary)] rtl:aria-[current]:shadow-[inset_-2px_0_0_var(--primary)]';
 
 /**
  * A folder as `TreeView` needs it: the row it already had, plus the name under the key the tree
@@ -197,45 +217,29 @@ export function FolderTree({
    */
   const groups: readonly {
     readonly id: string;
-    readonly title: ReactNode;
+    readonly title: string;
     readonly body: ReactNode;
   }[] = [
     {
       id: 'libraries',
-      title: heading(
-        <LibraryIcon className="size-4" aria-hidden />,
-        translate('documents.nav.libraries'),
-      ),
-      body: (
-        <ul className="-mx-2 flex flex-col gap-0.5">
-          {libraries.map((library) => (
-            <li key={library.id}>
-              <Link
-                href={
-                  `/documents?libraryId=${library.id}&folderId=${library.rootFolderId}` as Route
-                }
-                aria-current={inFolderView && library.id === selectedLibraryId ? 'true' : undefined}
-                className="block truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium"
-              >
-                {library.name}
-              </Link>
-            </li>
-          ))}
-          {libraries.length === 0 && (
-            <li className="px-2 py-1 text-sm">{translate('documents.nav.noLibraries')}</li>
-          )}
-        </ul>
-      ),
+      title: translate('documents.nav.library'),
+      body:
+        libraries.length === 0 ? (
+          <p className="px-2 text-sm">{translate('documents.nav.noLibraries')}</p>
+        ) : (
+          <LibraryPicker
+            libraries={libraries}
+            selectedLibraryId={selectedLibraryId}
+            current={inFolderView}
+          />
+        ),
     },
     ...(selectedLibraryId === null
       ? []
       : [
           {
             id: 'folders',
-            title: heading(
-              <FolderTreeIcon className="size-4" aria-hidden />,
-              translate('documents.nav.folders'),
-            ),
+            title: translate('documents.nav.folders'),
             body: (
               <>
                 <TreeView<FolderNode>
@@ -248,8 +252,8 @@ export function FolderTree({
                    * reader announcing "Folders, tree" is exactly what the rail means.
                    */
                   aria-label={translate('documents.nav.folders')}
-                  className="-mx-2 gap-0.5"
-                  renderItem={({ node, treeItemProps, depth }) => (
+                  className="gap-px"
+                  renderItem={({ node, treeItemProps, depth, hasChildren, toggle }) => (
                     <Link
                       href={
                         `/documents?libraryId=${selectedLibraryId}&folderId=${node.id}` as Route
@@ -265,13 +269,27 @@ export function FolderTree({
                       aria-current={
                         inFolderView && node.id === selectedFolderId ? 'true' : undefined
                       }
-                      className={`flex flex-1 items-center gap-2 truncate rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium${
+                      className={`${RAIL_ROW} min-w-0 flex-1${
                         // The head of the tree, given the weight of one — so the levels below it read
                         // *from* somewhere. `depth` comes from the tree rather than from a path split
                         // here; this is typography keyed on Platform's answer, not a second hierarchy.
-                        depth === 0 ? ' font-medium' : ''
+                        depth === 0 ? ' font-semibold' : ''
                       }`}
+                      /*
+                       * Double-click opens or closes a branch — Docs v2, asked for in review. The
+                       * single click still navigates; the browser fires it first, so a double-click
+                       * on a folder lands on that folder *and* flips it, which is what both halves of
+                       * the gesture mean. The chevron and the arrow keys remain the ways to expand
+                       * without navigating.
+                       */
+                      {...(hasChildren && {
+                        onDoubleClick: (event: { preventDefault: () => void }) => {
+                          event.preventDefault();
+                          toggle();
+                        },
+                      })}
                     >
+                      <FolderIcon className="size-3.5 shrink-0 opacity-75" aria-hidden />
                       <span className="flex-1 truncate">{node.name}</span>
                       {documentCounts?.[node.id] !== undefined && (
                         <Badge tone="muted">{String(documentCounts[node.id])}</Badge>
@@ -297,7 +315,7 @@ export function FolderTree({
                 {folderPage !== undefined &&
                   folderPage.hasMore &&
                   folderPage.shown < folderPage.total && (
-                    <p className="px-2 text-xs text-muted-foreground">
+                    <p className="text-muted-foreground px-2 text-xs">
                       {translate('documents.nav.foldersTruncated', {
                         count: folderPage.total,
                         shown: folderPage.shown,
@@ -310,9 +328,9 @@ export function FolderTree({
         ]),
     {
       id: 'views',
-      title: heading(<Star className="size-4" aria-hidden />, translate('documents.nav.views')),
+      title: translate('documents.nav.views'),
       body: (
-        <ul className="-mx-2 flex flex-col gap-0.5">
+        <ul className="flex flex-col gap-px">
           <li>
             <Link
               href="/documents?favorite=true"
@@ -326,8 +344,9 @@ export function FolderTree({
                * the same fact would be one screen readers do not hear.
                */
               aria-current={view === 'filtered' ? 'true' : undefined}
-              className="block rounded px-2 py-1 hover:bg-accent aria-[current]:font-medium"
+              className={RAIL_ROW}
             >
+              <Star className="size-3.5 shrink-0 opacity-75" aria-hidden />
               {translate('documents.nav.favorites')}
             </Link>
           </li>
@@ -338,7 +357,8 @@ export function FolderTree({
                 link is on screen *and* current, so marking it would be describing a page this
                 component never appears on.
               */}
-            <Link href="/documents/recent" className="block rounded px-2 py-1 hover:bg-accent">
+            <Link href="/documents/recent" className={RAIL_ROW}>
+              <Clock className="size-3.5 shrink-0 opacity-75" aria-hidden />
               {translate('documents.nav.recent')}
             </Link>
           </li>
@@ -349,45 +369,76 @@ export function FolderTree({
 
   return (
     /*
-      One surface, three groups — Slice 4, unchanged by Slice 6.
+      The rail — Docs v2.
 
-      ## What this replaces, and why
+      A full-height column at the start of the screen, on a half-card wash (painted by the library's
+      frame, so the rail stays a plain list wherever else it is used) and separated
+      from the list by one border, rather than a card floating in the page's padding. Slice 4 had
+      already collapsed three cards into one surface; the approved design takes the last step and
+      makes the rail part of the frame. The three groups are still three named regions with `h2`s —
+      see `Group` — so nothing an assistive technology relies on has moved.
 
-      Phase 7.2 gave each group a `Panel`, which was the right move at the time: the groups had been
-      bare headings at `text-sm font-medium opacity-70` floating above their links, so each label
-      read as *less* present than the list under it. `Panel` fixed that and made each group a
-      labelled region.
-
-      It also made the rail three cards. On the screen that is this product's centrepiece, the left
-      half was three bordered, rounded, elevated boxes stacked in a column — the look of an
-      administration sidebar rather than a document structure, and the single most card-heavy element
-      in the product.
-
-      So the chrome collapses to **one** `Surface` and the grouping moves to what the type and the
-      spacing already say: a heading per group, a rule between them, and room around both. The
-      groups are still three labelled regions — `Section` claims `role="region"` with
-      `aria-labelledby` exactly as `Panel` did, and its heading is an `h2` at the same level — so
-      nothing an assistive technology relies on has moved. Only the boxes are gone.
-
-      The separators are `decorative` by default, which is correct: `Section` already tells a screen
-      reader where each group starts, so announcing the rules as well would say it twice.
+      The separator stays between Folders and Views only: Library is a single control, and a rule
+      under one dropdown separates it from nothing.
     */
-    <Surface
-      as="nav"
-      aria-label={translate('documents.nav.label')}
-      tone="card"
-      bordered
-      radius="lg"
-      padding={4}
-    >
-      <Stack gap={4}>
-        {groups.map((group, index) => (
-          <Fragment key={group.id}>
-            {index > 0 && <Separator />}
-            <Section title={group.title}>{group.body}</Section>
-          </Fragment>
+    <nav aria-label={translate('documents.nav.label')} className="flex flex-col gap-4.5 px-3 py-4">
+      {groups.map((group) => (
+        <Fragment key={group.id}>
+          {group.id === 'views' && <Separator className="mx-2 w-auto" />}
+          <Group title={group.title}>{group.body}</Group>
+        </Fragment>
+      ))}
+    </nav>
+  );
+}
+
+/**
+ * The library picker — Docs v2's dropdown, built so every library is still a link.
+ *
+ * The design draws a select. A native `<select>` that navigates on change is a context change on
+ * input (WCAG 3.2.2), and it would have turned five links a reader could middle-click into a widget
+ * they cannot. So it is a menu button that *looks* like the select, whose items are the same links
+ * to the same URLs the rail always had — the platform's own recipe for navigation in a menu
+ * (`DropdownMenuItem asChild` around a link).
+ *
+ * The trigger's name says what it is and what is chosen; the current library carries
+ * `aria-current` inside the menu as it did in the list.
+ */
+function LibraryPicker({
+  libraries,
+  selectedLibraryId,
+  current,
+}: {
+  readonly libraries: readonly Library[];
+  readonly selectedLibraryId: string | null;
+  readonly current: boolean;
+}): ReactNode {
+  const translate = useTranslate();
+  const selected = libraries.find((library) => library.id === selectedLibraryId) ?? null;
+  const name = selected?.name ?? translate('documents.nav.libraries');
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label={translate('documents.nav.libraryPicker', { name })}
+        className="border-border bg-card hover:border-primary-200 focus-visible:ring-ring flex h-[34px] w-full items-center gap-2 rounded-lg border px-2.5 text-start text-[13px] font-medium focus-visible:ring-2 focus-visible:outline-none"
+      >
+        <span className="flex-1 truncate">{name}</span>
+        <ChevronDown className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-48">
+        {libraries.map((library) => (
+          <DropdownMenuItem key={library.id} asChild>
+            <Link
+              href={`/documents?libraryId=${library.id}&folderId=${library.rootFolderId}` as Route}
+              aria-current={current && library.id === selectedLibraryId ? 'true' : undefined}
+              className="aria-[current]:font-semibold"
+            >
+              {library.name}
+            </Link>
+          </DropdownMenuItem>
         ))}
-      </Stack>
-    </Surface>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

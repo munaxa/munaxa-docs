@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { ALL_PERMISSIONS } from '@edms/domain';
@@ -16,13 +16,18 @@ import { NAVIGATION_ICON_IDS, NAVIGATION_SECTION_IDS, WorkspaceShell } from './w
  * because the shell passes `skipLinkLabel` and `AppShell` renders the component. A symbol search
  * cannot see that. This test can, and it will also notice if the prop is ever dropped.
  */
-function shell(children = <h1>Content</h1>, unreadNotifications?: number | null): HTMLElement {
+function shell(
+  children = <h1>Content</h1>,
+  unreadNotifications?: number | null,
+  counts: { pendingApprovals?: number | null; retentionDue?: number | null } = {},
+): HTMLElement {
   return renderWithProviders(
     <WorkspaceShell
       destinations={destinationsFor(ALL_PERMISSIONS)}
       displayName="Test Person"
       description="Test Tenant"
       {...(unreadNotifications !== undefined && { unreadNotifications })}
+      {...counts}
       signOutAction={() => Promise.resolve()}
     >
       {children}
@@ -163,5 +168,62 @@ describe('workspace shell accessibility', () => {
   it('caps the badge rather than widening the top bar', () => {
     const root = shell(undefined, 1284);
     expect(root.textContent).toContain('99+');
+  });
+});
+
+describe('the Docs v2 frame', () => {
+  it('has no axe violations with every reminder showing', async () => {
+    await expectNoViolations(shell(undefined, 3, { pendingApprovals: 4, retentionDue: 14 }));
+  });
+
+  it('counts what is waiting beside Approvals, and says what the number is', () => {
+    shell(undefined, undefined, { pendingApprovals: 4 });
+    // The digit is decoration; the sentence is what a screen reader hears inside the link.
+    const approvals = screen.getByRole('link', { name: /Approvals.*4 approvals waiting for you/ });
+    expect(approvals.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('draws no approvals count at zero or when it is unknown', () => {
+    shell(undefined, undefined, { pendingApprovals: 0 });
+    expect(screen.queryByText(/waiting for you/)).toBeNull();
+    document.body.innerHTML = '';
+    shell(undefined, undefined, { pendingApprovals: null });
+    expect(screen.queryByText(/waiting for you/)).toBeNull();
+  });
+
+  it('shows the retention reminder only when something is due', () => {
+    shell(undefined, undefined, { retentionDue: 14 });
+    expect(screen.getByText('14 documents are due for their disposal review.')).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Open schedule' }).getAttribute('href')).toBe(
+      '/admin/retention',
+    );
+    document.body.innerHTML = '';
+    shell(undefined, undefined, { retentionDue: 0 });
+    expect(screen.queryByText('Retention review')).toBeNull();
+  });
+
+  it('collapses the rail from the top bar', () => {
+    shell();
+    const toggle = screen.getByRole('button', { name: 'Collapse navigation' });
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: 'Expand navigation' })).toBeDefined();
+  });
+
+  it('searches the workspace from the frame, and ⌘K / Ctrl+K reaches the box', () => {
+    shell();
+    const form = screen.getByRole('search', { name: 'Search the workspace' });
+    const box = screen.getByRole('searchbox', { name: 'Search the workspace' });
+    expect(form.contains(box)).toBe(true);
+    expect(box.getAttribute('aria-keyshortcuts')).toContain('Control+K');
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    expect(document.activeElement).toBe(box);
+  });
+
+  it('offers the other language, named in that language', () => {
+    shell();
+    const button = screen.getByRole('button', { name: 'Switch to Arabic' });
+    expect(button.textContent).toBe('العربية');
+    expect(button.getAttribute('lang')).toBe('ar');
   });
 });

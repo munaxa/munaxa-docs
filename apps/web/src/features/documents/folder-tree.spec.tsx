@@ -95,7 +95,7 @@ describe('the three groups', () => {
    * screen reader would pass every screenshot in the suite.
    */
   it.each([
-    ['Libraries', 'folder'],
+    ['Library', 'folder'],
     ['Folders', 'folder'],
     ['Views', 'folder'],
   ] as const)('exposes %s as a labelled region', (name, view) => {
@@ -116,10 +116,11 @@ describe('the three groups', () => {
      * hrefs either side of the folders are unchanged, which is the half that must not move.
      */
     tree('folder', undefined, PROCEDURES.id);
+    // The libraries sit behind the picker now (Docs v2) — see "the library picker" below — so the
+    // visible run starts at the folders.
     expect(
       anchors().map((anchor) => [anchor.textContent?.trim(), anchor.getAttribute('href')]),
     ).toStrictEqual([
-      [library().name, `/documents?libraryId=${library().id}&folderId=${library().rootFolderId}`],
       ['Quality Management', `/documents?libraryId=${library().id}&folderId=${ROOT.id}`],
       ['Procedures', `/documents?libraryId=${library().id}&folderId=${PROCEDURES.id}`],
       ['Favourites', '/documents?favorite=true'],
@@ -136,10 +137,10 @@ describe('the three groups', () => {
      */
     tree('empty');
     expect(screen.queryByRole('region', { name: 'Folders' })).toBeNull();
-    expect(screen.getByRole('region', { name: 'Libraries' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Library' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Views' })).toBeTruthy();
-    // The library is still listed — it is selectable, just not selected.
-    expect(screen.getByRole('link', { name: LIBRARY })).toBeTruthy();
+    // The picker is still there — a library is selectable, just not selected.
+    expect(screen.getByRole('button', { name: /^Choose a library/ })).toBeTruthy();
   });
 
   it('says so when there is no library at all', () => {
@@ -165,11 +166,46 @@ describe('the three groups', () => {
   });
 });
 
+/**
+ * The library picker — Docs v2.
+ *
+ * The approved design draws the library as a dropdown. It is a menu button over the same links the
+ * rail always had, rather than a navigating `<select>`, so a library is still something a reader can
+ * middle-click and a context change still needs a choice rather than an arrow key.
+ */
+describe('the library picker', () => {
+  it('names the chosen library on the button', () => {
+    tree('folder');
+    expect(screen.getByRole('button', { name: `Choose a library — ${LIBRARY}` })).toBeTruthy();
+  });
+
+  it('opens onto every library as a link, and marks the one the reader is in', async () => {
+    const user = userEvent.setup();
+    tree('folder', undefined, PROCEDURES.id);
+    await user.click(screen.getByRole('button', { name: /^Choose a library/ }));
+    const item = await screen.findByRole('menuitem', { name: LIBRARY });
+    expect(item.getAttribute('href')).toBe(
+      `/documents?libraryId=${library().id}&folderId=${library().rootFolderId}`,
+    );
+    expect(item.getAttribute('aria-current')).toBe('true');
+  });
+
+  it('does not mark the library on a filtered view', async () => {
+    // "You are in Quality" is the same false statement one level up from the folder.
+    const user = userEvent.setup();
+    tree('filtered');
+    await user.click(screen.getByRole('button', { name: /^Choose a library/ }));
+    const item = await screen.findByRole('menuitem', { name: LIBRARY });
+    expect(item.getAttribute('aria-current')).toBeNull();
+  });
+});
+
 describe('folder view', () => {
   it('marks the folder the reader is in, and no view', () => {
     tree('folder', undefined, PROCEDURES.id);
-    // The library is current too — the reader is genuinely inside it — but Favourites is not.
-    expect(current()).toStrictEqual([LIBRARY, 'Procedures']);
+    // The library is current too — the reader is genuinely inside it — but it is marked inside the
+    // closed picker, which "the library picker" below opens. Favourites is not current.
+    expect(current()).toStrictEqual(['Procedures']);
     expect(current()).not.toContain('Favourites');
   });
 
@@ -234,7 +270,7 @@ describe('Arabic', () => {
     tree('folder', 'ar', PROCEDURES.id);
     // Folder names are user data and stay Latin here, which is the mixed-direction case the RTL
     // rail actually has to render.
-    expect(current()).toStrictEqual([LIBRARY, 'Procedures']);
+    expect(current()).toStrictEqual(['Procedures']);
     // And the Arabic favourites entry stays unmarked on a folder view.
     expect(current()).not.toContain('المفضلة');
   });
@@ -540,10 +576,7 @@ describe('libraries and views stay flat', () => {
     expect(inTree).not.toContain(library().name);
     expect(inTree).not.toContain('Favourites');
     expect(inTree).not.toContain('Recently opened');
-    // They are still links, and still exactly where they were.
-    expect(screen.getByRole('link', { name: library().name }).getAttribute('href')).toContain(
-      '/documents?libraryId=',
-    );
+    // They are still links, and still exactly where they were — the library behind its picker.
     expect(screen.getByRole('link', { name: 'Favourites' }).getAttribute('href')).toBe(
       '/documents?favorite=true',
     );

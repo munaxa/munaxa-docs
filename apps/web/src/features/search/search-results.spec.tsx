@@ -200,3 +200,24 @@ describe('search section grammar', () => {
     expect(screen.queryAllByRole('heading', { level: 3 })).toHaveLength(0);
   });
 });
+
+describe('the facet rail’s All row — Docs v2', () => {
+  it('starts every facet with All, pressed while nothing in it is picked', () => {
+    renderSearch();
+    const status = screen.getByRole('region', { name: 'Status' });
+    const all = status.querySelector('button');
+    expect(all?.textContent).toMatch(/^All/);
+    expect(all?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('counts every result beside Status · All, because status buckets partition them', () => {
+    renderSearch();
+    const status = screen.getByRole('region', { name: 'Status' });
+    const buttons = [...status.querySelectorAll('button')];
+    const sum = buttons
+      .slice(1)
+      .map((button) => Number(button.querySelector('span:last-child')?.textContent ?? 0))
+      .reduce((a, b) => a + b, 0);
+    expect(buttons[0]?.textContent).toBe(`All${String(sum)}`);
+  });
+});

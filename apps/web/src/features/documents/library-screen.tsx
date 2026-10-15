@@ -4,26 +4,20 @@ import type { Route } from 'next';
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
-import {
-  Badge,
-  Button,
-  type ColumnDef,
-  Split,
-  Switch,
-  formatFileSize,
-  useMediaQuery,
-  useToast,
-} from '@munaxa/ui';
+import { Badge, Button, type ColumnDef, Switch, useMediaQuery, useToast } from '@munaxa/ui';
 
 import { Plus } from '@munaxa/icons';
 
 import type { BulkOperationResult, DocumentSummary, Folder, Library } from '@edms/contracts';
-import { formatFor } from '@edms/domain';
+import { DocumentStatus, type DocumentStatusKey, formatFor } from '@edms/domain';
+import type { MessageKey } from '@edms/i18n';
 
 import { WorkspacePage, type WorkspaceCrumb } from '../../components/workspace-page';
 import { useTranslate } from '../../app/providers';
 import type { ListState } from '../../lib/admin/list-state';
 import {
+  type BulkAction,
+  BulkBar,
   type Choice,
   ResourceList,
   useAction,
@@ -33,8 +27,10 @@ import {
 import { deleteDocument, requestDownload, restoreDocument, setFavorite } from './actions';
 import { bulkExport, bulkRestore } from './bulk-actions';
 import { BulkMetadataDialog, BulkResultDialog } from './bulk-panel';
+import { DocumentGlance } from './document-glance';
 import type { DocumentsView } from './documents-view';
 import { FolderTree } from './folder-tree';
+import { FilterChip, type FilterChoice } from './filter-chip';
 import { folderTrail } from './folder-trail';
 import { DocumentStatusBadge } from './status-badge';
 import { type DocumentTypeChoice, UploadDialog } from './upload-dialog';
@@ -67,6 +63,8 @@ export function LibraryScreen({
   confidentialityLevels,
   users,
   departments,
+  filterOptions = NO_FILTER_OPTIONS,
+  ownerNames = NO_NAMES,
   canCreate,
   canBulk,
   view,
@@ -99,6 +97,18 @@ export function LibraryScreen({
   readonly confidentialityLevels: readonly Choice[];
   readonly users: readonly Choice[];
   readonly departments: readonly Choice[];
+  /**
+   * What the filter chips offer — Docs v2. `null` for a list the caller may not read (the
+   * configuration catalogue is behind `configuration:view`), in which case that chip is not drawn
+   * rather than drawn empty. `currentUserId` is what "Owner · Me" puts in the URL.
+   */
+  readonly filterOptions?: {
+    readonly types: readonly FilterChoice[] | null;
+    readonly confidentiality: readonly FilterChoice[] | null;
+    readonly currentUserId: string | null;
+  };
+  /** Owner ids to names, when the caller may read the directory. Empty otherwise. */
+  readonly ownerNames?: Readonly<Record<string, string>>;
   readonly canCreate: boolean;
   /**
    * What this caller may do in bulk — 16 §5's *"bulk actions gated by `capabilities`"*.
@@ -129,6 +139,15 @@ export function LibraryScreen({
   const [adding, setAdding] = useState<'UPLOAD' | 'SCAN' | null>(null);
   const [bulkResult, setBulkResult] = useState<BulkOperationResult | null>(null);
   const [bulkEditing, setBulkEditing] = useState<readonly string[] | null>(null);
+  /*
+   * Two independent answers about rows, and the design shows both at once: which rows are ticked
+   * for a bulk action (the header's bar) and which one row is being looked at (the docked panel).
+   * The selection is held here rather than inside `ResourceList` so the bar can sit in the page
+   * header; `ResourceList` still clears it when the list changes underneath it.
+   */
+  const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
+  const [shownId, setShownId] = useState<string | null>(null);
+  const shown = rows.find((row) => row.id === shownId) ?? rows[0] ?? null;
 
   const includeSubfolders = state.filters.underFolderId !== undefined;
 
@@ -260,329 +279,405 @@ export function LibraryScreen({
     });
   };
 
-  return (
-    <WorkspacePage
-      title={title}
-      description={description}
-      // Where you are, said once at the top rather than only by which node the tree has
-      // highlighted — Phase 7. The library and the folder are how somebody describes a location out
-      // loud ("the SOP folder in Quality"), and until now the screen wrote down only the last step.
-      breadcrumb={breadcrumb}
-      /**
-       * The primary action, promoted out of the toolbar — Phase 7.6.
-       *
-       * `ResourceList` renders `onCreate` as the last control in its `Toolbar`, beside the search
-       * box, the deleted filter and the column menu. That is the right place for a *list* control
-       * and the wrong place for the screen's primary action: the one thing a reader comes here to
-       * do sat in a row of things that change what they are looking at, at the same weight as a
-       * dropdown.
-       *
-       * `PageHeader` has carried an `actions` slot since the platform shipped it, and
-       * `WorkspacePage` has passed it through since Phase 7 — four screens used it and the library
-       * was not one of them. So this is the composition that already existed, applied to the screen
-       * with the strongest claim on it, and it is what every reference screenshot shows: the create
-       * action at the top of the page, not inside the table's chrome.
-       *
-       * `onCreate` is correspondingly *not* passed below, because two create buttons is worse than
-       * either placement. The permission test is unchanged and still the server's answer.
-       */
-      actions={
-        canCreate && selectedFolderId !== null ? (
-          <Button
-            type="button"
-            onClick={() => {
-              setAdding('UPLOAD');
-            }}
-          >
-            <Plus className="size-4" aria-hidden />
-            {translate('admin.actions.create')}
-          </Button>
-        ) : undefined
-      }
-    >
-      {/*
-        `Split`, not the hand-written `flex flex-col gap-6 lg:flex-row` this replaces — and not
-        `SidebarLayout`, which is what Administration uses one directory away.
+  /**
+   * The bulk actions, gated twice — 16 §5's folder-browser row.
+   *
+   * Here, on the caller's tenant-wide grant, so an affordance nobody could use is not offered; and at
+   * the API, per object, against the caller's reach — which is the one that decides. That is why a
+   * bulk restore of forty documents can come back with thirty-eight applied and two refused: this
+   * screen cannot know which two, and it does not guess.
+   */
+  const bulkActions = (selected: readonly DocumentSummary[]): readonly BulkAction[] => {
+    const ids = selected.map((row) => row.id);
+    const deletedOnly = selected.every((row) => row.deletedAt !== null);
+    return [
+      {
+        id: 'metadata',
+        label: translate('bulk.action.metadata'),
+        disabledReason: canBulk.edit ? null : translate('bulk.disabled.noPermission'),
+        onSelect: () => {
+          setBulkEditing(ids);
+        },
+      },
+      {
+        id: 'export',
+        label: translate('bulk.action.export'),
+        disabledReason: canBulk.download ? null : translate('bulk.disabled.noPermission'),
+        onSelect: () => {
+          void bulkExport(ids).then((answer) => {
+            if (!answer.ok) {
+              toast.error(answer.detail ?? translate(`error.${answer.code}`));
+              return;
+            }
+            setBulkResult(answer.value);
+          });
+        },
+      },
+      {
+        id: 'restore',
+        label: translate('bulk.action.restore'),
+        // Two different reasons for the same disabled button, and saying which is the difference
+        // between "you cannot" and "not these".
+        disabledReason: !canBulk.restore
+          ? translate('bulk.disabled.noPermission')
+          : deletedOnly
+            ? null
+            : translate('bulk.disabled.notDeleted'),
+        onSelect: () => {
+          void bulkRestore(ids).then((answer) => {
+            if (!answer.ok) {
+              toast.error(answer.detail ?? translate(`error.${answer.code}`));
+              return;
+            }
+            setBulkResult(answer.value);
+            refresh();
+          });
+        },
+      },
+    ];
+  };
 
-        `SidebarLayout` was the obvious candidate and it is the wrong one *here*. It renders its
-        sidebar inside `hidden lg:block`, so below 1024px the pane is removed rather than moved: it
-        documents this itself — "the application shows the same navigation in a drawer instead" —
-        and this screen has no such drawer. Adopting it would have deleted the folder tree on every
-        tablet and phone, which is the library's primary navigation, in a slice whose whole claim is
-        that it changes no behaviour.
-
-        `Split` keeps what the hand-written classes did: one column when there is no room for two,
-        two when there is, in source order either way. The content pane's `min-w-0` comes with it,
-        which is what stops a wide table pushing the tree off screen.
-      */}
-      <Split
-        ratio="1/4"
-        gap={6}
-        start={
-          <FolderTree
-            libraries={libraries}
-            folders={folders}
-            selectedLibraryId={selectedLibraryId}
-            selectedFolderId={selectedFolderId}
-            folderPage={folderPage}
-            // The same value the heading, the counts and the breadcrumb read. One resolution of
-            // "which view is this", consumed four times.
-            view={view}
-          />
-        }
-        end={
-          <ResourceList<DocumentSummary>
-            rows={rows}
-            total={total}
-            state={state}
-            getRowId={(row) => row.id}
-            getRowName={(row) => row.title}
-            isDeleted={(row) => row.deletedAt !== null}
-            searchPlaceholderKey="documents.list.searchPlaceholder"
-            // Two lines in the title cell need the room for two lines. Uniform, because the grid
-            // windows on it.
-            rowHeight={56}
-            onRowActivate={(row) => {
-              router.push(`/documents/${row.id}` as Route);
+  /**
+   * The filter chips — Docs v2. Every one is a real filter the API already answers
+   * (`DOCUMENT_FILTER_KEYS`); the design's Department and Updated chips are not drawn, because the
+   * document list has no such filter and a chip that highlighted without narrowing would be a
+   * control that lies.
+   */
+  const filterValue = (key: string): string | null => {
+    const value = state.filters[key];
+    return typeof value === 'string' && value !== '' ? value : null;
+  };
+  const chips: ReactNode[] = [
+    <FilterChip
+      key="status"
+      name={translate('documents.filter.status')}
+      value={filterValue('status')}
+      resetLabel={translate('documents.filter.all')}
+      choices={LIBRARY_STATUSES.map((status) => ({
+        value: status,
+        label: translate(`documents.status.${status}` as MessageKey),
+      }))}
+      onChange={(value) => {
+        setFilters({ status: value ?? '' });
+      }}
+    />,
+    ...(filterOptions.types === null
+      ? []
+      : [
+          <FilterChip
+            key="type"
+            name={translate('documents.filter.type')}
+            value={filterValue('documentTypeId')}
+            resetLabel={translate('documents.filter.all')}
+            choices={filterOptions.types}
+            onChange={(value) => {
+              setFilters({ documentTypeId: value ?? '' });
             }}
-            // Deliberately absent: the create action lives in the page header now — see the
-            // `actions` prop above. `ResourceList` still owns every other toolbar control.
-            onDelete={(row, reason) => deleteDocument(row.id, row.version, reason)}
-            // Phase 10's rule, and it applies here rather than to every administered list: a
-            // controlled record's removal is an act somebody answers for, and the recycle bin shows
-            // the sentence beside the row.
-            deleteRequiresReason
-            onRestore={(row) => restoreDocument(row.id, row.version)}
-            extraActions={(row) => [
-              {
-                id: 'download',
-                label: translate('documents.actions.download'),
-                onSelect: () => {
-                  download(row);
-                },
-                // A document whose content has not cleared the scanner exists and cannot be opened.
-                // Saying so on a disabled item is honest; an action that fails when used is not.
-                disabledReason:
-                  row.file?.reachable === true ? null : translate('documents.actions.notReachable'),
-              },
-              {
-                id: 'favorite',
-                label: translate(
-                  row.isFavorite ? 'documents.actions.unfavorite' : 'documents.actions.favorite',
-                ),
-                onSelect: () => {
-                  run(() => setFavorite(row.id, !row.isFavorite));
-                },
-              },
+          />,
+        ]),
+    ...(filterOptions.confidentiality === null
+      ? []
+      : [
+          <FilterChip
+            key="confidentiality"
+            name={translate('documents.filter.confidentiality')}
+            value={filterValue('confidentialityId')}
+            resetLabel={translate('documents.filter.all')}
+            choices={filterOptions.confidentiality}
+            onChange={(value) => {
+              setFilters({ confidentialityId: value ?? '' });
+            }}
+          />,
+        ]),
+    ...(filterOptions.currentUserId === null
+      ? []
+      : [
+          <FilterChip
+            key="owner"
+            name={translate('documents.filter.owner')}
+            // Only "me" is offered, so any other owner id in the URL (a dashboard tile's link names
+            // the caller too) still reads as set.
+            value={filterValue('ownerUserId')}
+            resetLabel={translate('documents.filter.anyone')}
+            choices={[
+              { value: filterOptions.currentUserId, label: translate('documents.filter.me') },
             ]}
-            /**
-             * The folder browser's bulk actions, which 16 §5 has promised since Phase 0.
-             *
-             * Each is gated twice and the two gates are not the same. Here, on the caller's
-             * tenant-wide grant, so an affordance nobody could use is not offered; and at the API,
-             * per object, against the caller's reach — which is the one that decides. That is why a
-             * bulk restore of forty documents can come back with thirty-eight applied and two
-             * refused: this screen cannot know which two, and it does not guess.
-             */
-            bulkActions={(selected) => {
-              const ids = selected.map((row) => row.id);
-              const deletedOnly = selected.every((row) => row.deletedAt !== null);
-              return [
-                {
-                  id: 'metadata',
-                  label: translate('bulk.action.metadata'),
-                  disabledReason: canBulk.edit ? null : translate('bulk.disabled.noPermission'),
-                  onSelect: () => {
-                    setBulkEditing(ids);
-                  },
-                },
-                {
-                  id: 'export',
-                  label: translate('bulk.action.export'),
-                  disabledReason: canBulk.download ? null : translate('bulk.disabled.noPermission'),
-                  onSelect: () => {
-                    void bulkExport(ids).then((answer) => {
-                      if (!answer.ok) {
-                        toast.error(answer.detail ?? translate(`error.${answer.code}`));
-                        return;
-                      }
-                      setBulkResult(answer.value);
-                    });
-                  },
-                },
-                {
-                  id: 'restore',
-                  label: translate('bulk.action.restore'),
-                  // Two different reasons for the same disabled button, and saying which is the
-                  // difference between "you cannot" and "not these".
-                  disabledReason: !canBulk.restore
-                    ? translate('bulk.disabled.noPermission')
-                    : deletedOnly
-                      ? null
-                      : translate('bulk.disabled.notDeleted'),
-                  onSelect: () => {
-                    void bulkRestore(ids).then((answer) => {
-                      if (!answer.ok) {
-                        toast.error(answer.detail ?? translate(`error.${answer.code}`));
-                        return;
-                      }
-                      setBulkResult(answer.value);
-                      refresh();
-                    });
-                  },
-                },
-              ];
+            onChange={(value) => {
+              setFilters({ ownerUserId: value ?? '' });
             }}
-            filters={
-              <div className="flex flex-wrap items-center gap-3">
-                {selectedFolderId !== null && (
-                  <label className="flex items-center gap-2 text-sm">
-                    <Switch
-                      checked={includeSubfolders}
-                      onCheckedChange={(checked) => {
-                        // One filter carries the answer and the other is cleared, because the API
-                        // distinguishes "in this folder" from "anywhere beneath it" — the second is
-                        // a path-prefix scan the first does not need.
-                        //
-                        // One navigation, not two: two `setFilter` calls each started from the URL
-                        // the page had, and only the second landed — switching on dropped the
-                        // folder and returned to the library root; switching off left both.
-                        setFilters({
-                          underFolderId: checked ? selectedFolderId : '',
-                          folderId: checked ? '' : selectedFolderId,
-                        });
-                      }}
-                    />
-                    {translate('documents.list.includeSubfolders')}
-                  </label>
+          />,
+        ]),
+  ];
+
+  /**
+   * The columns — Docs v2: number, title with its owner beneath, type, status and last change.
+   *
+   * Confidentiality and size moved to the docked panel, which is where the design puts them and
+   * what made room for the panel at all. Everything below the title is still optional in the order
+   * a reader gives it up on a narrower screen (Phase 7.1's measured breakpoints), and the number
+   * returns to the title's second line whenever its own column is not there, so no width ever loses
+   * it.
+   *
+   * Widths on the narrow columns only. The title takes what is left, and is the one column that
+   * should: Phase 7 measured what fixed title widths did to everything beside them.
+   */
+  const columns: ColumnDef<DocumentSummary>[] = [
+    ...(roomForAll
+      ? ([
+          {
+            id: 'documentNumber',
+            header: translate('documents.column.number'),
+            // Null until approval, and shown as a dash rather than blank so the column reads as
+            // "not yet" instead of "missing". Mono and in the brand's text colour: a number is an
+            // identifier a reader copies, and the design sets it apart from prose.
+            cell: (row) => (
+              <span className="text-primary-strong font-mono text-xs">
+                {row.documentNumber ?? '—'}
+              </span>
+            ),
+            value: (row) => row.documentNumber,
+            width: 148,
+          },
+        ] as ColumnDef<DocumentSummary>[])
+      : []),
+    {
+      id: 'title',
+      header: translate('documents.column.title'),
+      cell: (row) => {
+        const second = roomForAll
+          ? (ownerNames[row.ownerUserId] ?? row.folderName)
+          : (row.documentNumber ?? translate('documents.number.none'));
+        return (
+          <div className="flex min-w-0 items-center gap-2">
+            {/* Only when the file has not cleared the malware check: it is the one state of the file
+                a reader needs to know before opening the row. The format itself is in the panel. */}
+            {row.file !== null && !row.file.reachable && <FormatBadge row={row} />}
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="truncate text-[13.5px] font-medium">
+                {row.title}
+                {row.isFavorite && (
+                  <span
+                    className="text-primary-strong ms-1.5"
+                    aria-label={translate('documents.actions.favorite')}
+                  >
+                    ★
+                  </span>
+                )}
+              </span>
+              <span className="text-muted-foreground truncate text-[11.5px]">{second}</span>
+            </div>
+          </div>
+        );
+      },
+      sortable: true,
+      multiline: true,
+      value: (row) => row.title,
+    },
+    ...(roomForSome
+      ? ([
+          {
+            id: 'documentType',
+            header: translate('documents.column.type'),
+            cell: (row) => (
+              <span className="text-muted-foreground text-[12.5px]">{row.documentTypeName}</span>
+            ),
+            width: 120,
+          },
+        ] as ColumnDef<DocumentSummary>[])
+      : []),
+    {
+      id: 'status',
+      header: translate('documents.column.status'),
+      // One status system, shared with search, the record page and the recycle bin — every state its
+      // own tone *and* its own mark, because five tones cannot distinguish thirteen states and colour
+      // alone would not be readable anyway.
+      cell: (row) => <DocumentStatusBadge status={row.status} />,
+      sortable: true,
+      value: (row) => row.status,
+      width: 168,
+    },
+    // Whether the *row* is deleted or inactive — only worth a column when the list can contain such
+    // rows. On the live list every row would say the same thing.
+    ...(state.deleted === 'live'
+      ? []
+      : [{ ...column.state(), header: translate('admin.fields.record') }]),
+    ...(roomForAll ? [{ ...column.updated(), width: 116 }] : []),
+  ];
+
+  return (
+    <div className="flex min-h-full flex-col lg:flex-row">
+      {/* The folder rail — full height, flush with the frame (Docs v2). Half the card surface over
+          the canvas: a shade lighter than the page in both schemes, which is what the design's rail
+          is, where a muted wash would have read as a shade darker. */}
+      <div className="border-border bg-card/50 shrink-0 border-b lg:w-[200px] lg:border-e lg:border-b-0">
+        <FolderTree
+          libraries={libraries}
+          folders={folders}
+          selectedLibraryId={selectedLibraryId}
+          selectedFolderId={selectedFolderId}
+          folderPage={folderPage}
+          // The same value the heading, the counts and the breadcrumb read. One resolution of
+          // "which view is this", consumed four times.
+          view={view}
+        />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <WorkspacePage
+          title={title}
+          description={description}
+          width="full"
+          gap={4}
+          // Where you are, said once at the top rather than only by which node the tree has
+          // highlighted — Phase 7.
+          breadcrumb={breadcrumb}
+          /**
+           * The primary action, and — Docs v2 — the bulk bar beside it.
+           *
+           * The selection's actions sit in the header where the reader's eye already is for "what
+           * can I do here", and only while something is selected: an always-present "0 selected" bar
+           * was tried in review and read as clutter.
+           */
+          actions={
+            selectedIds.length === 0 && !(canCreate && selectedFolderId !== null) ? undefined : (
+              <>
+                {selectedIds.length > 0 && (
+                  <BulkBar
+                    compact
+                    selected={selectedIds}
+                    actions={bulkActions(rows.filter((row) => selectedIds.includes(row.id)))}
+                    onClear={() => {
+                      setSelectedIds([]);
+                    }}
+                  />
                 )}
                 {canCreate && selectedFolderId !== null && (
-                  <Button type="button" variant="outline" onClick={() => setAdding('SCAN')}>
-                    {translate('documents.actions.scan')}
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      setAdding('UPLOAD');
+                    }}
+                  >
+                    <Plus className="size-4" aria-hidden />
+                    {translate('documents.actions.upload')}
                   </Button>
                 )}
-              </div>
-            }
-            columns={[
-              {
-                id: 'title',
-                header: translate('documents.column.title'),
-                /**
-                 * Two lines, and the second one is the point — Phase 7.
-                 *
-                 * The title and the document number were two columns of equal weight, so a folder of
-                 * two hundred rows read as a wall of same-sized text. What a reader actually scans for
-                 * is the *title*; the number is how they cite it once they have found it. So the title
-                 * carries the row's weight and the number sits under it, smaller and muted, where it
-                 * is still readable and still copyable but no longer competing.
-                 *
-                 * The number column stays in the grid (hidden by default is the column menu's
-                 * business, not this cell's) because it is sortable and because an auditor sorting by
-                 * number is a real thing somebody does.
-                 */
-                cell: (row) => (
-                  <div className="flex min-w-0 items-center gap-2">
-                    <FormatBadge row={row} />
-                    <div className="flex min-w-0 flex-col">
-                      <span className="truncate font-medium">{row.title}</span>
-                      <span className="text-muted-foreground truncate text-xs tabular-nums">
-                        {row.documentNumber ?? translate('documents.number.none')}
-                      </span>
+              </>
+            )
+          }
+        >
+          {/*
+            The list and the panel beside it — wrapping, not breaking. The list keeps at least 640px
+            and the panel at least 300px; below their sum the panel drops under the list rather than
+            either of them being squeezed, which is the design's own rule and the one Phase 7.1's
+            measured column collapses depend on.
+          */}
+          <div className="flex flex-wrap items-start gap-4">
+            <div className="flex min-w-0 flex-[1_1_640px] flex-col gap-3">
+              <ResourceList<DocumentSummary>
+                rows={rows}
+                total={total}
+                state={state}
+                getRowId={(row) => row.id}
+                getRowName={(row) => row.title}
+                isDeleted={(row) => row.deletedAt !== null}
+                searchPlaceholderKey="documents.list.searchPlaceholder"
+                // Two lines in the title cell need the room for two lines. Uniform, because the grid
+                // windows on it.
+                rowHeight={56}
+                headerStyle="caps"
+                // A click shows the row in the panel; a double click or Enter opens the record, as
+                // it always did. The panel's own button is the third way in.
+                onRowClick={(row) => {
+                  setShownId(row.id);
+                }}
+                activeRowId={shown?.id ?? null}
+                onRowActivate={(row) => {
+                  router.push(`/documents/${row.id}` as Route);
+                }}
+                onDelete={(row, reason) => deleteDocument(row.id, row.version, reason)}
+                // Phase 10's rule: a controlled record's removal is an act somebody answers for.
+                deleteRequiresReason
+                onRestore={(row) => restoreDocument(row.id, row.version)}
+                extraActions={(row) => [
+                  {
+                    id: 'download',
+                    label: translate('documents.actions.download'),
+                    onSelect: () => {
+                      download(row);
+                    },
+                    // A document whose content has not cleared the scanner exists and cannot be
+                    // opened. Saying so on a disabled item is honest; an action that fails is not.
+                    disabledReason:
+                      row.file?.reachable === true
+                        ? null
+                        : translate('documents.actions.notReachable'),
+                  },
+                  {
+                    id: 'favorite',
+                    label: translate(
+                      row.isFavorite
+                        ? 'documents.actions.unfavorite'
+                        : 'documents.actions.favorite',
+                    ),
+                    onSelect: () => {
+                      run(() => setFavorite(row.id, !row.isFavorite));
+                    },
+                  },
+                ]}
+                bulkActions={bulkActions}
+                selection={{ ids: selectedIds, onChange: setSelectedIds }}
+                filters={
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div
+                      role="group"
+                      aria-label={translate('documents.filter.label')}
+                      className="flex flex-wrap items-center gap-2"
+                    >
+                      {chips}
                     </div>
-                    {row.isFavorite && (
-                      <span aria-label={translate('documents.actions.favorite')}>★</span>
+                    {selectedFolderId !== null && (
+                      <label className="text-muted-foreground flex items-center gap-2 text-xs">
+                        <Switch
+                          checked={includeSubfolders}
+                          onCheckedChange={(checked) => {
+                            // One filter carries the answer and the other is cleared, because the
+                            // API distinguishes "in this folder" from "anywhere beneath it". One
+                            // navigation, not two — see Phase 3's note on `setFilters`.
+                            setFilters({
+                              underFolderId: checked ? selectedFolderId : '',
+                              folderId: checked ? '' : selectedFolderId,
+                            });
+                          }}
+                        />
+                        {translate('documents.list.includeSubfolders')}
+                      </label>
+                    )}
+                    {canCreate && selectedFolderId !== null && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setAdding('SCAN')}
+                      >
+                        {translate('documents.actions.scan')}
+                      </Button>
                     )}
                   </div>
-                ),
-                sortable: true,
-                /*
-                 * The platform's own answer to "a name above a secondary identifier". `multiline`
-                 * keeps the uniform row height windowing depends on; the `rowHeight` below is the
-                 * half of that contract this screen has to keep.
-                 *
-                 * **No width, and that was measured rather than assumed.** Both `width: 320` and
-                 * `width: 240` were tried in a real browser: the grid gives fixed columns their width
-                 * first and shares what is left, so either one turned Type, Confidentiality and Size
-                 * into single-letter ellipses with colliding headers. `minWidth` is not honoured by
-                 * the current distribution. Even sharing reads best at this width, and the platform's
-                 * lack of a proportional column strategy is written up as a gap in the Phase 7 report
-                 * rather than worked around here.
-                 */
-                multiline: true,
-                value: (row) => row.title,
-              },
-              // Everything below the title is optional, in the order a reader gives it up. The
-              // number goes first because the title cell already carries it; size and the record's
-              // own state go next; type and confidentiality survive to tablet because they are how
-              // somebody scans a folder for the right *kind* of document.
-              ...(roomForAll
-                ? ([
-                    {
-                      id: 'documentNumber',
-                      header: translate('documents.column.number'),
-                      // Null until approval, and shown as a dash rather than blank so the column reads as
-                      // "not yet" instead of "missing".
-                      cell: (row) => row.documentNumber ?? '—',
-                      sortable: true,
-                      value: (row) => row.documentNumber,
-                    },
-                  ] as ColumnDef<DocumentSummary>[])
-                : []),
-              {
-                id: 'status',
-                header: translate('documents.column.status'),
-                // One status system, shared with search, the record page and the recycle bin — every
-                // state its own tone *and* its own mark, because five tones cannot distinguish
-                // thirteen states and colour alone would not be readable anyway.
-                cell: (row) => <DocumentStatusBadge status={row.status} />,
-                sortable: true,
-                value: (row) => row.status,
-              },
-              ...(roomForSome
-                ? ([
-                    {
-                      id: 'documentType',
-                      header: translate('documents.column.type'),
-                      cell: (row) => row.documentTypeName,
-                    },
-                    {
-                      id: 'confidentiality',
-                      header: translate('documents.column.confidentiality'),
-                      cell: (row) => row.confidentialityName,
-                    },
-                    {
-                      id: 'size',
-                      header: translate('documents.column.size'),
-                      cell: (row) => (row.file === null ? '—' : formatFileSize(row.file.sizeBytes)),
-                      // End-aligned: a size is a figure, and figures read down a column when their last
-                      // digits line up.
-                      align: 'end',
-                      value: (row) => row.file?.sizeBytes ?? null,
-                    },
-                  ] as ColumnDef<DocumentSummary>[])
-                : []),
-              ...(roomForAll
-                ? ([
-                    /*
-                     * Two columns headed "Status" is what the browser showed once the lifecycle badge grew
-                     * a mark — and it was there before Phase 7, unread because both were the same grey.
-                     * They answer different questions: the one above is the document's *lifecycle* state,
-                     * this one is whether the **row** is deleted, inactive or system-owned. The shared
-                     * column keeps its own header everywhere else in Administration, where there is no
-                     * second status to confuse it with; here it is renamed in place.
-                     */
-                    { ...column.state(), header: translate('admin.fields.record') },
-                    // The date joins the tablet set rather than the phone one. At 390px, with a
-                    // selection checkbox and a row menu already taking their share, "Last changed"
-                    // cost the title about half its width — and a list where the title reads "Qu…"
-                    // is a list that has stopped naming documents. Measured, not guessed.
-                    column.updated(),
-                  ] as ColumnDef<DocumentSummary>[])
-                : []),
-            ]}
-          />
-        }
-      />
+                }
+                columns={columns}
+              />
+            </div>
+
+            <div className="min-w-0 flex-[1_0_300px] lg:max-w-[340px]">
+              <DocumentGlance
+                row={shown}
+                ownerName={shown === null ? null : (ownerNames[shown.ownerUserId] ?? null)}
+              />
+            </div>
+          </div>
+        </WorkspacePage>
+      </div>
 
       {adding !== null && selectedFolderId !== null && (
         <UploadDialog
@@ -623,16 +718,29 @@ export function LibraryScreen({
           }}
         />
       )}
-    </WorkspacePage>
+    </div>
   );
 }
 
+/** No list the caller may read, so only the Status chip — the one that needs no lookup. */
+const NO_FILTER_OPTIONS = { types: null, confidentiality: null, currentUserId: null } as const;
+const NO_NAMES: Readonly<Record<string, string>> = {};
+
 /**
- * What kind of file this is, at a glance.
+ * The statuses a library row can be in, for the Status chip.
  *
- * The format's own label rather than an icon, because Phase 3 draws a thumbnail only for PNG and a
- * grid of mostly-blank thumbnail cells reads worse than a grid of legible labels. Phase 7 brings
- * renderers for the rest, and this is the row that will carry them.
+ * `DELETED` and `PURGED` are not offered: a deleted document is reached through the list's own
+ * "Show" filter and the recycle bin, and a purged one is not in any list at all.
+ */
+const LIBRARY_STATUSES: readonly DocumentStatusKey[] = Object.values(DocumentStatus).filter(
+  (status) => status !== DocumentStatus.DELETED && status !== DocumentStatus.PURGED,
+);
+
+/**
+ * What kind of file this is — shown now only while the file is still being checked (Docs v2).
+ *
+ * The format's own label rather than an icon, because a grid of mostly-blank thumbnail cells reads
+ * worse than a grid of legible labels.
  */
 function FormatBadge({ row }: { readonly row: DocumentSummary }): ReactNode {
   const translate = useTranslate();

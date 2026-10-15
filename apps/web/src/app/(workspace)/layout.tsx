@@ -2,6 +2,9 @@ import type { Route } from 'next';
 import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
 
+import type { Collection } from '@edms/contracts';
+import { ApprovalTaskState, Permission } from '@edms/domain';
+
 import { SessionUnavailable } from '../../components/session-unavailable';
 import { WorkspaceShell } from '../../components/workspace-shell';
 import { apiFetch } from '../../lib/api-client';
@@ -48,6 +51,16 @@ export default async function WorkspaceLayout({
   }
   const me = check.identity;
 
+  // Three independent counts for the frame, fetched together. Each one degrades to `null` on its
+  // own, so a slow retention query never costs the reader their navigation.
+  const [unread, pending, retentionDue] = await Promise.all([
+    unreadNotifications(session.accessToken),
+    pendingApprovals(session.accessToken),
+    me.permissions.includes(Permission.RETENTION_MANAGE)
+      ? dueDispositions(session.accessToken)
+      : Promise.resolve(null),
+  ]);
+
   return (
     <WorkspaceShell
       destinations={destinationsFor(me.permissions)}
@@ -62,7 +75,9 @@ export default async function WorkspaceLayout({
        */
       displayName={me.displayName ?? me.userId ?? ''}
       description={me.email ?? me.tenantId}
-      unreadNotifications={await unreadNotifications(session.accessToken)}
+      unreadNotifications={unread}
+      pendingApprovals={pending}
+      retentionDue={retentionDue}
       signOutAction={signOutAction}
     >
       {children}
@@ -105,6 +120,47 @@ async function unreadNotifications(accessToken: string): Promise<number | null> 
  * Signing out is a mutation, so it is a server action rather than a link: a `GET` that ends a
  * session can be triggered by any page that embeds an image pointing at it.
  */
+/**
+ * What is waiting on this reader's decision — the count beside Approvals in the rail, Docs v2.
+ *
+ * The inbox's own total rather than a dashboard tile: the rail is on every page, and the dashboard
+ * endpoint computes a dozen tiles to answer a question this asks one of. `pageSize=1` because only
+ * `meta.total` is read. The same endpoint the inbox renders, so the badge and the list it leads to
+ * can never disagree about what "pending" means — delegated cover included.
+ */
+async function pendingApprovals(accessToken: string): Promise<number | null> {
+  try {
+    const page = await apiFetch<Collection<unknown>>({
+      path: `/approval-tasks?page=1&pageSize=1&state=${ApprovalTaskState.PENDING}`,
+      accessToken,
+      signal: AbortSignal.timeout(SESSION_CHECK_TIMEOUT_MS),
+    });
+    return page.meta.total;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Documents awaiting a disposal decision — the rail's retention reminder, Docs v2.
+ *
+ * Asked only of a caller who holds `retention:manage`, because the endpoint refuses everybody else
+ * and a reminder about a queue you cannot open is noise. The endpoint returns the review queue
+ * itself, capped at two hundred; the reminder states its length.
+ */
+async function dueDispositions(accessToken: string): Promise<number | null> {
+  try {
+    const { data } = await apiFetch<{ data: readonly unknown[] }>({
+      path: '/retention/dispositions',
+      accessToken,
+      signal: AbortSignal.timeout(SESSION_CHECK_TIMEOUT_MS),
+    });
+    return data.length;
+  } catch {
+    return null;
+  }
+}
+
 async function signOutAction(): Promise<void> {
   'use server';
   await signOut();

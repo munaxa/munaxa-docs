@@ -2,8 +2,8 @@
 
 import type { Route } from 'next';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { type ReactNode, useEffect, useRef, useTransition } from 'react';
 
 import {
   AppShell,
@@ -11,9 +11,11 @@ import {
   Badge,
   Button,
   buttonVariants,
+  Input,
   NavigationDrawer,
   type RenderNavigationLink,
   Sidebar,
+  SidebarCollapseToggle,
   SidebarNav,
   SidebarTrigger,
   TopBar,
@@ -40,9 +42,10 @@ import {
   UserRoundCheck,
 } from '@munaxa/icons';
 
-import type { MessageKey } from '@edms/i18n';
+import { Locale, type MessageKey } from '@edms/i18n';
 
-import { useTranslate } from '../app/providers';
+import { useSession, useTranslate } from '../app/providers';
+import { switchLocale } from '../lib/locale';
 import type { NavigationDestination } from '../lib/navigation';
 
 /** One rendered rail row, in the shape `SidebarNav` takes. */
@@ -52,6 +55,7 @@ interface NavigationRow {
   readonly label: string;
   readonly icon: ReactNode;
   readonly active: boolean;
+  readonly badge?: ReactNode;
 }
 
 /**
@@ -178,6 +182,8 @@ export function WorkspaceShell({
   displayName,
   description,
   unreadNotifications,
+  pendingApprovals = null,
+  retentionDue = null,
   signOutAction,
   children,
 }: {
@@ -187,6 +193,13 @@ export function WorkspaceShell({
   description: string;
   /** Unread messages for the top bar's bell. `null` when the count could not be established. */
   unreadNotifications?: number | null | undefined;
+  /** Tasks waiting on this reader, for the count beside Approvals. `null` when unknown. */
+  pendingApprovals?: number | null | undefined;
+  /**
+   * Documents due for a disposal decision. `null` when the reader cannot manage retention or the
+   * count could not be established — either way the reminder is not shown.
+   */
+  retentionDue?: number | null | undefined;
   signOutAction: () => Promise<void>;
   children: ReactNode;
 }): ReactNode {
@@ -206,26 +219,56 @@ export function WorkspaceShell({
     </Link>
   );
 
-  const navigation = <WorkspaceRail destinations={destinations} renderLink={renderLink} />;
+  const navigation = (
+    <WorkspaceRail
+      destinations={destinations}
+      renderLink={renderLink}
+      pendingApprovals={pendingApprovals}
+    />
+  );
+  const reminder =
+    retentionDue === null || retentionDue === 0 ? undefined : (
+      <RetentionReminder count={retentionDue} />
+    );
 
   return (
     <AppShellProvider>
       <AppShell
         skipLinkLabel={translate('nav.skipToContent')}
+        /*
+         * The Docs v2 frame: a flush rail that meets the top bar, separated from the page by one
+         * border, and collapsed from the top bar rather than from a control overhanging its edge.
+         * Every piece is still the platform's — `variant="flush"` is the platform's own option.
+         */
         sidebar={
-          <Sidebar brand={(collapsed) => <Brand collapsed={collapsed} />}>{navigation}</Sidebar>
+          <Sidebar
+            variant="flush"
+            collapsible={false}
+            brand={(collapsed) => <Brand collapsed={collapsed} />}
+            {...(reminder !== undefined && { footer: reminder })}
+          >
+            {navigation}
+          </Sidebar>
         }
         drawer={
-          <NavigationDrawer label={translate('nav.menu')} brand={<Brand collapsed={false} />}>
+          <NavigationDrawer
+            label={translate('nav.menu')}
+            brand={<Brand collapsed={false} />}
+            {...(reminder !== undefined && { footer: reminder })}
+          >
             {navigation}
           </NavigationDrawer>
         }
         topBar={
           <TopBar
+            // The card surface, and the rail's 56px: the top bar and the brand row beside it read
+            // as one band now that the page canvas is no longer the same colour as a panel.
+            className="h-14 bg-card py-0 sm:px-4"
             actions={
               <div className="flex items-center gap-1">
                 <NotificationBell count={unreadNotifications ?? null} renderLink={renderLink} />
                 <ThemeToggle />
+                <LanguageSwitch />
                 <UserMenu
                   name={displayName}
                   description={description}
@@ -243,7 +286,12 @@ export function WorkspaceShell({
               </div>
             }
           >
+            <SidebarCollapseToggle
+              collapseLabel={translate('nav.collapseRail')}
+              expandLabel={translate('nav.expandRail')}
+            />
             <SidebarTrigger />
+            <GlobalSearch />
           </TopBar>
         }
       >
@@ -270,10 +318,12 @@ export function WorkspaceRail({
   destinations,
   renderLink,
   collapsed,
+  pendingApprovals = null,
 }: {
   readonly destinations: readonly NavigationDestination[];
   readonly renderLink?: RenderNavigationLink | undefined;
   readonly collapsed?: boolean | undefined;
+  readonly pendingApprovals?: number | null | undefined;
 }): ReactNode {
   const translate = useTranslate();
   const pathname = usePathname();
@@ -295,6 +345,23 @@ export function WorkspaceRail({
       // Exact match for the workspace root, prefix match for everything else, so a nested
       // route still highlights the section it belongs to.
       active: destination.href === '/' ? pathname === '/' : pathname.startsWith(destination.href),
+      // What is waiting on you, beside the place you act on it — Docs v2. Warning tone because it
+      // is a queue that ages, the same tone the inbox gives an overdue task. Absent at zero and when
+      // unknown: a "0" would claim the queue is empty, which is only true when it was counted.
+      ...(destination.id === 'approvals' &&
+        pendingApprovals !== null &&
+        pendingApprovals > 0 && {
+          badge: (
+            <Badge tone="warning" className="tabular-nums">
+              <span aria-hidden>
+                {pendingApprovals > 99 ? '99+' : pendingApprovals.toLocaleString()}
+              </span>
+              <span className="sr-only">
+                {translate('shell.pendingApprovals', { count: pendingApprovals })}
+              </span>
+            </Badge>
+          ),
+        }),
     };
   };
 
@@ -334,6 +401,9 @@ export function WorkspaceRail({
     <SidebarNav
       groups={groups}
       label={translate('nav.main')}
+      // The current page is an accent row with a brand bar on its leading edge rather than a solid
+      // brand block — Docs v2, and the platform's own `indicator` treatment.
+      variant="indicator"
       {...(renderLink !== undefined && { renderLink })}
       {...(collapsed !== undefined && { collapsed })}
     />
@@ -454,7 +524,7 @@ function NotificationBell({
  * — labelling it "Dark" on the server and flipping to "Light" on hydration is a visible glitch
  * and a hydration mismatch.
  */
-function ThemeToggle(): ReactNode {
+export function ThemeToggle(): ReactNode {
   const translate = useTranslate();
   const { scheme, toggle } = useTheme({ storageKey: 'edms.theme' });
   const label =
@@ -484,5 +554,142 @@ function ThemeToggle(): ReactNode {
         <Moon className="size-4" aria-hidden />
       )}
     </Button>
+  );
+}
+
+/**
+ * Search from anywhere — the top bar's search box, Docs v2.
+ *
+ * Search had its own screen and nothing else: finding a document from the record page meant
+ * leaving it for the search page first. Every document workspace a reader has used before puts the
+ * box in the frame, so this does — and it is the *same* search, not a second one. Submitting goes
+ * to `/search?q=…`, which is the search screen's own URL, so its ranking, permission filtering,
+ * facets and saved searches all apply unchanged.
+ *
+ * ⌘K / Ctrl+K moves focus here from anywhere in the workspace. The shortcut is shown in the box
+ * and is part of its accessible description, so it is discoverable without a help page.
+ *
+ * Uncontrolled and keyed on the route's query: arriving on a search page shows what was searched,
+ * and arriving anywhere else shows an empty box, rather than a stale query following the reader
+ * from screen to screen.
+ */
+function GlobalSearch(): ReactNode {
+  const translate = useTranslate();
+  const router = useRouter();
+  const pathname = usePathname();
+  const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        input.current?.focus();
+        input.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
+
+  const shortcut =
+    typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent)
+      ? '⌘K'
+      : 'Ctrl K';
+
+  return (
+    <form
+      role="search"
+      aria-label={translate('nav.globalSearch')}
+      className="relative ms-2 hidden max-w-[460px] min-w-60 flex-1 sm:block"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const query = new FormData(event.currentTarget).get('q');
+        const text = typeof query === 'string' ? query.trim() : '';
+        router.push(text === '' ? '/search' : `/search?q=${encodeURIComponent(text)}`);
+      }}
+    >
+      <Search
+        className="text-muted-foreground pointer-events-none absolute inset-y-0 start-3 my-auto size-4"
+        aria-hidden
+      />
+      <Input
+        ref={input}
+        // Re-mounted per route so the box never carries a query into a screen it does not describe.
+        key={pathname}
+        name="q"
+        type="search"
+        aria-label={translate('nav.globalSearch')}
+        aria-keyshortcuts="Meta+K Control+K"
+        placeholder={translate('nav.globalSearchPlaceholder')}
+        className="bg-secondary h-9 ps-9 pe-16"
+      />
+      <kbd
+        aria-hidden
+        className="border-border bg-card text-muted-foreground pointer-events-none absolute inset-y-0 end-2 my-auto h-fit rounded-md border px-1.5 font-sans text-[11px]"
+      >
+        {shortcut}
+      </kbd>
+    </form>
+  );
+}
+
+/**
+ * English ⇄ Arabic — Docs v2.
+ *
+ * The control is labelled in the language it switches *to*, in that language: an Arabic reader
+ * landing on the English product looks for "العربية", not for "Arabic". Its accessible name says
+ * what it does in the current language.
+ *
+ * The switch is a cookie written on the server followed by a refresh, because direction is set on
+ * `<html>` by the root layout on the server — see `lib/locale.ts`.
+ */
+export function LanguageSwitch(): ReactNode {
+  const translate = useTranslate();
+  const { locale } = useSession();
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const next = locale === Locale.AR ? Locale.EN : Locale.AR;
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      lang={next}
+      disabled={pending}
+      aria-label={translate('nav.switchLanguageLabel')}
+      onClick={() => {
+        startTransition(async () => {
+          await switchLocale(next);
+          router.refresh();
+        });
+      }}
+    >
+      {translate('nav.switchLanguage')}
+    </Button>
+  );
+}
+
+/**
+ * The rail's retention reminder — Docs v2.
+ *
+ * Shown only to somebody who can act on it (the layout asks only when the reader holds
+ * `retention:manage`) and only when something is due. A permanent card saying "nothing due" would
+ * be a card people learn to stop reading, which is the one property a reminder cannot have.
+ */
+function RetentionReminder({ count }: { readonly count: number }): ReactNode {
+  const translate = useTranslate();
+  return (
+    <div className="border-border bg-muted/40 flex flex-col gap-1.5 rounded-lg border p-2.5">
+      <span className="text-muted-foreground text-[11px]">{translate('shell.retentionTitle')}</span>
+      <span className="text-xs leading-snug">{translate('shell.retentionDue', { count })}</span>
+      <Link
+        href="/admin/retention"
+        className="text-primary-strong text-xs font-semibold hover:underline"
+      >
+        {translate('shell.retentionOpen')}
+      </Link>
+    </div>
   );
 }
