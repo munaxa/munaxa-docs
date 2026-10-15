@@ -76,8 +76,9 @@
 
 ### 3.3 Full integration run
 
-The full API integration suite on the local services, after the last code change, was still running
-when this revision was committed. Its result is recorded in the commit that follows.
+The full API integration suite (real PostgreSQL, Redis, MinIO and the ICAP scanner) ran after the
+last code change (`60dd4cc`): **58 files, 1310 tests, all passed**. The previous release's figure
+was 1287; the difference is this remediation's new tests.
 
 ### 3.4 Commits
 
