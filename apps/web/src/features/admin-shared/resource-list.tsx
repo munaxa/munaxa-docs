@@ -99,6 +99,27 @@ export interface ResourceListProps<TRow> {
    * unreliable, while one that says why is an answer.
    */
   readonly bulkActions?: ((selected: readonly TRow[]) => readonly BulkAction[]) | undefined;
+  /**
+   * Hold the selection outside the list — Docs v2.
+   *
+   * By default the list owns its selection and draws the bulk bar under the grid. A screen whose
+   * design puts the bar somewhere else (the library puts it in the page header, beside the primary
+   * action) passes the selection in, and draws `BulkBar` itself; the inline bar is then not drawn,
+   * so there is never a second one. Clearing on a new page, search or filter still happens here,
+   * through `onChange`, because that rule belongs to the list rather than to wherever the bar is.
+   */
+  readonly selection?:
+    | {
+        readonly ids: readonly string[];
+        readonly onChange: (ids: readonly string[]) => void;
+      }
+    | undefined;
+  /** A single click on a row — showing it in a detail pane. See `DataGrid`'s `onRowClick`. */
+  readonly onRowClick?: ((row: TRow) => void) | undefined;
+  /** The row a detail pane is showing. See `DataGrid`'s `activeRowId`. */
+  readonly activeRowId?: string | null | undefined;
+  /** Column headings as small capitals — Docs v2's library. See `DataGrid`'s `headerStyle`. */
+  readonly headerStyle?: 'sentence' | 'caps' | undefined;
 }
 
 /** One action over a selection. Its own type, because it acts on many rows rather than on one. */
@@ -142,6 +163,10 @@ export function ResourceList<TRow>({
   searchPlaceholderKey = 'admin.list.searchPlaceholder',
   rowHeight,
   bulkActions,
+  selection,
+  onRowClick,
+  activeRowId,
+  headerStyle,
 }: ResourceListProps<TRow>): ReactNode {
   const translate = useTranslate();
   const toast = useToast();
@@ -171,7 +196,9 @@ export function ResourceList<TRow>({
    * longer see. That is the client-side counterpart of the API's own rule: a bulk operation acts
    * on what the caller can reach *now*.
    */
-  const [selected, setSelected] = useState<readonly string[]>([]);
+  const [ownSelection, setOwnSelection] = useState<readonly string[]>([]);
+  const selected = selection?.ids ?? ownSelection;
+  const setSelected = selection?.onChange ?? setOwnSelection;
   const selectable = bulkActions !== undefined;
   const selectionKey = `${state.search}|${String(state.page)}|${state.deleted}|${JSON.stringify(state.filters)}`;
   const [lastKey, setLastKey] = useState(selectionKey);
@@ -305,6 +332,9 @@ export function ResourceList<TRow>({
         labels={labels}
         {...(rowHeight !== undefined && { rowHeight })}
         {...(onRowActivate !== undefined && { onRowActivate })}
+        {...(onRowClick !== undefined && { onRowClick })}
+        {...(activeRowId !== undefined && { activeRowId })}
+        {...(headerStyle !== undefined && { headerStyle })}
         aria-label={translate('admin.title')}
         emptyState={
           <EmptyState
@@ -330,40 +360,15 @@ export function ResourceList<TRow>({
         })}
       />
 
-      {!selectable || selected.length === 0 ? null : (
-        <Toolbar label={translate('bulk.bar.label')}>
-          <p className="text-sm font-medium">
-            {translate('bulk.bar.selected', { count: selected.length })}
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            {(bulkActions?.(selectedRows) ?? []).map((action) => {
-              const blocked = action.disabledReason ?? null;
-              return (
-                <Button
-                  key={action.id}
-                  type="button"
-                  variant={action.destructive === true ? 'destructive' : 'secondary'}
-                  disabled={blocked !== null || working}
-                  {...(blocked !== null && { title: blocked })}
-                  onClick={() => {
-                    action.onSelect([...selected]);
-                  }}
-                >
-                  {action.label}
-                </Button>
-              );
-            })}
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setSelected([]);
-              }}
-            >
-              {translate('bulk.bar.clear')}
-            </Button>
-          </div>
-        </Toolbar>
+      {!selectable || selection !== undefined || selected.length === 0 ? null : (
+        <BulkBar
+          selected={selected}
+          actions={bulkActions?.(selectedRows) ?? []}
+          busy={working}
+          onClear={() => {
+            setSelected([]);
+          }}
+        />
       )}
 
       <div className="flex items-center justify-between gap-4">
@@ -572,5 +577,78 @@ export function StateBadges({
         <Badge tone="warning">{translate('admin.list.inactiveBadge')}</Badge>
       ) : null}
     </span>
+  );
+}
+
+/**
+ * The bar that acts on a selection — "3 selected", the actions, and Clear.
+ *
+ * Exported so a screen that holds the selection itself (`ResourceList`'s `selection` prop) draws
+ * the same bar with the same gating, rather than a second one. `compact` is the size that sits in a
+ * page header beside a button, which is where the library puts it.
+ */
+export function BulkBar({
+  selected,
+  actions,
+  onClear,
+  busy = false,
+  compact = false,
+}: {
+  readonly selected: readonly string[];
+  readonly actions: readonly BulkAction[];
+  readonly onClear: () => void;
+  readonly busy?: boolean;
+  readonly compact?: boolean;
+}): ReactNode {
+  const translate = useTranslate();
+  const size = compact ? 'sm' : undefined;
+  const buttons = (
+    <div className="flex flex-wrap items-center gap-2">
+      {actions.map((action) => {
+        const blocked = action.disabledReason ?? null;
+        return (
+          <Button
+            key={action.id}
+            type="button"
+            {...(size !== undefined && { size })}
+            variant={
+              action.destructive === true ? 'destructive' : compact ? 'outline' : 'secondary'
+            }
+            disabled={blocked !== null || busy}
+            {...(blocked !== null && { title: blocked })}
+            onClick={() => {
+              action.onSelect([...selected]);
+            }}
+          >
+            {action.label}
+          </Button>
+        );
+      })}
+      <Button type="button" variant="ghost" {...(size !== undefined && { size })} onClick={onClear}>
+        {translate('bulk.bar.clear')}
+      </Button>
+    </div>
+  );
+
+  return compact ? (
+    // `role="toolbar"` and the same name as the inline bar: it is the same control in another place,
+    // and a screen reader should find it by the same words.
+    <div
+      role="toolbar"
+      aria-label={translate('bulk.bar.label')}
+      className="border-primary-200 bg-accent flex flex-wrap items-center gap-2 rounded-lg border py-1 ps-3 pe-1"
+    >
+      <p className="text-accent-foreground text-sm font-semibold whitespace-nowrap">
+        {translate('bulk.bar.selected', { count: selected.length })}
+      </p>
+      {buttons}
+    </div>
+  ) : (
+    <Toolbar label={translate('bulk.bar.label')}>
+      <p className="text-sm font-medium">
+        {translate('bulk.bar.selected', { count: selected.length })}
+      </p>
+      {buttons}
+    </Toolbar>
   );
 }

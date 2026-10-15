@@ -257,20 +257,54 @@ describe('the application shell in the running product', () => {
           0.0722 * channel(rgb[2] ?? 0)
         );
       };
-      const parse = (value: string): number[] =>
-        (/rgba?\(([^)]+)\)/.exec(value)?.[1] ?? '0,0,0')
-          .split(',')
-          .map((part) => Number.parseFloat(part.trim()));
+      /*
+       * Any CSS colour as [r, g, b, a]. Tailwind v4 writes an alpha utility as `color-mix(in oklab,
+       * …)`, which Chrome reports as `oklab(… / 0.05)` — a string the old `rgba(…)` regex could not
+       * read, so it fell back to opaque black. A canvas resolves every colour syntax the browser
+       * paints; one pixel of it is the colour, with its alpha.
+       */
+      const probe = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+      const parse = (value: string): number[] => {
+        if (probe === null) {
+          return [0, 0, 0, 1];
+        }
+        probe.clearRect(0, 0, 1, 1);
+        probe.fillStyle = '#000';
+        probe.fillStyle = value;
+        probe.fillRect(0, 0, 1, 1);
+        const [r = 0, g = 0, b = 0, a = 0] = probe.getImageData(0, 0, 1, 1).data;
+        return [r, g, b, a / 255];
+      };
+      /*
+       * The colour the eye sees behind an element: every translucent layer composited over the
+       * first opaque one beneath it. Taking the first non-transparent layer *as if* it were opaque
+       * read Docs v2's 5% brand wash on the current rail item as solid olive — 1.18:1 against text
+       * that measures over 13:1 on what is actually painted.
+       */
       const opaqueBackground = (from: Element): number[] => {
+        const layers: number[][] = [];
         let node: Element | null = from;
         while (node !== null) {
           const parsed = parse(getComputedStyle(node).backgroundColor);
-          if ((parsed[3] ?? 1) > 0) {
-            return parsed;
+          const alpha = parsed[3] ?? 1;
+          if (alpha > 0) {
+            layers.push(parsed);
+            if (alpha >= 1) {
+              break;
+            }
           }
           node = node.parentElement;
         }
-        return [255, 255, 255];
+        const base = (layers[layers.length - 1]?.[3] ?? 1) >= 1 ? layers.pop() : undefined;
+        return layers.reduceRight<number[]>(
+          (under, [r = 0, g = 0, b = 0, a = 1]) => [
+            r * a + (under[0] ?? 0) * (1 - a),
+            g * a + (under[1] ?? 0) * (1 - a),
+            b * a + (under[2] ?? 0) * (1 - a),
+            1,
+          ],
+          base ?? [255, 255, 255, 1],
+        );
       };
       const ratio = (element: Element): number => {
         const text = luminance(parse(getComputedStyle(element).color));

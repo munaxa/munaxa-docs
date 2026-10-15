@@ -265,7 +265,7 @@ describe('document permissions as each role', () => {
        * answer to "I searched and there is nothing", which is a question you ask before choosing.
        */
       await page.getByRole('combobox', { name: 'Subject' }).click();
-      await page.getByPlaceholder('Search').fill('nobody by that name at all');
+      await page.getByPlaceholder('Search', { exact: true }).fill('nobody by that name at all');
 
       const empty = page.getByText('Nothing matches that search');
       await empty.waitFor({ state: 'visible', timeout: 30_000 });
@@ -277,7 +277,7 @@ describe('document permissions as each role', () => {
       await page.getByLabel('Kind', { exact: false }).selectOption('USER');
 
       await page.getByRole('combobox', { name: 'Subject' }).click();
-      await page.getByPlaceholder('Search').fill('Zz Picker 110');
+      await page.getByPlaceholder('Search', { exact: true }).fill('Zz Picker 110');
 
       const option = page.getByRole('option', { name: BEYOND });
       await option.waitFor({ state: 'visible', timeout: 30_000 });
@@ -290,7 +290,7 @@ describe('document permissions as each role', () => {
 
     it('keeps them named when the search moves on', async () => {
       await page.getByRole('combobox', { name: 'Subject' }).click();
-      const box = page.getByPlaceholder('Search');
+      const box = page.getByPlaceholder('Search', { exact: true });
       await box.fill('');
       await box.fill('Zz Picker 001');
       await page.getByRole('option', { name: 'Zz Picker 001' }).waitFor({ timeout: 30_000 });

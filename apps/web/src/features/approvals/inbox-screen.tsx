@@ -8,7 +8,7 @@ import { type ReactNode, useState } from 'react';
 import { Badge, Button, Card, EmptyState } from '@munaxa/ui';
 
 import type { ApprovalInboxItem } from '@edms/contracts';
-import { TaskDecision, type TaskDecisionKey } from '@edms/domain';
+import { ApprovalTaskState, TaskDecision, type TaskDecisionKey } from '@edms/domain';
 
 import { useTranslate } from '../../app/providers';
 import { DecisionDialog } from './decision-dialog';
@@ -44,27 +44,35 @@ export function ApprovalInboxScreen({
 
   if (rows.length === 0) {
     return (
-      <EmptyState
-        title={translate(decided ? 'approvals.emptyDecided' : 'approvals.empty')}
-        description={translate('approvals.description')}
-      />
+      <div className="flex max-w-[960px] flex-col gap-4">
+        <InboxSwitch decided={decided} />
+        <EmptyState
+          title={translate(decided ? 'approvals.emptyDecided' : 'approvals.empty')}
+          description={translate('approvals.description')}
+        />
+      </div>
     );
   }
 
   return (
-    <>
-      <ul className="flex flex-col gap-2">
+    <div className="flex max-w-[960px] flex-col gap-4">
+      <InboxSwitch decided={decided} />
+      <ul className="flex flex-col gap-3">
         {rows.map((row) => (
           <li key={row.id}>
-            <Card className="flex flex-col gap-2">
+            <Card className="flex flex-col gap-2.5 p-4">
               <div className="flex flex-wrap items-center gap-3">
                 <Link
                   href={`/documents/${row.documentId}` as Route}
-                  className="min-w-0 flex-1 truncate font-medium"
+                  className="text-foreground min-w-[200px] flex-1 truncate text-[15px] font-semibold hover:underline"
                 >
                   {row.documentTitle}
                 </Link>
-                {row.documentNumber !== null && <Badge tone="muted">{row.documentNumber}</Badge>}
+                {row.documentNumber !== null && (
+                  <Badge tone="muted" className="font-mono tabular-nums">
+                    {row.documentNumber}
+                  </Badge>
+                )}
                 <Badge tone="muted">{row.documentTypeName}</Badge>
                 {row.overdue && <Badge tone="danger">{translate('approvals.overdue')}</Badge>}
                 {/*
@@ -86,7 +94,10 @@ export function ApprovalInboxScreen({
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-3 text-sm opacity-70">
+              {/* The muted token rather than `opacity-70`: a fade of the foreground is a contrast
+                  ratio nobody chose, and on the Docs v2 canvas it measured below the muted text it
+                  was imitating. */}
+              <div className="text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px]">
                 <span>
                   {translate('approvals.stage')}: {row.stageName}
                 </span>
@@ -104,10 +115,20 @@ export function ApprovalInboxScreen({
 
               {row.decision !== null && (
                 <div className="flex items-center gap-2 text-sm">
-                  <Badge tone={row.decision === TaskDecision.APPROVED ? 'success' : 'danger'}>
+                  <Badge
+                    tone={
+                      row.decision === TaskDecision.APPROVED
+                        ? 'success'
+                        : row.decision === TaskDecision.CHANGES_REQUESTED
+                          ? 'warning'
+                          : 'danger'
+                    }
+                  >
                     {translate(`approvals.decision${row.decision}`)}
                   </Badge>
-                  {row.comment !== null && <span className="opacity-80">{row.comment}</span>}
+                  {row.comment !== null && (
+                    <span className="text-muted-foreground">{row.comment}</span>
+                  )}
                 </div>
               )}
 
@@ -124,6 +145,13 @@ export function ApprovalInboxScreen({
                       <Button
                         key={decision}
                         variant={decision === TaskDecision.APPROVED ? 'default' : 'outline'}
+                        size="sm"
+                        // Rejection is the one decision that ends the document's run, so its label
+                        // carries the danger colour — on an outline button, because a red fill
+                        // beside Approve would compete with the primary action.
+                        className={
+                          decision === TaskDecision.REJECTED ? 'text-destructive-strong' : undefined
+                        }
                         onClick={() => {
                           setDeciding({ taskId: row.id, decision });
                         }}
@@ -132,7 +160,9 @@ export function ApprovalInboxScreen({
                       </Button>
                     ))
                   ) : (
-                    <span className="text-sm opacity-70">{translate('approvals.notYourTurn')}</span>
+                    <span className="text-muted-foreground text-sm">
+                      {translate('approvals.notYourTurn')}
+                    </span>
                   )}
                 </div>
               )}
@@ -154,7 +184,38 @@ export function ApprovalInboxScreen({
           router.refresh();
         }}
       />
-    </>
+    </div>
+  );
+}
+
+/**
+ * Awaiting you · Decided — Docs v2's segmented switch.
+ *
+ * The inbox has answered both questions since Phase 4 (`?state=DECIDED`) and nothing on screen led
+ * to the second one; the catalogue even carried both labels, unused. They are two URLs, so this is
+ * two links marked with `aria-current` rather than a tab widget: a tab panel switches content in
+ * place, and this navigates — back and forward work, and either view is a link somebody can send.
+ */
+function InboxSwitch({ decided }: { readonly decided: boolean }): ReactNode {
+  const translate = useTranslate();
+  const item =
+    'focus-visible:ring-ring flex h-9 items-center rounded-md px-3.5 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:outline-none aria-[current]:bg-card aria-[current]:text-foreground aria-[current]:shadow-xs';
+  return (
+    <nav
+      aria-label={translate('approvals.title')}
+      className="bg-secondary flex gap-1 self-start rounded-[10px] p-1"
+    >
+      <Link href="/approvals" aria-current={decided ? undefined : 'page'} className={item}>
+        {translate('approvals.inbox')}
+      </Link>
+      <Link
+        href={`/approvals?state=${ApprovalTaskState.DECIDED}` as Route}
+        aria-current={decided ? 'page' : undefined}
+        className={item}
+      >
+        {translate('approvals.decided')}
+      </Link>
+    </nav>
   );
 }
 

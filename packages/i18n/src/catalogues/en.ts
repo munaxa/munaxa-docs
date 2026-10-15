@@ -39,6 +39,7 @@ export const en = {
     passwordLabel: 'Password',
     organisationLabel: 'Organisation',
     organisationHint: 'The short name of your organisation, as it appears in your address.',
+    accessLogged: 'Access is logged to the audit trail.',
     signingIn: 'Signing in…',
     // One message for every reason, matching the API. Telling somebody which half of the pair
     // was wrong tells an attacker the same thing.
@@ -123,6 +124,27 @@ export const en = {
     groupLibrary: 'Library',
     groupOversight: 'Oversight',
     groupSystem: 'System',
+    /** The top bar — Docs v2. */
+    collapseRail: 'Collapse navigation',
+    expandRail: 'Expand navigation',
+    globalSearch: 'Search the workspace',
+    globalSearchPlaceholder: 'Search documents, numbers, people',
+    /** The language switch names the language it switches *to*, in that language. */
+    switchLanguage: 'العربية',
+    switchLanguageLabel: 'Switch to Arabic',
+  },
+  /** The frame's reminders — the rail's approval count and retention card, Docs v2. */
+  shell: {
+    pendingApprovals: plural({
+      one: '{count} approval waiting for you',
+      other: '{count} approvals waiting for you',
+    }),
+    retentionTitle: 'Retention review',
+    retentionDue: plural({
+      one: '{count} document is due for its disposal review.',
+      other: '{count} documents are due for their disposal review.',
+    }),
+    retentionOpen: 'Open schedule',
   },
   /**
    * Administration.
@@ -900,6 +922,8 @@ export const en = {
       }),
     },
     nav: {
+      library: 'Library',
+      libraryPicker: 'Choose a library — {name}',
       label: 'Libraries and folders',
       libraries: 'Libraries',
       folders: 'Folders',
@@ -927,6 +951,50 @@ export const en = {
       searchPlaceholder: 'Search titles, numbers and descriptions',
       includeSubfolders: 'Include subfolders',
     },
+    /** The library's docked detail panel — Docs v2. */
+    glance: {
+      label: 'Document details',
+      empty: 'Select a document to see its details.',
+      revision: 'Revision {revision}',
+      progress: 'Approval progress',
+      notSubmitted: 'Not submitted for approval yet.',
+      noApproval: 'Published without an approval workflow.',
+      unavailable: 'The approval record could not be loaded.',
+      details: 'Details',
+      activity: 'Recent activity',
+      noActivity: 'No recorded activity yet.',
+      open: 'Open document',
+      stageApprovedBy: 'Approved by {name} · {date}',
+      stageDone: 'Completed · {date}',
+      stageWaitingDue: 'Waiting for a decision · due {date}',
+      stageWaiting: 'Waiting for a decision',
+      stagePending: 'Not started',
+      stageSkipped: 'Skipped',
+      stageCancelled: 'Did not run',
+      stageRejectedBy: 'Rejected by {name}',
+      stageChangesBy: 'Changes requested by {name}',
+      field: {
+        type: 'Document type',
+        owner: 'Owner',
+        confidentiality: 'Confidentiality',
+        category: 'Category',
+        folder: 'Folder',
+        file: 'File',
+        updated: 'Last changed',
+      },
+    },
+    /** The library's filter chips — Docs v2. Each names its field, then what it is set to. */
+    filter: {
+      label: 'Filters',
+      chip: '{name} · {value}',
+      status: 'Status',
+      type: 'Type',
+      confidentiality: 'Confidentiality',
+      owner: 'Owner',
+      all: 'All',
+      anyone: 'Anyone',
+      me: 'Me',
+    },
     column: {
       title: 'Title',
       number: 'Number',
@@ -935,6 +1003,14 @@ export const en = {
       confidentiality: 'Confidentiality',
       size: 'Size',
       unknownFormat: 'File',
+    },
+    /** The record page's sections — Docs v2. */
+    tab: {
+      label: 'Record sections',
+      overview: 'Overview',
+      approvals: 'Approvals',
+      revisions: 'Revisions',
+      history: 'History',
     },
     section: {
       properties: 'Properties',
@@ -962,6 +1038,7 @@ export const en = {
       checksum: 'SHA-256',
     },
     actions: {
+      upload: 'Upload document',
       edit: 'Edit properties',
       move: 'Move',
       download: 'Download',

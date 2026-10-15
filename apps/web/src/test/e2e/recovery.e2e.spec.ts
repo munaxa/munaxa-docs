@@ -409,6 +409,7 @@ describe('B · a real approval, and the notification it produces', () => {
     await author.goto(`${WEB_URL}/documents/${fixture.approvalDocumentId}`, {
       waitUntil: 'domcontentloaded',
     });
+    await openRecordTab(author, 'Approvals');
     await confirmThrough(author, /^submit for approval$/i);
     await waitForStatus(fixture.approvalDocumentId, 'UNDER_REVIEW');
     await author.close();
@@ -607,6 +608,7 @@ describe('B · a real approval, and the notification it produces', () => {
     await author.goto(`${WEB_URL}/documents/${fixture.documentId}`, {
       waitUntil: 'domcontentloaded',
     });
+    await openRecordTab(author, 'Approvals');
     await confirmThrough(author, /^submit for approval$/i);
     await waitForStatus(fixture.documentId, 'UNDER_REVIEW');
     await author.close();
@@ -657,6 +659,16 @@ async function waitForStatus(id: string, want: string, timeoutMs = 90_000): Prom
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   throw new Error(`Document ${id} is ${seen} rather than ${want}.`);
+}
+
+/**
+ * Moves the record page to one of its sections — Docs v2 put Overview, Approvals, Revisions and
+ * History in tabs, so the approval panel (and its submit button) is one click in from the page.
+ */
+async function openRecordTab(page: Page, name: string): Promise<void> {
+  const tab = page.getByRole('tab', { name });
+  await tab.waitFor({ timeout: 30_000 });
+  await tab.click();
 }
 
 /**

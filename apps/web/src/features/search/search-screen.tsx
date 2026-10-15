@@ -271,6 +271,11 @@ export function SearchScreen({
                   buckets={buckets}
                   active={filters[facet]}
                   labels={facetLabels[facet]}
+                  onClear={() => {
+                    const next = { ...filters };
+                    delete next[facet];
+                    navigate({ filters: next });
+                  }}
                   onPick={(value) => {
                     const next = { ...filters };
                     if (next[facet] === value) {
@@ -470,12 +475,15 @@ function FacetGroup({
   active,
   labels,
   onPick,
+  onClear,
 }: {
   readonly facet: string;
   readonly buckets: readonly FacetBucket[];
   readonly active: string | undefined;
   readonly labels: Readonly<Record<string, string>> | undefined;
   readonly onPick: (value: string) => void;
+  /** Clears this facet — the "All" row. */
+  readonly onClear: () => void;
 }): ReactNode {
   const translate = useTranslate();
   if (buckets.length === 0) {
@@ -495,6 +503,29 @@ function FacetGroup({
   return (
     <Panel title={titleKey === undefined ? facet : translate(titleKey)}>
       <ul className="flex flex-col">
+        {/*
+          "All" first — Docs v2, asked for in review. Picking a value again already cleared it, but
+          nothing said so; a row that *is* the unfiltered state makes the way back visible and marks
+          it as current until a value is picked. Status carries the total beside it because its
+          buckets partition every result; the other facets' buckets need not, so they show none.
+        */}
+        <li>
+          <button
+            type="button"
+            onClick={onClear}
+            aria-pressed={active === undefined}
+            className={`hover:bg-accent flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-start text-sm ${
+              active === undefined ? 'bg-accent font-semibold' : ''
+            }`}
+          >
+            <span className="min-w-0 truncate">{translate('documents.filter.all')}</span>
+            {facet === 'status' && (
+              <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                {buckets.reduce((sum, bucket) => sum + bucket.count, 0)}
+              </span>
+            )}
+          </button>
+        </li>
         {buckets.map((bucket) => (
           <li key={bucket.value}>
             <button
@@ -503,14 +534,16 @@ function FacetGroup({
                 onPick(bucket.value);
               }}
               aria-pressed={active === bucket.value}
-              className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-start text-sm hover:bg-accent ${
-                active === bucket.value ? 'font-semibold' : ''
+              className={`hover:bg-accent flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-start text-sm ${
+                active === bucket.value ? 'bg-accent font-semibold' : ''
               }`}
             >
               <span className="min-w-0 truncate">
                 {facetLabel(facet, bucket.value, labels, translate)}
               </span>
-              <span className="text-muted-foreground tabular-nums">{bucket.count}</span>
+              <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                {bucket.count}
+              </span>
             </button>
           </li>
         ))}
@@ -560,8 +593,11 @@ function ResultCard({
   const typeLabel = typeLabels[hit.documentTypeId];
 
   return (
-    <Link href={`/documents/${hit.documentId}` as Route} className="block">
-      <Card className="flex flex-col gap-1">
+    <Link
+      href={`/documents/${hit.documentId}` as Route}
+      className="focus-visible:ring-ring group block rounded-xl focus-visible:ring-2 focus-visible:outline-none"
+    >
+      <Card className="group-hover:border-primary-200 flex flex-col gap-1.5 px-4 py-3.5 transition-colors">
         {/*
           The status sits *beside* the title, not at the far edge.
 
@@ -571,7 +607,7 @@ function ResultCard({
           belong together, read as two unrelated ones. The title truncates and the badge follows it.
         */}
         <Stack direction="horizontal" gap={2} align="center">
-          <span className="min-w-0 truncate font-medium">
+          <span className="min-w-0 truncate text-[15px] font-semibold">
             {title === undefined ? hit.title : <Spans spans={title} />}
           </span>
           <div className="shrink-0">
@@ -598,7 +634,7 @@ function ResultCard({
         >
           {typeLabel !== undefined && <span className="shrink-0 font-medium">{typeLabel}</span>}
           {hit.documentNumber !== null && (
-            <span className="shrink-0 tabular-nums">{hit.documentNumber}</span>
+            <span className="shrink-0 font-mono tabular-nums">{hit.documentNumber}</span>
           )}
           {hit.revisionLabel !== null && <span className="shrink-0">{hit.revisionLabel}</span>}
           <time dateTime={hit.updatedAt} className="shrink-0 tabular-nums">
