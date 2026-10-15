@@ -1,7 +1,9 @@
 # Moving export downloads onto verified delivery — design and implementation plan
 
-- **Status:** **Design for review, revision 2. Nothing here is implemented.** No application code is
-  changed until the owner approves this document and the decisions in §9.
+- **Status:** **Implemented locally** on branch `claude/amazing-turing-09vlks` (`88af7a8` to
+  `2c07ee7`), validated on the local MinIO stack only. Not merged, not deployed, and not a claim of
+  production readiness; ADR-0026 stays **Proposed**. The implementation record, the deviations from
+  this design and the test evidence are in §13 below and in ADR-0026 §10.
 - **Date:** 2026-10-15
 - **Branch:** `claude/amazing-turing-09vlks`, at `8c2476a`.
 - **Context:**
@@ -431,3 +433,54 @@ requester once any named document becomes unviewable; refused for anyone else.
   - audit export generation holds a whole range in memory (§6 d);
   - R2 behaviour remains Phase C;
   - ADR-0026 stays **Proposed**, and nothing here claims production readiness.
+
+## 13. Implementation record (2026-10-15, local)
+
+| Step | Commit | What |
+| --- | --- | --- |
+| 1 | `88af7a8` | Link kinds (`s`), strict decoding, redeemer registry; document links unchanged byte for byte |
+| 2 | `431501c` | Report exports (E-8, E-11) |
+| 3 | `75cc8aa` | Audit exports (E-5, E-9, E-12) |
+| 4, 5 | `f10cd84` | Bulk item list, per-click links, manifest with counts (E-3, E-4, E-6) |
+| 6 | `f3d7f31` | Audit generation streams in bounded memory; start-up warning for limits (D-7) |
+| 7 | `52cb83f` | Signed URLs fenced to the API's own reads; tokens redacted from the access log |
+| review | `2c07ee7` | Security review D-1 (manifest check bounded, redemption throttled); registry per application |
+| Phase B | `d326c03` | Browser case for bulk exports |
+
+**Deviations from the text above, and why:**
+- The redemption controller stays in the document module (which already imports Identity and
+  Storage) rather than moving to Storage: moving it would have made Storage import Identity, a
+  cycle. The registry is Storage's, as designed.
+- Bulk document links have their own kind (`BULK_DOCUMENT`) rather than reusing `DOCUMENT`, so
+  redemption also re-asks the export's questions (own, `EXPORT`, `COMPLETED`, released). Every
+  document rule still applies.
+- An audit bundle's screen issues one artefact per click (`?artefact=`) rather than the whole
+  bundle followed by sequential downloads: a browser may block all but the first download of one
+  gesture, and a link that was issued but never used would be recorded as issued. The bundle request
+  remains all-or-nothing for API clients.
+- Audit generation streams in two passes bounded by a sequence ceiling and checked by a digest of
+  the events read (§6 d was listed as a follow-up; the task required it).
+- The manifest check uses a set-based visibility count (500 per query), and `GET /downloads` is
+  rate-limited by address (240/min) — both from the security review (D-1).
+- Too large: computed per request against `DOWNLOAD_MAX_FILE_BYTES` (no schema change) and shown on
+  each report, artefact and bulk item.
+
+**What "served" means.** `FILE_DOWNLOAD_SERVED` is written when every verified byte has been
+written to the HTTP response and the response has finished (`writableFinished`): the bytes were
+handed to the operating system for the connection. It is **not** proof that the browser received or
+saved them; a connection lost after that point is not visible to the API. A request that is refused,
+fails verification, is answered 503, or is abandoned before the end writes no served row.
+
+**Atomicity, stated exactly.** The database rows of one issuance (`FILE_DOWNLOAD_ISSUED` per link,
+and `BULK_DOWNLOAD` for a bundle) are one transaction and match what the response returns. The
+store checks before them (HEAD) are reads outside any transaction; a store failure refuses the whole
+issuance before anything is written. There is no distributed transaction between the store and the
+database, and none is claimed.
+
+**Still open:**
+- E-10: a quarantined content-addressed export cannot be recovered by running it again (D-6).
+- The preview pipeline's internal source reads (`createInternalReadUrl`) do not verify the source
+  digest before rendering; nothing they read reaches a person as a download.
+- Export plans release a document regardless of its file's integrity; the link is what withholds a
+  quarantined file, and the manifest names what was released (the quarantined document included).
+- D-3 (requester-only audit exports) remains an option; the any-holder policy is kept.

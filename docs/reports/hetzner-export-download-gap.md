@@ -101,5 +101,6 @@ revision 2. It is a design and implementation plan only; nothing in it is implem
   - E-11: the report screen offers Download on other people's exports.
   - E-12: the audit screen's popups are blocked after the first.
 
-Until the design is implemented, everything in §1–§4 above still describes the code: these
-routes return 300 s signed store URLs.
+**Closed (2026-10-15, local).** The design is implemented on the branch (`88af7a8`–`2c07ee7`): none
+of the three routes returns a store URL any more; §1–§4 above describe the code before that. E-3 to
+E-9, E-11 and E-12 are fixed; E-10 remains open. See the design's §13 and ADR-0026 §10.

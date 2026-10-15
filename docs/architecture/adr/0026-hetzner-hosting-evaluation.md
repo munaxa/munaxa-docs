@@ -712,6 +712,64 @@ Run 4 failed only on three harness selectors that the redesign had changed. They
 - Page cache against the container limit.
 - Phase C (R2), which has not been run.
 
+### Exports moved onto verified delivery (2026-10-15, local)
+
+On branch `claude/amazing-turing-09vlks` (`88af7a8`–`2c07ee7`). **Not merged, not deployed.**
+Design and deviations: [`hetzner-export-verified-delivery-design.md`](../../reports/hetzner-export-verified-delivery-design.md)
+§13.
+
+**What changed:**
+- **No person receives a store-signed URL any more.** Report exports, audit (evidence) artefacts,
+  bulk-exported documents and the bulk manifest are verified links (`/api/v1/downloads`, 60 s), each
+  with its own kind and a redeemer that re-asks its module's questions when the link is followed.
+- A test fails the build if anything but the preview pipeline signs a store URL.
+- The bulk list carries no URL and has no item ceiling. Links are issued per click.
+- Audit bundles are issued all or nothing.
+- The audit export streams in bounded memory.
+- Too-large files are marked on screen.
+- Tokens are redacted from the proxy's access log.
+- Link redemption is rate-limited by address.
+
+**Validation:**
+- **Integration (real PostgreSQL, stored bytes):** 58 files, 1,287 tests, on freshly migrated
+  databases. The baseline at `c9dc887` was 1,264.
+- **API unit:** 1,056 tests. **Web:** 555 tests.
+- Typecheck and lint pass on all 20 tasks; formatting passes.
+- **Negative controls:** seven mutations, each reintroducing one defect. Each was caught by its test:
+  - manifest per-document check;
+  - bulk confidentiality at redemption;
+  - report permission at redemption;
+  - audit artefact media-type binding;
+  - audit atomicity;
+  - in-memory audit generation;
+  - process-wide registry.
+- **Independent security review:** no cross-tenant access, authorization performed only at issuance,
+  confidentiality bypass, XSS or signed-URL leak was found. One medium defect (D-1, an unbounded
+  manifest check on an unthrottled public route) was fixed in `2c07ee7`.
+- **Full integration run:** a regression since `88af7a8` was found and fixed in `2c07ee7`. The
+  registry was shared across applications in one process, so suites that boot twice failed.
+
+**Phase B, run 7 of record** (local MinIO only), with images built from `2c07ee7`:
+- **92 passed, 0 failed.**
+- Report and audit exports save the verified file through `/api/v1/downloads` with no popup.
+- **Bulk export, at 1280×720:**
+  - the list contains no URL;
+  - a released document downloads byte for byte through its own link;
+  - a quarantined one is withheld, with its integrity reason;
+  - the manifest downloads through a verified link, with counts and no links.
+- No restart and no out-of-memory kill.
+- Memory peaks: 1535 / 481 MiB (8 × 128 MiB) and 1421 / 367 MiB (40 × 128 MiB).
+- No credential in 2,635 log lines.
+- Teardown left nothing behind.
+
+**Still open:**
+- **E-10:** recovering a quarantined deduplicated export.
+- The preview pipeline's internal reads do not verify the digest.
+- A link remains a bearer link for its 60 s lifetime (re-checked per person).
+- Phase C (R2) has not been run.
+- The readiness picture is in
+  [`hetzner-test-deployment-readiness.md`](../../reports/hetzner-test-deployment-readiness.md).
+
 **Gates before adoption:**
 
 | Gate | What must pass | Status |
