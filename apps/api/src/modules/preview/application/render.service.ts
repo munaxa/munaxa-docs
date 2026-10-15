@@ -12,6 +12,7 @@ import {
 } from '@edms/domain';
 
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
+import { ContentQuarantinedError } from '../../../core/errors';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { OUTBOX_WRITER, type OutboxWriter } from '../../../core/outbox/outbox.port';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
@@ -150,7 +151,7 @@ export class PreviewRenderService {
 
     let rendered: (RenderResult & { renderer: string; version: string }) | null;
     try {
-      const bytes = await this.fetchSource(fileObjectId, source.mimeType);
+      const bytes = await this.fetchSource(fileObjectId);
       rendered = await this.withDeadline(
         this.preview.render({ bytes, mimeType: source.mimeType, limits: this.limits() }),
         this.config.preview.timeoutMs,
@@ -158,6 +159,14 @@ export class PreviewRenderService {
     } catch (error) {
       if (error instanceof RenderFailedError) {
         await this.uow.run(() => this.settleFailed(revisionId, null, error.reason, true));
+        return;
+      }
+      if (error instanceof ContentQuarantinedError) {
+        // The source failed its integrity check — now, or already. A verdict, not trouble: the
+        // blob stays quarantined until an operator restores it, so retrying cannot help.
+        await this.uow.run(() =>
+          this.settleFailed(revisionId, null, 'The source failed its integrity check.', true),
+        );
         return;
       }
       // Infrastructure trouble — storage unreachable, a timeout that may be load. Retryable.
@@ -286,19 +295,14 @@ export class PreviewRenderService {
   }
 
   /**
-   * The source bytes, through a signed URL the API redeems itself — the same path a browser
-   * takes, and the only shape a renderer input has: one blob, no credentials (14 §5).
+   * The source bytes, verified against their record before anything renders them (R-9): a source
+   * altered in the store is quarantined and refused rather than rendered as the document.
    */
-  private async fetchSource(fileObjectId: FileObjectId, mimeType: string): Promise<Buffer> {
-    const extension = formatFor(mimeType)?.extensions[0] ?? '';
-    const signed = await this.storage.createInternalReadUrl(fileObjectId, `source${extension}`, {
-      inline: true,
+  private fetchSource(fileObjectId: FileObjectId): Promise<Buffer> {
+    return this.storage.readVerifiedSource(fileObjectId, {
+      purpose: 'RENDER',
+      maxBytes: this.config.preview.maxSourceBytes,
     });
-    const response = await fetch(signed.url);
-    if (!response.ok) {
-      throw new Error(`The source blob could not be fetched (${String(response.status)}).`);
-    }
-    return Buffer.from(await response.arrayBuffer());
   }
 
   private limits(): RenderLimits {

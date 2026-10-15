@@ -4,32 +4,23 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * No person receives a store-signed URL — ADR-0026 §10, the export design §10 step 7.
+ * Nothing in the API signs a store URL for reading — ADR-0026 §10, the export design §10 step 7,
+ * and R-9 of the Hetzner readiness report.
  *
  * Every download a person receives is a verified link the API serves (`/api/v1/downloads`), read
- * whole and matched against its digest first. Store-signed URLs remain only for the API's own
- * reads: the preview pipeline fetching a source to render, rasterise or OCR, and the preview
- * stream reading an artefact it then serves itself. This fails the build when any other file
- * starts signing — an export, a document route, a fallback in an error handler — so the
- * unverified door cannot quietly come back.
+ * whole and matched against its digest first. The preview pipeline's own reads used to be the one
+ * remaining signer: rendering, thumbnails and OCR fetched their source through a signed URL and
+ * checked nothing, and the preview stream and text reads did the same for artefacts. They now read
+ * on the port (`readVerifiedSource`, or `read` plus a digest check). Only the port's implementations
+ * may still implement `createDownloadUrl`; this fails the build when any other file starts calling
+ * it — an export, a document route, a fallback in an error handler — so the unverified door cannot
+ * quietly come back.
  */
 
 const SOURCE = join(__dirname, '..', '..', '..');
 
-/** Callers of `StorageService.createInternalReadUrl`: the pipeline's own source reads. */
-const INTERNAL_READERS = [
-  'modules/preview/application/ocr.service.ts',
-  'modules/preview/application/render.service.ts',
-  'modules/preview/application/thumbnail.service.ts',
-];
-
-/** Callers of the raw port's `createDownloadUrl`: its implementation, adapters and API reads. */
-const PORT_SIGNERS = [
-  'infrastructure/tenancy/tenant-scoped-storage.ts',
-  'modules/preview/application/preview-query.service.ts',
-  'modules/preview/presentation/preview-stream.controller.ts',
-  'modules/storage/application/storage.service.ts',
-];
+/** Callers of the raw port's `createDownloadUrl`: only the tenant-scoping adapter that wraps it. */
+const PORT_SIGNERS = ['infrastructure/tenancy/tenant-scoped-storage.ts'];
 
 function sources(directory: string): string[] {
   return readdirSync(directory).flatMap((entry) => {
@@ -49,22 +40,19 @@ function callersOf(pattern: RegExp): string[] {
 }
 
 describe('who may sign a store URL', () => {
-  it('only the preview pipeline reads through the internal signed URL', () => {
-    expect(callersOf(/\.createInternalReadUrl\(/u)).toEqual(INTERNAL_READERS);
+  it('the internal signed-URL method is gone', () => {
+    expect(callersOf(/createInternalReadUrl/u)).toEqual([]);
   });
 
-  it('only storage, its adapters and the preview pipeline sign on the raw port', () => {
+  it('only the tenant-scoping adapter calls the raw port’s signer', () => {
     expect(callersOf(/\.createDownloadUrl\(/u)).toEqual(PORT_SIGNERS);
   });
 
-  it('no export or document module signs anything', () => {
-    for (const module of ['reporting', 'audit', 'document']) {
-      expect(
-        callersOf(/\.(createDownloadUrl|createInternalReadUrl)\(/u).filter((path) =>
-          path.startsWith(`modules/${module}/`),
-        ),
-        module,
-      ).toEqual([]);
-    }
+  it('the preview pipeline reads its sources through the verified read', () => {
+    expect(callersOf(/\.readVerifiedSource\(/u)).toEqual([
+      'modules/preview/application/ocr.service.ts',
+      'modules/preview/application/render.service.ts',
+      'modules/preview/application/thumbnail.service.ts',
+    ]);
   });
 });

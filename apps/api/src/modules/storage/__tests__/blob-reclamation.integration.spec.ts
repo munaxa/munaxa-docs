@@ -406,13 +406,14 @@ describe('who may be handed a download link', () => {
     });
     return asId<FileObjectId>(id);
   }
-  const link = (id: FileObjectId) =>
-    asTenant(() => storage.createInternalReadUrl(id, 'export.csv'));
+  // The gate every hand-over asks — a verified download link, a preview, an internal read —
+  // through the one method that asks nothing else, so this fake store needs no bytes (R-9 retired
+  // the signed internal URL these tests used to go through).
+  const link = (id: FileObjectId) => asTenant(() => storage.servable(id));
 
-  it('signs a product-generated file stored derived and SKIPPED', async () => {
-    await expect(link(await aFile(true, 'SKIPPED'))).resolves.toMatchObject({
-      url: expect.stringContaining('https://store.test/blobs/') as unknown as string,
-    });
+  it('serves a product-generated file stored derived and SKIPPED', async () => {
+    const id = await aFile(true, 'SKIPPED');
+    await expect(link(id)).resolves.toMatchObject({ id });
   });
 
   it('still refuses an uploaded file the scanner has not cleared', async () => {
@@ -427,7 +428,7 @@ describe('who may be handed a download link', () => {
     });
   });
 
-  it('signs an uploaded file the scanner cleared, as before', async () => {
+  it('serves an uploaded file the scanner cleared, as before', async () => {
     await expect(link(await aFile(false, 'CLEAN'))).resolves.toBeDefined();
   });
 

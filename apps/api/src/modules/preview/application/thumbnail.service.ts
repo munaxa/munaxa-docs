@@ -46,9 +46,6 @@ export class ThumbnailService implements DocumentThumbnailer {
 
     try {
       const source = await this.fetch(fileObjectId);
-      if (source === null) {
-        return;
-      }
       const decoded = decodePng(source);
       if (decoded === null) {
         // The decoder declined: interlaced, palette-based, 16-bit, corrupt, or larger than the
@@ -125,25 +122,26 @@ export class ThumbnailService implements DocumentThumbnailer {
   }
 
   /**
-   * The source bytes, through a signed URL the API redeems itself.
+   * The source bytes, verified against their record (R-9).
    *
-   * The same path a browser takes rather than a second, privileged one. A direct read would mean a
-   * code path per driver that only the thumbnailer exercises, and a code path only one caller
-   * exercises is the one that breaks silently when a driver is added.
+   * A refusal — too large, quarantined (now or already), or a store that could not be read — is
+   * the same answer as a decoder that declined: no thumbnail, and a warning from the caller. A
+   * thumbnail never fails a document.
    */
-  private async fetch(fileObjectId: string): Promise<Buffer | null> {
-    const signed = await this.storage.createInternalReadUrl(
-      asId<FileObjectId>(fileObjectId),
-      'source.png',
-      { inline: true },
-    );
-    const response = await fetch(signed.url);
-    if (!response.ok) {
-      return null;
-    }
-    return Buffer.from(await response.arrayBuffer());
+  private fetch(fileObjectId: string): Promise<Buffer> {
+    return this.storage.readVerifiedSource(asId<FileObjectId>(fileObjectId), {
+      purpose: 'THUMBNAIL',
+      maxBytes: THUMBNAIL_MAX_SOURCE_BYTES,
+    });
   }
 }
+
+/**
+ * The largest PNG this service reads to draw a thumbnail. The read is whole and in this process,
+ * inside the document's creating transaction, so it is bounded here rather than by the object; a
+ * larger PNG gets no thumbnail, which is the same answer as one the decoder declines.
+ */
+const THUMBNAIL_MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 
 /** Recorded per artefact, so a renderer upgrade can invalidate what the old version produced. */
 const RENDERER = 'munaxa-raster';

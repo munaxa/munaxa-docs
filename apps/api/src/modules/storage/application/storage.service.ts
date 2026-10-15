@@ -522,32 +522,83 @@ export class DefaultStorageService implements StorageService {
   }
 
   /**
-   * A short-lived, single-object URL — audited before it exists.
+   * A source's bytes for the API's own processing — rendering, thumbnails, OCR — verified before
+   * they are returned. R-9 of the Hetzner readiness report.
    *
-   * The audit event is written inside the same transaction that issues the URL, and the URL is
-   * built after it. A signed URL outlives the request that produced it and can be redeemed by
-   * whoever holds it, so the record of who was handed one is the evidence of how bytes left; a
-   * window in which one exists and nothing says so is exactly where a failure would hide
-   * (`11-storage-architecture.md` §5).
+   * The pipeline used to sign a store URL and fetch it, checking nothing about what came back: a
+   * blob altered in the store was rendered, rasterised or read for text as if it were the
+   * document. Now the read is the integrity sweep's own read, and a source is handed over only
+   * when its size and SHA-256 equal the record:
+   *
+   * - **refused first**, before anything is read, exactly as a download is refused — unscanned,
+   *   infected, quarantined, or larger than `maxBytes` (the caller's own ceiling, so memory is
+   *   bounded by configuration and not by the object);
+   * - **audited** as `FILE_DOWNLOAD_ISSUED` with `delivery: 'INTERNAL'` and the purpose once the
+   *   bytes have verified — the same action the signed URL wrote, so the trail of how bytes left
+   *   the store keeps its shape; a refusal is not a hand-over and records none;
+   * - **read whole within the scan byte budget**, which already bounds every whole-object read this
+   *   process makes (scans and the verifier), so previews cannot add memory pressure beside them;
+   * - **a finding quarantines** — different bytes, or an object the store says is absent on two
+   *   looks — and is refused as `ContentQuarantinedError`, like the verifier and verified
+   *   downloads (ADR-0026 §10). **A failed read never does**: a store error or a budget wait that
+   *   ran out is `StorageUnavailableError`, retryable, and the blob's state is left as it was.
+   *
+   * Nothing is written to disk, so there is nothing to clean up: the buffer is the caller's, and
+   * on any refusal it was never returned.
    */
-  async createInternalReadUrl(
+  async readVerifiedSource(
     fileObjectId: FileObjectId,
-    filename: string,
-    options: { inline?: boolean } = {},
-  ): Promise<{ url: string; expiresAt: Date }> {
-    return this.writer.write<{ url: string; expiresAt: Date }>(async () => {
-      const file = await this.require(fileObjectId);
-      this.refuseUnreachable(file);
-      await this.confirmStoredBytes(file);
+    options: { readonly purpose: 'RENDER' | 'THUMBNAIL' | 'OCR'; readonly maxBytes: number },
+  ): Promise<Buffer> {
+    const file = await this.writer.read(async () => {
+      const found = await this.require(fileObjectId);
+      this.refuseUnreachable(found);
+      if (found.sizeBytes > options.maxBytes) {
+        throw new DownloadTooLargeError(options.maxBytes, formatBytes(options.maxBytes));
+      }
+      return found;
+    });
 
-      const signed = await this.storage.createDownloadUrl(file.storageKey, {
-        expiresInSeconds: this.config.storage.signedUrlTtlSeconds,
-        filename: sanitizeFilename(filename),
-        ...(options.inline === true && { inline: true }),
+    let bytes: Buffer | null;
+    try {
+      // Outside any transaction, like the verifier: a network read of the store must not hold a
+      // database transaction open.
+      bytes = await this.scanCapacity.run(file.sizeBytes, VERIFIER_CAPACITY_WAIT_MS, () =>
+        this.storage.read(file.storageKey),
+      );
+    } catch (error) {
+      throw new StorageUnavailableError('The source could not be read from the store.', {
+        cause: error,
       });
+    }
 
-      return {
-        result: signed,
+    if (bytes === null) {
+      let present: boolean;
+      try {
+        present = (await this.storage.head(file.storageKey)) !== null;
+      } catch (error) {
+        throw new StorageUnavailableError('The source could not be read from the store.', {
+          cause: error,
+        });
+      }
+      if (present) {
+        // Absent to the read, present to the HEAD: the store is flickering, not the blob gone.
+        throw new StorageUnavailableError('The source could not be read from the store.');
+      }
+      await this.quarantine(file, IntegrityStatus.UNREADABLE, null);
+      throw new ContentQuarantinedError(IntegrityStatus.UNREADABLE);
+    }
+
+    const actual = createHash('sha256').update(bytes).digest('hex');
+    if (bytes.length !== file.sizeBytes || actual !== file.checksumSha256) {
+      await this.quarantine(file, IntegrityStatus.MISMATCH, actual);
+      throw new ContentQuarantinedError(IntegrityStatus.MISMATCH);
+    }
+
+    const verified = bytes;
+    return this.writer.write<Buffer>(() =>
+      Promise.resolve({
+        result: verified,
         change: {
           action: StorageAudit.FILE_DOWNLOAD_ISSUED,
           subjectType: AuditSubjectType.FILE,
@@ -555,20 +606,19 @@ export class DefaultStorageService implements StorageService {
           operation: AdministrativeOperation.UPDATED,
           after: {
             checksumSha256: file.checksumSha256,
-            filename,
-            inline: options.inline === true,
-            expiresAt: signed.expiresAt.toISOString(),
+            delivery: 'INTERNAL',
+            purpose: options.purpose,
           },
         },
-      };
-    });
+      }),
+    );
   }
 
   /**
    * A verified download link — ADR-0026 §10, the download-integrity proposal §3.1.
    *
-   * Every refusal `createInternalReadUrl` makes, in the same order, plus the size the verified path
-   * stages, and the same `FILE_DOWNLOAD_ISSUED` event in the same transaction. The link is the
+   * Every refusal `readVerifiedSource` makes, in the same order, plus the store's HEAD and the size
+   * the verified path stages, and the same `FILE_DOWNLOAD_ISSUED` event in the same transaction. The link is the
    * API's own (`/api/v1/downloads?token=…`): no store URL is signed, and nothing is served until
    * the bytes have been read whole and their SHA-256 matched (`VerifiedDownloadDelivery`).
    */

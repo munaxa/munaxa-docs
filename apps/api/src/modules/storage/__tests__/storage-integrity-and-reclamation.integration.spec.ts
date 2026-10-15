@@ -295,6 +295,14 @@ function stored(key: string, tenant: 'acme' | 'other' = 'acme'): Promise<boolean
   return run(async () => (await scoped.head(key)) !== null);
 }
 
+/** The preview pipeline's verified read (R-9), as every gate test below asks it. */
+function readSource(fileObjectId: FileObjectId): Promise<Buffer> {
+  return storage.readVerifiedSource(fileObjectId, {
+    purpose: 'RENDER',
+    maxBytes: 64 * 1024 * 1024,
+  });
+}
+
 async function downloadIssuedCount(fileObjectId: string): Promise<number> {
   return owner.auditEvent.count({
     where: { tenantId: ACME, action: 'FILE_DOWNLOAD_ISSUED', subjectId: fileObjectId },
@@ -383,21 +391,18 @@ afterAll(async () => {
 // --- D-11 -------------------------------------------------------------------------------------
 
 describe('the download gate asks whether the bytes are still the bytes (D-11)', () => {
-  it('signs a link for intact, scanned content, and the link serves the stored bytes', async () => {
+  it('reads intact, scanned content and returns the stored bytes', async () => {
     const bytes = aPdf('intact');
     const { fileObjectId } = await inAcme(() => upload(bytes));
     await hold(fileObjectId);
     await verify(fileObjectId);
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('VERIFIED');
 
-    const signed = await inAcme(() =>
-      storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
-    );
-    const served = Buffer.from(await (await fetch(signed.url)).arrayBuffer());
+    const served = await inAcme(() => readSource(asId<FileObjectId>(fileObjectId)));
     expect(sha256(served)).toBe(sha256(bytes));
   });
 
-  it('refuses a blob the verifier found tampered with, and signs nothing', async () => {
+  it('refuses a blob the verifier found tampered with, and hands nothing over', async () => {
     const bytes = aPdf('tamper');
     const { fileObjectId } = await inAcme(() => upload(bytes));
     await hold(fileObjectId);
@@ -413,15 +418,11 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('MISMATCH');
 
     const before = await downloadIssuedCount(fileObjectId);
-    await expect(
-      inAcme(() =>
-        storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
-      ),
-    ).rejects.toMatchObject({
+    await expect(inAcme(() => readSource(asId<FileObjectId>(fileObjectId)))).rejects.toMatchObject({
       code: 'CONTENT_NOT_SCANNED',
       details: { integrityStatus: 'MISMATCH' },
     });
-    // Refused before a URL existed: nothing was issued, so nothing was audited as issued.
+    // Refused before any byte was read: nothing was handed over, so nothing audited as issued.
     expect(await downloadIssuedCount(fileObjectId)).toBe(before);
     expect(await reachable(fileObjectId)).toBe(false);
     // The gate repairs nothing and re-marks nothing: the finding and the scan verdict stand.
@@ -439,11 +440,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNREADABLE');
 
     const before = await downloadIssuedCount(fileObjectId);
-    await expect(
-      inAcme(() =>
-        storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
-      ),
-    ).rejects.toMatchObject({
+    await expect(inAcme(() => readSource(asId<FileObjectId>(fileObjectId)))).rejects.toMatchObject({
       code: 'CONTENT_NOT_SCANNED',
       details: { integrityStatus: 'UNREADABLE' },
     });
@@ -461,10 +458,8 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
     await inAcme(() => unitOfWork.run(() => storage.reference(artefact.id)));
     await verify(String(artefact.id));
 
-    const signed = await inAcme(() => storage.createInternalReadUrl(artefact.id, 'export.pdf'));
-    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(
-      sha256(content),
-    );
+    const served = await inAcme(() => readSource(artefact.id));
+    expect(sha256(served)).toBe(sha256(content));
 
     await inAcme(() =>
       scoped.put(artefact.storageKey, once(Buffer.from('%PDF-1.7\n% not the export\n')), {
@@ -472,9 +467,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
       }),
     );
     await verify(String(artefact.id));
-    await expect(
-      inAcme(() => storage.createInternalReadUrl(artefact.id, 'export.pdf')),
-    ).rejects.toMatchObject({
+    await expect(inAcme(() => readSource(artefact.id))).rejects.toMatchObject({
       code: 'CONTENT_NOT_SCANNED',
       details: { integrityStatus: 'MISMATCH' },
     });
@@ -488,7 +481,7 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
       expect(row.scanStatus).toBe('SKIPPED');
       expect(row.derived).toBe(false);
       await expect(
-        inAcme(() => storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'x.pdf')),
+        inAcme(() => readSource(asId<FileObjectId>(fileObjectId))),
       ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED', details: { scanStatus: 'SKIPPED' } });
       expect(await reachable(fileObjectId)).toBe(false);
     } finally {
@@ -507,25 +500,23 @@ describe('the download gate asks whether the bytes are still the bytes (D-11)', 
       }),
     );
     await verify(fileObjectId);
-    await expect(
-      inAcme(() => storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'p.pdf')),
-    ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+    await expect(inAcme(() => readSource(asId<FileObjectId>(fileObjectId)))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
 
     // Restored from backup, and the verifier re-reads it: now, and only now, it is served again.
     await inAcme(() => scoped.put(storageKey, once(bytes), { contentType: 'application/pdf' }));
     await verify(fileObjectId);
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('VERIFIED');
-    const signed = await inAcme(() =>
-      storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'p.pdf'),
-    );
-    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(bytes));
+    const served = await inAcme(() => readSource(asId<FileObjectId>(fileObjectId)));
+    expect(sha256(served)).toBe(sha256(bytes));
   });
 
   it('never resolves another tenant’s blob, quarantined or not', async () => {
     const { fileObjectId } = await inAcme(() => upload(aPdf('acme-only')));
-    await expect(
-      inOther(() => storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'x.pdf')),
-    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(inOther(() => readSource(asId<FileObjectId>(fileObjectId)))).rejects.toMatchObject(
+      { code: 'NOT_FOUND' },
+    );
     expect(await reachable(fileObjectId, inOther)).toBe(false);
   });
 });
@@ -652,10 +643,8 @@ describe('the integrity verifier quarantines a finding, never a failure to look 
     expect(row.integrityCheckedAt?.getTime()).toBeGreaterThan(EPOCH.getTime());
     expect(await findingsFor(id)).toEqual([0, 0]);
     expect(await reachable(id)).toBe(true);
-    const signed = await inAcme(() =>
-      storage.createInternalReadUrl(asId<FileObjectId>(id), 'large.pdf'),
-    );
-    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(large));
+    const served = await inAcme(() => readSource(asId<FileObjectId>(id)));
+    expect(sha256(served)).toBe(sha256(large));
   });
 
   it.each([
@@ -724,9 +713,9 @@ describe('the integrity verifier quarantines a finding, never a failure to look 
     expect(audit.payload).toMatchObject({
       after: { integrityStatus: 'UNREADABLE', actualSha256: null },
     });
-    await expect(
-      inAcme(() => storage.createInternalReadUrl(asId<FileObjectId>(id), 'p.pdf')),
-    ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+    await expect(inAcme(() => readSource(asId<FileObjectId>(id)))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+    });
   });
 
   it('quarantines a confirmed checksum mismatch, recording both digests', async () => {
@@ -789,18 +778,18 @@ describe('the integrity verifier quarantines a finding, never a failure to look 
 /**
  * ADR-0026 §10, Phase A. The gate above relies on the nightly verifier's finding, so until it ran
  * a link was signed for an object somebody had overwritten (it served the other bytes) or deleted.
- * The gate now asks the store itself (one HEAD) before it signs. Every case here is judged before
+ * The gate now reads the object itself and compares its digest (R-9: whole bytes, not a HEAD)
+ * before it hands anything over. Every case here is judged before
  * any verifier pass: the row still says UNVERIFIED.
  */
 describe('the download gate asks the store, not only the verifier (Phase A)', () => {
   async function refused(fileObjectId: string, integrityStatus: string): Promise<void> {
     const before = await downloadIssuedCount(fileObjectId);
-    await expect(
-      inAcme(() =>
-        storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
-      ),
-    ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED', details: { integrityStatus } });
-    // Nothing signed, so nothing audited as issued.
+    await expect(inAcme(() => readSource(asId<FileObjectId>(fileObjectId)))).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+      details: { integrityStatus },
+    });
+    // Nothing handed over, so nothing audited as issued.
     expect(await downloadIssuedCount(fileObjectId)).toBe(before);
   }
 
@@ -808,10 +797,8 @@ describe('the download gate asks the store, not only the verifier (Phase A)', ()
     const bytes = aPdf('unverified-intact');
     const { fileObjectId } = await inAcme(() => upload(bytes));
     expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNVERIFIED');
-    const signed = await inAcme(() =>
-      storage.createInternalReadUrl(asId<FileObjectId>(fileObjectId), 'procedure.pdf'),
-    );
-    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(bytes));
+    const served = await inAcme(() => readSource(asId<FileObjectId>(fileObjectId)));
+    expect(sha256(served)).toBe(sha256(bytes));
   });
 
   it('refuses an object overwritten in place, before any verifier pass', async () => {
@@ -867,10 +854,8 @@ describe('the download gate asks the store, not only the verifier (Phase A)', ()
     );
     // A streamed (multipart) object carries no store SHA-256; its age against the row decides.
     expect((await inAcme(() => scoped.head(artefact.storageKey)))?.checksumSha256).toBeNull();
-    const signed = await inAcme(() => storage.createInternalReadUrl(artefact.id, 'manifest.json'));
-    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(
-      sha256(content),
-    );
+    const served = await inAcme(() => readSource(artefact.id));
+    expect(sha256(served)).toBe(sha256(content));
 
     // Recorded an hour ago, rewritten now: written after the product last vouched for it.
     await owner.fileObject.update({
@@ -948,10 +933,8 @@ describe('bytes reclaimed once can be stored again (D-12)', () => {
 
     // The renewed blob is a first-class blob: served, verified, deduplicated onto.
     await verify(again.fileObjectId);
-    const signed = await inAcme(() =>
-      storage.createInternalReadUrl(asId<FileObjectId>(again.fileObjectId), 'form.pdf'),
-    );
-    expect(sha256(Buffer.from(await (await fetch(signed.url)).arrayBuffer()))).toBe(sha256(bytes));
+    const served = await inAcme(() => readSource(asId<FileObjectId>(again.fileObjectId)));
+    expect(sha256(served)).toBe(sha256(bytes));
     expect(await inAcme(() => upload(bytes))).toMatchObject({
       fileObjectId: again.fileObjectId,
       deduplicated: true,
@@ -1096,5 +1079,157 @@ describe('bytes reclaimed once can be stored again (D-12)', () => {
     const live = await liveRowsFor(ACME, bytes);
     expect(live).toHaveLength(1);
     expect(live[0]?.storageKey).toBe(storageKey);
+  });
+});
+
+// --- R-9: the preview pipeline's own reads are verified ------------------------------------------
+
+/**
+ * R-9 of the Hetzner readiness report. Rendering, thumbnails and OCR used to sign a store URL and
+ * fetch it, checking nothing about what came back. `readVerifiedSource` reads the object whole and
+ * hands it over only when its size and digest equal the record: a finding quarantines, a failure to
+ * look changes nothing, and nothing is written anywhere a read could leave behind.
+ */
+describe('the preview pipeline’s source reads are verified (R-9)', () => {
+  const faulty = new FaultyStore();
+  const reader = new DefaultStorageService(
+    new PrismaFileObjectRepository(stamps),
+    new PrismaUploadSessionRepository(stamps),
+    faulty,
+    antivirus,
+    clock,
+    outbox,
+    config,
+    writer,
+  );
+  const read = (fileObjectId: string, maxBytes = 64 * 1024 * 1024) =>
+    inAcme(() =>
+      reader.readVerifiedSource(asId<FileObjectId>(fileObjectId), { purpose: 'OCR', maxBytes }),
+    );
+  const mismatchesFor = (fileObjectId: string) =>
+    owner.auditEvent.count({
+      where: { tenantId: ACME, action: 'INTEGRITY_MISMATCH', subjectId: fileObjectId },
+    });
+
+  afterEach(() => {
+    faulty.clear();
+  });
+
+  it('returns intact bytes and records the internal read with its purpose', async () => {
+    const bytes = aPdf('r9-intact');
+    const { fileObjectId } = await inAcme(() => upload(bytes));
+    const before = await downloadIssuedCount(fileObjectId);
+
+    expect(sha256(await read(fileObjectId))).toBe(sha256(bytes));
+    const issued = await owner.auditEvent.findMany({
+      where: { tenantId: ACME, action: 'FILE_DOWNLOAD_ISSUED', subjectId: fileObjectId },
+      orderBy: { sequence: 'desc' },
+      take: 1,
+    });
+    expect(await downloadIssuedCount(fileObjectId)).toBe(before + 1);
+    expect(issued[0]?.payload).toMatchObject({
+      after: { delivery: 'INTERNAL', purpose: 'OCR', checksumSha256: sha256(bytes) },
+    });
+  });
+
+  it('quarantines bytes rewritten in the store before the verifier saw them, and hands none over', async () => {
+    const bytes = aPdf('r9-tampered');
+    const { fileObjectId } = await inAcme(() => upload(bytes));
+    const { storageKey } = await rowOf(fileObjectId);
+    const other = Buffer.from(`${bytes.toString()}% rewritten for the renderer\n`);
+    await inAcme(() => scoped.put(storageKey, once(other), { contentType: 'application/pdf' }));
+    expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNVERIFIED');
+    const before = await downloadIssuedCount(fileObjectId);
+
+    await expect(read(fileObjectId)).rejects.toMatchObject({
+      code: 'CONTENT_NOT_SCANNED',
+      details: { integrityStatus: 'MISMATCH' },
+    });
+    expect((await rowOf(fileObjectId)).integrityStatus).toBe('MISMATCH');
+    expect(await mismatchesFor(fileObjectId)).toBe(1);
+    const finding = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: ACME, action: 'INTEGRITY_MISMATCH', subjectId: fileObjectId },
+    });
+    expect(finding.payload).toMatchObject({ after: { actualSha256: sha256(other) } });
+    expect(await downloadIssuedCount(fileObjectId)).toBe(before);
+    // Refused from then on without another read of the store.
+    await expect(read(fileObjectId)).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+  });
+
+  it('quarantines an object the store says is gone on two looks', async () => {
+    const { fileObjectId } = await inAcme(() => upload(aPdf('r9-gone')));
+    const { storageKey } = await rowOf(fileObjectId);
+    await inAcme(() => scoped.delete(storageKey));
+
+    await expect(read(fileObjectId)).rejects.toMatchObject({
+      details: { integrityStatus: 'UNREADABLE' },
+    });
+    expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNREADABLE');
+  });
+
+  it.each([
+    ['a store error (HTTP 503)', () => new StorageUnavailableError('read answered 503.')],
+    ['a timeout', () => new DOMException('The operation timed out.', 'TimeoutError')],
+    ['an unreachable store', () => new TypeError('fetch failed')],
+  ])(
+    'treats %s as unavailable — retryable, nothing quarantined, nothing recorded',
+    async (_, fault) => {
+      const bytes = aPdf(`r9-fault-${uuidv7()}`);
+      const { fileObjectId } = await inAcme(() => upload(bytes));
+      const { storageKey } = await rowOf(fileObjectId);
+      const before = await downloadIssuedCount(fileObjectId);
+      faulty.readFaults.set(storageKey, fault);
+
+      await expect(read(fileObjectId)).rejects.toMatchObject({ code: 'DEPENDENCY_UNAVAILABLE' });
+      const row = await rowOf(fileObjectId);
+      expect(row.integrityStatus).toBe('UNVERIFIED');
+      expect(await mismatchesFor(fileObjectId)).toBe(0);
+      expect(await downloadIssuedCount(fileObjectId)).toBe(before);
+
+      // The store recovers; the same read succeeds.
+      faulty.clear();
+      expect(sha256(await read(fileObjectId))).toBe(sha256(bytes));
+    },
+  );
+
+  it('does not take an object the read missed but the HEAD still sees for a missing one', async () => {
+    const { fileObjectId } = await inAcme(() => upload(aPdf('r9-flicker')));
+    const { storageKey } = await rowOf(fileObjectId);
+    faulty.absentOnRead.add(storageKey);
+
+    await expect(read(fileObjectId)).rejects.toMatchObject({ code: 'DEPENDENCY_UNAVAILABLE' });
+    expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNVERIFIED');
+  });
+
+  it('refuses a source over the caller’s ceiling without reading it', async () => {
+    const bytes = aPdf('r9-large');
+    const { fileObjectId } = await inAcme(() => upload(bytes));
+    const { storageKey } = await rowOf(fileObjectId);
+    // Any read would fail loudly; the refusal must come first.
+    faulty.readFaults.set(storageKey, () => new Error('the store was read'));
+
+    await expect(read(fileObjectId, bytes.length - 1)).rejects.toMatchObject({
+      code: 'UNSUPPORTED_CONTENT',
+    });
+    expect((await rowOf(fileObjectId)).integrityStatus).toBe('UNVERIFIED');
+  });
+
+  it('still refuses content the scanner never cleared, and another tenant’s blob', async () => {
+    scannerMode = 'NONE';
+    try {
+      const { fileObjectId } = await inAcme(() => upload(aPdf('r9-unscanned')));
+      await expect(read(fileObjectId)).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+    } finally {
+      scannerMode = 'CLEAN';
+    }
+    const { fileObjectId } = await inAcme(() => upload(aPdf('r9-acme-only')));
+    await expect(
+      inOther(() =>
+        reader.readVerifiedSource(asId<FileObjectId>(fileObjectId), {
+          purpose: 'RENDER',
+          maxBytes: 1024 * 1024,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });

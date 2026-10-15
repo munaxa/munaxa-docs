@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
@@ -201,13 +203,17 @@ export class PreviewQueryService {
     }
     // The raw port rather than the audited service: reading derived text back to serve search
     // and comparison is the pipeline consuming its own output, not bytes leaving to a person —
-    // the audited fact is the issuance of the preview itself, recorded by the caller.
-    const signed = await this.storagePort.createDownloadUrl(file.storageKey, {
-      expiresInSeconds: 60,
-      inline: true,
-    });
-    const response = await fetch(signed.url);
-    return response.ok ? await response.text() : '';
+    // the audited fact is the issuance of the preview itself, recorded by the caller. Read
+    // directly rather than through a signed URL, and checked against the record (R-9): text
+    // whose bytes are not the ones recorded is not the document's text.
+    const bytes = await this.storagePort.read(file.storageKey);
+    if (
+      bytes === null ||
+      createHash('sha256').update(bytes).digest('hex') !== file.checksumSha256
+    ) {
+      return '';
+    }
+    return bytes.toString('utf8');
   }
 
   private streamBase(): string {

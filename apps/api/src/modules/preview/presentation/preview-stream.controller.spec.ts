@@ -24,10 +24,6 @@ const NOW = new Date('2026-10-14T12:00:00Z');
 const recorded = Buffer.from('%PDF-1.7\n% the rendition that was recorded\n');
 
 function controllerServing(served: Buffer, errors: string[]) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(() => Promise.resolve(new Response(new Uint8Array(served), { status: 200 }))),
-  );
   const file = {
     id: 'file-1',
     storageKey: 'derived/ab/cd/artefact',
@@ -41,10 +37,8 @@ function controllerServing(served: Buffer, errors: string[]) {
       isReachable: () => Promise.resolve(true),
       get: () => Promise.resolve(file),
     } as unknown as StorageService,
-    {
-      createDownloadUrl: () =>
-        Promise.resolve({ url: 'https://store.test/artefact', expiresAt: NOW }),
-    } as unknown as StoragePort,
+    // Read on the port, never through a signed URL (R-9).
+    { read: () => Promise.resolve(served) } as unknown as StoragePort,
     {
       error: (message: string) => errors.push(message),
       warn: () => undefined,

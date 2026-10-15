@@ -8,7 +8,6 @@ import {
   type RevisionId,
   ScanStatus,
   asId,
-  formatFor,
   queueDefinition,
 } from '@edms/domain';
 
@@ -90,7 +89,16 @@ export class PreviewOcrService {
       return;
     }
 
-    const bytes = await this.fetchSource(fileObjectId, source.mimeType);
+    if (source.sizeBytes > this.config.preview.maxSourceBytes) {
+      // Over the render ceiling, so it has no preview to add text to either; reading it whole
+      // would be the one unbounded read in the pipeline.
+      this.logger.info('OCR skipped: the source is over the render ceiling', {
+        revisionId,
+        sizeBytes: source.sizeBytes,
+      });
+      return;
+    }
+    const bytes = await this.fetchSource(fileObjectId);
     const result = readable
       ? await this.ocr.extract({
           bytes,
@@ -230,15 +238,14 @@ export class PreviewOcrService {
     };
   }
 
-  private async fetchSource(fileObjectId: FileObjectId, mimeType: string): Promise<Buffer> {
-    const extension = formatFor(mimeType)?.extensions[0] ?? '';
-    const signed = await this.storage.createInternalReadUrl(fileObjectId, `source${extension}`, {
-      inline: true,
+  /**
+   * The source bytes, verified against their record before anything reads text off them (R-9),
+   * and bounded by the render ceiling, which a source must already be under to have a preview.
+   */
+  private fetchSource(fileObjectId: FileObjectId): Promise<Buffer> {
+    return this.storage.readVerifiedSource(fileObjectId, {
+      purpose: 'OCR',
+      maxBytes: this.config.preview.maxSourceBytes,
     });
-    const response = await fetch(signed.url);
-    if (!response.ok) {
-      throw new Error(`The source blob could not be fetched (${String(response.status)}).`);
-    }
-    return Buffer.from(await response.arrayBuffer());
   }
 }

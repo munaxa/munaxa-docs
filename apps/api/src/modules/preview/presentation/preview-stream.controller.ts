@@ -113,7 +113,7 @@ export class PreviewStreamController {
     response.status(200).end(bytes);
   }
 
-  /** The artefact's bytes, through the same presigned path every other read takes. */
+  /** The artefact's bytes, read directly from the store and checked against the record. */
   private async fetchArtifact(grant: PreviewStreamGrant): Promise<Buffer | null> {
     const id = asId<FileObjectId>(grant.fileObjectId);
     // The download gate's predicate, asked again because this door is public: a grant is minted
@@ -124,15 +124,12 @@ export class PreviewStreamController {
     if (file === null) {
       return null;
     }
-    const signed = await this.storagePort.createDownloadUrl(file.storageKey, {
-      expiresInSeconds: 60,
-      inline: true,
-    });
-    const fetched = await fetch(signed.url);
-    if (!fetched.ok) {
+    // Read on the port rather than through a signed URL the API would then fetch from itself
+    // (R-9): no store URL exists for it, and a store error is the same 404 as before.
+    const bytes = await this.storagePort.read(file.storageKey);
+    if (bytes === null) {
       return null;
     }
-    const bytes = Buffer.from(await fetched.arrayBuffer());
     // The bytes are already here, so checking them costs a hash and no memory (ADR-0026 §10,
     // Phase A): an artefact whose stored bytes are not the ones recorded is not served.
     if (createHash('sha256').update(bytes).digest('hex') !== file.checksumSha256) {

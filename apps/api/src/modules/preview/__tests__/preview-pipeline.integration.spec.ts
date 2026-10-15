@@ -617,6 +617,51 @@ describe('the antivirus gate', () => {
   });
 });
 
+/**
+ * R-9 of the Hetzner readiness report: the renderer used to fetch its source through a signed URL
+ * and render whatever came back. A source rewritten in the store is now caught by the read itself.
+ */
+describe('a source altered in the store', () => {
+  it('is not rendered: the source is quarantined and the render fails terminally', async () => {
+    const created = await createDocument(
+      await realPdf(['The original.']),
+      'altered.pdf',
+      'application/pdf',
+    );
+    const { storageKey } = await owner.fileObject.findUniqueOrThrow({
+      where: { id: created.fileObjectId },
+      select: { storageKey: true },
+    });
+    const replacement = await realPdf(['Somebody else’s words.']);
+    await as(() =>
+      library.storagePort.put(
+        storageKey as never,
+        (async function* () {
+          await Promise.resolve();
+          yield replacement;
+        })(),
+        { contentType: 'application/pdf' },
+      ),
+    );
+
+    await render(created.revisionId, created.fileObjectId);
+
+    const row = await owner.previewRender.findUniqueOrThrow({
+      where: { revisionId: created.revisionId },
+    });
+    expect(row.state).toBe('FAILED');
+    expect(row.reason).toContain('integrity');
+    expect(await owner.previewArtifact.count({ where: { revisionId: created.revisionId } })).toBe(
+      0,
+    );
+    const source = await owner.fileObject.findUniqueOrThrow({
+      where: { id: created.fileObjectId },
+      select: { integrityStatus: true },
+    });
+    expect(source.integrityStatus).toBe('MISMATCH');
+  });
+});
+
 describe('an unsupported format', () => {
   it('is a terminal, honest answer — no renderer, no artefacts, the reason recorded', async () => {
     const dwg = Buffer.concat([Buffer.from('AC1032', 'ascii'), Buffer.alloc(64, 0x20)]);
@@ -856,7 +901,7 @@ describe('two preview workers meeting on one revision', () => {
     /*
      * The seam: the real storage service, wrapped for one caller, holding its first source fetch.
      *
-     * The park is on `createInternalReadUrl` rather than on anything inside the persistence
+     * The park is on `readVerifiedSource` rather than on anything inside the persistence
      * transaction, and that placement is the whole of what makes this test about production.
      * `ensureRendered` reads and claims in one transaction, renders with no transaction open, then
      * opens a second to persist. Parking inside the second holds a transaction past Prisma's
@@ -874,16 +919,16 @@ describe('two preview workers meeting on one revision', () => {
     let parkedOnce = false;
     const held = new Proxy(library.storage, {
       get(target, property, receiver) {
-        if (property === 'createInternalReadUrl') {
+        if (property === 'readVerifiedSource') {
           return async (...args: readonly unknown[]) => {
             if (!parkedOnce) {
               parkedOnce = true;
               reached();
               await parked;
             }
-            return (
-              target.createInternalReadUrl as (...rest: readonly unknown[]) => Promise<unknown>
-            )(...args);
+            return (target.readVerifiedSource as (...rest: readonly unknown[]) => Promise<unknown>)(
+              ...args,
+            );
           };
         }
         const value = Reflect.get(target, property, receiver) as unknown;
@@ -973,7 +1018,7 @@ describe('two OCR workers meeting on one revision', () => {
     /*
      * The seam: the real storage service, wrapped for one caller, holding its first source fetch.
      *
-     * `createInternalReadUrl` is reached from `fetchSource`, which sits between the guard transaction
+     * `readVerifiedSource` is reached from `fetchSource`, which sits between the guard transaction
      * and the persistence transaction — so the park holds no transaction open. Parking inside the
      * persistence transaction instead would hold one past Prisma's five-second interactive budget
      * and the worker would die of the seam rather than of the race, which is the trap Slice 92
@@ -990,16 +1035,16 @@ describe('two OCR workers meeting on one revision', () => {
     let parkedOnce = false;
     const held = new Proxy(library.storage, {
       get(target, property, receiver) {
-        if (property === 'createInternalReadUrl') {
+        if (property === 'readVerifiedSource') {
           return async (...args: readonly unknown[]) => {
             if (!parkedOnce) {
               parkedOnce = true;
               reached();
               await parked;
             }
-            return (
-              target.createInternalReadUrl as (...rest: readonly unknown[]) => Promise<unknown>
-            )(...args);
+            return (target.readVerifiedSource as (...rest: readonly unknown[]) => Promise<unknown>)(
+              ...args,
+            );
           };
         }
         const value = Reflect.get(target, property, receiver) as unknown;

@@ -213,22 +213,23 @@ export interface StorageService {
   abandonUploadSession(id: UploadSessionId): Promise<void>;
 
   /**
-   * A short-lived store URL **for the API's own reads** — the preview pipeline fetching a source
-   * to render, rasterise or OCR. Never handed to a person: every download a person receives is a
-   * verified link (`createVerifiedDownloadLink`), and `signed-url-callers.spec.ts` fails the build
-   * if anything outside the pipeline calls this. Same refusals (scan, integrity, HEAD) and the
-   * same `FILE_DOWNLOAD_ISSUED` row as before.
+   * A source's bytes for the API's own processing (rendering, thumbnails, OCR), read whole and
+   * returned only when their size and SHA-256 equal the record. Never handed to a person.
+   *
+   * Refuses as a download is refused (scan, integrity) and above `maxBytes`. A mismatch or an
+   * absent object quarantines and throws `ContentQuarantinedError`; a store failure throws
+   * `StorageUnavailableError` and changes nothing. Audited as `FILE_DOWNLOAD_ISSUED` with
+   * `delivery: 'INTERNAL'`.
    */
-  createInternalReadUrl(
+  readVerifiedSource(
     fileObjectId: FileObjectId,
-    filename: string,
-    options?: { inline?: boolean },
-  ): Promise<{ url: string; expiresAt: Date }>;
+    options: { readonly purpose: 'RENDER' | 'THUMBNAIL' | 'OCR'; readonly maxBytes: number },
+  ): Promise<Buffer>;
 
   /**
    * A verified download link — ADR-0026 §10, the download-integrity proposal §3.1.
    *
-   * The same refusals as `createInternalReadUrl` (scan, integrity, the store's HEAD), plus the size
+   * The same refusals as `readVerifiedSource` (scan, integrity), plus the store's HEAD and the size
    * the verified path accepts, and the same `FILE_DOWNLOAD_ISSUED` event. The link names the
    * person in the current context, their permission version, and the document (and revision) it
    * is for, so its redemption can ask every question again. Nothing is signed by the store: the
