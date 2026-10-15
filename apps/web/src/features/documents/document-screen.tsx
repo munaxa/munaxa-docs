@@ -421,7 +421,13 @@ export function DocumentScreen({
       {file !== null && !file.reachable && (
         // The document exists and its content is deliberately unreachable. Saying which of the two
         // is the case is the difference between a system that looks broken and one that is careful.
-        <Alert tone="warning">{translate(`documents.scan.${file.scanStatus}`)}</Alert>
+        // A file that passed its scan and is still unreachable is quarantined: its bytes failed an
+        // integrity check, and the scan's sentence ("has passed the malware check") would be wrong.
+        <Alert tone="warning">
+          {file.scanStatus === 'CLEAN'
+            ? translate('errorReason.INTEGRITY_FAILED')
+            : translate(`documents.scan.${file.scanStatus}`)}
+        </Alert>
       )}
 
       {/*

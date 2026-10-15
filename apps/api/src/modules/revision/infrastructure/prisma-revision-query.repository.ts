@@ -8,6 +8,7 @@ import {
   type ScanStatusKey,
   asId,
   calendarDay,
+  type IntegrityStatusKey,
 } from '@edms/domain';
 
 import { requireTransaction } from '../../../core/prisma/unit-of-work';
@@ -95,6 +96,7 @@ interface JoinedRevision {
     sizeBytes: bigint;
     checksumSha256: string;
     scanStatus: string;
+    integrityStatus: string;
   };
   restoredFrom: { label: string } | null;
 }
@@ -124,6 +126,7 @@ function toHistoryRow(row: JoinedRevision, names: ReadonlyMap<string, string>): 
       sizeBytes: Number(row.fileObject.sizeBytes),
       checksumSha256: row.fileObject.checksumSha256,
       scanStatus: row.fileObject.scanStatus as ScanStatusKey,
+      integrityStatus: row.fileObject.integrityStatus as IntegrityStatusKey,
     },
   };
 }

@@ -1,4 +1,10 @@
-import type { DocumentId, RevisionId, RevisionStatusKey, ScanStatusKey } from '@edms/domain';
+import type {
+  DocumentId,
+  IntegrityStatusKey,
+  RevisionId,
+  RevisionStatusKey,
+  ScanStatusKey,
+} from '@edms/domain';
 
 /**
  * Revision's read side: the history and the comparison.
@@ -38,6 +44,7 @@ export interface RevisionFileRow {
   readonly sizeBytes: number;
   readonly checksumSha256: string;
   readonly scanStatus: ScanStatusKey;
+  readonly integrityStatus: IntegrityStatusKey;
 }
 
 /** One field in a published revision's metadata snapshot, as publication wrote it. */

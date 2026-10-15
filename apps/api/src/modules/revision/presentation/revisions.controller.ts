@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 
 import type { RevisionCompare, RevisionHistory, RevisionHistoryEntry } from '@edms/contracts';
-import { Permission, ScopeType } from '@edms/domain';
+import { Permission, ScopeType, isReachableFile } from '@edms/domain';
 
 import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { ValidationError } from '../../../core/errors/application-errors';
@@ -133,7 +133,8 @@ function toFile(row: RevisionHistoryRow) {
     sizeBytes: row.file.sizeBytes,
     checksumSha256: row.file.checksumSha256,
     scanStatus: row.file.scanStatus,
-    reachable: row.file.scanStatus === 'CLEAN',
+    integrityStatus: row.file.integrityStatus,
+    reachable: isReachableFile(row.file),
     thumbnailUrl: null,
   };
 }

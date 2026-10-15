@@ -5,7 +5,7 @@ import { ALL_DOCUMENT_STATUSES, type DocumentStatusKey } from '@edms/domain';
 import { isoDateTimeSchema, uuidSchema } from '../common/identifiers';
 import { adminListQuerySchema, queryFlagSchema } from '../common/query';
 import { administered, descriptionSchema, nameSchema } from '../admin/record';
-import { scanStatusSchema } from './upload';
+import { integrityStatusSchema, scanStatusSchema } from './upload';
 
 /**
  * Documents — the controlled record, its business metadata, and where it sits.
@@ -129,7 +129,16 @@ export const documentFileSchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
   checksumSha256: z.string(),
   scanStatus: scanStatusSchema,
-  /** False for anything but `CLEAN`: the content exists and cannot be opened. */
+  /**
+   * What the integrity checks last found. `MISMATCH` and `UNREADABLE` are quarantined: the bytes
+   * are not (or no longer) the recorded ones, and nothing serves them until an administrator
+   * restores the file.
+   */
+  integrityStatus: integrityStatusSchema,
+  /**
+   * False unless the scan is `CLEAN` *and* the integrity status is servable — the same rule the
+   * download gate enforces, so a screen never offers a download the API will refuse.
+   */
   reachable: z.boolean(),
   /** Present once an upload-time thumbnail exists. Short-lived and signed. */
   thumbnailUrl: z.string().nullable(),

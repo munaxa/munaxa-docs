@@ -54,6 +54,18 @@ export function isServableIntegrity(status: IntegrityStatusKey): boolean {
   return status === IntegrityStatus.UNVERIFIED || status === IntegrityStatus.VERIFIED;
 }
 
+/**
+ * Whether a document's file may be opened: scanned `CLEAN` and not quarantined. The download gate
+ * refuses anything else, so this is what every screen is told before it offers a download (a
+ * person's upload always needs `CLEAN`; the `SKIPPED` of a generated file never reaches a document).
+ */
+export function isReachableFile(file: {
+  readonly scanStatus: ScanStatusKey;
+  readonly integrityStatus: IntegrityStatusKey;
+}): boolean {
+  return file.scanStatus === ScanStatus.CLEAN && isServableIntegrity(file.integrityStatus);
+}
+
 export const UploadSessionState = {
   OPEN: 'OPEN',
   COMPLETED: 'COMPLETED',

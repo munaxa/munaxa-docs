@@ -32,7 +32,14 @@ import {
   moveDocumentSchema,
   updateDocumentSchema,
 } from '@edms/contracts';
-import { type DocumentId, Permission, type UserId, asId, ScopeType } from '@edms/domain';
+import {
+  type DocumentId,
+  Permission,
+  type UserId,
+  asId,
+  isReachableFile,
+  ScopeType,
+} from '@edms/domain';
 import type { Page } from '@edms/utils';
 
 import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
@@ -353,10 +360,11 @@ function toFile(row: DocumentRow): DocumentSummary['file'] {
     sizeBytes: revision.file.sizeBytes,
     checksumSha256: revision.file.checksumSha256,
     scanStatus: revision.file.scanStatus,
-    // Stated rather than left for the client to derive from the status. "Not CLEAN means
-    // unreachable" is a rule the API enforces, and a client re-deriving it is a second copy that
-    // can disagree.
-    reachable: revision.file.scanStatus === 'CLEAN',
+    integrityStatus: revision.file.integrityStatus,
+    // Stated rather than left for the client to derive from the statuses. "Not CLEAN, or
+    // quarantined, means unreachable" is a rule the API enforces, and a client re-deriving it is a
+    // second copy that can disagree.
+    reachable: isReachableFile(revision.file),
     // The URL is not signed here: a list of two hundred rows would mean two hundred audited URL
     // issuances for pictures nobody may look at. The identifier is enough for a client to ask.
     thumbnailUrl: revision.file.thumbnailFileObjectId,
@@ -427,7 +435,8 @@ function toRevision(revision: NonNullable<DocumentRow['latestRevision']>) {
       sizeBytes: revision.file.sizeBytes,
       checksumSha256: revision.file.checksumSha256,
       scanStatus: revision.file.scanStatus,
-      reachable: revision.file.scanStatus === 'CLEAN',
+      integrityStatus: revision.file.integrityStatus,
+      reachable: isReachableFile(revision.file),
       thumbnailUrl: revision.file.thumbnailFileObjectId,
     },
   };

@@ -82,6 +82,7 @@ export function document(overrides: Partial<Document> = {}): Document {
       sizeBytes: 1024,
       checksumSha256: 'a'.repeat(64),
       scanStatus: 'CLEAN' as const,
+      integrityStatus: 'UNVERIFIED' as const,
       reachable: true,
       thumbnailUrl: null,
     },

@@ -89,6 +89,9 @@ export const uploadTargetSchema = z.object({
 
 export const scanStatusSchema = z.enum(['PENDING', 'CLEAN', 'INFECTED', 'FAILED', 'SKIPPED']);
 
+/** `IntegrityStatus` (`@edms/domain`): `MISMATCH` and `UNREADABLE` are quarantined. */
+export const integrityStatusSchema = z.enum(['UNVERIFIED', 'VERIFIED', 'MISMATCH', 'UNREADABLE']);
+
 export const completedUploadSchema = z.object({
   fileObjectId: uuidSchema,
   checksumSha256: z.string(),

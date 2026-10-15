@@ -14,6 +14,7 @@ import type {
   RevisionStatusKey,
   ScanStatusKey,
   UserId,
+  IntegrityStatusKey,
 } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
@@ -669,6 +670,7 @@ interface JoinedRevision {
     sizeBytes: bigint;
     checksumSha256: string;
     scanStatus: string;
+    integrityStatus: string;
   };
   previews: readonly { fileObjectId: string }[];
 }
@@ -713,6 +715,7 @@ function toRevisionView(revision: JoinedRevision) {
       sizeBytes: Number(revision.fileObject.sizeBytes),
       checksumSha256: revision.fileObject.checksumSha256,
       scanStatus: revision.fileObject.scanStatus as ScanStatusKey,
+      integrityStatus: revision.fileObject.integrityStatus as IntegrityStatusKey,
       thumbnailFileObjectId: revision.previews[0]?.fileObjectId ?? null,
     },
   };

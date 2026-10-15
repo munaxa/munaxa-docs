@@ -11,6 +11,7 @@ import type {
   RevisionStatusKey,
   ScanStatusKey,
   UserId,
+  IntegrityStatusKey,
 } from '@edms/domain';
 import type { Page, PageRequest } from '@edms/utils';
 
@@ -120,6 +121,7 @@ export interface FileView {
   readonly sizeBytes: number;
   readonly checksumSha256: string;
   readonly scanStatus: ScanStatusKey;
+  readonly integrityStatus: IntegrityStatusKey;
   readonly thumbnailFileObjectId: string | null;
 }
 
