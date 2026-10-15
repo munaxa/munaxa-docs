@@ -191,9 +191,12 @@ step "Phase B 8 — the Arabic interface (B-9) and the exports (B-10)"
 pb_browser arabic exports || pb_fail "the Arabic and export cases did not complete"
 pb_expect arabic-download 'f.downloadEvent === true && f.sameBytes === true && f.dir === "rtl"' "an Arabic, right-to-left interface downloads the same bytes"
 pb_expect arabic-integrity 'f.downloadEvent === false && f.savedBytes === 0' "a quarantined file, in Arabic: no file saved"
-pb_expect arabic-integrity '/سلامة/.test(f.message ?? "")' \
-  "a quarantined file, in Arabic: the person is told it failed its integrity check"
-pb_finding "a quarantined file's page, before any click: warning shown $(pb_q "JSON.stringify((R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).warnedBeforeClick ?? null)"), Download button enabled $(pb_q "(R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).downloadButtonEnabled ?? null"); message on click: $(pb_q "(R.filter((r) => r.case === 'arabic-integrity').pop() ?? {}).message ?? null")"
+pb_expect arabic-integrity '/سلامة/.test(f.warnedBeforeClick ?? "")' \
+  "a quarantined file, in Arabic: the page says it failed its integrity check before anyone clicks"
+pb_expect arabic-integrity 'f.downloadButtonEnabled === false' \
+  "a quarantined file, in Arabic: no enabled Download button"
+pb_expect arabic-integrity 'f.clicked === false || /سلامة/.test(f.message ?? "")' \
+  "a quarantined file, in Arabic: a refusal, if one is reached, names the integrity check"
 pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true && !/^\/api\/v1\/downloads/.test(f.link ?? "")' \
   "a report export saves exactly what the store served, through a direct signed store URL (NOT the verified path; see hetzner-export-download-gap.md)"
 pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true && !/^\/api\/v1\/downloads/.test(f.link ?? "")' \

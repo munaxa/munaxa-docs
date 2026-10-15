@@ -845,20 +845,29 @@ const cases = {
         expectedDigest: documents.text.digest,
       })),
     });
-    // The swapped file is quarantined by step 7. Does the page say so before anyone clicks, and
-    // what does the refusal say in Arabic when they do?
+    // The swapped file is quarantined by step 7. Does the page say so before anyone clicks, and is
+    // the Download button withheld? The platform's Alert has no role unless it is live, so the
+    // warning is found by its words ("سلامة": integrity), not by a role.
     await documentPage(page, documents.swapped.id);
-    const warnedBeforeClick =
-      (await page.locator('[role=alert]').allTextContents()).join(' | ') || null;
+    const warnedBeforeClick = await page
+      .locator('main')
+      .getByText(/سلامة/)
+      .first()
+      .textContent({ timeout: 5_000 })
+      .catch(() => null);
     const downloadButtonEnabled = await page
       .getByRole('button', { name: 'تنزيل', exact: true })
       .first()
       .isEnabled()
       .catch(() => null);
+    // Clicked only when offered: a disabled button is the outcome being tested, not an obstacle.
     result('arabic-integrity', {
       warnedBeforeClick,
       downloadButtonEnabled,
-      ...(await attempt(page, () => headerDownload(page, 'تنزيل'), { timeoutMs: 15_000 })),
+      clicked: downloadButtonEnabled === true,
+      ...(downloadButtonEnabled === true
+        ? await attempt(page, () => headerDownload(page, 'تنزيل'), { timeoutMs: 15_000 })
+        : { downloadEvent: false, savedBytes: 0, message: null }),
     });
     await closeContext(context);
   },
