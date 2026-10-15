@@ -148,8 +148,8 @@ importers:
         specifier: ^1.1.1
         version: 1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/platform':
-        specifier: ^1.6.1
-        version: 1.6.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^1.7.0
+        version: 1.7.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@munaxa/theme':
         specifier: ^1.1.1
         version: 1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -1017,8 +1017,8 @@ packages:
       react-dom:
         optional: true
 
-  '@munaxa/platform@1.6.1':
-    resolution: {integrity: sha512-2Ls8XgoYW61uCzXoxulOGrS1+4ZwzUxjD+AnuA3Atu7OLBpcutv1phde5WpbhJqoEDYeNzj2vJKj/uDbgGqphQ==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.6.1/1ba432faad1eb061c591696b39789c4bcc1d4fb6}
+  '@munaxa/platform@1.7.0':
+    resolution: {integrity: sha512-qfZTUaBSCM4lLzMVkUea0PLWDB4JeKuG97J2FGr0JT6UPQrGPTP8qBWTSiNf3Y1AURlArBdXyykXSwa5FrzuFg==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.7.0/e90bee2b34419265d0b656025b92f016cb7d7bb2}
     hasBin: true
     peerDependencies:
       react: ^19.0.0
@@ -4431,7 +4431,7 @@ snapshots:
 
   '@munaxa/icons@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.6.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.7.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -4439,7 +4439,7 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
-  '@munaxa/platform@1.6.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@munaxa/platform@1.7.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@dnd-kit/core': 6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@dnd-kit/modifiers': 9.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
@@ -4468,7 +4468,7 @@ snapshots:
 
   '@munaxa/theme@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.6.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.7.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -4478,7 +4478,7 @@ snapshots:
 
   '@munaxa/tokens@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.6.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.7.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
@@ -4488,7 +4488,7 @@ snapshots:
 
   '@munaxa/ui@1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@munaxa/platform': 1.6.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@munaxa/platform': 1.7.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     optionalDependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
