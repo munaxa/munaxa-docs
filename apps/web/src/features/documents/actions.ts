@@ -1,12 +1,15 @@
 'use server';
 
 import {
+  type AuditEntry,
+  type AuditPage,
   type CategoryOption,
   type CompletedUpload,
   type ConfidentialityOption,
   type DepartmentOption,
   type Document,
   type DocumentTypeOption,
+  type DocumentWorkflow,
   type DuplicateReport,
   type Folder,
   type PersonOption,
@@ -23,7 +26,7 @@ import {
 import { MetadataDataType } from '@edms/domain';
 
 import { type ActionResult, succeeded, toActionResult } from '../../lib/admin/action-result';
-import { adminGet, adminList, adminOptions, adminWrite } from '../../lib/admin/api';
+import { adminGet, adminList, adminOptions, adminRead, adminWrite } from '../../lib/admin/api';
 import { validated } from '../../lib/admin/validated';
 import type { DocumentEditOptions, DocumentMoveOptions } from './options';
 
@@ -311,4 +314,35 @@ export async function requestDownload(
     path: `/documents/${id}/content?inline=${String(inline)}`,
     method: 'POST',
   });
+}
+
+/**
+ * What the library's detail panel shows beside the row it already has — Docs v2.
+ *
+ * **Deliberately not `GET /documents/:id`.** That read records the view: it writes the reader's
+ * "recently opened" entry and, for confidentiality levels that demand it, an audit-on-read event
+ * (see the record page). Clicking down a column of rows to compare them is not opening twelve
+ * documents, and a panel that called it would fill the recents list and the audit trail with
+ * documents nobody opened. Everything the panel can show about the record itself is on the list
+ * row already; this fetches only the two things the row does not carry, and both are plain reads:
+ *
+ * - the approval record, from the same endpoint the record page's approval panel uses;
+ * - the newest entries of the document's own timeline, behind `document:history:view` like the
+ *   record page's timeline — `null` when the reader does not hold it, which the panel shows as an
+ *   absent section rather than as "no activity", because the two are not the same claim.
+ *
+ * Each half fails on its own. A document with no readable workflow still shows its activity.
+ */
+export async function loadDocumentGlance(id: string): Promise<{
+  readonly workflow: DocumentWorkflow | null;
+  readonly activity: readonly AuditEntry[] | null;
+}> {
+  const [workflow, activity] = await Promise.all([
+    adminRead<DocumentWorkflow>(`/documents/${id}/workflow`),
+    adminRead<AuditPage>(`/audit/timeline/DOCUMENT/${id}?page=1&pageSize=3`),
+  ]);
+  return {
+    workflow: workflow.ok ? workflow.value : null,
+    activity: activity.ok ? activity.value.data : null,
+  };
 }

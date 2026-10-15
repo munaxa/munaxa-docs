@@ -7,7 +7,13 @@
  * screens themselves are not, and none of them lives here.
  */
 export { AdminForbidden, AdminScreen, Prerequisite, RateLimited } from './screen';
-export { ResourceList, StateBadges, type RowAction } from './resource-list';
+export {
+  BulkBar,
+  ResourceList,
+  StateBadges,
+  type BulkAction,
+  type RowAction,
+} from './resource-list';
 export { FormDialog } from './form-dialog';
 export { FormSection } from './form-section';
 export { useAdminColumns } from './columns';

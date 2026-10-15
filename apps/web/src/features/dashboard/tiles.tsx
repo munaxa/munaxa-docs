@@ -47,6 +47,7 @@ export function CountStat({
   href,
   tone,
   icon: TileIcon,
+  variant = 'feature',
 }: {
   readonly labelKey: MessageKey;
   readonly hintKey?: MessageKey | undefined;
@@ -63,6 +64,11 @@ export function CountStat({
    * by colour, which is the accessibility half of the same argument.
    */
   readonly icon?: Icon | undefined;
+  /**
+   * Docs v2: `feature` for the tiles that are a claim on the reader's time (the first row), and
+   * `compact` for the ones that describe what they hold. The platform's own variants.
+   */
+  readonly variant?: 'feature' | 'compact';
 }): ReactNode {
   const translate = useTranslate();
   const note = tileNote(tile.state, translate);
@@ -76,6 +82,7 @@ export function CountStat({
       hint={note ?? (hintKey === undefined ? undefined : translate(hintKey))}
       tone={tile.count === null ? 'muted' : (tone ?? 'default')}
       {...(TileIcon !== undefined && { icon: <TileIcon className="size-4" aria-hidden /> })}
+      variant={variant}
       className="h-full"
     />
   );

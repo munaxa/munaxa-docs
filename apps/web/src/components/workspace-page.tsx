@@ -46,6 +46,7 @@ export function WorkspacePage({
   actions,
   breadcrumb,
   gap = 6,
+  width,
   children,
 }: {
   readonly title: ReactNode;
@@ -53,12 +54,18 @@ export function WorkspacePage({
   readonly actions?: ReactNode;
   readonly breadcrumb?: readonly WorkspaceCrumb[];
   readonly gap?: 4 | 6;
+  /**
+   * The page measure. The default is the platform's `wide`; the library passes `full` (Docs v2),
+   * because its list and its docked detail panel share the row with a full-height folder rail and a
+   * centred cap would leave the panel stranded mid-screen on a wide display.
+   */
+  readonly width?: 'wide' | 'full';
   readonly children: ReactNode;
 }): ReactNode {
   const translate = useTranslate();
 
   return (
-    <Page gap={gap}>
+    <Page gap={gap} {...(width !== undefined && { width })}>
       <PageHeader
         title={title}
         {...(description !== undefined && { description })}

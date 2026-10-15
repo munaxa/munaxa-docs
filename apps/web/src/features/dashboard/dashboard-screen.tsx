@@ -177,6 +177,7 @@ export function DashboardScreen({
         <Grid cols={{ base: 2, md: 4, xl: 4 }} gap={3}>
           <CountStat
             labelKey="dashboard.user.drafts"
+            variant="compact"
             icon={PencilLine}
             hintKey="dashboard.user.draftsHint"
             tile={user.drafts}
@@ -184,6 +185,7 @@ export function DashboardScreen({
           />
           <CountStat
             labelKey="dashboard.user.checkedOut"
+            variant="compact"
             icon={Lock}
             hintKey="dashboard.user.checkedOutHint"
             tile={user.checkedOut}
@@ -191,12 +193,14 @@ export function DashboardScreen({
           />
           <CountStat
             labelKey="dashboard.user.favorites"
+            variant="compact"
             icon={Star}
             tile={user.favorites}
             href={'/documents?favorite=true'}
           />
           <CountStat
             labelKey="dashboard.user.unread"
+            variant="compact"
             icon={Bell}
             tile={user.unreadNotifications}
             href={'/notifications?unread=true'}
