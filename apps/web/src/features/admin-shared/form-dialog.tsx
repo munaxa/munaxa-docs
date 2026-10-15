@@ -22,6 +22,10 @@ import type { ActionResult } from '../../lib/admin/action-result';
  *
  * A failed submission keeps the dialogue open with the server's sentence above the fields. Closing
  * it would throw away what the administrator typed in order to show them an error about it.
+ *
+ * The panel is never taller than the window and scrolls inside itself. The platform's dialogue sets
+ * no height, and a long form (the upload dialogue is ~900px) otherwise left its submit button below
+ * a 1280×720 window with nothing able to scroll to it.
  */
 export function FormDialog({
   open,
@@ -69,6 +73,7 @@ export function FormDialog({
   return (
     <Dialog
       open
+      className="max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain"
       onClose={() => {
         if (!saving) {
           onClose();
