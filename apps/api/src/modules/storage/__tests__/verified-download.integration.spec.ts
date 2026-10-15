@@ -33,7 +33,7 @@ import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { realS3TenantStorage, realWriteStack } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
-import type { VerifiedDownload } from '../application/ports';
+import type { DownloadStaging, StagingFile, VerifiedDownload } from '../application/ports';
 import { DefaultStorageService } from '../application/storage.service';
 import { DefaultVerifiedDownloadDelivery } from '../application/verified-download.delivery';
 import { LocalDownloadStaging } from '../infrastructure/download-staging';
@@ -247,6 +247,7 @@ const storage = serviceWith(config);
 
 async function deliveryWith(
   download: Partial<AppConfig['download']> = {},
+  wrap: (staging: DownloadStaging) => DownloadStaging = (staging) => staging,
 ): Promise<DefaultVerifiedDownloadDelivery> {
   const local = configWith(download);
   const staging = new LocalDownloadStaging(local.download.stagingDir);
@@ -254,7 +255,7 @@ async function deliveryWith(
   return new DefaultVerifiedDownloadDelivery(
     serviceWith(local),
     faulty,
-    staging,
+    wrap(staging),
     local,
     logger,
     clock,
@@ -656,6 +657,99 @@ describe('a verified download refuses before it reads, where the answer is alrea
     expect(sent).toBeNull();
     expect(error).toMatchObject({ publicReason: { reason: 'DOWNLOAD_BUSY' } });
     expect(faulty.openReads).toBe(0);
+  });
+});
+
+/**
+ * The real staging, but the file system runs out of room once `room` bytes are staged — the way a
+ * disk shared with other downloads fills part-way (Hetzner Phase B, finding 2). `room` 0 fails the
+ * create itself.
+ */
+function fillingAfter(room: number, code = 'ENOSPC') {
+  const full = () =>
+    Object.assign(new Error(`${code}: no space left on device, write`), { code, errno: -28 });
+  return (inner: DownloadStaging): DownloadStaging => ({
+    freeBytes: () => inner.freeBytes(),
+    async create(): Promise<StagingFile> {
+      if (room === 0) {
+        throw full();
+      }
+      const file = await inner.create();
+      return {
+        get bytesWritten() {
+          return file.bytesWritten;
+        },
+        async write(chunk) {
+          if (file.bytesWritten + chunk.byteLength > room) {
+            throw full();
+          }
+          await file.write(chunk);
+        },
+        replay: () => file.replay(),
+        dispose: () => file.dispose(),
+      };
+    },
+  });
+}
+
+describe('a verified download answers a staging disk that fills as retryable, never as a fault', () => {
+  it('answers busy, sends nothing, keeps nothing and quarantines nothing when the disk fills part-way', async () => {
+    const { id } = await upload(aPdf('disk-fills', 3 * 1024 * 1024));
+
+    const { sent, error } = await deliver(await deliveryWith({}, fillingAfter(1024 * 1024)), id);
+
+    expect(sent).toBeNull();
+    expect(error).toMatchObject({
+      code: 'DEPENDENCY_UNAVAILABLE',
+      publicReason: { reason: 'DOWNLOAD_BUSY' },
+    });
+    expect(await integrityOf(id)).toBe('UNVERIFIED');
+    expect(await findings(id)).toEqual([0, 0]);
+    // afterEach: no staging file is left open.
+  });
+
+  it('answers busy when the staging file cannot even be created', async () => {
+    const { id } = await upload(aPdf('no-room-to-create'));
+
+    const { sent, error } = await deliver(await deliveryWith({}, fillingAfter(0)), id);
+
+    expect(sent).toBeNull();
+    expect(error).toMatchObject({ publicReason: { reason: 'DOWNLOAD_BUSY' } });
+    expect(await integrityOf(id)).toBe('UNVERIFIED');
+  });
+
+  it('treats an exhausted quota (EDQUOT) as the same retryable condition', async () => {
+    const { id } = await upload(aPdf('quota', 2 * 1024 * 1024));
+
+    const { error } = await deliver(await deliveryWith({}, fillingAfter(512 * 1024, 'EDQUOT')), id);
+
+    expect(error).toMatchObject({ publicReason: { reason: 'DOWNLOAD_BUSY' } });
+    expect(await integrityOf(id)).toBe('UNVERIFIED');
+  });
+
+  it('still serves the file once there is room again', async () => {
+    const bytes = aPdf('room-again', 2 * 1024 * 1024);
+    const { id } = await upload(bytes);
+    expect((await deliver(await deliveryWith({}, fillingAfter(1024)), id)).error).toMatchObject({
+      publicReason: { reason: 'DOWNLOAD_BUSY' },
+    });
+
+    const { sent, error } = await deliver(await deliveryWith(), id);
+
+    expect(error).toBeNull();
+    expect(sent?.equals(bytes)).toBe(true);
+  });
+
+  it('does not hide another staging failure as busy', async () => {
+    const { id } = await upload(aPdf('other-failure'));
+    const broken = (inner: DownloadStaging): DownloadStaging => ({
+      freeBytes: () => inner.freeBytes(),
+      create: () => Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' })),
+    });
+
+    const { error } = await deliver(await deliveryWith({}, broken), id);
+
+    expect(error).toMatchObject({ code: 'EACCES' });
   });
 });
 

@@ -48,6 +48,7 @@ import {
  * | One "no such object" the HEAD contradicts or cannot confirm | 503 | no |
  * | A store error, a timeout, a reset, a body shorter or longer than stated | 503 | no |
  * | No room (concurrency, staging bytes, free disk) within the wait | 503 + Retry-After | no |
+ * | The staging disk fills while the file is being staged (`ENOSPC`, `EDQUOT`) | 503 + Retry-After | no |
  *
  * Memory is a few staging records per download whatever the file's size; disk is the file's size,
  * for as long as it is being verified and sent, inside `DOWNLOAD_STAGING_MAX_BYTES`.
@@ -115,7 +116,7 @@ export class DefaultVerifiedDownloadDelivery implements VerifiedDownloadDelivery
     started: number,
   ): Promise<void> {
     // Staging first, so that nothing opened at the store is ever left without a reader to close it.
-    const staged = await this.staging.create();
+    const staged = await this.withStagingRoom(file, () => this.staging.create());
     try {
       const opened = await this.open(file, signal);
       if (opened.sizeBytes !== file.sizeBytes) {
@@ -130,7 +131,7 @@ export class DefaultVerifiedDownloadDelivery implements VerifiedDownloadDelivery
           throw new StorageUnavailableError('The download was abandoned.');
         }
         hash.update(chunk);
-        await staged.write(chunk);
+        await this.withStagingRoom(file, () => staged.write(chunk));
       }
       const actual = hash.digest('hex');
       if (staged.bytesWritten !== file.sizeBytes || actual !== file.checksumSha256) {
@@ -178,6 +179,29 @@ export class DefaultVerifiedDownloadDelivery implements VerifiedDownloadDelivery
     throw new ContentQuarantinedError(status);
   }
 
+  /**
+   * The reserve check runs once, before staging, and other downloads share the disk — so the disk
+   * can still fill while this one is being written (Hetzner Phase B: two 48 MiB downloads on a
+   * 64 MiB disk). That says nothing about the file and is over as soon as another download finishes:
+   * the same retryable "busy" as a refusal before staging, never a 500 and never a quarantine. The
+   * partial staging file is removed by `dispose`, as on every other path.
+   */
+  private async withStagingRoom<T>(file: FileObjectRecord, step: () => Promise<T>): Promise<T> {
+    try {
+      return await step();
+    } catch (error) {
+      if (!isOutOfSpace(error)) {
+        throw error;
+      }
+      this.logger.error('The download staging disk filled while verifying a download', {
+        fileObjectId: String(file.id),
+        neededBytes: file.sizeBytes,
+        code: (error as NodeJS.ErrnoException).code,
+      });
+      throw new DownloadBusyError();
+    }
+  }
+
   private async refuseWithoutDiskRoom(file: FileObjectRecord): Promise<void> {
     const free = await this.staging.freeBytes();
     if (free - file.sizeBytes < this.config.download.minFreeBytes) {
@@ -190,4 +214,10 @@ export class DefaultVerifiedDownloadDelivery implements VerifiedDownloadDelivery
       throw new DownloadBusyError();
     }
   }
+}
+
+/** The file system has no room (or no quota) left: a capacity condition, not a fault in the file. */
+function isOutOfSpace(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOSPC' || code === 'EDQUOT';
 }
