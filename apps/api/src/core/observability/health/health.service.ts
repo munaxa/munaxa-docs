@@ -7,6 +7,7 @@ import { ANTIVIRUS_PORT, type AntivirusPort } from '../../../ports/antivirus.por
 import { CACHE_PORT, type CachePort } from '../../../ports/cache.port';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
 import { TenantDatabase } from '../../prisma/tenant-database';
+import { LOGGER, type Logger } from '../logger';
 
 /**
  * The dependency probes behind readiness.
@@ -26,6 +27,7 @@ export class HealthService {
     @Inject(TenantDatabase) private readonly databases: TenantDatabase,
     @Inject(CACHE_PORT) private readonly cache: CachePort,
     @Inject(ANTIVIRUS_PORT) private readonly antivirus: AntivirusPort,
+    @Inject(LOGGER) private readonly logger: Logger,
   ) {}
 
   async report(): Promise<HealthReport> {
@@ -46,16 +48,23 @@ export class HealthService {
   }
 
   /**
-   * One probe per tenant database, named by slug.
+   * One probe per tenant database, named by its position in the catalogue — never by slug.
    *
    * There is no single "the database" any more, and collapsing them into one check would answer the
    * question an orchestrator is actually asking — *can this instance serve traffic* — with "no"
    * whenever any one customer's database was unreachable. Reported separately, the aggregate is still
-   * `DOWN`, and the detail says which tenant to look at.
+   * `DOWN`, and the detail says which database to look at.
+   *
+   * **Positions, not names (R-11 of the Hetzner readiness report).** These routes are public by
+   * necessity — a load balancer holds no credentials — and only the proxy keeps them off the
+   * internet. A probe named `database:acme` turned that one routing rule into the only thing
+   * standing between the internet and the list of customers. `database:3` says the same to an
+   * operator (the third entry of the catalogue), and a probe that fails logs the tenant's slug to
+   * the API's own log, which is private.
    *
    * Bounded by `maxTenantClients`: a deployment with four hundred tenants must not open four hundred
    * pools to answer a readiness probe. Beyond the bound the check is honest about being a sample —
-   * `databases (sampled 25 of 400)` — rather than quietly implying it covered everything.
+   * `(sampled 25 of 400)` — rather than quietly implying it covered everything.
    */
   private async databaseProbes(): Promise<readonly Promise<DependencyCheck>[]> {
     let placements: readonly { id: string; slug: string }[];
@@ -81,8 +90,19 @@ export class HealthService {
         ? ` (sampled ${String(sampled.length)} of ${String(placements.length)})`
         : '';
 
-    return sampled.map((placement) =>
-      this.probe(`database:${placement.slug}${suffix}`, () => this.databases.ping(placement.id)),
+    return sampled.map((placement, index) =>
+      this.probe(`database:${String(index + 1)}${suffix}`, () =>
+        this.databases.ping(placement.id),
+      ).then((check) => {
+        if (check.status !== 'UP') {
+          this.logger.warn('A tenant database failed its health probe', {
+            probe: check.name,
+            tenant: placement.slug,
+            detail: check.detail ?? null,
+          });
+        }
+        return check;
+      }),
     );
   }
 

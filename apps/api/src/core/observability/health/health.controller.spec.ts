@@ -26,7 +26,7 @@ describe('the readiness probe a load balancer keys on', () => {
 
     expect(response.statusCode).toBe(HttpStatus.SERVICE_UNAVAILABLE);
     expect(report.status).toBe('DOWN');
-    expect(report.dependencies.map((dependency) => dependency.name)).toContain('database:acme');
+    expect(report.dependencies.map((dependency) => dependency.name)).toContain('database:1');
   });
 
   it('answers 200 when every dependency is up', async () => {
@@ -60,7 +60,7 @@ function build(status: DependencyStatus): {
     checkedAt: '2026-08-16T00:00:00.000Z',
     dependencies: [
       {
-        name: 'database:acme',
+        name: 'database:1',
         status,
         latencyMs: 1,
         ...(status === 'UP' ? {} : { detail: 'PrismaClientInitializationError' }),
