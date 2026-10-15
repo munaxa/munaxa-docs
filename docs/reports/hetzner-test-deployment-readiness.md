@@ -5,8 +5,8 @@
     created; no secret was rotated; no image was published.
   - ADR-0026 stays **Proposed**.
   - This is **not** a statement of production readiness.
-- **Date:** 2026-10-15 (third revision: the decision pack in §5–§10 added on top of the
-  pre-deployment remediation).
+- **Date:** 2026-10-15 (fourth revision: §11, the pre-provisioning implementation and its local
+  verification, on top of the decision pack in §5–§10).
 - **Branch:** `claude/amazing-turing-09vlks`. The remediation is in the commits listed in §3.4,
   on top of `0401c21`.
 - **Rule used below:** an item is "verified" only where a run is recorded. A document or a script
@@ -32,14 +32,14 @@
 
 | # | Risk | Severity | Why it is open | Needed before |
 | --- | --- | --- | --- | --- |
-| R-1a | **No off-server backup copy.** The backup volume is on the same server and provider as the database | **High** | Needs a second provider and credentials: a hosted step. The design is a host sync of the already-encrypted volume (README.md §7) | Any data that matters |
+| R-1a | **No off-server backup copy at a provider.** The job is built and tested against a stand-in (§11); no provider account, bucket or key exists | **High** | Needs the second provider (D-5) and its console checks (region, Object Lock, key rights) | Any data that matters |
 | R-2 | Object store not chosen. Versioning, checksum contract and EU residency are unverified for every candidate (R2 was tested in ENAM only) | High | Gate P-1 needs a real bucket | Choosing the store (D-3) |
 | R-5a | Key escrow (two offline holders, current and previous values, backup identities) is a procedure, not evidence | High | Organisational | First real data |
-| R-6a | Alert delivery (timer, dead-man's switch, uptime check, notifications) not built | High | Needs outside accounts | Users |
-| R-7 | TLS undecided, and with it the client-address chain (G-5) | High | **New consideration:** with Cloudflare (A, B), Cloudflare decrypts all traffic, documents included, possibly outside the EU (`hetzner-tls-decision.md` §2) | Exposure to the internet |
+| R-6a | Alert delivery: the timer and delivery script are built and tested locally (§11); the heartbeat service, uptime check and the person paged do not exist | High | Needs outside accounts and the owner's choice of recipient | Users |
+| R-7 | TLS undecided (D-2); direct TLS is prepared and tested with a local CA (§11), not issued | High | The owner's decision; then DNS, firewall and a real issuance on TEST. With Cloudflare, Cloudflare decrypts all traffic, possibly outside the EU (`hetzner-tls-decision.md` §2) | Exposure to the internet |
 | R-12a | **No in-product reset of another person's MFA factor.** A person with a lost key and no recovery codes needs an operator to delete their enrolment row | Medium | A feature, not a configuration | Production |
 | R-12b | No inventory of which MFA rows are under which key; previous sealing keys must be kept | Low | Counting needs every key in one process (ADR-0020 refuses that) | — |
-| R-13 | `munaxa-docs-postgres` is not in `publish-images.yml`, so a TEST deployment cannot be reproduced from a published digest | Medium | Changing the publishing workflow is a release decision | TEST |
+| R-13 | `munaxa-docs-postgres` is now a leg of `publish-images.yml`, accepted by `verify-image.sh` (§11), but **nothing is published**: no image has a digest yet | Medium | Publishing is the owner's step (an `image/<sha>` tag) | TEST |
 | R-8 | E-10: a quarantined deduplicated export needs an administrator | Medium | Unchanged | — |
 | R-14 | Firewall, SSH, OS updates, rollback by digest, host rebuild: written (`hetzner-host-operations.md`), never performed | High | Needs a server | TEST, then production |
 | R-15 | RTO unmeasured at real size; the drill's 4–5 s are for small databases on a laptop | Medium | Needs real data | Production |
@@ -337,16 +337,16 @@ support usage alerts [unverified]).
 
 | Gate | Local (already shown) | Hosted evidence required |
 | --- | --- | --- |
-| G-1 Off-server backup configured | Encrypted WAL, base backups and dumps; same-device refusal; 38/38 script tests | The B2 bucket: region shown in the console; lock and versioning settings; key capabilities listed (no `deleteFiles`, no `bypassGovernance`); one sync run; an attempted delete with the key **refused** |
-| G-2 Restore from the off-server copy | Restore from the local volume (drill) | On a scratch volume on the TEST server or a second throwaway server: download from B2 only, check `.sha256`, decrypt with an escrowed identity, restore the base and replay the WAL |
-| G-3 PITR | Shown in the drill (stopped before transaction 1056 at the target time) | The same, from the B2 copy, to a recorded target time, with a change before and after the target |
+| G-1 Off-server backup configured | Encrypted WAL, base backups and dumps; same-device refusal; 38/38 script tests. The copy job against a MinIO stand-in: 57/57, including a credential refused a delete (§11) | The B2 bucket: region shown in the console; lock and versioning settings; key capabilities listed (no `deleteFiles`, no `bypassGovernance`); one sync run; an attempted delete with the key **refused** |
+| G-2 Restore from the off-server copy | Restore from the local volume (drill); `offsite fetch` from the stand-in remote alone, every byte checked, then PITR from it (drill step 6, §11) | On a scratch volume on the TEST server or a second throwaway server: download from B2 only, check `.sha256`, decrypt with an escrowed identity, restore the base and replay the WAL |
+| G-3 PITR | Shown in the drill (stopped before transaction 1056 at the target time), from the local volume and from the fetched off-server copy | The same, from the B2 copy, to a recorded target time, with a change before and after the target |
 | G-4 Tenant isolation and audit chain after restore | Shown in the drill (RLS forced, `edms_app` isolated, chain verified from genesis) | The drill's checks run against the cluster restored in G-2 and G-3 |
-| G-5 TLS and privacy decision accepted | — | D-2 signed off by the owner; certificate issued and renewed (`caddy` logs); SSL Labs-style check; HTTP→HTTPS redirect; `/api/health` 404 from outside; the sign-in rate limit sees distinct client addresses |
+| G-5 TLS and privacy decision accepted | Direct TLS with a local CA: routing, redirect, HSTS, the certificate's name, persistence (19/19, §11) | D-2 signed off by the owner; certificate issued and renewed (`caddy` logs); SSL Labs-style check; HTTP→HTTPS redirect; `/api/health` 404 from outside; the sign-in rate limit sees distinct client addresses |
 | G-6 EU region verified | — | Console screenshots of the server location, the object-store location and the B2 region; the owner's DPA review recorded |
-| G-7 Object recovery and integrity (P-1) | Verified reads, quarantine on mismatch, missing object, store errors (R-9 tests against MinIO) | P-1 against the chosen store: checksum on upload and download; multipart; overwrite then restore the prior version; delete then restore; Object Lock refusal; a browser upload and a verified download end to end |
-| G-8 Monitoring and alert delivery | `host-check.sh` healthy and with a forced finding (stack test) | A forced finding pages a named person; stopping the heartbeat pages within its grace period; the uptime check fires when the proxy is stopped |
+| G-7 Object recovery and integrity (P-1) | Verified reads, quarantine on mismatch, missing object, store errors (R-9 tests against MinIO); the storage readiness check against MinIO, 30/30, and its control (§11) | P-1 against the chosen store: checksum on upload and download; multipart; overwrite then restore the prior version; delete then restore; Object Lock refusal; a browser upload and a verified download end to end |
+| G-8 Monitoring and alert delivery | `host-check.sh` healthy, with a forced finding, and with a stopped store, a failed copy and stale signatures (stack test); delivery against a local receiver, 20/20 (§11) | A forced finding pages a named person; stopping the heartbeat pages within its grace period; the uptime check fires when the proxy is stopped |
 | G-9 Scanner health and refresh | 22/22 offline (refresh failure, staleness, refusal, restart, fail-open guard) | `freshclam` succeeding against real mirrors over at least 3 days; peak memory during a reload on the chosen server; EICAR refused through the product |
-| G-10 Deploy and rollback by digest | `migrate` and `up` (stack test) | One release by digest with `RepoDigests` checked; one code-only rollback to the previous `deploy.env`; timings recorded |
+| G-10 Deploy and rollback by digest | `migrate` and `up` (stack test); `check-deploy-env.sh` refuses tags, placeholders and secrets (20/20, §11); the PostgreSQL image accepted by `verify-image.sh` | One release by digest with `RepoDigests` checked; one code-only rollback to the previous `deploy.env`; timings recorded |
 | G-11 Firewall and SSH | — | A port scan from outside shows only 22 (from the allowed address), 80 and 443; password and root log-in refused; `unattended-upgrades` active |
 | G-12 Cost and ceiling accepted | — | The owner's approval of §5.5 and the ceiling; billing alerts configured |
 
@@ -358,8 +358,8 @@ ADR-0026 stays **Proposed** until these gates pass and their evidence has been r
 
 - [ ] **D-6:** spending approved, ceiling €60 per month (§5.5).
 - [ ] **D-7:** CX33, or CPX32 if CX is unavailable; FSN1 or NBG1; Ubuntu 24.04 LTS.
-- [ ] **D-2:** option A, direct TLS on the host (§5.2), or another option with its residency
-      question answered.
+- [ ] **D-2:** direct TLS on the host (§5.2's option A; option C in `hetzner-tls-decision.md`, the
+      ADR and the template files), or another option with its residency question answered.
 - [ ] **D-3 (provisional):** Hetzner Object Storage in a separate project (§5.3).
 - [ ] **D-5:** Backblaze B2 EU Central, or Scaleway (§5.1).
 - [ ] **D-8:** the TEST host name.
@@ -376,13 +376,15 @@ ADR-0026 stays **Proposed** until these gates pass and their evidence has been r
 - [x] Health endpoints without tenant names; the host check.
 - [x] Procedures: backup and restore §5, key rotation, monitoring, host operations, TLS options.
 
-### 7.3 To prepare after approval, before provisioning (repository changes, reviewed)
+### 7.3 Repository changes before provisioning (done in the fourth revision, §11)
 
-- [ ] The Caddy option-A configuration: site address, persistent `/data`, ports 80 and 443 (§5.2).
-- [ ] The off-server sync unit and timer, and a host-check signal for the age of the newest object
-      off the server (§5.1).
-- [ ] The heartbeat and host-check systemd units (monitoring.md).
-- [ ] A TEST `deploy.env` with digests; `munaxa-docs-postgres` published or its ID recorded (R-13).
+- [x] Direct TLS: `compose.tls.yaml`, `Caddyfile.tls`, persistent `/data`, ports 80 and 443 only.
+- [x] The off-server copy, its timer, and host-check signals for it.
+- [x] The host-check and alert-delivery units (`ops/monitor.sh`, `ops/systemd/`).
+- [x] `deploy.test.env.example` with digest placeholders; `munaxa-docs-postgres` added to
+      `publish-images.yml` (not published).
+- [ ] Publishing the four images for the commit chosen for TEST (an `image/<sha>` tag) — the
+      owner's step; then the digests go into the TEST `deploy.env`.
 
 ### 7.4 On TEST (gates in §6)
 
@@ -481,3 +483,129 @@ In this order, each recorded in this report with its evidence:
 - Earlier sources on Scaleway, R2 and Cloudflare Regional Services:
   - `hetzner-object-storage-options.md`;
   - `hetzner-tls-decision.md`.
+
+## 11. Pre-provisioning implementation and verification (fourth revision)
+
+What the repository needed before a TEST server is created, built and verified **locally only**.
+Nothing was provisioned, bought, published, issued or called: no Hetzner, Backblaze, Scaleway,
+Cloudflare, DNS or AWS request was made, no bucket or key exists, no certificate was issued, no
+image was pushed. ADR-0026 stays **Proposed**.
+
+Starting point: `59b0e26` (Markdown only, so neither workflow ran on it; both were green on the last
+code commit `4725053`). Working tree clean.
+
+### 11.1 Changes and commits
+
+| Commit | What |
+| --- | --- |
+| `15941ff` | **Direct TLS and the deploy.env pre-flight.** The routing rules move to `caddy/routes.caddy`, imported by the plain `Caddyfile` and by the new `Caddyfile.tls` (automatic HTTPS for `DOCS_PUBLIC_HOSTNAME`, HTTP→HTTPS, HSTS, h1/h2, admin off). `compose.tls.yaml` publishes only 80 and 443, puts Caddy's `/data` on a volume, and refuses to start without a host name or ACME contact. `ops/check-deploy-env.sh` refuses tags instead of digests, placeholders, secrets in `deploy.env`, fewer than two backup recipients, a public plain-HTTP listener, and an address, `localhost` or example host name. `deploy.test.env.example` is the TEST file, every value a required placeholder |
+| `a00ed5a` | **The off-server copy** (R-1a). `offsite/offsite.sh` in the new `offsite` service (profile `ops`, pinned rclone image, uid 70, read-only root and backup volume, own egress network): copies ciphertext only, never deletes or overwrites, reads every new file back (size, the provider's MD5 when it has one, SHA-256 by download), records verified files in run manifests, marks a backup `COMPLETE` only when all its files verified, checks every run that the remote answers and holds the newest complete backup, one run at a time, and `fetch` recovers from the remote alone with every byte checked. The drill gains step 6: PITR from the fetched copy. Procedure, retention and failure handling in backup-and-restore.md §5.5 |
+| `ce160b2` | **Monitoring and alert delivery** (R-6a). `host-check.sh` adds Docker and expected services, `pg_isready`, the off-server copy, a read-only object-store listing through the API's adapter, log-derived counts (quarantine, audit chain, scanner refusal, fail-open guard), signature age, and the TLS certificate. `ops/monitor.sh` runs it and pings the heartbeat or sends the filtered finding lines; `ops/systemd/` holds the two timers. The stack test now stops the store, fails a copy and ages the signatures, and requires each to be named and then to clear |
+| `2cfef42` | **Images, storage readiness, CI** (R-13, R-2). `munaxa-docs-postgres` becomes the fourth leg of `publish-images.yml`, accepted by `postgres/verify-image.sh` before the push and again on the pulled digest (the workflow runs only for an `image/<sha>` tag: nothing was published). `testing/storage/` asks a store, through the product's adapter, everything the verified reads and recovery depend on. `hetzner-template.yml` runs every new test. README, host operations, TLS and storage notes updated |
+| (this report) | §2, §6, §7 and this section |
+
+**Defects found and fixed during this work** (none in the application):
+
+1. The copy job's first version reported success with the remote stopped when it had nothing new
+   to send — found by the stack test's new outage step. Every run now checks the remote; a test
+   case covers it.
+2. `grep -q` at the end of a pipeline under `pipefail` could make a complete backup look
+   incomplete when grep exited before rclone finished writing (seen once as a missing dump set
+   in a fetch). Fixed by letting grep read to the end; three repeat runs passed.
+3. The host check's default `deploy.env` path pointed into `infra/hetzner/` while the
+   documentation puts the file at the checkout's root. Fixed.
+
+### 11.2 Tests run, and exact results
+
+All on this workstation; Docker 29.8.2, Compose v5.6.0. "Runs" counts complete runs after the
+last change to the file under test.
+
+| Test | Result |
+| --- | --- |
+| `testing/offsite/test-offsite.sh` (MinIO stand-in, versioned bucket, a no-delete key) | **57/57.** Earlier versions: 56/56 three times in a row after the pipefail fix; before it, one run with 3 failures (the race, then two test-script bugs: `grep -q` under pipefail and `mc ls` prefix matching) |
+| `testing/monitoring/test-monitor.sh` (local receiver) | **20/20**, first run. Negative control (the character filter removed): the hostile-text check fails, as it must |
+| `testing/deploy/test-check-deploy-env.sh` | **20/20**: a complete TEST file passes; 16 kinds of mistake refused by name; values never printed; both shipped examples refused |
+| `testing/tls/test-tls.sh` (Caddy's local CA; nothing published on the host) | **19/19**, three runs. The first run failed one check of the test's own (how curl prints certificate names) |
+| `testing/storage/run-storage-readiness.sh` (MinIO, versioning + Object Lock, a scoped key, a second bucket) | **30/30**, two runs (after: the part size set to the 5 MiB minimum so multipart is really exercised; the Object Lock refusal judged by the version surviving, since MinIO answers 400 where S3 answers 403). Control without versioning or lock: 21 PASS, 2 UNSUPPORTED, exit 0; the same expecting them: 2 FAIL, exit 1 |
+| `postgres/verify-image.sh munaxa-docs-postgres:local` | **8/8** (after correcting the expected `age --version` string) |
+| `systemd-analyze verify` (the four units, in a scratch root holding the checkout's paths) | no errors |
+| ShellCheck (warning level, the repository's bar), every new or changed script | clean |
+| actionlint | `hetzner-template.yml` clean; `publish-images.yml`: the same four style/info notes as at `59b0e26`, none new |
+| `pnpm format:check` | clean |
+| Stack test with the backup drill (`run-stack-test.sh`, backup volume on its own tmpfs so the same-device refusal is ON) | Run 1 **failed**, at the new outage step: it found defect 1 above. After the fix, run 2: **all stack checks passed, 66 PASS lines, no FAIL** — smoke 14/14; the off-server copy (17 files verified, base backup and dump set `COMPLETE`); the host check healthy, with a crossed limit, and with the store stopped, a copy failed and signatures 100 h old (three findings named, then cleared); unsafe settings refused 8/8; no credential (the off-server key included) in 571 log lines. The drill: PITR stopped "before commit of transaction 1062" at the target in 4 s; end of archive 3 s; the dump restore; and **step 6: base backup, 8 WAL files and the dump set fetched from the stand-in remote alone in 4 s, every byte matched, then PITR from that copy in 4 s with all 15 checks held** (changes A/B, each database identical at the target, RLS forced, `edms_app` isolated, audit chain from genesis). Laptop timings, not an RTO |
+
+**Not re-run, because no application, migration or package code changed in this revision**
+(every change is under `infra/hetzner/`, `.github/workflows/` and `docs/`): the API, web, domain,
+contracts, i18n, utils and worker unit suites, lint and typecheck, the integration suite and the
+migration tests. Their last results are in §3 (`4725053`'s CI and the full integration run of
+58 files and 1310 tests).
+
+### 11.3 What is now verified locally
+
+- The off-server copy's behaviour: no deletion, no overwrite, verification by read-back, partial
+  and interrupted uploads never treated as recovery points, duplicate runs, outages with and
+  without new files, a damaged local file refused, recovery by `fetch`, and a **point-in-time
+  recovery of the stack's cluster from the fetched copy alone**, with RLS, isolation and the audit
+  chain checked (drill step 6).
+- Monitoring: every check of `host-check.sh` on a healthy stack and on three real failures, and
+  alert delivery with its refusals, filtering and failure reporting.
+- Direct TLS: the configuration, the rendered ports and private networks, routing, the redirect,
+  HSTS, the certificate's name, the token kept out of the access log, and certificate persistence.
+- Storage readiness: every check against MinIO, and that it tells a capable bucket from one without
+  versioning or Object Lock.
+- The deploy.env pre-flight and the PostgreSQL image acceptance.
+
+**None of this is evidence about any provider.** MinIO stood in for Backblaze B2 and Hetzner Object
+Storage; Caddy's local CA stood in for Let's Encrypt; a local receiver stood in for the heartbeat
+service.
+
+### 11.4 What still requires the provider console or the TEST environment
+
+| Item | Where |
+| --- | --- |
+| B2 (or Scaleway): account region EU Central confirmed; Object Lock available there; the key's capabilities (no `deleteFiles`, no `bypassGovernance`); lifecycle rule; then G-1, G-2, G-3 from it | Provider console, then TEST |
+| Hetzner Object Storage: location, versioning and Object Lock set at bucket creation; `run-storage-readiness.sh` with `STORAGE_TEST_EXPECT_VERSIONING=1`, `STORAGE_TEST_EXPECT_OBJECT_LOCK=1` and a second bucket; the stack test against it (P-1); the checksum contract | Console, then TEST |
+| A real Let's Encrypt issuance (staging first) and renewal; DNS; the firewall seen from outside; client addresses reaching the rate limit (G-5, G-11) | TEST |
+| The heartbeat service, the uptime check, the person paged; a forced finding reaching them (G-8) | Monitoring service, TEST |
+| The timers running under systemd; log rotation | TEST |
+| Publishing the four images and deploying by digest; a rollback; a host rebuild with timings (G-10, R-14, R-15) | GitHub (owner), TEST |
+| Scanner refresh against real mirrors over days, clamd reload memory (G-9, R-16) | TEST |
+| EU residency and the DPA review (G-6) | Owner |
+
+### 11.5 Decisions and values the owner must supply
+
+**Decisions:** D-2 (direct TLS), D-3 (Hetzner Object Storage), D-5 (B2 EU Central or Scaleway),
+D-6 (spending, ceiling €60/month), D-7 (CX33 or CPX32; FSN1 or NBG1; Ubuntu 24.04), D-8 (the TEST
+host name), the commit to publish for TEST, and how TEST sends mail (a sink or a restricted relay).
+
+**Values** (every one is a placeholder in the repository today; none was invented):
+
+| Value | Goes into |
+| --- | --- |
+| `DOCS_PUBLIC_HOSTNAME`, `DOCS_ACME_EMAIL` | `deploy.env` |
+| The four release digests, and the Caddy and Redis digests | `deploy.env` (after the `image/<sha>` tag runs) |
+| Two `age` public keys, from two named holders; the identities offline in escrow | `deploy.env` (public keys only) |
+| B2/Scaleway endpoint, region, bucket, restricted key id and secret | `offsite.env` |
+| Hetzner Object Storage endpoint, region, bucket, key id and secret | `api.env`; the readiness file |
+| `HEARTBEAT_URL`, `ALERT_CONTACT` (and optionally `HEARTBEAT_FAIL_URL`, `ALERT_WEBHOOK_URL`); the uptime check of `/login` | `monitoring.env`; the monitoring service |
+| Administrators' SSH public keys and source addresses | the server and the Hetzner Cloud Firewall |
+| A read-only GHCR pull identity (`DOCS_PRODUCTION_PULL_USER`/`_TOKEN`) if the images stay private | repository secrets; the server's Docker login |
+| Mail settings for TEST | `api.env` |
+
+### 11.6 Resources and cost for the later, separately authorized provisioning step
+
+Unchanged from §5.4–§5.5; nothing in this revision adds a billable resource (rclone, Caddy and the
+timers run on the same server).
+
+| Resource | Monthly (excl. VAT) | Basis |
+| --- | --- | --- |
+| Hetzner CX33 (4 vCPU, 8 GB, 80 GB), FSN1 or NBG1 — or CPX32 if CX cannot be ordered | €8.49 — or €35.49 | official price page, June 2026; availability unverified |
+| Primary IPv4 | about €0.50 | third-party |
+| Hetzner Volume, 50 GB (the backup volume) | about €2.50–3 | third-party |
+| Hetzner Object Storage, one bucket (base fee, 1 TB and 1 TB egress included) | about €4.99 | third-party |
+| Backblaze B2 EU Central, under 50 GB, plus the read-back verification (egress free up to 3× stored) | under €0.50 | official price list; EU region unverified |
+| Monitoring and uptime (free tiers), Let's Encrypt | €0 | plan terms unverified |
+| **Total** | **about €17–19 (CX33) or €44–46 (CPX32)**; suggested ceiling **€60**, alerts at €30 | |
+
+Effort to provision and pass the gates: 2–4 working days, as before. **Nothing is created until the
+owner authorizes it.**
