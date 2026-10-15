@@ -197,8 +197,8 @@ pb_expect arabic-integrity 'f.downloadButtonEnabled === false' \
   "a quarantined file, in Arabic: no enabled Download button"
 pb_expect arabic-integrity 'f.clicked === false || /سلامة/.test(f.message ?? "")' \
   "a quarantined file, in Arabic: a refusal, if one is reached, names the integrity check"
-pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true && !/^\/api\/v1\/downloads/.test(f.link ?? "")' \
-  "a report export saves exactly what the store served, through a direct signed store URL (NOT the verified path; see hetzner-export-download-gap.md)"
+pb_expect report-export 'f.downloadEvent === true && f.matchesStore === true && /^\/api\/v1\/downloads/.test(f.link ?? "") && f.tabOpened !== true' \
+  "a report export saves the verified file through /api/v1/downloads, with no popup (export design §3.2)"
 pb_expect audit-export 'f.downloadEvent === true && f.matchesStore === true && !/^\/api\/v1\/downloads/.test(f.link ?? "")' \
   "an audit export saves exactly what the store served, through a direct signed store URL (NOT the verified path)"
 

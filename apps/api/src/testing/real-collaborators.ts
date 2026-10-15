@@ -180,6 +180,8 @@ import type { JobEnvelope, QueueConsumer } from '../ports/queue.port';
 import { BulkLaneConsumer } from '../core/bulk/bulk-lane.consumer';
 import { DefaultBulkPlanRegistry } from '../core/bulk/bulk-plan.registry';
 import { BulkRequesterDirectoryAdapter } from '../modules/identity/infrastructure/bulk-requester.directory';
+import { DownloadRedemptionService } from '../modules/document/application/download-redemption.service';
+import { DownloadRedeemerRegistry } from '../modules/storage/application/download-redeemers';
 import { PrismaBulkOperationRepository } from '../core/bulk/prisma-bulk.repository';
 import type { BulkOperationRepository, BulkRequesterDirectory } from '../core/bulk/bulk.port';
 import { BulkDocumentService } from '../modules/document/application/bulk-document.service';
@@ -355,6 +357,35 @@ function silentLogger(): Logger {
     error: () => undefined,
     debug: () => undefined,
   } as unknown as Logger;
+}
+
+/**
+ * The redemption door's decision, composed for real — ADR-0026 §10, the export design §2.2.
+ *
+ * The person is re-read through Identity's own requester directory over the real tables, and the
+ * kind's question is asked by whichever redeemers the suite registers in `registry` — the same
+ * classes the modules register at start. What it answers is what the door would run the download
+ * under; the door itself (headers, staging, the bytes) has its own suites.
+ *
+ * Composed here because it crosses modules (Identity's infrastructure, Document's door, Storage's
+ * registry) — the one file that does that on purpose.
+ */
+export function realDownloadRedemption(options: {
+  readonly unitOfWork: UnitOfWork;
+  readonly registry?: DownloadRedeemerRegistry;
+}): {
+  readonly registry: DownloadRedeemerRegistry;
+  readonly redemption: DownloadRedemptionService;
+} {
+  const registry = options.registry ?? new DownloadRedeemerRegistry();
+  return {
+    registry,
+    redemption: new DownloadRedemptionService(
+      new BulkRequesterDirectoryAdapter(new PrismaCredentialRepository(), options.unitOfWork),
+      registry,
+      silentLogger(),
+    ),
+  };
 }
 
 /**

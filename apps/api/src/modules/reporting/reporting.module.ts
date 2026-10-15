@@ -1,3 +1,4 @@
+import { ReportExportRedeemer } from './application/report-export.redeemer';
 import { Module } from '@nestjs/common';
 
 import { AuditModule } from '../audit/audit.module';
@@ -79,6 +80,8 @@ import { ReportingController } from './presentation/reporting.controller';
     { provide: REPORT_DEFINITION_REPOSITORY, useClass: PrismaReportDefinitionRepository },
     { provide: REPORT_EXPORT_REPOSITORY, useClass: PrismaReportExportRepository },
     { provide: REPORTING_SERVICE, useClass: DefaultReportingService },
+    // The `REPORT_EXPORT` kind of verified download link is redeemed here, by Reporting's rules.
+    ReportExportRedeemer,
     ReportDefinitionService,
     ReportExportService,
     ReportingLaneConsumer,

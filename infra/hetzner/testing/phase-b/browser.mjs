@@ -922,6 +922,8 @@ const cases = {
       result(name, {
         exportListed: true,
         downloadEvent: true,
+        // A verified export is a navigation, not a popup (export design §3.2, §3.3).
+        tabOpened: popupDownloads.length > 0,
         savedBytes: readFileSync(saved).length,
         matchesStore:
           sha256(readFileSync(saved)) === sha256(Buffer.from(await direct.arrayBuffer())),

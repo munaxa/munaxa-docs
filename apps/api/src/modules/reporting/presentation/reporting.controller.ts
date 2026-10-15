@@ -26,6 +26,8 @@ import { type AnyId, Permission, type ReportDefinitionId, asId } from '@edms/dom
 import { normalizePageRequest } from '@edms/utils';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
+import { APP_CONFIG, type AppConfig } from '../../../core/config';
+import { requireContext } from '../../../core/tenancy/tenant-context';
 import { NotFoundError } from '../../../core/errors/application-errors';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { FORMAT_PARAMETER, type ReportDefinition } from '../domain/report-catalogue';
@@ -72,6 +74,7 @@ export class ReportingController {
   constructor(
     @Inject(REPORTING_SERVICE) private readonly reports: ReportingService,
     private readonly definitions: ReportDefinitionService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   /**
@@ -137,7 +140,7 @@ export class ReportingController {
     @Query(new ZodValidationPipe(runReportQuerySchema)) query: Record<string, string>,
   ): Promise<{ data: readonly WireExport[] }> {
     const page = await this.reports.listExports(normalizePageRequest(query));
-    return { data: page.data.map(toExport) };
+    return { data: page.data.map((record) => this.toExport(record)) };
   }
 
   @Get('exports/:id')
@@ -146,7 +149,7 @@ export class ReportingController {
     if (record === null) {
       throw new NotFoundError('The requested resource');
     }
-    return toExport(record);
+    return this.toExport(record);
   }
 
   /**
@@ -214,7 +217,36 @@ export class ReportingController {
     if (record === null) {
       throw new NotFoundError('The requested resource');
     }
-    return toExport(record);
+    return this.toExport(record);
+  }
+
+  /**
+   * The wire shape, with what *this caller* may do with it: an export is listed tenant-wide but
+   * taken only by its requester (Slice 132), so Download is offered only on their own rows (E-11).
+   */
+  private toExport(record: ReportExportRecord): WireExport {
+    const tooLargeToDownload = record.sizeBytes > this.config.download.maxFileBytes;
+    return {
+      id: String(record.id),
+      reportKey: record.reportKey,
+      format: record.format,
+      state: record.state,
+      parameters: record.parameters,
+      requestedAt: record.requestedAt.toISOString(),
+      rowCount: record.rowCount,
+      sizeBytes: record.sizeBytes,
+      sha256: record.sha256,
+      truncated: record.truncated,
+      substitutions: record.substitutions,
+      completedAt: record.completedAt?.toISOString() ?? null,
+      error: record.error,
+      tooLargeToDownload,
+      downloadable:
+        record.state === 'COMPLETED' &&
+        record.fileObjectId !== null &&
+        (record.requestedById as string) === requireContext().userId &&
+        !tooLargeToDownload,
+    };
   }
 }
 
@@ -244,23 +276,5 @@ function toDescriptor(report: ReportDefinition): ReportDescriptor {
     })),
     columns: report.columns.map((column) => ({ ...column })),
     chart: report.chart,
-  };
-}
-
-function toExport(record: ReportExportRecord): WireExport {
-  return {
-    id: String(record.id),
-    reportKey: record.reportKey,
-    format: record.format,
-    state: record.state,
-    parameters: record.parameters,
-    requestedAt: record.requestedAt.toISOString(),
-    rowCount: record.rowCount,
-    sizeBytes: record.sizeBytes,
-    sha256: record.sha256,
-    truncated: record.truncated,
-    substitutions: record.substitutions,
-    completedAt: record.completedAt?.toISOString() ?? null,
-    error: record.error,
   };
 }

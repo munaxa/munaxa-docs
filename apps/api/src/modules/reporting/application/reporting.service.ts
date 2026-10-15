@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import {
   type AnyId,
+  Permission,
   type PermissionKey,
   type UserId,
   AuditSubjectType,
@@ -25,12 +26,19 @@ import {
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { QUEUE_PORT, type QueuePort } from '../../../ports/queue.port';
-import { STORAGE_SERVICE, type StorageService } from '../../storage/application/ports';
+import {
+  DownloadLinkKind,
+  type DownloadLinkGrantOf,
+  type RedeemedDownload,
+  STORAGE_SERVICE,
+  type StorageService,
+} from '../../storage/application/ports';
 import { ReportingAudit } from '../domain/audit-actions';
 import {
   REPORTS,
   type ReportDefinition as CatalogueEntry,
   artefactNameFor,
+  mediaTypeFor,
   reportFor,
 } from '../domain/report-catalogue';
 import { parseParameters, type ParsedParameters } from '../domain/report-parameters';
@@ -241,17 +249,20 @@ export class DefaultReportingService implements ReportingService {
   }
 
   /**
-   * A signed URL for a completed export.
+   * A verified download link for a completed export — ADR-0026 §10, the export design §3.2.
    *
-   * Through Storage's own `createDownloadUrl`, which writes `FILE_DOWNLOAD_ISSUED` — so the trail
-   * records that these bytes were handed to somebody, without this phase inventing a second action
-   * for it. Signing here instead would be a second place that obligation has to be remembered, and
-   * the second place is the one that gets forgotten (Phase 9's words, and its practice).
+   * Through Storage's `createVerifiedDownloadLink`, which writes `FILE_DOWNLOAD_ISSUED` (with this
+   * export's identifier) — so the trail records that these bytes were handed to somebody, without
+   * this phase inventing a second action for it. The bytes are served by the API, read whole and
+   * matched against their digest first; no store URL leaves the product.
    *
-   * **The report's permissions are re-checked**, not merely the export's ownership. An export is a
-   * file of rows somebody was entitled to at request time; the entitlement can be withdrawn, and a
-   * link that kept working afterwards would be the revocation not applying to the one artefact that
-   * left the product.
+   * **The report's permissions are re-checked**, not merely the export's ownership — here and
+   * again when the link is followed (`redeemExportDownload`). An export is a file of rows somebody
+   * was entitled to at request time; the entitlement can be withdrawn, and a link that kept working
+   * afterwards would be the revocation not applying to the one artefact that left the product.
+   *
+   * The media type is the export's own format's, never the stored blob's: two identical exports
+   * share one content-addressed blob, which carries whichever was written first (E-8).
    */
   async downloadExport(id: AnyId): Promise<{ url: string; expiresAt: Date; filename: string }> {
     const record = await this.export(id);
@@ -271,8 +282,63 @@ export class DefaultReportingService implements ReportingService {
     await this.authorise(report);
 
     const filename = artefactNameFor(record.reportKey, record.format);
-    const signed = await this.files.createDownloadUrl(asId(record.fileObjectId), filename);
-    return { url: signed.url, expiresAt: signed.expiresAt, filename };
+    const link = await this.files.createVerifiedDownloadLink(asId(record.fileObjectId), filename, {
+      subject: { kind: DownloadLinkKind.REPORT_EXPORT, exportId: String(record.id) },
+      mimeType: mediaTypeFor(record.format),
+      audit: { reportExportId: String(record.id) },
+    });
+    return { url: link.url, expiresAt: link.expiresAt, filename };
+  }
+
+  /**
+   * Whether a report export's download link may still be used, by the person in the current
+   * context, now — the redemption half of `downloadExport`, asked again from the database.
+   *
+   * Every answer but yes is `NotFoundError`: another person's export, one no longer `COMPLETED`, a
+   * link whose file, name or media type is not the export's own, a report whose permissions the
+   * person no longer holds, or a `report:view` they lost. The export's recorded digest must also
+   * be the digest of the file it points at — the record is what the bytes are verified against.
+   */
+  async redeemExportDownload(
+    grant: DownloadLinkGrantOf<typeof DownloadLinkKind.REPORT_EXPORT>,
+  ): Promise<RedeemedDownload> {
+    const context = requireContext();
+    if (!context.permissions.includes(Permission.REPORT_VIEW)) {
+      throw new NotFoundError('the person no longer holds report:view');
+    }
+    const record = await this.export(asId<AnyId>(grant.subject.exportId));
+    if (
+      record === null ||
+      (record.requestedById as string) !== context.userId ||
+      record.state !== ReportExportState.COMPLETED ||
+      record.fileObjectId !== grant.fileObjectId
+    ) {
+      throw new NotFoundError('the export is not this person’s, not finished, or not this file');
+    }
+    if (
+      grant.mimeType !== mediaTypeFor(record.format) ||
+      grant.filename !== artefactNameFor(record.reportKey, record.format)
+    ) {
+      throw new NotFoundError('the link does not describe this export');
+    }
+    const report = reportFor(record.reportKey);
+    if (report === null) {
+      throw new NotFoundError('the report no longer exists');
+    }
+    try {
+      await this.authorise(report);
+    } catch (error) {
+      if (error instanceof ForbiddenError) {
+        throw new NotFoundError('the person no longer holds the report’s permissions');
+      }
+      throw error;
+    }
+    // Quarantined or unscanned refuses here (409) exactly as delivery would.
+    const file = await this.files.servable(asId(record.fileObjectId));
+    if (record.sha256 !== null && file.checksumSha256 !== record.sha256) {
+      throw new NotFoundError('the export’s recorded digest is not its file’s');
+    }
+    return { audit: { reportExportId: String(record.id) } };
   }
 
   // --- Internals ------------------------------------------------------------------------------

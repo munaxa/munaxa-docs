@@ -142,9 +142,10 @@ export function ReportsScreen({
   const take = async (id: string): Promise<void> => {
     const result = await downloadReportExport(id);
     if (result.ok) {
-      // A new tab rather than a navigation: the signed URL is a capability for one object, and
-      // replacing the page with it would lose the screen somebody is working on.
-      window.open(result.value.url, '_blank', 'noopener,noreferrer');
+      // A navigation to the verified download, as a document's is. The answer is an attachment,
+      // so the browser saves it and this page stays where it is; there is no popup to be blocked.
+      // A link that expires or no longer applies answers a short page in the person's language.
+      window.location.assign(result.value.url);
       return;
     }
     toast.error(result.detail ?? translate('reports.export.failed'));
@@ -415,7 +416,14 @@ export function ReportsScreen({
                   {record.substitutions > 0 ? (
                     <Badge tone="warning">{translate('reports.exports.lossy')}</Badge>
                   ) : null}
-                  {record.state === 'COMPLETED' ? (
+                  {record.tooLargeToDownload ? (
+                    <Badge tone="warning">{translate('reports.exports.tooLarge')}</Badge>
+                  ) : null}
+                  {/*
+                    Offered only where the API says this person may take it: their own completed
+                    export, small enough to verify. Somebody else's is listed and never offered.
+                  */}
+                  {record.downloadable ? (
                     <Button
                       type="button"
                       variant="secondary"

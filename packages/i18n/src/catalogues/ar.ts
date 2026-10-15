@@ -1914,6 +1914,7 @@ export const ar: Catalogue = {
       download: 'تنزيل',
       truncated: 'مقتطع',
       lossy: 'تعذّر عرض بعض الأحرف',
+      tooLarge: 'أكبر من أن يُنزَّل. ضيّق نطاق التقرير أو تواصل مع المسؤول.',
     },
     definitions: {
       title: 'التقارير المحفوظة',

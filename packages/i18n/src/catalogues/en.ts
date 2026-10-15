@@ -2003,6 +2003,7 @@ export const en = {
       download: 'Download',
       truncated: 'Truncated',
       lossy: 'Some characters could not be rendered',
+      tooLarge: 'Too large to download. Narrow the report, or ask an administrator.',
     },
     definitions: {
       title: 'Saved reports',

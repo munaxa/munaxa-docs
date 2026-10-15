@@ -2,6 +2,12 @@ import type { AnyId, ReportDefinitionId, UserId } from '@edms/domain';
 import type { Page, PageRequest } from '@edms/utils';
 
 import type {
+  DownloadLinkGrantOf,
+  DownloadLinkKind,
+  RedeemedDownload,
+} from '../../storage/application/ports';
+
+import type {
   ExportFormatKey,
   ReportDefinition as CatalogueEntry,
 } from '../domain/report-catalogue';
@@ -99,8 +105,12 @@ export interface ReportingService {
   /** One export, for the screen that polls it. Null when it is not this tenant's. */
   export(id: AnyId): Promise<ReportExportRecord | null>;
   listExports(page: PageRequest): Promise<Page<ReportExportRecord>>;
-  /** A signed URL for a completed export's artefact, audited by Storage as it is issued. */
+  /** A verified download link for a completed export, audited by Storage as it is issued. */
   downloadExport(id: AnyId): Promise<{ url: string; expiresAt: Date; filename: string }>;
+  /** Whether that link may still be used, by the person in context, now. */
+  redeemExportDownload(
+    grant: DownloadLinkGrantOf<typeof DownloadLinkKind.REPORT_EXPORT>,
+  ): Promise<RedeemedDownload>;
 }
 
 // --- The export record --------------------------------------------------------------------

@@ -38,12 +38,15 @@ import {
   realDocumentLibrary,
   realPermissions,
   realReporting,
+  realDownloadRedemption,
   realRetention,
   realRoleAdmin,
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { ExportFormat } from '../domain/report-catalogue';
 import { ReportExportState } from '../application/ports';
+import { ReportExportRedeemer } from '../application/report-export.redeemer';
+import { grantOfLink } from '../../../testing/download-links';
 
 /**
  * Phase 15 against a real PostgreSQL — the disclosure questions, which are the only ones that
@@ -93,6 +96,8 @@ const logger = {
   error: () => {},
   debug: () => {},
 } as unknown as Logger;
+
+const LINK_SECRET = 'a-reporting-suite-link-secret-of-32-chars';
 
 const TENANT = asId<TenantId>(uuidv7());
 /** Holds `report:view` and `document:view` tenant-wide, and reaches both folders. */
@@ -162,6 +167,10 @@ beforeAll(async () => {
     // cached decision between the two would make the second a recollection.
     acl: { cacheTtlSeconds: 0, maxSubjectEntries: 5_000 },
     reporting: { exportBatchSize: 2, exportMaxRows: 250_000, pdfMaxRows: 5_000 },
+    // ADR-0026 §10: an export's download is a verified link the API serves, signed with this.
+    app: { port: 3001 },
+    auth: { accessSecret: LINK_SECRET },
+    download: { linkTtlSeconds: 60, maxFileBytes: 32 * 1024 * 1024 },
   } as unknown as AppConfig;
 
   owner = new PrismaClient({ datasources: { db: { url: OWNER_URL } } });
@@ -941,5 +950,314 @@ describe('an export belongs to the person it was produced for', () => {
     const forBen = await asBen(() => reporting.reports.downloadExport(asId<AnyId>(bens?.id ?? '')));
     expect(forAda.url).toBeTruthy();
     expect(forBen.url).toBeTruthy();
+  }, 60_000);
+});
+
+/**
+ * A report export's verified download link — ADR-0026 §10, the export design §3.2.
+ *
+ * Issued as a link the API serves, never a store URL, and **re-asked when it is followed**: the
+ * person (re-read from the database), `report:view`, the report's own permission set, the export's
+ * ownership and state, and that the file, name and media type the link names are the export's own.
+ * Each case below must refuse at redemption whatever was true when the link was issued.
+ *
+ * Carol's two permissions sit on two roles, so either can be withdrawn on its own without moving
+ * her permission version — which would refuse everything, and so test nothing in particular.
+ */
+describe('a report export link is re-authorized when it is followed', () => {
+  const CAROL = asId<UserId>(uuidv7());
+  const CAROL_REPORTS = uuidv7();
+  const CAROL_DOCUMENTS = uuidv7();
+  const asCarol = <T>(work: () => Promise<T>): Promise<T> =>
+    runWithContext(contextFor(CAROL, [CAROL_REPORTS, CAROL_DOCUMENTS]), work);
+  let redeem: ReturnType<typeof realDownloadRedemption>['redemption'];
+
+  beforeAll(async () => {
+    await owner.user.create({
+      data: {
+        id: CAROL,
+        tenantId: TENANT,
+        email: `${CAROL}@reporting.test`,
+        emailNormalized: `${CAROL}@reporting.test`,
+        displayName: 'carol',
+        status: 'ACTIVE',
+        updatedAt: FIXED_NOW,
+      },
+    });
+    for (const [roleId, key, granted] of [
+      [CAROL_REPORTS, 'CAROL_REPORTS', [Permission.REPORT_VIEW]],
+      [CAROL_DOCUMENTS, 'CAROL_DOCUMENTS', [Permission.DOCUMENT_VIEW]],
+    ] as const) {
+      await seedRoleGrant(owner, {
+        tenantId: TENANT,
+        roleId,
+        key,
+        userIds: [CAROL],
+        permissions: granted,
+        now: FIXED_NOW,
+      });
+    }
+    const composed = realDownloadRedemption({ unitOfWork });
+    new ReportExportRedeemer(composed.registry, reporting.reports).onModuleInit();
+    redeem = composed.redemption;
+  });
+
+  async function carolsExport(): Promise<{ id: string; fileObjectId: string }> {
+    const { jobId } = await asCarol(() =>
+      reporting.reports.requestExport('documents', { format: ExportFormat.CSV }),
+    );
+    await asConsumer(() => reporting.exports.run(asId<AnyId>(jobId)));
+    const record = await asCarol(() => reporting.reports.export(asId<AnyId>(jobId)));
+    expect(record?.state).toBe(ReportExportState.COMPLETED);
+    return { id: String(record?.id), fileObjectId: String(record?.fileObjectId) };
+  }
+
+  async function linkFor(exportId: string) {
+    const link = await asCarol(() => reporting.reports.downloadExport(asId<AnyId>(exportId)));
+    return { link, grant: grantOfLink(link.url, LINK_SECRET, FIXED_NOW) };
+  }
+
+  async function withAssignment<T>(roleId: string, work: () => Promise<T>): Promise<T> {
+    await owner.userRole.deleteMany({ where: { userId: CAROL, roleId } });
+    try {
+      return await work();
+    } finally {
+      await owner.userRole.create({
+        data: { tenantId: TENANT, userId: CAROL, roleId, assignedAt: FIXED_NOW },
+      });
+    }
+  }
+
+  it('issues a verified link (no store URL), audited with the export, and redeems it as the person', async () => {
+    const produced = await carolsExport();
+    const { link, grant } = await linkFor(produced.id);
+
+    expect(new URL(link.url).pathname).toBe('/api/v1/downloads');
+    expect(link.expiresAt.getTime()).toBe(FIXED_NOW.getTime() + 60_000);
+    expect(grant).toMatchObject({
+      userId: CAROL,
+      subject: { kind: 'REPORT_EXPORT', exportId: produced.id },
+      fileObjectId: produced.fileObjectId,
+      filename: 'documents.csv',
+      mimeType: 'text/csv; charset=utf-8',
+    });
+    const issued = await owner.auditEvent.findFirstOrThrow({
+      where: { tenantId: TENANT, action: 'FILE_DOWNLOAD_ISSUED', subjectId: produced.fileObjectId },
+      orderBy: { sequence: 'desc' },
+    });
+    expect(issued.payload).toMatchObject({
+      after: { kind: 'REPORT_EXPORT', reportExportId: produced.id, delivery: 'VERIFIED' },
+    });
+
+    const { context, audit } = await redeem.redeem(grant, 'reporting-suite');
+    expect(context.userId).toBe(CAROL);
+    expect(audit).toEqual({ reportExportId: produced.id });
+  }, 60_000);
+
+  it('serves the export’s own media type, never the shared blob’s (E-8)', async () => {
+    const produced = await carolsExport();
+    // Whatever the content-addressed row says — another export wrote it first — the link carries
+    // the type of *this* export's format.
+    await owner.fileObject.update({
+      where: { id: produced.fileObjectId },
+      data: { mimeType: 'application/octet-stream' },
+    });
+    const { grant } = await linkFor(produced.id);
+    expect(grant.mimeType).toBe('text/csv; charset=utf-8');
+    await redeem.redeem(grant, 'reporting-suite');
+  }, 60_000);
+
+  it('refuses at redemption once report:view is withdrawn, though it held at issue', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    await withAssignment(CAROL_REPORTS, () =>
+      expect(redeem.redeem(grant, 'reporting-suite')).rejects.toMatchObject({ code: 'NOT_FOUND' }),
+    );
+    await redeem.redeem(grant, 'reporting-suite');
+  }, 60_000);
+
+  it('refuses at redemption once the report’s own permission (document:view) is withdrawn', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    await withAssignment(CAROL_DOCUMENTS, () =>
+      expect(redeem.redeem(grant, 'reporting-suite')).rejects.toMatchObject({ code: 'NOT_FOUND' }),
+    );
+  }, 60_000);
+
+  it('refuses when the person’s permission version moved, or the person was disabled', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    await owner.user.update({ where: { id: CAROL }, data: { permissionVersion: 2 } });
+    await expect(redeem.redeem(grant, 'reporting-suite')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await owner.user.update({
+      where: { id: CAROL },
+      data: { permissionVersion: 1, status: 'DISABLED' },
+    });
+    await expect(redeem.redeem(grant, 'reporting-suite')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await owner.user.update({ where: { id: CAROL }, data: { status: 'ACTIVE' } });
+  }, 60_000);
+
+  it('refuses another person’s export, even with a link naming them', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    // A link the issuer could have produced for Ada (who holds the report's permissions too), for
+    // Carol's export: the export is not Ada's, so it is not hers to take.
+    await expect(redeem.redeem({ ...grant, userId: ADA }, 'reporting-suite')).rejects.toMatchObject(
+      { code: 'NOT_FOUND' },
+    );
+  }, 60_000);
+
+  it('refuses an export that is not COMPLETED, and one whose file is not the link’s', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    for (const state of ['REQUESTED', 'RUNNING', 'FAILED'] as const) {
+      await owner.reportExport.update({ where: { id: produced.id }, data: { state } });
+      await expect(redeem.redeem(grant, 'reporting-suite'), state).rejects.toMatchObject({
+        code: 'NOT_FOUND',
+      });
+    }
+    await owner.reportExport.update({ where: { id: produced.id }, data: { state: 'COMPLETED' } });
+
+    const another = await carolsExport();
+    await expect(
+      redeem.redeem({ ...grant, fileObjectId: uuidv7() }, 'reporting-suite'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    // The same report run twice is byte-identical, so both exports share one content-addressed
+    // blob. A link is still bound to the export it names: one naming the second export is answered
+    // by the second export's record — its owner, state and file — and recorded as that export.
+    expect(another.fileObjectId).toBe(produced.fileObjectId);
+    await expect(
+      redeem.redeem(
+        { ...grant, subject: { kind: 'REPORT_EXPORT', exportId: another.id } },
+        'reporting-suite',
+      ),
+    ).resolves.toMatchObject({ audit: { reportExportId: another.id } });
+    await owner.reportExport.update({ where: { id: another.id }, data: { state: 'FAILED' } });
+    await expect(
+      redeem.redeem(
+        { ...grant, subject: { kind: 'REPORT_EXPORT', exportId: another.id } },
+        'reporting-suite',
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    // The first export is untouched by the second's state.
+    await expect(redeem.redeem(grant, 'reporting-suite')).resolves.toMatchObject({
+      audit: { reportExportId: produced.id },
+    });
+  }, 60_000);
+
+  it('refuses a link whose name or media type is not the export’s own', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    await expect(
+      redeem.redeem({ ...grant, mimeType: 'text/html' }, 'reporting-suite'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(
+      redeem.redeem({ ...grant, filename: 'documents.html' }, 'reporting-suite'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  }, 60_000);
+
+  it('refuses an identifier of another kind presented as a report export, and a report export presented as another kind', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    await expect(
+      redeem.redeem(
+        { ...grant, subject: { kind: 'REPORT_EXPORT', exportId: uuidv7() } },
+        'reporting-suite',
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    // No module redeems audit artefacts in this composition, and a report export's id is not one.
+    await expect(
+      redeem.redeem(
+        {
+          ...grant,
+          subject: { kind: 'AUDIT_ARTEFACT', exportId: produced.id, artefact: 'events.csv' },
+        },
+        'reporting-suite',
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  }, 60_000);
+
+  it('refuses another tenant’s person presenting this tenant’s export identifier', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    const elsewhere = asId<TenantId>(uuidv7());
+    await expect(
+      redeem.redeem({ ...grant, tenantId: elsewhere }, 'reporting-suite'),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  }, 60_000);
+
+  it('refuses quarantined content at issue and at redemption, and a record whose digest is not its file’s', async () => {
+    const produced = await carolsExport();
+    const { grant } = await linkFor(produced.id);
+    const issuedBefore = await owner.auditEvent.count({
+      where: { tenantId: TENANT, action: 'FILE_DOWNLOAD_ISSUED', subjectId: produced.fileObjectId },
+    });
+    for (const finding of ['MISMATCH', 'UNREADABLE'] as const) {
+      await owner.fileObject.update({
+        where: { id: produced.fileObjectId },
+        data: { integrityStatus: finding },
+      });
+      await expect(redeem.redeem(grant, 'reporting-suite')).rejects.toMatchObject({
+        code: 'CONTENT_NOT_SCANNED',
+      });
+      await expect(
+        asCarol(() => reporting.reports.downloadExport(asId<AnyId>(produced.id))),
+      ).rejects.toMatchObject({ code: 'CONTENT_NOT_SCANNED' });
+    }
+    expect(
+      await owner.auditEvent.count({
+        where: {
+          tenantId: TENANT,
+          action: 'FILE_DOWNLOAD_ISSUED',
+          subjectId: produced.fileObjectId,
+        },
+      }),
+    ).toBe(issuedBefore);
+    await owner.fileObject.update({
+      where: { id: produced.fileObjectId },
+      data: { integrityStatus: 'UNVERIFIED' },
+    });
+    await owner.reportExport.update({
+      where: { id: produced.id },
+      data: { sha256: 'f'.repeat(64) },
+    });
+    await expect(redeem.redeem(grant, 'reporting-suite')).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+  }, 60_000);
+
+  it('refuses at issue a file larger than a download can be verified at, and issues nothing', async () => {
+    const produced = await carolsExport();
+    const issued = () =>
+      owner.auditEvent.count({
+        where: {
+          tenantId: TENANT,
+          action: 'FILE_DOWNLOAD_ISSUED',
+          subjectId: produced.fileObjectId,
+        },
+      });
+    const before = await issued();
+    const { sizeBytes } = await owner.fileObject.findUniqueOrThrow({
+      where: { id: produced.fileObjectId },
+    });
+    await owner.fileObject.update({
+      where: { id: produced.fileObjectId },
+      data: { sizeBytes: BigInt(33 * 1024 * 1024) },
+    });
+    try {
+      await expect(
+        asCarol(() => reporting.reports.downloadExport(asId<AnyId>(produced.id))),
+      ).rejects.toMatchObject({ code: 'UNSUPPORTED_CONTENT' });
+      expect(await issued()).toBe(before);
+    } finally {
+      await owner.fileObject.update({
+        where: { id: produced.fileObjectId },
+        data: { sizeBytes },
+      });
+    }
   }, 60_000);
 });

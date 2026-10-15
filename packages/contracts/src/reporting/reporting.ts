@@ -105,6 +105,18 @@ export interface ReportExport {
   readonly substitutions: number;
   readonly completedAt: string | null;
   readonly error: string | null;
+  /**
+   * Whether **this caller** may take the file now: their own completed export, within the size a
+   * download can be verified at. Computed per request; an export somebody else ran is listed but
+   * never offered (E-11).
+   */
+  readonly downloadable: boolean;
+  /**
+   * True when the file is larger than the download limit (`DOWNLOAD_MAX_FILE_BYTES`), so no link
+   * can be issued for it. Said on the row rather than discovered by a refused click; never
+   * replaced by an unverified link.
+   */
+  readonly tooLargeToDownload: boolean;
 }
 
 export interface ReportExportLink {
