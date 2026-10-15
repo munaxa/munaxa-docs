@@ -87,10 +87,19 @@ Bulk links were not exercised in the browser. Nothing in this section has change
 ## 5. Design and defects found since (2026-10-15)
 
 The design for moving these routes onto verified delivery is
-[`hetzner-export-verified-delivery-design.md`](hetzner-export-verified-delivery-design.md). It is
-not implemented. Inspecting the routes found defects not listed above, most importantly:
-- **E-1:** bulk links skip the confidentiality level's `allowDownload`, which the ordinary door
-  enforces;
-- **E-2:** bulk links check neither the operation's kind nor its state.
+[`hetzner-export-verified-delivery-design.md`](hetzner-export-verified-delivery-design.md),
+revision 2. It is a design and implementation plan only; nothing in it is implemented.
 
-Both are recorded there for a separate fix.
+- **Fixed:** E-1 (bulk links skipped the confidentiality level) and E-2 (bulk links checked
+  neither the operation's kind nor its state), in `8c2476a`. That commit also stopped writing
+  `FILE_DOWNLOAD_ISSUED` for documents whose content the gate refuses.
+- **Still open, and addressed by the design:** E-3 to E-7.
+- **Found during the revision:**
+  - E-8: a verified link takes its media type from a shared `file_object`.
+  - E-9: audit artefacts deduplicate across exports.
+  - E-10: a quarantined deduplicated export cannot be recovered by running it again.
+  - E-11: the report screen offers Download on other people's exports.
+  - E-12: the audit screen's popups are blocked after the first.
+
+Until the design is implemented, everything in §1–§4 above still describes the code: these
+routes return 300 s signed store URLs.
