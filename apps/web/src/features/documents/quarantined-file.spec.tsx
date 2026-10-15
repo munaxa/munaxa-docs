@@ -36,7 +36,7 @@ function withFile(file: { integrityStatus: string; reachable: boolean; scanStatu
 }
 
 function downloadButton(name: string): HTMLButtonElement {
-  return screen.getByRole('button', { name }) as HTMLButtonElement;
+  return screen.getByRole<HTMLButtonElement>('button', { name });
 }
 
 function screenFor(file: Parameters<typeof withFile>[0]) {
