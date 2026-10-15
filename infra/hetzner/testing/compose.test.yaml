@@ -3,7 +3,7 @@
 #
 #   docker compose -f infra/hetzner/compose.yaml -f infra/hetzner/testing/compose.test.yaml …
 #
-# It adds exactly two things to the production-shaped template:
+# It adds two services to the production-shaped template, and relaxes one backup check (below):
 #
 #   storage   MinIO, built from the same pinned source CI uses, standing in for the external
 #             S3-compatible store a real deployment names in config/api.env. A passing run proves the
@@ -76,6 +76,17 @@ services:
     depends_on:
       storage:
         condition: service_healthy
+
+  # The backup scripts refuse a backup volume on the database's own filesystem. A CI runner has one
+  # disk, so the stack test relaxes that unless STACKTEST_BACKUP_DIR names a separate filesystem
+  # (run-stack-test.sh). The refusal itself is tested by testing/backup/test-backup-scripts.sh.
+  postgres:
+    environment:
+      BACKUP_ALLOW_SAME_DEVICE: ${STACKTEST_BACKUP_ALLOW_SAME_DEVICE:-1}
+
+  db-backup:
+    environment:
+      BACKUP_ALLOW_SAME_DEVICE: ${STACKTEST_BACKUP_ALLOW_SAME_DEVICE:-1}
 
 networks:
   ci-storage:

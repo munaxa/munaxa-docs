@@ -41,6 +41,7 @@ on:
     tags: ['storage-test/**']
     paths:
       - 'infra/hetzner/**'
+      - 'infra/antivirus/**'
       - '.github/workflows/hetzner-template.yml'
   workflow_dispatch:
 
@@ -56,7 +57,7 @@ jobs:
     name: Compose stack · real images, MinIO, production validation
     if: ${{ !startsWith(github.ref, 'refs/tags/storage-test/') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: read
@@ -111,9 +112,25 @@ jobs:
           load: true
           tags: munaxa-docs-antivirus:stacktest
 
+      # PostgreSQL with the backup scripts (infra/hetzner/postgres; R-1).
+      - name: Build the PostgreSQL image
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/hetzner/postgres
+          push: false
+          load: true
+          tags: munaxa-docs-postgres:stacktest
+
       - name: Remove the registry credential
         if: always()
         run: rm -f "$RUNNER_TEMP/npmrc"
+
+      # The backup scripts on their own: encryption, refusals, retention, restore (README.md §7).
+      # Before the stack test: both use the template's data subnet, so they never run together.
+      - name: Backup script tests
+        run: infra/hetzner/testing/backup/test-backup-scripts.sh
+        env:
+          DOCS_POSTGRES_IMAGE: munaxa-docs-postgres:stacktest
 
       # One signature download a day, as ci.yml does: ClamAV's mirrors throttle repeat fetches, and a
       # throttled scanner has nothing to scan with. The stack test seeds the scanner from this
@@ -129,14 +146,26 @@ jobs:
           key: hetzner-clamav-db-${{ steps.signatures.outputs.day }}
           restore-keys: hetzner-clamav-db-
 
-      - name: Run the stack test
+      # With the backup drill (testing/backup/backup-drill.sh): point-in-time recovery and a tenant
+      # restore from the stack's own data, with the audit chain, RLS and isolation checked.
+      - name: Run the stack test with the backup drill
         run: infra/hetzner/testing/run-stack-test.sh
         env:
           DOCS_API_IMAGE: munaxa-docs-api:stacktest
           DOCS_WEB_IMAGE: munaxa-docs-web:stacktest
           DOCS_ANTIVIRUS_IMAGE: munaxa-docs-antivirus:stacktest
+          DOCS_POSTGRES_IMAGE: munaxa-docs-postgres:stacktest
+          EXTRA_CHECKS: infra/hetzner/testing/backup/backup-drill.sh
           CLAMAV_SEED_DIR: ${{ runner.temp }}/clamav-db
           CLAMAV_EXPORT_DIR: ${{ runner.temp }}/clamav-db
+
+      # Signature refresh, staleness, refusal and the fail-open guard (R-10), with no network, on the
+      # signatures the stack test just exported.
+      - name: Scanner watch tests
+        run: infra/antivirus/test-scanner-watch.sh
+        env:
+          DOCS_ANTIVIRUS_IMAGE: munaxa-docs-antivirus:stacktest
+          CLAMAV_SEED_DIR: ${{ runner.temp }}/clamav-db
 
   # Gate P-1. The same images, the same test, the same harness — with the test MinIO replaced by
   # the dedicated R2 test bucket. A separate job only because the credentials must stay inside the

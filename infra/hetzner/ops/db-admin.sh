@@ -33,7 +33,8 @@ bootstrap() {
   # (`infra/sql/cluster/02-app-credentials.sh` is the local compose stack's version and is not used.)
   #
   # Step 1b: the backup role (STG-2). Row-level security is forced on every tenant table, so a
-  # logical backup needs a role that bypasses it and can read everything, and nothing else.
+  # logical backup needs a role that bypasses it and can read everything, and nothing else — plus
+  # REPLICATION for the nightly base backup (db-backup service).
   psql_admin \
     --set owner_password="$EDMS_OWNER_PASSWORD" \
     --set app_password="$EDMS_APP_PASSWORD" \
@@ -46,6 +47,10 @@ CREATE ROLE edms_backup LOGIN BYPASSRLS;
 \endif
 ALTER ROLE edms_backup PASSWORD :'backup_password';
 GRANT pg_read_all_data TO edms_backup;
+-- Base backups (pg_basebackup) need a replication connection. The role can already read every
+-- row (BYPASSRLS, pg_read_all_data), so this adds no access to data — only the physical copy and
+-- the WAL. pg_hba.conf admits it for replication from the data network only (R-1).
+ALTER ROLE edms_backup REPLICATION;
 SQL
   echo "Cluster roles ready: edms_owner, edms_app, edms_backup."
 }

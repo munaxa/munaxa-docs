@@ -11,7 +11,8 @@
 #   web        the `web` image (`node server.mjs`)
 #   api        the `api` image: HTTP, and every queue consumer and schedule (QUEUE_CONSUMERS_ENABLED)
 #   antivirus  the `antivirus` image: c-icap + ClamAV, plain ICAP on a private network
-#   postgres   PostgreSQL 16, one database per tenant (ADR-0015)
+#   postgres   PostgreSQL 16, one database per tenant (ADR-0015), WAL archived encrypted
+#   db-backup  nightly base backup + per-tenant dumps, encrypted, with retention (README.md §7)
 #   redis      Redis 7, password, AOF, noeviction
 #
 # The `worker` image is deliberately absent: it starts, logs that consumers run in the API process,
@@ -208,12 +209,38 @@ services:
     logging: *logging
 
   postgres:
-    image: ${DOCS_POSTGRES_IMAGE:-postgres:16.10-alpine}
+    # The official PostgreSQL 16.10 image plus `age` and the backup scripts (postgres/Dockerfile).
+    # Production names a published digest in deploy.env; the build is for the template and its tests.
+    image: ${DOCS_POSTGRES_IMAGE:-munaxa-docs-postgres:16.10}
+    build: ./postgres
     restart: unless-stopped
     env_file:
       - ${DOCS_CONFIG_DIR}/postgres.env
+    environment:
+      # Public keys only (deploy.env). The server can encrypt its WAL and never decrypt it.
+      BACKUP_AGE_RECIPIENTS: ${DOCS_BACKUP_AGE_RECIPIENTS:?set DOCS_BACKUP_AGE_RECIPIENTS (age public keys; backup-and-restore.md §5)}
+    # Continuous WAL archiving (R-1; backup-and-restore.md §5): every segment is encrypted onto the
+    # backup volume, and archive_timeout bounds what a lost server can lose to five minutes on a
+    # quiet system. pg_hba.conf adds one rule: edms_backup may replicate from the data network.
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/munaxa-postgres/pg_hba.conf
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=munaxa-archive-wal %p %f
+      - -c
+      - archive_timeout=${DOCS_WAL_ARCHIVE_TIMEOUT:-300}
+      - -c
+      - max_wal_senders=3
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # A different filesystem from postgres-data, ideally a separate block device (a Hetzner
+      # Volume) — the archive script refuses the database's own filesystem (README.md §7).
+      - ${DOCS_BACKUP_DIR:?set DOCS_BACKUP_DIR (a mounted volume, not the root disk)}/wal:/backup/wal
     networks:
       - data
     healthcheck:
@@ -259,11 +286,55 @@ services:
     mem_limit: 384m
     logging: *logging
 
+  # Scheduled PostgreSQL backups (R-1; backup-and-restore.md §5): a base backup and one encrypted
+  # dump per tenant database every night at BACKUP_AT (UTC), retention, and a status file for
+  # monitoring. As edms_backup, on the private data network, with no egress: copying the backup
+  # volume off the server is a host job (README.md §7), so this container can reach nothing but
+  # PostgreSQL.
+  db-backup:
+    image: ${DOCS_POSTGRES_IMAGE:-munaxa-docs-postgres:16.10}
+    restart: unless-stopped
+    <<: *hardening
+    user: '70:70'
+    read_only: true
+    tmpfs:
+      - /tmp
+    entrypoint: ['munaxa-backup', 'run']
+    env_file:
+      # PGPASSWORD for edms_backup; nothing else.
+      - ${DOCS_CONFIG_DIR}/backup.env
+    environment:
+      PGHOST: postgres
+      PGUSER: edms_backup
+      BACKUP_DIR: /backup
+      BACKUP_AGE_RECIPIENTS: ${DOCS_BACKUP_AGE_RECIPIENTS}
+      BACKUP_AT: ${DOCS_BACKUP_AT:-02:30}
+      BACKUP_RETENTION_DAYS: ${DOCS_BACKUP_RETENTION_DAYS:-35}
+      BACKUP_DUMP_RETENTION_DAYS: ${DOCS_BACKUP_DUMP_RETENTION_DAYS:-35}
+    volumes:
+      - ${DOCS_BACKUP_DIR}:/backup
+      # Read-only, and only so the device check can compare filesystems: nothing reads it.
+      - postgres-data:/var/lib/postgresql/data:ro
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Healthy only while the last run succeeded within BACKUP_MAX_AGE_HOURS (26 h).
+      test: ['CMD', 'munaxa-backup', 'health']
+      interval: 5m
+      timeout: 10s
+      retries: 1
+      start_period: 30m
+    mem_limit: 256m
+    logging: *logging
+
   # --- One-off operator commands (profile `ops`; README.md §4) -----------------------------------
 
   db-admin:
     profiles: ['ops']
-    image: ${DOCS_POSTGRES_IMAGE:-postgres:16.10-alpine}
+    image: ${DOCS_POSTGRES_IMAGE:-munaxa-docs-postgres:16.10}
     entrypoint: ['/bin/sh', '/ops/db-admin.sh']
     env_file:
       - ${DOCS_CONFIG_DIR}/postgres.env

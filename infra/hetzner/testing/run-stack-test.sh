@@ -20,6 +20,11 @@
 #                      STORAGE_SECRET_ACCESS_KEY, and optionally STORAGE_TEST_CORS_ORIGIN (the web
 #                      origin the bucket's CORS rule admits, for a browser preflight check).
 #                      Each run writes under its own prefix and deletes what it wrote afterwards.
+#   STACKTEST_BACKUP_DIR  the backup volume to use (default: a new temporary directory). Point it
+#                      at a separate filesystem (a tmpfs, a second disk) to run with the backup
+#                      scripts' same-device refusal ON, as production does; with the default
+#                      directory the refusal is relaxed for the test (compose.test.yaml), because a
+#                      CI runner has one disk.
 #   KEEP_STACK=1       leave the stack and its config running for inspection
 #   EXTRA_CHECKS       a script SOURCED after the standard checks, with this script's functions and
 #                      values in scope (compose, step, tenant_sql, $config, $run_prefix, $admin_pw).
@@ -36,6 +41,9 @@ template="$(cd "$here/.." && pwd)"
 : "${DOCS_ANTIVIRUS_IMAGE:?set DOCS_ANTIVIRUS_IMAGE}"
 export DOCS_API_IMAGE DOCS_WEB_IMAGE DOCS_ANTIVIRUS_IMAGE
 export DOCS_PROJECT_NAME="${DOCS_PROJECT_NAME:-munaxa-docs-stacktest}"
+# PostgreSQL with the backup scripts (postgres/Dockerfile): built from this checkout unless an
+# image under this name already exists (a CI build step, or a local build).
+export DOCS_POSTGRES_IMAGE="${DOCS_POSTGRES_IMAGE:-munaxa-docs-postgres:stacktest}"
 
 config="$(mktemp -d)"
 chmod 700 "$config"
@@ -85,9 +93,15 @@ cleanup() {
     extra_cleanup || echo "WARNING: the extra checks' own cleanup did not complete"
   fi
   if [ "${KEEP_STACK:-}" = "1" ]; then
-    echo "KEEP_STACK=1: stack left running; config in $config"
+    echo "KEEP_STACK=1: stack left running; config in $config, backups in ${DOCS_BACKUP_DIR:-}"
   else
     compose --profile ops --profile test down --volumes --remove-orphans >/dev/null 2>&1 || true
+    # The backup files belong to the image's postgres user, so they are removed from a container.
+    if [ -n "${DOCS_BACKUP_DIR:-}" ] && [ -d "$DOCS_BACKUP_DIR" ]; then
+      docker run --rm --entrypoint sh -v "$DOCS_BACKUP_DIR:/b" "$DOCS_POSTGRES_IMAGE" \
+        -c 'rm -rf /b/* /b/.[!.]* 2>/dev/null; true' >/dev/null 2>&1 || true
+      [ -n "${STACKTEST_BACKUP_DIR:-}" ] || rmdir "$DOCS_BACKUP_DIR" 2>/dev/null || true
+    fi
     rm -rf "$config"
   fi
   exit "$status"
@@ -125,6 +139,10 @@ cat > "$config/operator.env" <<EOF
 EDMS_OWNER_PASSWORD=$owner_pw
 EDMS_APP_PASSWORD=$app_pw
 EDMS_BACKUP_PASSWORD=$backup_pw
+EOF
+
+cat > "$config/backup.env" <<EOF
+PGPASSWORD=$backup_pw
 EOF
 
 cat > "$config/minio.env" <<EOF
@@ -215,6 +233,34 @@ SMOKE_ADMIN_PASSWORD=$admin_pw
 SMOKE_CORS_ORIGIN=$s_cors
 EOF
 
+# --- Backups: a volume, and a key pair for this run only -------------------------------------------
+step "Preparing the backup volume and this run's backup key pair"
+if ! docker image inspect "$DOCS_POSTGRES_IMAGE" >/dev/null 2>&1; then
+  compose build postgres
+fi
+if [ -n "${STACKTEST_BACKUP_DIR:-}" ]; then
+  export DOCS_BACKUP_DIR="$STACKTEST_BACKUP_DIR"
+  export STACKTEST_BACKUP_ALLOW_SAME_DEVICE="${STACKTEST_BACKUP_ALLOW_SAME_DEVICE:-0}"
+else
+  DOCS_BACKUP_DIR="$(mktemp -d)"
+  export DOCS_BACKUP_DIR
+  export STACKTEST_BACKUP_ALLOW_SAME_DEVICE="${STACKTEST_BACKUP_ALLOW_SAME_DEVICE:-1}"
+fi
+as_root mkdir -p "$DOCS_BACKUP_DIR/wal"
+as_root chown -R 70:70 "$DOCS_BACKUP_DIR"
+as_root chmod 0700 "$DOCS_BACKUP_DIR"
+# The identity (private key) exists for this run only, in the private config directory, because the
+# drill restores from what it backs up. A deployment never has it on the server (README.md §7).
+docker run --rm --entrypoint age-keygen "$DOCS_POSTGRES_IMAGE" >"$config/backup-identity.txt" 2>/dev/null
+backup_identity_secret="$(grep -o 'AGE-SECRET-KEY-[A-Z0-9]*' "$config/backup-identity.txt")"
+DOCS_BACKUP_AGE_RECIPIENTS="$(grep -o 'age1[a-z0-9]*' "$config/backup-identity.txt")"
+export DOCS_BACKUP_AGE_RECIPIENTS
+if [ "$STACKTEST_BACKUP_ALLOW_SAME_DEVICE" = 1 ]; then
+  echo "backup volume ready; the same-device refusal is relaxed for this test"
+else
+  echo "backup volume ready; the same-device refusal is ON"
+fi
+
 # --- Validate --------------------------------------------------------------------------------------
 step "Validating the Compose configuration"
 # `-q` only: the rendered configuration inlines env_file values, so it is never printed.
@@ -223,7 +269,12 @@ echo "compose.yaml + testing/compose.test.yaml: valid"
 
 # --- Stateful services ---------------------------------------------------------------------------
 step "Building the test-only object store"
-compose build storage
+# Built from pinned source; an existing image of that name is reused (a CI runner has none).
+if docker image inspect munaxa-docs-test-minio:local >/dev/null 2>&1; then
+  echo "munaxa-docs-test-minio:local already present; not rebuilt"
+else
+  compose build storage
+fi
 
 if [ -n "${CLAMAV_SEED_DIR:-}" ] && ls "$CLAMAV_SEED_DIR"/main.c?d >/dev/null 2>&1; then
   step "Seeding the scanner's signatures from $CLAMAV_SEED_DIR"
@@ -245,6 +296,41 @@ compose --profile ops run --rm db-admin bootstrap
 step "db-admin create-tenant acme / rival"
 compose --profile ops run --rm db-admin create-tenant acme
 compose --profile ops run --rm db-admin create-tenant rival
+
+# --- Backups: R-1 (README.md §7) -----------------------------------------------------------------
+step "db-backup: configuration valid, first base backup and tenant dumps taken at start"
+compose up -d db-backup
+backup() { compose exec -T db-backup munaxa-backup "$@"; }
+for _ in $(seq 1 60); do
+  backup health >/dev/null 2>&1 && break
+  sleep 5
+done
+backup health
+backup list
+for database in edms_acme edms_rival; do
+  if ! compose exec -T db-backup sh -c "ls /backup/dumps/*/$database.dump.age" >/dev/null 2>&1; then
+    echo "FAIL  no encrypted dump of $database"
+    exit 1
+  fi
+done
+# shellcheck disable=SC2016 # expanded inside the container, from postgres.env
+compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d postgres -tA -c "SELECT pg_switch_wal()"' >/dev/null
+sleep 3
+# shellcheck disable=SC2016 # expanded inside the container, from postgres.env
+archiver="$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d postgres -tA -F " " -c "SELECT archived_count, failed_count FROM pg_stat_archiver"')"
+archived="${archiver%% *}" archive_failures="${archiver##* }"
+echo "pg_stat_archiver: archived $archived, failed $archive_failures"
+if [ "$archived" -lt 1 ] || [ "$archive_failures" -ne 0 ]; then
+  echo "FAIL  WAL archiving is not working"
+  exit 1
+fi
+# A custom-format dump starts with PGDMP and a base backup's tar holds PG_VERSION in clear; neither
+# may appear in anything on the volume.
+if compose exec -T db-backup sh -c 'grep -rlE "PGDMP|PG_VERSION" /backup/base /backup/dumps /backup/wal' 2>/dev/null | grep -q .; then
+  echo "FAIL  an unencrypted backup file is on the backup volume"
+  exit 1
+fi
+echo "PASS  base backup, two encrypted tenant dumps, WAL archived with no failures, nothing in plaintext"
 
 # ADR-0026 finding F-1. `migrate` runs on the internal `data` network only, so an image without the
 # schema engine its runtime needs fails there (trying to download one) — this names the cause first.
@@ -321,6 +407,24 @@ fi
 step "Smoke test"
 compose --profile test run --rm smoke
 
+# The check the server's timer runs (ops/host-check.sh; monitoring.md §3): all well on this stack,
+# and a finding — a non-zero exit, which withholds the dead-man's-switch ping — when a limit is
+# crossed.
+step "Host check: all well on a healthy stack, a finding when a limit is crossed"
+host_check() {
+  COMPOSE_FILES="${files[*]}" DOCS_ENV_FILE=/nonexistent "$template/ops/host-check.sh"
+}
+host_check
+if host_check_output="$(DISK_MAX_PERCENT=0 host_check 2>&1)"; then
+  echo "FAIL  host-check passed with a disk limit of 0%"
+  exit 1
+fi
+printf '%s\n' "$host_check_output" | grep -q '^FINDING  disk: / is' || {
+  echo "FAIL  host-check did not name the disk"
+  exit 1
+}
+echo "PASS  host-check reports a crossed limit by exit status, naming what crossed it"
+
 # An HTTP answer is the API's word for it. The scan verdicts are also recorded in the tenant's
 # database with the scanner that gave them and, for an infected file, the signature that matched — a
 # name only the scanner supplies. Read back over the server's local socket; no credential involved.
@@ -385,7 +489,8 @@ refused 'no audit checkpoint key' AUDIT_CHECKPOINT_SECRET -e AUDIT_CHECKPOINT_SE
 step "No generated credential appears in any container log"
 logs="$(compose logs --no-color 2>&1)"
 leaked=0
-for value in "$owner_pw" "$app_pw" "$backup_pw" "$redis_pw" "$minio_pw" "$admin_pw" "$s_secret"; do
+for value in "$owner_pw" "$app_pw" "$backup_pw" "$redis_pw" "$minio_pw" "$admin_pw" "$s_secret" \
+  "$backup_identity_secret"; do
   if printf '%s' "$logs" | grep -qF "$value"; then
     leaked=1
   fi

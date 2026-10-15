@@ -11,12 +11,14 @@ The decision record is [ADR-0026](../../docs/architecture/adr/0026-hetzner-hosti
 
 | Path | What it is |
 | --- | --- |
-| `compose.yaml` | The production-shaped stack: proxy, web, api, antivirus, postgres, redis, plus the one-off `ops` commands |
+| `compose.yaml` | The production-shaped stack: proxy, web, api, antivirus, postgres, db-backup, redis, plus the one-off `ops` commands |
 | `Caddyfile` | The single entry point and ADR-0024's routing rule |
 | `deploy.env.example` | Which images and which secret directory one environment uses (not secret) |
 | `config/*.example` | Placeholder versions of every secret file. **Real copies never go in git** (`.gitignore` refuses them) |
 | `ops/db-admin.sh` | Database bootstrap and tenant-database creation (go-live-runbook.md §6) |
 | `ops/pnpm` | The `pnpm exec` stand-in the migration runner needs inside the API image (ADR-0026 §8) |
+| `ops/host-check.sh` | The server's own check, run by a timer; its exit decides the dead-man's-switch ping (§8) |
+| `postgres/` | PostgreSQL 16.10 plus `age` and the backup scripts: WAL archiving, `munaxa-backup`, `pg_hba.conf` (§7) |
 | `testing/` | The test-only overlay (MinIO + smoke runner), the smoke test and the stack test. **Never deployed** |
 
 ## 2. How it works, in plain terms
@@ -45,6 +47,7 @@ example into it without the `.example` suffix, mode `0600`:
 | `postgres.env` | postgres, db-admin | The superuser password |
 | `redis.env` | redis | The Redis password (also inside `api.env`'s `REDIS_URL`) |
 | `provision.env` | provision | One tenant's first administrator — **delete after use** |
+| `backup.env` | db-backup | `PGPASSWORD` of `edms_backup` (the same value as in `operator.env`) |
 
 **Ownership.** The `*.env` files are read by Docker Compose on the host: owner `root`, mode `0600`.
 The two catalogues are bind-mounted into containers that run as the image's unprivileged `node`
@@ -107,7 +110,9 @@ Measured locally (ADR-0026 §10):
 - The API process's own memory stays near 200 MiB. The page cache of the staged files counts
   against the container's limit; size the server for it.
 
-Report, bulk and audit exports still use signed store URLs. Moving them is a separate decision.
+Report, audit and bulk exports use the same verified links (ADR-0026 §10, "Exports moved onto
+verified delivery"). Since R-9 nothing in the API signs a store URL for reading at all: the preview
+pipeline reads its sources on the port and checks their digests too.
 
 ## 5. Testing the template
 
@@ -262,3 +267,81 @@ multipart writes (used for large internal objects such as audit evidence exports
 (which ADR-0026 §6 asks for; Cloudflare R2 does not offer S3 object versioning — its S3 API
 documents `PutBucketVersioning` as not implemented), or
 downloads in a real browser.
+
+## 7. Backups (R-1)
+
+What runs, in plain terms:
+
+- **PostgreSQL archives every WAL segment** as it completes, at most `DOCS_WAL_ARCHIVE_TIMEOUT`
+  (300 s) after a write, encrypted with `age` to the public keys in `DOCS_BACKUP_AGE_RECIPIENTS`,
+  onto `DOCS_BACKUP_DIR/wal`. A failure keeps the segment in `pg_wal` and retries; nothing is lost
+  while it fails, but `pg_wal` grows (monitoring M9).
+- **`db-backup` takes a base backup and one dump per tenant database** every night at
+  `DOCS_BACKUP_AT` (UTC), and one at its first start. Both are encrypted the same way.
+  - The base backup is `pg_basebackup -Ft` with the WAL inside and a SHA-256 manifest.
+  - The dumps are `pg_dump --format=custom` as `edms_backup`, plus the role definitions without
+    passwords.
+  - Then it prunes: base backups and their WAL after `DOCS_BACKUP_RETENTION_DAYS` (35), dumps
+    after `DOCS_BACKUP_DUMP_RETENTION_DAYS` (35), always keeping the newest two.
+  - It writes `status/backup.prom` for monitoring.
+- **The server cannot read its own backups.** It holds only public keys. Both containers refuse to
+  run beside a private key, and refuse a backup directory on the database's own filesystem.
+
+| Property | Value | Where |
+| --- | --- | --- |
+| RPO (cluster, point in time) | ≤ 5 min of committed writes plus whatever had not left the server when it was lost | `archive_timeout`; but see the off-server copy below |
+| RTO | Not measured at production scale; the local drill's numbers are in the readiness report | backup-and-restore.md §5 |
+| Encryption | `age` X25519, public-key; identities offline with two holders (key-rotation.md §5) | `postgres/` scripts |
+| Integrity | SHA-256 of every encrypted file at write; of every WAL segment's plaintext; the base backup's own manifest checked by `pg_verifybackup` on restore | `munaxa-backup decrypt`, `restore-base`, `munaxa-restore-wal` |
+| Access | Backup volume owned by uid 70, mode 0700; `db-backup` has no network but the private `data` one; `edms_backup` may replicate only from that network | compose.yaml, `postgres/pg_hba.conf` |
+
+### Setting it up on a server
+
+1. Attach a volume that is **not** the root disk (a Hetzner Volume, for example), mount it, for
+   example at `/mnt/munaxa-backup`, then `chown 70:70` and `chmod 0700` it, and create `wal/`
+   inside it the same way.
+2. Generate **two** age identities **offline** (`age-keygen`, on the owner's and a second holder's
+   machines). Put only the two public keys in `DOCS_BACKUP_AGE_RECIPIENTS`; record the identities
+   in the escrow (key-rotation.md §5). Never copy an identity to the server.
+3. Write `backup.env`, run `db-admin bootstrap` (it grants `edms_backup` REPLICATION), then
+   `$C up -d`.
+4. Check: `$C exec db-backup munaxa-backup list` shows a base backup and a dump set;
+   `$C exec db-backup munaxa-backup health` exits 0.
+
+### Copying it off the server (not built)
+
+The volume is on the same server and the same provider as the database, so a lost server or a lost
+Hetzner account loses both. ADR-0026 §9 requires an encrypted copy **at a different provider**.
+Because everything on the volume is already encrypted to keys the server does not hold, the copy
+can be a plain file sync of `DOCS_BACKUP_DIR` by a host timer (for example `rclone sync` to a
+bucket at another provider, with credentials that can write but not delete). That job, its
+credentials and its schedule are a hosted step:
+- it is **not** in this template;
+- it has **not** been run;
+- until it exists, the RPO for losing the whole server is the age of the last copy taken by hand.
+
+### Restoring
+
+[backup-and-restore.md §5](../../docs/operations/backup-and-restore.md) has the procedures: a whole
+cluster to a point in time, and one tenant from its dump. They are what
+`testing/backup/backup-drill.sh` runs.
+
+### Tests
+
+- `testing/backup/test-backup-scripts.sh`: the scripts alone. It covers encryption, idempotent and
+  never-overwriting archiving, digest checks, every configuration refusal, base backups, dumps,
+  retention, status and failure reporting, and `restore-base`. Negative control: removing the
+  same-device and no-overwrite guards fails 3 checks.
+- `testing/backup/backup-drill.sh` (as `EXTRA_CHECKS`): point-in-time recovery and a tenant
+  restore from the real stack's data, with the audit chain, RLS and tenant-isolation checks.
+- `testing/run-stack-test.sh` itself checks, on every run, that the first backup exists, that WAL
+  is archived with no failures, and that nothing on the volume is plaintext.
+
+## 8. Monitoring
+
+[docs/operations/monitoring.md](../../docs/operations/monitoring.md). In short:
+- `ops/host-check.sh` runs on a 5-minute timer and pings a dead-man's switch when all is well;
+- an outside service checks `/login`.
+
+The script is tested by the stack test. The timer, the switch and the uptime check are hosted
+steps, not yet built.

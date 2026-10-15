@@ -199,3 +199,110 @@ So: **the database restore is verified and the object-storage restore is not.** 
 still a target rather than a measurement of a production-scale dataset, though it now has a first
 number beside it — 20.5 seconds of restore for two small tenant databases, which says the procedure
 works rather than that it will finish in two hours.
+
+## 5. The Hetzner template's backups (R-1)
+
+**Status:** implemented in `infra/hetzner/` and drilled **locally** with disposable data (§5.4).
+Not run on Hetzner. The off-server copy is not built.
+
+### 5.1 What is taken, and where it goes
+
+| Asset | Method | Encryption | Retention | RPO |
+| --- | --- | --- | --- | --- |
+| Cluster WAL | `archive_command` → `munaxa-archive-wal`, every segment, forced at least every `archive_timeout` (300 s) when there are writes | `age`, public-key, at write | Back to the oldest kept base backup | ≤ 5 min on the server |
+| Cluster base backup | `pg_basebackup -Ft -X fetch --manifest-checksums=SHA256`, nightly (`db-backup`) | `age` | 35 days, newest 2 always kept | — |
+| Each tenant database | `pg_dump --format=custom` as `edms_backup`, nightly, plus roles without passwords | `age` | 35 days, newest 2 always kept | The dump's time |
+| Off-server copy | **Not built**: a host sync of the (already encrypted) backup volume to another provider (infra/hetzner/README.md §7) | inherited | provider's | Until built: the last manual copy |
+
+**Where:**
+
+- `DOCS_BACKUP_DIR`, a filesystem that is not the database's. Both writers refuse the database's
+  own filesystem.
+- Owned by uid 70, mode 0700.
+- Reached only by the `postgres` container (WAL) and `db-backup`, which has no network except the
+  private data network.
+
+**Keys:**
+
+- The server holds only `age` public keys (`DOCS_BACKUP_AGE_RECIPIENTS`, at least two holders).
+- The identities are offline (key-rotation.md §5).
+- `db-backup` refuses to run beside an identity.
+
+### 5.2 Point-in-time recovery of the cluster (then §2.2 for one tenant)
+
+Into a **new** container and volume, never over the live cluster, with an identity brought from
+the escrow:
+
+```bash
+# 1. Decrypt, extract and verify a base backup older than the target time.
+#    restore-base checks the ciphertext's SHA-256, then pg_verifybackup checks every file against
+#    the manifest.
+docker run --rm --user 70:70 --network none -v recovery:/restore -v "$DOCS_BACKUP_DIR:/backup:ro" \
+  -v /path/to/identity:/restore-identity:ro -e BACKUP_AGE_IDENTITY_FILE=/restore-identity \
+  "$DOCS_POSTGRES_IMAGE" munaxa-backup restore-base <name|latest> /restore/data
+
+# 2. Recovery settings. The archive is mounted read-only. The identity file must be readable by
+#    uid 70 inside the recovery volume.
+cat >> /restore/data/postgresql.auto.conf <<'EOF'
+restore_command = 'BACKUP_AGE_IDENTITY_FILE=/restore/identity munaxa-restore-wal %f %p'
+recovery_target_time = '2026-10-15 19:20:00+00'
+recovery_target_action = 'promote'
+EOF
+touch /restore/data/recovery.signal
+
+# 3. Start it on its own network; wait for pg_is_in_recovery() = false.
+docker run -d --user 70:70 --network <isolated> -v recovery:/restore \
+  -v "$DOCS_BACKUP_DIR/wal:/backup/wal:ro" --entrypoint postgres "$DOCS_POSTGRES_IMAGE" -D /restore/data
+```
+
+**Then:**
+
+- Check §3's conditions on the recovered databases.
+- Take out the tenant you need by §2.2 steps 2–4.
+- Retire the recovery container and volume, and the identity copy inside it.
+
+`munaxa-restore-wal` refuses a segment whose decrypted digest is not the one recorded at archive
+time, so recovery stops rather than replay altered WAL.
+
+### 5.3 One tenant from its dump (§2.1, from the encrypted files)
+
+```bash
+munaxa-backup decrypt /backup/dumps/<set>/edms_<slug>.dump.age > edms_<slug>.dump  # checks the digest first
+# …then §2.1 from step 1 (roles first, a NEW database name, --exit-on-error, grants and
+# post-migration SQL, the chain verified, then the catalogue repointed).
+```
+
+### 5.4 The drill: what it proves and what it does not
+
+`infra/hetzner/testing/backup/backup-drill.sh`, run inside the stack test against the real images
+with the smoke test's data:
+
+1. a base backup;
+2. change A;
+3. the target time;
+4. change B;
+5. the WAL archived.
+
+Then:
+
+- **PITR** into a new container: A present (it came from the WAL), B absent. Each tenant database
+  is identical at the target (audit-trail length, last position and digest; users, documents,
+  files).
+- **Isolation:** row-level security is enabled **and forced** on every tenant-scoped table, and
+  `edms_app` is neither superuser nor BYPASSRLS. Each database holds only its own tenant's users.
+  As `edms_app`, acme's context sees acme's users and rival's context sees none.
+- **The audit hash chain** of the recovered database verifies from genesis with the product's own
+  verifier.
+- **Recovery to the end of the archive**: A and B both present.
+- **One tenant's encrypted dump** restored beside the others under a new name: the same contents as
+  at the dump, RLS still forced, its chain verifying.
+
+The drill's results, with timings, are in the readiness report.
+
+**It does not prove:**
+
+- anything about Hetzner's disks or a Hetzner Volume;
+- the off-server copy;
+- a restore at production size, so no RTO;
+- §3's condition 3 (checkpoints in object storage) and condition 4 (blob re-hash). Those belong
+  to the object-storage restore, which depends on the provider (D-3).
