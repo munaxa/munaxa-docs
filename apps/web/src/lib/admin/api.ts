@@ -10,6 +10,8 @@ import type { PermissionKey } from '@edms/domain';
 import { apiFetch } from '../api-client';
 import { currentLocale, currentSession } from '../session';
 import { SESSION_CHECK_TIMEOUT_MS, isRejection, sessionEndedPath } from '../session-check';
+import { DEFAULT_LOCALE, type LocaleKey } from '@edms/i18n';
+
 import { type ActionResult, succeeded, toActionResult } from './action-result';
 import { type ListState, listQueryString } from './list-state';
 
@@ -118,6 +120,24 @@ export async function adminAccess(permission: PermissionKey): Promise<{
   return { granted: permissions.includes(permission), permissions };
 }
 
+/**
+ * A failed call as a result, with any stated reason in the person's language.
+ *
+ * The locale only chooses a sentence, so failing to read it — outside a request, where `cookies()`
+ * throws — falls back to the default language rather than turning a handled refusal into a crash.
+ */
+export async function failureOf<TResult>(error: unknown): Promise<ActionResult<TResult>> {
+  return toActionResult<TResult>(error, await sentenceLocale());
+}
+
+async function sentenceLocale(): Promise<LocaleKey> {
+  try {
+    return await currentLocale();
+  } catch {
+    return DEFAULT_LOCALE;
+  }
+}
+
 /** A page of an administered resource, for the state the URL described. */
 export async function adminList<TItem>(path: string, state: ListState): Promise<Collection<TItem>> {
   return apiFetch<Collection<TItem>>({
@@ -160,7 +180,7 @@ export async function adminRead<TResult>(path: string): Promise<ActionResult<TRe
     if (isRejection(error)) {
       redirect(sessionEndedPath() as Route);
     }
-    return toActionResult<TResult>(error, await currentLocale());
+    return failureOf<TResult>(error);
   }
 }
 
@@ -232,6 +252,6 @@ export async function adminWrite<TResult = void>(
     if (isRejection(error)) {
       redirect(sessionEndedPath() as Route);
     }
-    return toActionResult<TResult>(error, await currentLocale());
+    return failureOf<TResult>(error);
   }
 }
