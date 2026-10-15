@@ -505,7 +505,7 @@ const cases = {
           waitUntil: 'networkidle',
         },
       );
-      await small.page.getByRole('button', { name: 'Add', exact: true }).click();
+      await small.page.getByRole('button', { name: 'Upload document', exact: true }).click();
       const smallDialog = small.page.getByRole('dialog', { name: 'Add documents' });
       await smallDialog.locator('input[type=file]').setInputFiles(`${OUT}/reach-probe.txt`);
       const button = smallDialog.getByRole('button', { name: /^File \d+ documents?$/ });
@@ -533,7 +533,7 @@ const cases = {
     await page.goto(`${WEB}/documents?libraryId=${library.id}&folderId=${library.folderId}`, {
       waitUntil: 'networkidle',
     });
-    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.getByRole('button', { name: 'Upload document', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Add documents' });
     await dialog.locator('input[type=file]').setInputFiles(path);
     await dialog.locator('select[name=documentTypeId]').selectOption(typeId);
@@ -600,6 +600,8 @@ const cases = {
     );
 
     await documentPage(page, documents.text.id);
+    // Docs v2: the record page's sections are tabs; the revision panel is on "Revisions".
+    await page.getByRole('tab', { name: 'Revisions', exact: true }).click();
     const revisions = page.getByRole('region', { name: 'Revisions' });
     result(
       'download-revision',
@@ -948,8 +950,8 @@ const cases = {
     // An audit evidence export of today's range.
     await page.goto(`${WEB}/audit`, { waitUntil: 'networkidle' });
     const today = new Date().toISOString().slice(0, 10);
-    await page.getByLabel('From').fill(today);
-    await page.getByLabel('To').fill(today);
+    await page.getByRole('textbox', { name: 'From', exact: true }).fill(today);
+    await page.getByRole('textbox', { name: 'To', exact: true }).fill(today);
     await page.getByRole('button', { name: 'Apply' }).click();
     await page.waitForLoadState('networkidle');
     await page.getByRole('button', { name: 'Export this range' }).click();
