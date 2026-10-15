@@ -60,8 +60,9 @@ only the intended ports.
 | `api.env`, `postgres.env`, `redis.env`, `operator.env`, `backup.env`, the catalogues | `DOCS_CONFIG_DIR` (`/etc/munaxa-docs`, 0700 root) | 0600 root (catalogues 0400 uid 1000) | The password manager and the offline escrow (key-rotation.md §5). **Not** in the database backups |
 | The three long-lived keys and their previous values | `api.env` | as above | escrow, with key ids and dates (key-rotation.md) |
 | `age` **identities** for the backups | **never on the server** | — | two holders, offline |
-| The dead-man's-switch URL | `/etc/munaxa-docs/monitoring.env` | 0600 root | password manager |
-| The off-server copy's write-only credential | `/etc/munaxa-docs/offsite.env` (when built) | 0600 root | password manager |
+| The heartbeat and alert URLs, and who is paged | `/etc/munaxa-docs/monitoring.env` (config/monitoring.env.example) | 0600 root | password manager |
+| The off-server copy's no-delete credential | `/etc/munaxa-docs/offsite.env` (config/offsite.env.example) | 0600 root | password manager |
+| Caddy's ACME account key and certificates (direct TLS) | the `caddy-data` volume | Docker volume | not backed up: re-issued if lost (mind the CA's rate limits) |
 | GHCR pull credential (if the images are private) | `/root/.docker/config.json` | 0600 | password manager; a read-only token |
 
 **Rules:**
@@ -80,14 +81,20 @@ only the intended ports.
 - the `api`, `web` and `antivirus` images published by `publish-images.yml`, by `@sha256:` digest;
 - the third-party images (Caddy, Redis), pinned by digest too.
 
-**Open item:** `munaxa-docs-postgres` (infra/hetzner/postgres) is not yet in `publish-images.yml`.
-Until it is, TEST builds it from the release checkout and records the image ID, so the release
-cannot be reproduced bit for bit.
+**The PostgreSQL image** (`munaxa-docs-postgres`) is now a fourth leg of `publish-images.yml`: built
+from `infra/hetzner/postgres`, accepted by `postgres/verify-image.sh` (PostgreSQL 16.10, age 1.2.1,
+the backup tools, the refusal of a private key, a real start, no credential in its history), pushed,
+pulled back by digest and accepted again. **Nothing has been published**: the workflow runs only
+for an `image/<sha>` tag, which the owner pushes for the commit chosen for TEST. Until then every
+digest in `deploy.test.env.example` is a placeholder. The third-party images (Caddy, Redis, and
+rclone for the off-server copy, already pinned in compose.yaml) are pinned by digest in `deploy.env`;
+`ops/check-deploy-env.sh` refuses a tag.
 
 **Release** (from the release checkout, `C="docker compose --env-file deploy.env -f infra/hetzner/compose.yaml"`):
 
 1. Write the new digests into a **new** `deploy.env`; keep the previous file as
-   `deploy.env.<previous release>`.
+   `deploy.env.<previous release>`. Run `infra/hetzner/ops/check-deploy-env.sh deploy.env --on-host`
+   until it reports nothing wrong *(script tested; never run on a server)*.
 2. `$C pull`, then confirm each pulled image's digest is the one written: `docker image inspect --format '{{index .RepoDigests 0}}' <image>`.
 3. **Pre-deployment backup:** `$C exec db-backup munaxa-backup once`. Write down the base backup's
    name and the time.
@@ -123,8 +130,9 @@ hours, not minutes (ADR-0026 §9). **Never rehearsed (open).**
    - after a compromise, rotate every secret except the three long-lived keys, which are moved to
      their previous lists (key-rotation.md §3).
 4. **Data:**
-   - copy the newest encrypted backup set (base backups, `wal/`, dumps) from the off-server copy
-     onto the new backup volume;
+   - `offsite fetch` the newest complete recovery point (base backup, every verified WAL file after
+     it, the newest dump set) from the off-server copy onto the new backup volume, every byte
+     checked (backup-and-restore.md §5.5) *(tested against MinIO, and the drill recovers from it)*;
    - recover by backup-and-restore.md §5.2 to the end of the archive, or to a time before a
      compromise, into the `postgres-data` volume;
    - verify by §3 (chain, RLS, tenant isolation; the drill's checks).
@@ -137,5 +145,40 @@ hours, not minutes (ADR-0026 §9). **Never rehearsed (open).**
    - what was lost: the window between the last WAL that left the server and the failure;
    - how long each step took. That is the first real RTO measurement.
 
-**The weak link today:** step 4 needs an off-server copy, which is not built (README.md §7). Until
-it is, losing the server loses the backups with it.
+**The weak link today:** step 4 needs the off-server copy running at a real provider. The job is
+built and tested against a stand-in; until a bucket exists and G-1/G-2 pass on it, losing the
+server loses the backups with it.
+
+## 7. Direct TLS on the host (TLS option C)
+
+Recommended for TEST (readiness report §5.2), **not yet chosen** (D-2). With it, Caddy terminates TLS
+on this server and nobody else decrypts traffic.
+
+**Prerequisites, in this order:**
+
+1. The TEST host name (D-8) chosen; its A (and AAAA, if IPv6 is used) record points at the server's
+   address. Let's Encrypt checks it from several places on the internet.
+2. The Hetzner Cloud Firewall admits TCP 80 and 443 from anywhere (§1, column C). Port 80 must stay
+   open: it answers the HTTP-01 challenge and redirects everything else.
+3. `deploy.env` names `DOCS_PUBLIC_HOSTNAME` and `DOCS_ACME_EMAIL`, and for the first start
+   `DOCS_ACME_CA` = Let's Encrypt **staging** (no rate limits, an untrusted certificate).
+   `check-deploy-env.sh` refuses an address, `localhost` or an example name.
+4. `$C up -d` with `-f infra/hetzner/compose.tls.yaml`. Caddy obtains the certificate within a
+   minute; `docker compose logs proxy` says so. Then remove `DOCS_ACME_CA`, delete the staging
+   state (`docker volume rm <project>_caddy-data` with the proxy stopped) and start again for the
+   real certificate.
+
+**Renewal** is automatic (about 30 days before expiry) and needs the same two ports and DNS.
+`host-check.sh` reports a certificate with fewer than 14 days left (M15). The certificates and the
+ACME account live in the `caddy-data` volume; on tmpfs every restart would request a new
+certificate and soon hit Let's Encrypt's rate limits — the TLS test shows the difference.
+
+**Client addresses.** Browsers reach Caddy directly and Docker keeps the source address of
+published ports, so no forwarded header is trusted. **To verify on TEST:** the sign-in rate limit
+and audit records see distinct client addresses (G-5).
+
+**Tested locally** (`testing/tls/test-tls.sh`, Caddy's local CA in place of Let's Encrypt):
+configuration, rendered ports and networks, routing, the redirect, HSTS, the certificate's name,
+the token kept out of the access log, persistence across a restart. **Not tested:** a real
+issuance, renewal, DNS, the firewall.
+

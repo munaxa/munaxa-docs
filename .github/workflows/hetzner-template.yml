@@ -125,6 +125,25 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/npmrc"
 
+      # What publish-images.yml would accept before pushing it (R-13): versions, tools, a real start.
+      - name: PostgreSQL image acceptance
+        run: infra/hetzner/postgres/verify-image.sh munaxa-docs-postgres:stacktest
+
+      # The deploy.env pre-flight (ops/check-deploy-env.sh): a complete TEST file passes, each
+      # mistake is refused, the shipped examples are refused until filled in.
+      - name: deploy.env check tests
+        run: infra/hetzner/testing/deploy/test-check-deploy-env.sh
+
+      # Alert delivery (ops/monitor.sh) against a local receiver: refusals, heartbeat, findings,
+      # hostile text, delivery failure, no URL token printed.
+      - name: Alert delivery tests
+        run: infra/hetzner/testing/monitoring/test-monitor.sh
+
+      # Direct TLS on the host (compose.tls.yaml, Caddyfile.tls) with Caddy's local CA instead of
+      # Let's Encrypt: configuration, rendered ports and networks, routing, redirect, HSTS, persistence.
+      - name: Direct TLS tests
+        run: infra/hetzner/testing/tls/test-tls.sh
+
       # The backup scripts on their own: encryption, refusals, retention, restore (README.md §7).
       # Before the stack test: both use the template's data subnet, so they never run together.
       - name: Backup script tests
@@ -147,7 +166,8 @@ jobs:
           restore-keys: hetzner-clamav-db-
 
       # With the backup drill (testing/backup/backup-drill.sh): point-in-time recovery and a tenant
-      # restore from the stack's own data, with the audit chain, RLS and isolation checked.
+      # restore from the stack's own data, with the audit chain, RLS and isolation checked — and the
+      # same recovery from the off-server copy alone (drill step 6).
       - name: Run the stack test with the backup drill
         run: infra/hetzner/testing/run-stack-test.sh
         env:
@@ -158,6 +178,26 @@ jobs:
           EXTRA_CHECKS: infra/hetzner/testing/backup/backup-drill.sh
           CLAMAV_SEED_DIR: ${{ runner.temp }}/clamav-db
           CLAMAV_EXPORT_DIR: ${{ runner.temp }}/clamav-db
+
+      # The off-server copy (offsite/offsite.sh) against a local MinIO stand-in: outage, interrupted
+      # and duplicate runs, foreign objects, never deleting, fetch and decrypt. After the stack test,
+      # which builds the test MinIO image.
+      - name: Off-server copy tests
+        run: infra/hetzner/testing/offsite/test-offsite.sh
+        env:
+          DOCS_POSTGRES_IMAGE: munaxa-docs-postgres:stacktest
+
+      # The document store's readiness checks through the product's adapter, against MinIO: a
+      # versioned, Object-Locked bucket (all must pass), then the control without them.
+      - name: Storage readiness checks (MinIO)
+        run: |
+          infra/hetzner/testing/storage/run-storage-readiness.sh
+          LOCAL_BUCKET=plain infra/hetzner/testing/storage/run-storage-readiness.sh
+          if LOCAL_BUCKET=plain LOCAL_EXPECT_FEATURES=1 infra/hetzner/testing/storage/run-storage-readiness.sh; then
+            echo "::error::the readiness check passed a bucket without versioning while expecting it"; exit 1
+          fi
+        env:
+          DOCS_API_IMAGE: munaxa-docs-api:stacktest
 
       # Signature refresh, staleness, refusal and the fail-open guard (R-10), with no network, on the
       # signatures the stack test just exported.

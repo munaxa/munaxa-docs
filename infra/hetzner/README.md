@@ -11,14 +11,18 @@ The decision record is [ADR-0026](../../docs/architecture/adr/0026-hetzner-hosti
 
 | Path | What it is |
 | --- | --- |
-| `compose.yaml` | The production-shaped stack: proxy, web, api, antivirus, postgres, db-backup, redis, plus the one-off `ops` commands |
-| `Caddyfile` | The single entry point and ADR-0024's routing rule |
-| `deploy.env.example` | Which images and which secret directory one environment uses (not secret) |
+| `compose.yaml` | The production-shaped stack: proxy, web, api, antivirus, postgres, db-backup, redis, plus the one-off `ops` commands (`offsite` among them) |
+| `compose.tls.yaml`, `Caddyfile.tls` | Direct TLS on the host: automatic HTTPS, ports 80/443, a volume for certificates (§9). Not used until D-2 |
+| `Caddyfile`, `caddy/routes.caddy` | The plain-HTTP entry point, and ADR-0024's routing rule shared by both Caddyfiles |
+| `deploy.env.example`, `deploy.test.env.example` | Which images and which secret directory one environment uses (not secret); the second is the TEST environment's, with direct TLS |
+| `offsite/offsite.sh` | The off-server backup copy and its recovery (`fetch`) (§7) |
 | `config/*.example` | Placeholder versions of every secret file. **Real copies never go in git** (`.gitignore` refuses them) |
 | `ops/db-admin.sh` | Database bootstrap and tenant-database creation (go-live-runbook.md §6) |
 | `ops/pnpm` | The `pnpm exec` stand-in the migration runner needs inside the API image (ADR-0026 §8) |
-| `ops/host-check.sh` | The server's own check, run by a timer; its exit decides the dead-man's-switch ping (§8) |
-| `postgres/` | PostgreSQL 16.10 plus `age` and the backup scripts: WAL archiving, `munaxa-backup`, `pg_hba.conf` (§7) |
+| `ops/host-check.sh`, `ops/monitor.sh` | The server's own check, and its delivery: the dead-man's-switch ping or the findings (§8) |
+| `ops/check-deploy-env.sh` | Checks a `deploy.env` (and, with `--on-host`, the server's files) before anything starts |
+| `ops/systemd/` | The timers: host check every 5 minutes, off-server copy every 15 |
+| `postgres/` | PostgreSQL 16.10 plus `age` and the backup scripts: WAL archiving, `munaxa-backup`, `pg_hba.conf` (§7); `verify-image.sh` accepts a build before it is published |
 | `testing/` | The test-only overlay (MinIO + smoke runner), the smoke test and the stack test. **Never deployed** |
 
 ## 2. How it works, in plain terms
@@ -48,6 +52,8 @@ example into it without the `.example` suffix, mode `0600`:
 | `redis.env` | redis | The Redis password (also inside `api.env`'s `REDIS_URL`) |
 | `provision.env` | provision | One tenant's first administrator — **delete after use** |
 | `backup.env` | db-backup | `PGPASSWORD` of `edms_backup` (the same value as in `operator.env`) |
+| `offsite.env` | offsite | The off-server bucket and its no-delete credential (§7) |
+| `monitoring.env` | ops/monitor.sh (host) | The heartbeat URL, optional alert URLs, and who is paged (§8) |
 
 **Ownership.** The `*.env` files are read by Docker Compose on the host: owner `root`, mode `0600`.
 The two catalogues are bind-mounted into containers that run as the image's unprivileged `node`
@@ -55,7 +61,8 @@ user (uid 1000), so they must be readable by that user and nobody else:
 `chown 1000:1000 tenants.json operator-tenants.json && chmod 0400 tenants.json operator-tenants.json`.
 (Found by the stack test: with root-only files the migration runner stops with `EACCES`.)
 
-Then a `deploy.env` from `deploy.env.example`, naming the release digests.
+Then a `deploy.env` from `deploy.env.example` (TEST: `deploy.test.env.example`), naming the release
+digests, and `ops/check-deploy-env.sh deploy.env --on-host` until it reports nothing wrong.
 
 ## 4. Operating it
 
@@ -261,6 +268,20 @@ than `S3`/`R2` is refused before anything starts.
 | A **lifecycle rule** expiring objects after a day (recommended) | A safety net if a run is interrupted before its cleanup |
 | For Hetzner Object Storage: a **separate Hetzner project** for the test | Its S3 credentials are understood to reach every bucket in their project (verify) |
 
+**Storage readiness for Hetzner Object Storage (prepared, not run: no bucket exists).**
+`testing/storage/run-storage-readiness.sh` asks the store, through the product's own adapter, what
+the verified reads, quarantine and recovery depend on: private access, upload and download
+integrity (size and SHA-256), the refusal of mismatched bytes, missing objects, server-side
+multipart, an aborted multipart leaving nothing, overwritten bytes being what a read returns,
+versioning (list, read, restore a prior version, undo a delete), Object Lock (an early delete
+refused, a late one allowed), credential scope (another bucket refused) and cleanup of every
+version. Against MinIO it passes 30 of 30 with versioning and Object Lock on, and reports those two
+as UNSUPPORTED — or FAIL when expected — on a bucket without them. The same file format as
+`EXTERNAL_STORAGE_ENV`, plus `STORAGE_TEST_EXPECT_VERSIONING=1`, `STORAGE_TEST_EXPECT_OBJECT_LOCK=1`
+and `STORAGE_TEST_OTHER_BUCKET`, runs it against the real bucket; with the stack test against that
+bucket (above) it is gate P-1 for Hetzner Object Storage. End-to-end downloads, quarantine of a
+swapped or vanished file and the store-outage case run in a browser in Phase B, against MinIO only.
+
 **What a pass will and will not prove.** It proves the single-PUT upload path, checksum confirmation,
 tampered-byte refusal and scanner read-back on that provider. It does not exercise server-side
 multipart writes (used for large internal objects such as audit evidence exports), object versioning
@@ -308,17 +329,38 @@ What runs, in plain terms:
 4. Check: `$C exec db-backup munaxa-backup list` shows a base backup and a dump set;
    `$C exec db-backup munaxa-backup health` exits 0.
 
-### Copying it off the server (not built)
+### Copying it off the server
 
 The volume is on the same server and the same provider as the database, so a lost server or a lost
 Hetzner account loses both. ADR-0026 §9 requires an encrypted copy **at a different provider**.
-Because everything on the volume is already encrypted to keys the server does not hold, the copy
-can be a plain file sync of `DOCS_BACKUP_DIR` by a host timer (for example `rclone sync` to a
-bucket at another provider, with credentials that can write but not delete). That job, its
-credentials and its schedule are a hosted step:
-- it is **not** in this template;
-- it has **not** been run;
-- until it exists, the RPO for losing the whole server is the age of the last copy taken by hand.
+That is the `offsite` service (`offsite/offsite.sh`, profile `ops`), run every 15 minutes by
+`ops/systemd/munaxa-offsite.timer`:
+
+- it copies the volume's files — already ciphertext — to a bucket at another provider, mounting the
+  volume **read-only**, holding no key that can decrypt them;
+- it **never deletes or overwrites** anything on the remote, and its credential should not be able
+  to either;
+- it reads back every new file (size, the provider's MD5 when it has one, and the SHA-256 of the
+  downloaded bytes) and only then records it; a base backup or dump set is a recovery point on the
+  remote only once its `COMPLETE` marker is written, after all its files verified;
+- `offsite fetch` recovers onto a new host from the remote alone, checking every byte.
+
+Procedure, retention and failure handling: backup-and-restore.md §5.5.
+
+**Setting it up** (after the provider account exists — not yet the case):
+
+1. In the provider's console: a private bucket in an EU region, versioning on, Object Lock if
+   offered, a lifecycle rule (versions ≥ 45 days; abort unfinished uploads after 1 day), and a key
+   limited to that bucket that can list, read and write but not delete.
+2. `config/offsite.env.example` → `${DOCS_CONFIG_DIR}/offsite.env`, mode 0600.
+3. `mkdir -p /var/lib/munaxa-docs/offsite && chown 70:70 … && chmod 0700 …` (`DOCS_OFFSITE_STATE_DIR`).
+4. `$C --profile ops run --rm offsite validate`, then `… offsite sync` once by hand.
+5. Install and enable `ops/systemd/munaxa-offsite.{service,timer}`.
+
+**Tested:** `testing/offsite/test-offsite.sh` against MinIO (outage, interrupted and duplicate
+runs, foreign objects, fetch and decrypt, a refused delete), and the drill recovers a cluster from
+the fetched copy. **Not tested:** any real provider; Backblaze B2 and Scaleway are proposals whose
+EU region and Object Lock must be confirmed in the console.
 
 ### Restoring
 
@@ -335,13 +377,42 @@ cluster to a point in time, and one tenant from its dump. They are what
 - `testing/backup/backup-drill.sh` (as `EXTRA_CHECKS`): point-in-time recovery and a tenant
   restore from the real stack's data, with the audit chain, RLS and tenant-isolation checks.
 - `testing/run-stack-test.sh` itself checks, on every run, that the first backup exists, that WAL
-  is archived with no failures, and that nothing on the volume is plaintext.
+  is archived with no failures, that nothing on the volume is plaintext, and that the off-server
+  copy to the stand-in bucket verifies.
+- `testing/offsite/test-offsite.sh`: the off-server copy's failure paths (above).
 
 ## 8. Monitoring
 
 [docs/operations/monitoring.md](../../docs/operations/monitoring.md). In short:
-- `ops/host-check.sh` runs on a 5-minute timer and pings a dead-man's switch when all is well;
-- an outside service checks `/login`.
 
-The script is tested by the stack test. The timer, the switch and the uptime check are hosted
-steps, not yet built.
+- `ops/host-check.sh` checks disks, memory, every container and its health, PostgreSQL, backups and
+  WAL archiving, the off-server copy, readiness, the object store, integrity/audit/scanner log
+  signals, signature age and — with direct TLS — the certificate. Counts and ages only.
+- `ops/monitor.sh` runs it every 5 minutes (`ops/systemd/munaxa-host-check.{service,timer}`) and
+  pings a dead-man's switch when all is well, or sends the finding lines to an optional failure
+  endpoint and webhook. Configuration: `config/monitoring.env.example`, whose recipients and URLs
+  are **required placeholders** until the owner supplies them.
+
+**Tested:** the host check in the stack test (healthy; a crossed limit; a stopped object store, a
+failed copy and stale signatures, each named and then cleared); delivery against a local receiver
+(`testing/monitoring/test-monitor.sh`). **Not tested:** a real heartbeat service, phone or e-mail
+delivery, the timers on a server.
+
+## 9. Direct TLS on the host (TEST recommendation, not yet chosen)
+
+`compose.tls.yaml` with `Caddyfile.tls` (routes shared through `caddy/routes.caddy`): Caddy obtains
+and renews a Let's Encrypt certificate for `DOCS_PUBLIC_HOSTNAME`, redirects HTTP to HTTPS, sends
+HSTS, publishes only 80 and 443, and keeps its certificates on a volume. PostgreSQL, Redis and the
+scanner still publish nothing.
+
+```bash
+C="docker compose --env-file deploy.env -f infra/hetzner/compose.yaml -f infra/hetzner/compose.tls.yaml"
+infra/hetzner/ops/check-deploy-env.sh deploy.env --on-host   # refuses a missing or example host name
+```
+
+**Before the first start:** the A/AAAA record points at the server, ports 80 and 443 are open in
+the Hetzner Cloud Firewall, and — for the first issuance — `DOCS_ACME_CA` names Let's Encrypt's
+staging directory (`deploy.test.env.example`). **Tested** without any certificate authority or DNS:
+`testing/tls/test-tls.sh` (configuration, rendered ports and networks, routing, redirect, HSTS, the
+certificate's name, the token kept out of the log, and the certificate surviving a restart because
+`/data` persists). **Not tested:** a real issuance or renewal.

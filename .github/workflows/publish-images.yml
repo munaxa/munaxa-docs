@@ -1,11 +1,13 @@
 # Publishing the production images to GHCR, so a deployment pulls an artifact that was built and
 # verified here rather than building one itself — and pins it by digest.
 #
-# Three images, each from one named commit:
+# Four images, each from one named commit:
 #
 #   ghcr.io/munaxa/munaxa-docs-api        the `api` target of ./Dockerfile
 #   ghcr.io/munaxa/munaxa-docs-web        the `web` target of ./Dockerfile
 #   ghcr.io/munaxa/munaxa-docs-antivirus  ./infra/antivirus — c-icap in front of ClamAV
+#   ghcr.io/munaxa/munaxa-docs-postgres   ./infra/hetzner/postgres — PostgreSQL 16.10 with age and the
+#                                         backup scripts (Hetzner template, R-1, R-13)
 #
 # **Tag-triggered, and the tag names the commit to build.** Publishing is a decision about one
 # validated commit, not something every push should do — the convention munaxa-work's own
@@ -397,9 +399,98 @@ jobs:
           path: digests/
           retention-days: 90
 
+  # The Hetzner template's PostgreSQL (R-13 of the readiness report): accepted by
+  # infra/hetzner/postgres/verify-image.sh before it is pushed, and the pulled digest accepted again.
+  postgres:
+    name: munaxa-docs-postgres
+    needs: source
+    runs-on: ubuntu-latest
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+      SHORT: ${{ needs.source.outputs.short }}
+      REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/munaxa-docs-postgres
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build PostgreSQL (not yet pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/hetzner/postgres
+          push: false
+          load: true
+          tags: munaxa-docs-postgres:candidate
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.version=${{ env.SHORT }}
+            org.opencontainers.image.title=munaxa-docs-postgres
+
+      - name: Accept the candidate
+        run: infra/hetzner/postgres/verify-image.sh munaxa-docs-postgres:candidate
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tagged and pushed, not rebuilt: the registry holds the image that was accepted.
+      - name: Push the accepted image
+        id: build
+        run: |
+          set -euo pipefail
+          for tag in "$SHORT" "sha-$SHA"; do
+            docker tag munaxa-docs-postgres:candidate "$REPOSITORY:$tag"
+            docker push "$REPOSITORY:$tag"
+          done
+          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' munaxa-docs-postgres:candidate \
+            | grep "^$REPOSITORY@" | head -1 | sed 's/^.*@//')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the pushed digest is the image that was accepted
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::no digest"; exit 1; }
+          ref="$REPOSITORY@$DIGEST"
+          candidate=$(docker inspect --format '{{.Id}}' munaxa-docs-postgres:candidate)
+          docker rmi "$REPOSITORY:$SHORT" "$REPOSITORY:sha-$SHA" munaxa-docs-postgres:candidate >/dev/null
+          docker pull "$ref"
+          [ "$(docker inspect --format '{{.Id}}' "$ref")" = "$candidate" ] \
+            || { echo "::error::the pushed image is not the accepted candidate"; exit 1; }
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")
+          [ "$revision" = "$SHA" ] || { echo "::error::revision label $revision != $SHA"; exit 1; }
+          infra/hetzner/postgres/verify-image.sh "$ref"
+          {
+            echo "### munaxa-docs-postgres"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| source commit | \`$SHA\` (infra/hetzner/postgres) |"
+            echo "| reference | \`$ref\` |"
+            echo "| revision label | verified \`$SHA\` |"
+            echo "| verify-image.sh | accepted the candidate and the pulled digest |"
+            echo "| run | ${{ github.run_id }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p digests && printf '%s\n' "$ref" > digests/postgres
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-postgres
+          path: digests/
+          retention-days: 90
+
   pull-identity:
     name: Pull with the production identity
-    needs: [source, application, antivirus]
+    needs: [source, application, antivirus, postgres]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -410,15 +501,15 @@ jobs:
           merge-multiple: true
           path: digests
 
-      - name: The three references this run published
+      - name: The four references this run published
         run: |
           set -euo pipefail
-          cat digests/api digests/web digests/antivirus digests/antivirus-versions
+          cat digests/api digests/web digests/antivirus digests/postgres digests/antivirus-versions
           {
             echo "### Release images"
             echo ""
             echo '```'
-            cat digests/api digests/web digests/antivirus
+            cat digests/api digests/web digests/antivirus digests/postgres
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -438,6 +529,6 @@ jobs:
             exit 1
           fi
           printf '%s' "$PULL_TOKEN" | docker login ghcr.io -u "$PULL_USER" --password-stdin
-          for ref in $(cat digests/api digests/web digests/antivirus); do docker pull "$ref"; done
+          for ref in $(cat digests/api digests/web digests/antivirus digests/postgres); do docker pull "$ref"; done
           docker logout ghcr.io
-          echo "| production pull identity | pulled all three digests as \`$PULL_USER\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| production pull identity | pulled all four digests as \`$PULL_USER\` |" >> "$GITHUB_STEP_SUMMARY"

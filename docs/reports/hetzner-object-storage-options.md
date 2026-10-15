@@ -7,7 +7,9 @@
 - **Recommendation for TEST:** Hetzner Object Storage first, Scaleway as fallback, R2 not
   recommended; and Backblaze B2 EU Central for the off-server backup copy. See
   [the readiness report](./hetzner-test-deployment-readiness.md) §5.1 and §5.3. Still subject to
-  gate P-1 and the owner's decision.
+  gate P-1 and the owner's decision. The checks for a Hetzner Object Storage bucket are prepared
+  (`infra/hetzner/testing/storage/run-storage-readiness.sh`, README.md §6) and pass against MinIO
+  only; none has run against Hetzner.
 - **Rule:** every provider property is labelled with where it comes from:
   - **Verified (here)** means a test in this repository ran against it.
   - **Documented** means the provider's own page says so (link given; read on this date).

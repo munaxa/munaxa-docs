@@ -6,7 +6,9 @@
 - **Date:** 2026-10-15.
 - **Recommendation for TEST:** option C here (Caddy on the host with ACME), in
   [the readiness report](./hetzner-test-deployment-readiness.md) §5.2. It awaits the owner's
-  acceptance (D-2); nothing is configured.
+  acceptance (D-2). **Prepared, not deployed:** `infra/hetzner/compose.tls.yaml` and
+  `Caddyfile.tls` (README.md §9; hetzner-host-operations.md §7), tested locally with Caddy's own CA
+  in place of Let's Encrypt. No certificate has been issued and no DNS record exists.
 - **What the template does today:**
   - Caddy terminates no TLS.
   - Its one published port is bound to `127.0.0.1:8080` until this decision is made
