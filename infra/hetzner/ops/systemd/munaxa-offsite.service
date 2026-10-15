@@ -1,0 +1,17 @@
+# The off-server copy of the encrypted backups (infra/hetzner/README.md §7), every 15 minutes.
+# Install: copy both units to /etc/systemd/system/, then
+#   systemctl daemon-reload && systemctl enable --now munaxa-offsite.timer
+# A failed run is reported by the host check (offsite status), not by this unit.
+[Unit]
+Description=Munaxa Docs off-server backup copy
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/munaxa-docs
+ExecStart=/usr/bin/docker compose --env-file /opt/munaxa-docs/deploy.env -f /opt/munaxa-docs/infra/hetzner/compose.yaml --profile ops run --rm -T offsite sync
+# A first copy of a large base backup can take a while; the next timer run continues it.
+TimeoutStartSec=6h
+NoNewPrivileges=yes
+PrivateTmp=yes

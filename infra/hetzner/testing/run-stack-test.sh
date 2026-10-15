@@ -102,6 +102,11 @@ cleanup() {
         -c 'rm -rf /b/* /b/.[!.]* 2>/dev/null; true' >/dev/null 2>&1 || true
       [ -n "${STACKTEST_BACKUP_DIR:-}" ] || rmdir "$DOCS_BACKUP_DIR" 2>/dev/null || true
     fi
+    if [ -n "${DOCS_OFFSITE_STATE_DIR:-}" ] && [ -d "$DOCS_OFFSITE_STATE_DIR" ]; then
+      docker run --rm --entrypoint sh -v "$DOCS_OFFSITE_STATE_DIR:/s" "$DOCS_POSTGRES_IMAGE" \
+        -c 'rm -rf /s/* /s/.[!.]* 2>/dev/null; true' >/dev/null 2>&1 || true
+      rmdir "$DOCS_OFFSITE_STATE_DIR" 2>/dev/null || true
+    fi
     rm -rf "$config"
   fi
   exit "$status"
@@ -123,6 +128,7 @@ step "Generating a throwaway configuration (values never printed)"
 umask 077
 owner_pw="$(secret)" app_pw="$(secret)" backup_pw="$(secret)" redis_pw="$(secret)"
 minio_user="stacktest-$(openssl rand -hex 4)" minio_pw="$(secret)" admin_pw="Sm0ke-$(secret)"
+offsite_key_id="offsite-$(openssl rand -hex 4)" offsite_secret="$(secret)"
 acme_id="$(node -e 'console.log(crypto.randomUUID())' 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
 rival_id="$(node -e 'console.log(crypto.randomUUID())' 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
 
@@ -148,6 +154,22 @@ EOF
 cat > "$config/minio.env" <<EOF
 MINIO_ROOT_USER=$minio_user
 MINIO_ROOT_PASSWORD=$minio_pw
+OFFSITE_TEST_KEY_ID=$offsite_key_id
+OFFSITE_TEST_SECRET=$offsite_secret
+EOF
+
+# The off-server copy (README.md §7) to a stand-in bucket on the test MinIO, with a credential that
+# cannot delete (compose.test.yaml, storage-init). Plain http only because MinIO here has no TLS.
+cat > "$config/offsite.env" <<EOF
+RCLONE_CONFIG_OFFSITE_TYPE=s3
+RCLONE_CONFIG_OFFSITE_PROVIDER=Minio
+RCLONE_CONFIG_OFFSITE_ENDPOINT=http://storage:9000
+RCLONE_CONFIG_OFFSITE_REGION=us-east-1
+RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID=$offsite_key_id
+RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY=$offsite_secret
+OFFSITE_BUCKET=munaxa-docs-offsite-test
+OFFSITE_PREFIX=stacktest
+OFFSITE_ALLOW_INSECURE_ENDPOINT=1
 EOF
 
 # Object storage: the test MinIO, or the external bucket under test (gate P-1).
@@ -249,6 +271,11 @@ fi
 as_root mkdir -p "$DOCS_BACKUP_DIR/wal"
 as_root chown -R 70:70 "$DOCS_BACKUP_DIR"
 as_root chmod 0700 "$DOCS_BACKUP_DIR"
+# The off-server copy job's own state (status file, lock), uid 70 like the volume it reads.
+DOCS_OFFSITE_STATE_DIR="$(mktemp -d)"
+export DOCS_OFFSITE_STATE_DIR
+as_root chown 70:70 "$DOCS_OFFSITE_STATE_DIR"
+as_root chmod 0700 "$DOCS_OFFSITE_STATE_DIR"
 # The identity (private key) exists for this run only, in the private config directory, because the
 # drill restores from what it backs up. A deployment never has it on the server (README.md §7).
 docker run --rm --entrypoint age-keygen "$DOCS_POSTGRES_IMAGE" >"$config/backup-identity.txt" 2>/dev/null
@@ -407,6 +434,17 @@ fi
 step "Smoke test"
 compose --profile test run --rm smoke
 
+# README.md §7: the timer's command, against the stand-in bucket. The volume is mounted read-only
+# into the job; testing/offsite/test-offsite.sh covers its failure paths.
+step "Off-server copy: the encrypted backups copied, read back and marked complete"
+compose --profile ops run --rm offsite sync
+compose --profile ops run --rm offsite list-remote
+if ! grep -qx 'munaxa_offsite_last_run_success 1' "$DOCS_OFFSITE_STATE_DIR/offsite.prom"; then
+  echo "FAIL  the off-server copy did not record a successful run"
+  exit 1
+fi
+echo "PASS  every file on the backup volume is verified on the (stand-in) remote"
+
 # The check the server's timer runs (ops/host-check.sh; monitoring.md §3): all well on this stack,
 # and a finding — a non-zero exit, which withholds the dead-man's-switch ping — when a limit is
 # crossed.
@@ -424,6 +462,50 @@ printf '%s\n' "$host_check_output" | grep -q '^FINDING  disk: / is' || {
   exit 1
 }
 echo "PASS  host-check reports a crossed limit by exit status, naming what crossed it"
+
+# Real failures, not thresholds: the object store stops (and an off-server copy run fails during
+# the outage), and the scanner's signatures are made 100 h old. Each must be named, then clear.
+step "Host check: an object-store outage, a failed off-server copy and stale signatures are named"
+compose stop storage >/dev/null
+if compose --profile ops run --rm -e OFFSITE_LOW_LEVEL_RETRIES=1 -e OFFSITE_RETRIES=1 offsite sync >/dev/null 2>&1; then
+  echo "FAIL  the off-server copy reported success with the remote stopped"
+  exit 1
+fi
+# shellcheck disable=SC2016 # expanded inside the scanner container
+compose exec -T antivirus sh -c 'cp /var/lib/clamav/.munaxa-refreshed /tmp/refreshed.saved 2>/dev/null; echo $(( $(date +%s) - 100 * 3600 )) > /var/lib/clamav/.munaxa-refreshed'
+outage_output="$(host_check 2>&1)" && {
+  echo "FAIL  host-check passed during an object-store outage"
+  exit 1
+}
+for expected in 'FINDING  storage: the object store does not answer' \
+  'FINDING  offsite: the last copy run did not succeed' \
+  'FINDING  scanner: signatures last known current 100 h ago'; do
+  printf '%s\n' "$outage_output" | grep -qF "$expected" || {
+    echo "FAIL  host-check did not report: $expected"
+    printf '%s\n' "$outage_output" | grep FINDING
+    exit 1
+  }
+done
+echo "PASS  host-check named the storage outage, the failed copy and the stale signatures"
+# shellcheck disable=SC2016 # expanded inside the scanner container
+compose exec -T antivirus sh -c 'if [ -s /tmp/refreshed.saved ]; then cp /tmp/refreshed.saved /var/lib/clamav/.munaxa-refreshed; else rm -f /var/lib/clamav/.munaxa-refreshed; fi'
+compose up -d --wait --wait-timeout 120 storage >/dev/null
+compose --profile ops run --rm offsite sync >/dev/null
+# The scanner's health status changes only at its next health-check run, so this waits for it.
+cleared=0
+for _ in $(seq 1 36); do
+  if host_check >/dev/null 2>&1; then
+    cleared=1
+    break
+  fi
+  sleep 5
+done
+if [ "$cleared" -ne 1 ]; then
+  echo "FAIL  host-check still reports findings after the store, the copy and the signatures recovered"
+  host_check | grep FINDING
+  exit 1
+fi
+echo "PASS  all findings cleared once the store was back, a copy succeeded and the signatures were current"
 
 # An HTTP answer is the API's word for it. The scan verdicts are also recorded in the tenant's
 # database with the scanner that gave them and, for an infected file, the signature that matched — a
@@ -490,7 +572,7 @@ step "No generated credential appears in any container log"
 logs="$(compose logs --no-color 2>&1)"
 leaked=0
 for value in "$owner_pw" "$app_pw" "$backup_pw" "$redis_pw" "$minio_pw" "$admin_pw" "$s_secret" \
-  "$backup_identity_secret"; do
+  "$backup_identity_secret" "$offsite_secret"; do
   if printf '%s' "$logs" | grep -qF "$value"; then
     leaked=1
   fi

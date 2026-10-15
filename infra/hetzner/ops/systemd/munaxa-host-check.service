@@ -1,0 +1,24 @@
+# The host check and alert delivery (docs/operations/monitoring.md §3–§4), every 5 minutes.
+# Install: copy both units to /etc/systemd/system/, then
+#   systemctl daemon-reload && systemctl enable --now munaxa-host-check.timer
+# Paths assume the release checkout at /opt/munaxa-docs and deploy.env at its root (README.md §4).
+[Unit]
+Description=Munaxa Docs host check and alert delivery
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/munaxa-docs
+Environment=DOCS_ENV_FILE=/opt/munaxa-docs/deploy.env
+Environment=MONITORING_ENV=/etc/munaxa-docs/monitoring.env
+Environment=MONITOR_LOG=/var/log/munaxa-docs/host-check.log
+ExecStart=/opt/munaxa-docs/infra/hetzner/ops/monitor.sh
+# Root, because it reads Docker and the root-owned configuration; it changes nothing.
+TimeoutStartSec=4min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+ReadWritePaths=/var/log/munaxa-docs
+LogsDirectory=munaxa-docs
