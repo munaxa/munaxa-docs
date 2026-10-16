@@ -680,8 +680,8 @@ Every decision below is **Proposed** today. None is verified, approved or comple
 | D-3 Document storage | Hetzner Object Storage, in a separate project | S-1 to S-8. If S-5 (versioning or equivalent recovery) or S-1 (location) fails, Scaleway is evaluated before deciding | Proposed |
 | D-5 Off-site backups | Backblaze B2 in its EU region (EU Central) | B-1 to B-8. If the region, Object Lock, the key restriction, retention or the real restore fails, evaluate Scaleway before deciding | Proposed |
 | D-6 Budget | Ceiling **€60 per month including VAT**; warning at **€30 per month** | C-1 to C-3. Thresholds only: no billing alert or cap is configured anywhere | Proposed |
-| D-7 Server | Hetzner **CX33** (x86-64, 4 vCPU, 8 GB, 80 GB) in **Falkenstein (FSN1)**, Ubuntu 24.04 LTS. **CPX32 only if CX33 cannot be ordered or proves inadequate, and only with a separate explicit approval** (it costs about four times as much, §12.4) | C-2; G-9 memory during a ClamAV reload | Proposed |
-| D-8 TEST host name | `docs.munaxa-nonprod.com` | H-1: domain ownership, DNS control and that the name is free. **Unverified**: not checked from here | Proposed |
+| D-7 Server | Hetzner **CX33** (x86-64, 4 vCPU, 8 GB, 80 GB) in **Falkenstein (FSN1)**, Ubuntu 24.04 LTS. **CPX32 only if CX33 cannot be ordered or proves inadequate, and only with a separate explicit approval** (it costs about four times as much, §12.4) | C-2; G-9 memory during a ClamAV reload. C-2 is **UNVERIFIED — CONSOLE CHECK REQUIRED**; public pages on 2026-10-16 showed CX33 as unavailable and did not list FSN1 for it (§12.7) | Proposed |
+| D-8 TEST host name | `docs.munaxa-nonprod.com` | H-1: domain ownership, DNS control and that the name is free. H-1 is **FAIL** on 2026-10-16: `munaxa-nonprod.com` is not registered at the `.com` registry (§12.7). Register it (billable, separate approval) or choose a domain the owner already holds | Proposed |
 | Images | Do not publish yet. Before publishing: the approved commit, green CI on it, `publish-images.yml` run from an `image/<sha>` tag, registry access (public, or a read-only pull identity), and the four exact digests recorded | R-1 to R-3. Publishing needs a separate explicit authorization | Proposed |
 | TEST email | Resend (`MAIL_DRIVER=RESEND` already exists in the API), from a verified non-production sender on the non-production domain, recipients limited to the TEST team. Otherwise an approved SMTP provider (`MAIL_DRIVER=SMTP`, port 587, STARTTLS) | E-1 to E-4 | Proposed |
 
@@ -713,9 +713,9 @@ A statement is not evidence, and local simulations never count.
 
 | # | Check | Evidence | Who | Cost | Pass when |
 | --- | --- | --- | --- | --- | --- |
-| B-1 | EU region | Console: the account's region; the S3 endpoint names it | O | none | EU Central. The region is fixed when the account is created, so it must be chosen correctly then |
-| B-2 | Object Lock | Console: bucket created with Object Lock, default retention ≥ 45 days | O | storage held for the retention | Lock enabled in that region. If unavailable, evaluate Scaleway |
-| B-3 | Restricted key | Console: key limited to the bucket. Capabilities: listFiles, readFiles, writeFiles; **no** deleteFiles, **no** bypassGovernance | O | none | Exactly those capabilities |
+| B-1 | EU region | Console: the account's region; the S3 endpoint names it | O | none | EU Central. The region is fixed when the account is created, so it must be chosen correctly then. **UNVERIFIED** (documented only, §12.7) |
+| B-2 | Object Lock | Console: bucket created with Object Lock, default retention ≥ 45 days | O | storage held for the retention | Lock enabled in that region. If unavailable, evaluate Scaleway. **UNVERIFIED** (documented only, §12.7) |
+| B-3 | Restricted key | Console: key limited to the bucket. Capabilities: listFiles, readFiles, writeFiles; **no** deleteFiles, **no** bypassGovernance, and none of the others listed in §12.7 | O | none | Exactly those capabilities |
 | B-4 | The server cannot delete or overwrite | From the server: `rclone deletefile` with the job's key; then re-uploading a different file under an existing name | Op | none | Delete refused; the original version still listed and readable |
 | B-5 | Lifecycle | Console rule | O | none | Versions kept ≥ 45 days; unfinished uploads aborted after 1 day |
 | B-6 | Keys off the server | `check-deploy-env.sh` passes (it refuses a private key in `deploy.env` only); `grep -rl AGE-SECRET-KEY` over `/etc/munaxa-docs` and the backup volume finds nothing; `munaxa-backup` refuses to run beside an identity; the escrow record shows two named holders | O / Op | none | No identity on the server; two holders, both able to decrypt in the drill (B-7) |
@@ -726,7 +726,7 @@ A statement is not evidence, and local simulations never count.
 
 | # | Check | Evidence | Who | Cost | Pass when |
 | --- | --- | --- | --- | --- | --- |
-| H-1 | Domain and DNS control | Registrar account shows `munaxa-nonprod.com` owned; the DNS provider shows its zone; no existing `docs` record | O | registration if not yet owned | All three true, before any record is created |
+| H-1 | Domain and DNS control | Registrar account shows `munaxa-nonprod.com` owned; the DNS provider shows its zone; no existing `docs` record | O | registration if not yet owned | All three true, before any record is created. **FAIL** on 2026-10-16: not registered (§12.7) |
 | H-2 | Public ports | `deploy.env` and `compose.tls.yaml`: 80 and 443 only. Firewall rule list: 22 from the named administrators' addresses only | O / Op | none | A port scan from outside shows only 22 (from an allowed address), 80 and 443 |
 | H-3 | Staging issuance | `DOCS_ACME_CA` = staging; `docker compose logs proxy` shows the certificate obtained | Op | none | Staging certificate served for the host name |
 | H-4 | Production issuance | `DOCS_ACME_CA` removed, staging state cleared; browser and `openssl s_client` show a trusted chain | Op | none | Valid certificate; HTTP redirects to HTTPS; HSTS sent; `/api/health` is 404 from outside |
@@ -772,7 +772,7 @@ A statement is not evidence, and local simulations never count.
 | # | Check | Evidence | Who | Pass when |
 | --- | --- | --- | --- | --- |
 | C-1 | Prices at ordering | Each console's price shown at the moment of ordering (§12.4 rows) | O | Total within €60 including VAT |
-| C-2 | CX33 orderable in FSN1 | Hetzner console | O | Orderable; otherwise stop and ask for the CPX32 approval |
+| C-2 | CX33 orderable in FSN1 | Hetzner console | O | Orderable; otherwise stop and ask for the CPX32 approval. **UNVERIFIED — CONSOLE CHECK REQUIRED** (§12.7) |
 | C-3 | Spend alerts | Hetzner and Backblaze usage alerts at €30 | O | Configured, once creating resources is approved |
 
 ### 12.4 Monthly bill of materials (estimate)
@@ -781,9 +781,9 @@ EUR per month.
 
 | Item | Excl. VAT | Basis | Bills while |
 | --- | --- | --- | --- |
-| CX33 server, FSN1 | 8.49 | Official price page, from 15 June 2026. Availability unverified; one report gives 8.99 | it exists, hourly |
+| CX33 server, FSN1 | 8.49 | Official price-adjustment page, from 15 June 2026. Availability unverified and publicly doubtful (§12.7); one report gives 8.99 | it exists, hourly |
 | *or* CPX32 (only with separate approval) | *35.49* | Official, June 2026 | it exists |
-| Primary IPv4 | 0.50 | Third-party | allocated, even detached |
+| Primary IPv4 | 0.50 | Official IPv4 pricing page (§12.7) | allocated, even detached |
 | Volume, 50 GB (backups) | 2.50–3.00 | Third-party (about $0.12/GB) | it exists |
 | Snapshot before teardown or rebuild (optional) | about 1 | Per-GB price unverified | it exists |
 | Hetzner server backups | not used | +20 % of the server | — |
@@ -793,7 +793,7 @@ EUR per month.
 | Resend, free plan (3,000/month, 100/day) | 0 | Official pricing page; Pro is $20/month | — |
 | Heartbeat and uptime service, free tier | 0 | Plan terms unverified | — |
 | Let's Encrypt | 0 | — | — |
-| Domain `munaxa-nonprod.com`, if not yet registered | about 1 | Registrar price unverified | yearly |
+| Domain `munaxa-nonprod.com` (not registered on 2026-10-16, §12.7) | about 1 | Registrar price unverified | yearly |
 | **Total, CX33** | **about 18–21.5** | | |
 | **Total, CX33, incl. 19 % VAT** | **about 21.5–25.5** | VAT rate assumes German VAT on a non-business account; a business with an EU VAT ID may be reverse-charged | |
 | Total, CPX32, incl. 19 % VAT | about 53.5–57.5 | | |
@@ -855,3 +855,203 @@ need approval.
 4. Each billable action in §12.4, separately.
 5. The commit to publish, and then publishing the four images.
 6. Who performs the operator steps (Op) in §12.3.
+
+### 12.7 Evidence for H-1, C-2, B-1 and B-2 (checked 2026-10-16)
+
+Checked from the repository's cloud session using public sources only. No account was used. Nothing
+was created, ordered, reserved or configured. Public pages and documentation show what a provider
+says it offers. They prove neither that an order will succeed nor that a real bucket is configured
+correctly. This section changes no decision: every row in §12.2 stays **Proposed**, and ADR-0026
+stays **Proposed**.
+
+| # | Status | Next action | Responsible |
+| --- | --- | --- | --- |
+| H-1 | **FAIL**: the domain is not registered | Register `munaxa-nonprod.com` (billable, separate approval) or choose a domain already held; then confirm ownership as below | O |
+| C-2 | **UNVERIFIED — CONSOLE CHECK REQUIRED** | Open the Hetzner console's create-server page and record whether CX33 can be chosen in FSN1, with the price shown | O |
+| B-1 | **UNVERIFIED**: the capability is documented; there is no account | When an account is approved, choose EU Central at sign-up; record the console's region and the S3 endpoint | O |
+| B-2 | **UNVERIFIED**: the capability is documented; there is no bucket | When a bucket is approved, create it with Object Lock and a default retention; then run B-4 | O, then Op |
+
+#### H-1: domain and DNS control: FAIL
+
+**Sources, queried 2026-10-16:**
+
+- Verisign RDAP, the authoritative registry for `.com`:
+  `https://rdap.verisign.com/com/v1/domain/munaxa-nonprod.com`.
+- DNS over HTTPS: `https://cloudflare-dns.com/dns-query` and `https://dns.google/resolve`.
+
+**Evidence:**
+
+- RDAP answered **HTTP 404** for `munaxa-nonprod.com`. The same query for `hetzner.com`, as a
+  control, answered 200.
+- Both resolvers answered **NXDOMAIN** (status 3) for the `NS` record of `munaxa-nonprod.com` and
+  the `A` record of `docs.munaxa-nonprod.com`. The authority section was the `.com` zone itself
+  (`a.gtld-servers.net`).
+
+**Conclusion:** the domain is not registered. Nobody owns it, so there is no zone to control and no
+`docs` record to find.
+
+**Limitations:**
+
+- This is a point-in-time reading. Someone else can register the name at any time.
+- It says nothing about any other domain. The name is not evidence that Munaxa owns it, and other
+  Munaxa domains are not evidence either.
+
+**Next actions (owner):**
+
+- **Either** approve registering `munaxa-nonprod.com` (registrar and price unverified), **or** name
+  a domain already held.
+- For whichever domain is chosen, ownership stays **REQUIRES USER CONFIRMATION** until all three of
+  these are recorded:
+  - the registrar account lists the domain under the owner's account, with its expiry date;
+  - the DNS provider shows the domain's zone, and the domain's `NS` records point to that provider;
+  - the zone has no existing `docs` record.
+- D-8 cannot be approved before this.
+
+#### C-2: CX33 orderable in Falkenstein: UNVERIFIED — CONSOLE CHECK REQUIRED
+
+**Sources, read 2026-10-16:**
+
+- Price adjustment, effective 15 June 2026:
+  `https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/`
+- IPv4 pricing: `https://docs.hetzner.com/general/infrastructure-and-availability/ipv4-pricing/`
+- Product pages: `https://www.hetzner.com/cloud/`, `https://www.hetzner.com/cloud/cost-optimized/`
+  and `https://www.hetzner.com/cloud/general-purpose/`.
+- Server overview: `https://docs.hetzner.com/cloud/servers/overview/`.
+- The Regular Performance (CPX) page returned **HTTP 429**, so it was not read.
+
+**Evidence:**
+
+- **Prices** from 15 June 2026, excluding VAT and IPv4, per month:
+
+  | Plan | Price |
+  | --- | --- |
+  | CX23 | €5.49 |
+  | CX33 | €8.49 |
+  | CX43 | €15.99 |
+  | CPX32 | €35.49 |
+
+- **IPv4:** "Cloud Primary IPv4 € 0.50 ($ 0.60) monthly". It is optional when a server is created,
+  and a Primary IPv6 is free. No other mandatory charge was found for a server.
+- **Specification:** the CX33 page shows x86 (Intel/AMD), 4 vCPU, 8 GB RAM, 80 GB NVMe and 20 TB of
+  traffic in the EU.
+- **Availability:**
+  - The CX33 page reads: "This product is currently unavailable. Please check back later."
+  - Its locations list shows "eu-central NBG1 HEL1", so **FSN1 is not listed**.
+  - `hetzner.com/cloud` marks Cost-Optimized as "Currently not available".
+- **Ubuntu 24.04:** only community tutorials show an `ubuntu-24.04` image. No official image list
+  was found.
+
+**Limitations:**
+
+- The public pages are inconsistent. The same "currently unavailable" banner also appears on every
+  General Purpose (CCX) plan, and the summary lists FSN while a plan's details do not. The banner may
+  be a static template, so the public pages can neither confirm nor rule out an order.
+- A price page never proves availability.
+- CPX32 availability and locations were not obtained (HTTP 429).
+
+**Status:** the public signals are negative, but only the console can decide.
+
+**Next actions (owner):**
+
+1. In the console's create-server page, without creating anything, record whether CX33 can be
+   selected in FSN1, the price shown, and whether an `Ubuntu 24.04` image is offered. Take a dated
+   screenshot.
+2. If CX33 is not offered in FSN1, decide between:
+   - CX33 in **NBG1** (same price; also in Germany);
+   - **waiting** for CX33 capacity;
+   - **CPX32**, which needs its separate approval and costs about €53.5–57.5 including VAT (§12.4).
+     Its availability must also be checked in the console.
+
+#### B-1: Backblaze B2 EU region: UNVERIFIED
+
+**Source, read 2026-10-16:** `https://www.backblaze.com/docs/cloud-storage-data-regions`.
+
+**Evidence (documentation):**
+
+- "Accounts that use the EU Central region store data in the Amsterdam data center". It is the only
+  EU region listed.
+- The region is chosen at sign-up, one region per account: "After you create your Backblaze B2
+  account, you cannot change your selected region."
+- Storage is priced the same in every region.
+
+**Limitations:**
+
+- No account exists, so nothing shows that this account would be in EU Central.
+- A mistake at sign-up cannot be corrected; it needs a new account.
+
+**Next action (owner):** at the approved sign-up, choose EU Central. Then record the console's
+region and the S3 endpoint, which names the region.
+
+#### B-2: Object Lock, retention and the server key: UNVERIFIED
+
+**Sources, read 2026-10-16:**
+
+- Object Lock: `https://www.backblaze.com/docs/cloud-storage-object-lock`.
+- Object Lock with the S3-compatible API:
+  `https://www.backblaze.com/bb/docs/cloud-storage-enable-object-lock-with-the-s3-compatible-api`.
+- Key capabilities: `https://www.backblaze.com/docs/cloud-storage-application-key-capabilities`.
+
+**Evidence (documentation):**
+
+- **Object Lock:**
+  - It can be enabled when a bucket is created or later, and cannot be disabled once enabled.
+  - It is not available on restricted buckets.
+  - Retention runs from 1 to 3,000 days.
+  - A **default bucket retention** requires Object Lock to be enabled when the bucket is created.
+  - No region limitation is stated.
+- **Modes:**
+  - **Governance:** keys holding the right capabilities can override it.
+  - **Compliance:** cannot be removed or shortened, only extended.
+- **S3-compatible API:** compliance and governance modes, per-object retention, legal hold and the
+  bucket default retention are supported.
+- **The server's upload key** needs only `listFiles`, `readFiles` and `writeFiles`, limited to the
+  one bucket. It must **not** hold any of these:
+
+  | Capability | Why it must be absent |
+  | --- | --- |
+  | `deleteFiles` | The only capability that deletes file versions (`b2_delete_file_version`) |
+  | `bypassGovernance` | Deletes governance-locked versions and shortens their retention |
+  | `writeFileRetentions`, `writeFileLegalHolds` | Changes a file's retention or legal hold |
+  | `writeBucketRetentions` | Changes the bucket's default retention |
+  | `writeBuckets`, `deleteBuckets` | Changes or removes the bucket, including its lifecycle rules |
+  | `writeKeys`, `deleteKeys` | Creates or removes keys; `writeKeys` amounts to full account access |
+
+**Limitations:**
+
+- `writeFiles` includes `b2_hide_file`. Hiding does not delete a version, but a hidden version is
+  not listed by default. B-4 must therefore show that the original version is still listed and
+  readable when versions are listed.
+- The documentation does not say whether `writeFileRetentions` alone can shorten a governance
+  retention. The inference is that it cannot without `bypassGovernance`, but the key must not hold
+  either.
+- None of this proves that a real EU Central bucket accepts Object Lock, or that a real key is
+  limited as listed. Only B-2 to B-4 on a real bucket can.
+
+**Next actions:**
+
+- **Owner:** decide the mode:
+  - **Compliance** is immune to early deletion by any key, including the owner's, so a mistaken
+    long retention is paid for in full.
+  - **Governance** can be undone by a key holding `bypassGovernance`, which stays off the server.
+- **Owner:** create the bucket with Object Lock and a default retention of 45 days or more.
+- **Op:** run B-4 from the server.
+- If Object Lock or the key restriction fails in EU Central, record **FAIL** and evaluate Scaleway
+  before D-5 is decided.
+
+#### B2 pricing
+
+**Source, read 2026-10-16:** `https://www.backblaze.com/cloud-storage/pricing`.
+
+- **Storage:** $6.95 per TB per month, billed by byte-hour. The first 10 GB are free.
+- **No minimums:** no minimum file-size or storage-duration fees.
+- **API calls:**
+  - Class A, B and C calls are free on pay-as-you-go.
+  - Class D calls cost $0.004 per 10,000, beyond 2,500 free per day.
+- **Egress:** free up to three times the average monthly stored amount, then $0.01 per GB.
+
+**Limitations:**
+
+- Prices are in USD. No EU-specific price, euro billing or VAT treatment was stated, so all three
+  are unverified.
+- Object Lock means stored data is billed for the whole retention, even after the server stops
+  needing it. The €0.50 estimate in §12.4 assumes under 50 GB.
