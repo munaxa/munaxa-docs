@@ -439,18 +439,64 @@ compose --profile test run --rm smoke
 step "Off-server copy: the encrypted backups copied, read back and marked complete"
 compose --profile ops run --rm offsite sync
 compose --profile ops run --rm offsite list-remote
-if ! grep -qx 'munaxa_offsite_last_run_success 1' "$DOCS_OFFSITE_STATE_DIR/offsite.prom"; then
-  echo "FAIL  the off-server copy did not record a successful run"
+# The copy job's state directory is uid 70, mode 0700, exactly as on a server, where the host check
+# reads it as root (ops/systemd/munaxa-host-check.service). This test's controller is an ordinary
+# user on a CI runner, so the one status file is read through as_root — a `cat` of that file and
+# nothing else — and judged here. Missing, unreadable, malformed or failed all fail the assertion.
+offsite_status_ok() {
+  local status
+  status="$(as_root cat -- "$1" 2>/dev/null)" || return 1
+  printf '%s\n' "$status" | grep -qx 'munaxa_offsite_last_run_success 1' || return 1
+  printf '%s\n' "$status" | grep -qx 'munaxa_offsite_pending_files 0' || return 1
+  printf '%s\n' "$status" | grep -Eqx 'munaxa_offsite_newest_base_created_timestamp_seconds [1-9][0-9]*'
+}
+if [ "$(as_root stat -c '%u %a' "$DOCS_OFFSITE_STATE_DIR")" != "70 700" ]; then
+  echo "FAIL  the off-server copy's state directory is not uid 70, mode 0700"
   exit 1
 fi
-echo "PASS  every file on the backup volume is verified on the (stand-in) remote"
+if [ "$(id -u)" -ne 0 ]; then
+  if cat "$DOCS_OFFSITE_STATE_DIR/offsite.prom" >/dev/null 2>&1; then
+    echo "FAIL  the test controller (uid $(id -u)) can read the protected state directory"
+    exit 1
+  fi
+  echo "PASS  the state directory (uid 70, 0700) is unreadable to the test controller (uid $(id -u))"
+else
+  echo "NOTE  the controller runs as root, so the state directory's protection is not exercised here"
+fi
+if ! offsite_status_ok "$DOCS_OFFSITE_STATE_DIR/offsite.prom"; then
+  echo "FAIL  the off-server copy did not record a successful, complete run"
+  exit 1
+fi
+# The assertion itself must still fail on a missing file, a malformed one and a failed run.
+as_root sh -c 'printf "%s\n" "not a status file" > "$1/bad.prom"; printf "%s\n" \
+  "munaxa_offsite_last_run_success 0" "munaxa_offsite_pending_files 3" \
+  "munaxa_offsite_newest_base_created_timestamp_seconds 1" > "$1/failed.prom"' sh "$DOCS_OFFSITE_STATE_DIR"
+for case_file in missing.prom bad.prom failed.prom; do
+  if offsite_status_ok "$DOCS_OFFSITE_STATE_DIR/$case_file"; then
+    echo "FAIL  the status assertion accepted $case_file"
+    exit 1
+  fi
+done
+as_root rm -f -- "$DOCS_OFFSITE_STATE_DIR/bad.prom" "$DOCS_OFFSITE_STATE_DIR/failed.prom"
+echo "PASS  every file on the backup volume is verified on the (stand-in) remote; a missing, malformed or failed status is refused"
 
 # The check the server's timer runs (ops/host-check.sh; monitoring.md §3): all well on this stack,
 # and a finding — a non-zero exit, which withholds the dead-man's-switch ping — when a limit is
 # crossed.
 step "Host check: all well on a healthy stack, a finding when a limit is crossed"
+# As root, as the server's systemd unit runs it (it reads the copy job's 0700 state directory), with
+# a clean environment holding only what it needs: the Compose files and the template's own
+# non-secret settings. No credential is passed; they stay in the config files.
 host_check() {
-  COMPOSE_FILES="${files[*]}" DOCS_ENV_FILE=/nonexistent "$template/ops/host-check.sh"
+  local pass=(PATH="$PATH" HOME=/root COMPOSE_FILES="${files[*]}" DOCS_ENV_FILE=/nonexistent) name
+  for name in DOCS_PROJECT_NAME DOCS_CONFIG_DIR DOCS_API_IMAGE DOCS_WEB_IMAGE DOCS_ANTIVIRUS_IMAGE \
+    DOCS_POSTGRES_IMAGE DOCS_BACKUP_DIR DOCS_BACKUP_AGE_RECIPIENTS DOCS_OFFSITE_STATE_DIR \
+    STACKTEST_BACKUP_ALLOW_SAME_DEVICE DISK_MAX_PERCENT; do
+    if [ -n "${!name:-}" ]; then
+      pass+=("$name=${!name}")
+    fi
+  done
+  as_root env -i "${pass[@]}" "$template/ops/host-check.sh"
 }
 host_check
 if host_check_output="$(DISK_MAX_PERCENT=0 host_check 2>&1)"; then

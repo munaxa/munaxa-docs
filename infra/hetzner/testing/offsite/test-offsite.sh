@@ -41,6 +41,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The backup volume, the job's state and the fetched copies belong to uid 70 with mode 0700, as on
+# a server. A CI runner's controller is an ordinary user, so each read of those paths goes through
+# as_root — one command, one path — never by loosening the modes.
+as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi; }
+
 pass() { echo "PASS  $*"; }
 fail() {
   echo "FAIL  $*"
@@ -103,15 +108,15 @@ offsite() {
     -v "$template/offsite/offsite.sh:/opt/munaxa/offsite.sh:ro" -v "$backup:/backup:ro" \
     -v "$state:/state" "${options[@]}" --entrypoint /bin/sh "$rclone_image" /opt/munaxa/offsite.sh "$@"
 }
-prom() { sed -n "s/^munaxa_offsite_$1 //p" "$state/offsite.prom" 2>/dev/null; }
+prom() { as_root cat -- "$state/offsite.prom" 2>/dev/null | sed -n "s/^munaxa_offsite_$1 //p"; }
 remote_ls() { admin ls --recursive "t/$bucket/$prefix/" 2>/dev/null | awk '{ print $NF }' | sort; }
 
 # --- Synthetic encrypted backups, written by uid 70 as the template's services write them ---------
 docker run --rm --entrypoint age-keygen "$postgres_image" >"$work/identity.txt" 2>/dev/null
 recipient="$(grep -o 'age1[a-z0-9]*' "$work/identity.txt")"
 identity_secret="$(grep -o 'AGE-SECRET-KEY-[A-Z0-9]*' "$work/identity.txt")"
-chown -R 70:70 "$backup" "$state" "$work/out"
-chmod 0700 "$backup" "$state"
+as_root chown -R 70:70 "$backup" "$state" "$work/out"
+as_root chmod 0700 "$backup" "$state"
 as70() { docker run --rm --user 70:70 --network none -v "$backup:/backup" -e R="$recipient" --entrypoint sh "$postgres_image" -ec "$1"; }
 # A WAL file as munaxa-archive-wal writes it: .sha256 of the plaintext, then the ciphertext.
 make_wal() {
@@ -214,7 +219,7 @@ code=$?
 check "status: last run failed" "$(prom last_run_success)" 0
 check "status: last success unchanged" "$(prom last_success_timestamp_seconds)" "$success_before"
 [ "$(prom pending_files)" -gt 0 ] && pass "status: $(prom pending_files) file(s) pending" || fail "nothing pending after a failed run"
-[ -f "$state/markers/base/20261015T020000Z/COMPLETE" ] && fail "a base backup was marked complete without reaching the remote" || pass "the new base backup is not marked complete"
+as_root test -f "$state/markers/base/20261015T020000Z/COMPLETE" && fail "a base backup was marked complete without reaching the remote" || pass "the new base backup is not marked complete"
 docker network connect --alias minio "$net" "$minio"
 for _ in $(seq 1 30); do admin ready t >/dev/null 2>&1 && break; sleep 1; done
 offsite -- sync >/dev/null 2>&1
@@ -251,7 +256,7 @@ check "the run fails" "$?" 1
 printf '%s' "$out" | grep -q 'PROBLEM' && pass "and names the problem" || fail "no problem reported: $out"
 check "the foreign object was not overwritten (one version only)" \
   "$(admin ls --versions "t/$bucket/$prefix/wal/000000010000000000000005.age" | grep -c ' 000000010000000000000005.age$')" 1
-[ -f "$state/markers/base/20261015T040000Z/COMPLETE" ] && fail "a base backup with a foreign file was marked complete" ||
+as_root test -f "$state/markers/base/20261015T040000Z/COMPLETE" && fail "a base backup with a foreign file was marked complete" ||
   pass "the base backup with a foreign file is not marked complete"
 check "status: last run failed" "$(prom last_run_success)" 0
 
@@ -269,19 +274,21 @@ printf '%s\n' "$out" | tail -n 2
 printf '%s' "$out" | grep -q 'base backup 20261015T030000Z' && pass "it chose the newest COMPLETE base backup, not the one with a foreign file" ||
   fail "wrong base chosen: $out"
 printf '%s' "$out" | grep -q 'left out 1 WAL' && pass "the unverified WAL object was left out" || fail "the foreign WAL was not reported as left out"
-[ -f "$work/out/latest/wal/000000010000000000000005.age" ] && fail "the foreign WAL file was fetched" || pass "and not fetched"
+as_root test -f "$work/out/latest/wal/000000010000000000000005.age" && fail "the foreign WAL file was fetched" || pass "and not fetched"
 same=1
 for f in base/20261015T030000Z/base.tar.age wal/000000010000000000000004.age dumps/20261015T010500Z/edms_acme.dump.age; do
-  [ "$(sha256sum <"$backup/$f")" = "$(sha256sum <"$work/out/latest/$f")" ] || same=0
+  original="$(as_root sha256sum -- "$backup/$f" | cut -d' ' -f1)"
+  fetched="$(as_root sha256sum -- "$work/out/latest/$f" | cut -d' ' -f1)"
+  [ -n "$original" ] && [ "$original" = "$fetched" ] || same=0
 done
 check "fetched files are byte-identical to the originals" "$same" 1
 plain="$(docker run --rm -v "$work/out/latest:/r:ro" -v "$work/identity.txt:/id:ro" --entrypoint sh "$postgres_image" \
   -c 'age -d -i /id /r/wal/000000010000000000000004.age | sha256sum | cut -d" " -f1')"
 check "a fetched WAL file decrypts with the offline identity to the digest recorded at archiving" \
-  "$plain" "$(cat "$backup/wal/000000010000000000000004.sha256")"
+  "$plain" "$(as_root cat -- "$backup/wal/000000010000000000000004.sha256")"
 out="$(fetch /restore/old 20261015T010000Z 2>&1)"
 check "fetch of a named older backup succeeds" "$?" 0
-check "it brings the WAL from that backup's start on" "$(find "$work/out/old/wal" -name '*.age' | wc -l)" 3
+check "it brings the WAL from that backup's start on" "$(as_root find "$work/out/old/wal" -name '*.age' | wc -l)" 3
 # Damage on the remote after verification: a full credential writes a new version over the base.
 admin cp --quiet /tmp/garbage "t/$bucket/$prefix/base/20261015T020000Z/base.tar.age" >/dev/null
 out="$(fetch /restore/tampered 20261015T020000Z 2>&1)"
@@ -314,13 +321,20 @@ remote_ls | grep -q '^dumps/20261015T050000Z/COMPLETE$' && fail "the damaged dum
 
 echo
 echo "=== nothing secret in what the job printed"
-all_output="$(offsite -- sync 2>&1; offsite -- list-remote 2>&1; cat "$state/offsite.prom")"
+status_file="$(as_root cat -- "$state/offsite.prom")" || fail "the status file cannot be read"
+all_output="$(offsite -- sync 2>&1; offsite -- list-remote 2>&1; printf '%s' "$status_file")"
 leak=0
 for value in "$key_secret" "$root_pw" "$identity_secret"; do
   printf '%s' "$all_output$out" | grep -qF "$value" && leak=1
 done
 check "no credential or key appears in the output or the status file" "$leak" 0
-grep -q "$bucket\|$prefix\|minio" "$state/offsite.prom" && fail "the status file names the bucket or host" || pass "the status file holds numbers only"
+if [ -z "$status_file" ]; then
+  fail "the status file is empty"
+elif printf '%s' "$status_file" | grep -q "$bucket\|$prefix\|minio"; then
+  fail "the status file names the bucket or host"
+else
+  pass "the status file holds numbers only"
+fi
 
 echo
 if [ "$failures" -eq 0 ]; then
