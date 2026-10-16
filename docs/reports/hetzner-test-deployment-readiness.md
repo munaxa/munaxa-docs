@@ -356,6 +356,9 @@ ADR-0026 stays **Proposed** until these gates pass and their evidence has been r
 
 ### 7.1 Decisions only the owner can take (needed before anything is created)
 
+The proposed answers, with what must be verified before each can be approved, are in §12.2. None is
+approved yet.
+
 - [ ] **D-6:** spending approved, ceiling €60 per month (§5.5).
 - [ ] **D-7:** CX33, or CPX32 if CX is unavailable; FSN1 or NBG1; Ubuntu 24.04 LTS.
 - [ ] **D-2:** direct TLS on the host (§5.2's option A; option C in `hetzner-tls-decision.md`, the
@@ -635,5 +638,220 @@ every job **PASS**:
 **Cause and fix.** The TLS test waited a fixed 2 seconds after starting Caddy before its first
 HTTPS request. On the GitHub runner, Caddy had not yet issued its local certificate. The fix waits
 until a request verifies against the root, at all three points where the test starts a proxy. It
-then passed 19/19 three times locally. A test defect, not a product one. The fix is in the commit
-that adds this section; CI on that commit is the evidence still to come.
+then passed 19/19 three times locally. A test defect, not a product one.
+
+**Outcome.**
+
+- On `b257f1d` the HTTPS test passed on GitHub, but the stack test then failed. It read the copy
+  job's uid-70, 0700 state directory as the runner's ordinary user, a harness defect that local root
+  runs had hidden.
+- `655e30e` reads that state through `as_root` for one file at a time. It also adds a regression
+  check that the CI user cannot read the directory, and makes the same fix in `test-offsite.sh`.
+- Production permissions are unchanged.
+- On `655e30e` both workflows passed every applicable step:
+  - [CI run 38963256196](https://github.com/munaxa/munaxa-docs/actions/runs/38963256196);
+  - [Hetzner template run 38963256264](https://github.com/munaxa/munaxa-docs/actions/runs/38963256264),
+    including the stack test with the drill, the off-server copy, storage readiness and scanner
+    watch.
+- The R2 job is skipped by design: it needs a `storage-test` tag.
+
+## 12. Proposed decisions and the external verification plan (2026-10-16)
+
+Repository state when written: `655e30e`, both workflows green on that exact commit (§11.7).
+Repository recommendation: **NOT READY — WAITING FOR EXTERNAL VERIFICATION.** Nothing in this
+section authorizes creating, buying, publishing or configuring anything. ADR-0026 stays **Proposed**.
+
+### 12.1 Status words used below
+
+| Status | Meaning |
+| --- | --- |
+| **Proposed** | Recommended here; not approved; may change after verification |
+| **Verified** | The evidence named in §12.3 exists and was reviewed |
+| **Approved** | The owner has said yes, in writing, to that specific item |
+| **Completed** | Done on the real provider, with its evidence recorded |
+
+Every decision below is **Proposed** today. None is verified, approved or completed.
+
+### 12.2 Decisions
+
+| # | Proposed decision | Verify before approval (§12.3) | Status |
+| --- | --- | --- | --- |
+| D-2 HTTPS | Caddy with Let's Encrypt, TLS ending on the server (`compose.tls.yaml`). First issuance from Let's Encrypt **staging**; renewal tested before any production use | H-1 to H-6 | Proposed |
+| D-3 Document storage | Hetzner Object Storage, in a separate project | S-1 to S-8. If S-5 (versioning or equivalent recovery) or S-1 (location) fails, Scaleway is evaluated before deciding | Proposed |
+| D-5 Off-site backups | Backblaze B2 in its EU region (EU Central) | B-1 to B-8. If the region, Object Lock, the key restriction, retention or the real restore fails, evaluate Scaleway before deciding | Proposed |
+| D-6 Budget | Ceiling **€60 per month including VAT**; warning at **€30 per month** | C-1 to C-3. Thresholds only: no billing alert or cap is configured anywhere | Proposed |
+| D-7 Server | Hetzner **CX33** (x86-64, 4 vCPU, 8 GB, 80 GB) in **Falkenstein (FSN1)**, Ubuntu 24.04 LTS. **CPX32 only if CX33 cannot be ordered or proves inadequate, and only with a separate explicit approval** (it costs about four times as much, §12.4) | C-2; G-9 memory during a ClamAV reload | Proposed |
+| D-8 TEST host name | `docs.munaxa-nonprod.com` | H-1: domain ownership, DNS control and that the name is free. **Unverified**: not checked from here | Proposed |
+| Images | Do not publish yet. Before publishing: the approved commit, green CI on it, `publish-images.yml` run from an `image/<sha>` tag, registry access (public, or a read-only pull identity), and the four exact digests recorded | R-1 to R-3. Publishing needs a separate explicit authorization | Proposed |
+| TEST email | Resend (`MAIL_DRIVER=RESEND` already exists in the API), from a verified non-production sender on the non-production domain, recipients limited to the TEST team. Otherwise an approved SMTP provider (`MAIL_DRIVER=SMTP`, port 587, STARTTLS) | E-1 to E-4 | Proposed |
+
+### 12.3 External verification checklist
+
+Each item names:
+
+- the **evidence** that must exist: command output or a console screenshot with a date and time;
+- **who** produces it: the owner (O), or an operator the owner names (Op);
+- its **cost**;
+- the **pass** criterion.
+
+A statement is not evidence, and local simulations never count.
+
+**Document storage (D-3): Hetzner Object Storage**
+
+| # | Check | Evidence | Who | Cost | Pass when |
+| --- | --- | --- | --- | --- | --- |
+| S-1 | Location and residency | Console: bucket location FSN1, NBG1 or HEL1; the DPA reviewed | O | starts the base fee | An EU location, and the DPA accepted |
+| S-2 | Private access | `run-storage-readiness.sh` check 1 against the bucket | Op | none extra | Unsigned GET and listing refused |
+| S-3 | Restricted credential | The same run with `STORAGE_TEST_OTHER_BUCKET` set to a second bucket in the project | Op | none extra | The key cannot list the other bucket. If Hetzner keys reach every bucket in a project, record that, and use a dedicated project per environment |
+| S-4 | Checksums and integrity | Checks 2–4 and 8; then the stack test with `EXTERNAL_STORAGE_ENV` (gate P-1) | Op | negligible requests | The SHA-256 is stored and returned; mismatched bytes are refused; reads are exact; the smoke test is 14/14 |
+| S-5 | Recovery protection | Checks 9–10 with `STORAGE_TEST_EXPECT_VERSIONING=1` and `…_OBJECT_LOCK=1` | Op | negligible | A prior version is restored and a delete is undone; a locked version is refused deletion. If the provider lacks it, record **FAIL**, not "unsupported", because the requirement stands |
+| S-6 | Multipart, and missing or corrupt objects | Checks 5–7 and 8 | Op | negligible | Multipart reads back whole; an aborted upload leaves nothing; a missing object reads as absent; changed bytes are visible to the verifier |
+| S-7 | Retention and lifecycle | Console: lifecycle rules (unfinished uploads aborted; version retention set) | O | none | Matches backup-and-restore.md §1 |
+| S-8 | Cleanup | Check 12 | Op | none | No version of the test's objects left |
+
+**Off-site backups (D-5): Backblaze B2, EU region**
+
+| # | Check | Evidence | Who | Cost | Pass when |
+| --- | --- | --- | --- | --- | --- |
+| B-1 | EU region | Console: the account's region; the S3 endpoint names it | O | none | EU Central. The region is fixed when the account is created, so it must be chosen correctly then |
+| B-2 | Object Lock | Console: bucket created with Object Lock, default retention ≥ 45 days | O | storage held for the retention | Lock enabled in that region. If unavailable, evaluate Scaleway |
+| B-3 | Restricted key | Console: key limited to the bucket. Capabilities: listFiles, readFiles, writeFiles; **no** deleteFiles, **no** bypassGovernance | O | none | Exactly those capabilities |
+| B-4 | The server cannot delete or overwrite | From the server: `rclone deletefile` with the job's key; then re-uploading a different file under an existing name | Op | none | Delete refused; the original version still listed and readable |
+| B-5 | Lifecycle | Console rule | O | none | Versions kept ≥ 45 days; unfinished uploads aborted after 1 day |
+| B-6 | Keys off the server | `check-deploy-env.sh` passes (it refuses a private key in `deploy.env` only); `grep -rl AGE-SECRET-KEY` over `/etc/munaxa-docs` and the backup volume finds nothing; `munaxa-backup` refuses to run beside an identity; the escrow record shows two named holders | O / Op | none | No identity on the server; two holders, both able to decrypt in the drill (B-7) |
+| B-7 | Real restore drill | On a separate throwaway server (separately approved), or a scratch volume: `offsite fetch` **from B2 alone**; `munaxa-backup restore-base`; point-in-time recovery to a recorded time; then the drill's checks: changes A/B, each tenant database identical at the target, RLS forced, `edms_app` isolated, audit chain verified from genesis | Op, with a key holder | a few hours of a server; B2 egress | Every check holds, and the elapsed time is recorded as the first real RTO |
+| B-8 | Copies keep running | `offsite.prom` and the host check over 3 days | Op | negligible | No failed run; newest complete base backup on the remote under 26 h old |
+
+**HTTPS, DNS and firewall (D-2, D-8)**
+
+| # | Check | Evidence | Who | Cost | Pass when |
+| --- | --- | --- | --- | --- | --- |
+| H-1 | Domain and DNS control | Registrar account shows `munaxa-nonprod.com` owned; the DNS provider shows its zone; no existing `docs` record | O | registration if not yet owned | All three true, before any record is created |
+| H-2 | Public ports | `deploy.env` and `compose.tls.yaml`: 80 and 443 only. Firewall rule list: 22 from the named administrators' addresses only | O / Op | none | A port scan from outside shows only 22 (from an allowed address), 80 and 443 |
+| H-3 | Staging issuance | `DOCS_ACME_CA` = staging; `docker compose logs proxy` shows the certificate obtained | Op | none | Staging certificate served for the host name |
+| H-4 | Production issuance | `DOCS_ACME_CA` removed, staging state cleared; browser and `openssl s_client` show a trusted chain | Op | none | Valid certificate; HTTP redirects to HTTPS; HSTS sent; `/api/health` is 404 from outside |
+| H-5 | Persistence and renewal | Restart the proxy and confirm the same certificate; force a renewal on staging; the host check reports the remaining days | Op | none | No new issuance on restart; renewal succeeds; the host check alerts below 14 days |
+| H-6 | Lost certificate data | Drop the `caddy-data` volume on staging and start | Op | none | Reissued automatically within the rate limits; documented as the recovery |
+
+**Monitoring and alerting**
+
+| # | Check | Evidence | Who | Cost | Pass when |
+| --- | --- | --- | --- | --- | --- |
+| M-1 | Service and recipient named | The chosen heartbeat/uptime service; `ALERT_CONTACT` and a second person recorded | O | free tier [plan terms unverified] | Named. The heartbeat URL and any token are kept as secrets (password manager and `monitoring.env` 0600), never in chat or the repository |
+| M-2 | Alerts reach the person | Stop the heartbeat; force a host-check finding; stop the proxy for the uptime check | Op + recipient | none | Each produces an alert the named person acknowledges, within the grace period |
+| M-3 | Timers and their failures | `systemctl list-timers`; a deliberately failing run | Op | none | Both timers active; a failed host check withholds the ping; a failed copy is a finding |
+
+**Release and rollback**
+
+| # | Check | Evidence | Who | Cost | Pass when |
+| --- | --- | --- | --- | --- | --- |
+| R-1 | Build and digests | The `publish-images.yml` run for the approved commit; its summary lists four `@sha256` references | O authorizes; workflow runs | GitHub-hosted, no cost to us [verify plan] | All legs green, including the PostgreSQL acceptance; digests recorded in `deploy.env` |
+| R-2 | Registry access | Public images, or `DOCS_PRODUCTION_PULL_USER/_TOKEN` configured and the pull-identity job green | O | none | The TEST server pulls every digest |
+| R-3 | Deploy, rollback, rebuild | `check-deploy-env.sh --on-host`; release by digest; a code-only rollback to the previous `deploy.env`; a host rebuild from B2 (B-7) | Op | the server hours | Each step's timings recorded; `/login` and the host check healthy after each |
+
+**Scanner and security**
+
+| # | Check | Evidence | Who | Cost | Pass when |
+| --- | --- | --- | --- | --- | --- |
+| A-1 | Signature freshness | Host-check signature age and scanner logs over **at least 3 days** | Op | none | Refreshed at least daily; never stale past 72 h; no refusal |
+| A-2 | Memory during reloads | `docker stats` peak during a signature reload | Op | none | Peak within the antivirus container's limit (2.5 GB) and the host above 10 % available |
+| A-3 | Scanner health | EICAR uploaded through the product is refused; a clean file is accepted | Op | none | Both |
+| A-4 | Reviews | Hosting security review (firewall, SSH, secrets, container hardening); access-control review (who holds SSH, console, escrow, alerts); data-residency and DPA review (Hetzner, Backblaze or Scaleway, the mail provider, the alert service) | O | none | Each signed off. Production readiness is not claimed before these and B-7 pass |
+
+**Email (TEST)**
+
+| # | Check | Evidence | Who | Cost | Pass when |
+| --- | --- | --- | --- | --- | --- |
+| E-1 | Sender domain | The provider shows the non-production domain verified (SPF, DKIM; DMARC policy published) | O | free tier | Verified |
+| E-2 | Delivery | A notification from TEST delivered to a team mailbox; headers show SPF/DKIM/DMARC pass | Op | none | Passes; not in spam |
+| E-3 | Separation | The sender address and domain differ from production; recipients limited to the team | O | none | No TEST message can come from a production address |
+| E-4 | Pricing and data | Plan limits and the provider's data location and DPA | O | free tier, then paid plans | Acceptable to the owner |
+
+**Cost**
+
+| # | Check | Evidence | Who | Pass when |
+| --- | --- | --- | --- | --- |
+| C-1 | Prices at ordering | Each console's price shown at the moment of ordering (§12.4 rows) | O | Total within €60 including VAT |
+| C-2 | CX33 orderable in FSN1 | Hetzner console | O | Orderable; otherwise stop and ask for the CPX32 approval |
+| C-3 | Spend alerts | Hetzner and Backblaze usage alerts at €30 | O | Configured, once creating resources is approved |
+
+### 12.4 Monthly bill of materials (estimate)
+
+EUR per month.
+
+| Item | Excl. VAT | Basis | Bills while |
+| --- | --- | --- | --- |
+| CX33 server, FSN1 | 8.49 | Official price page, from 15 June 2026. Availability unverified; one report gives 8.99 | it exists, hourly |
+| *or* CPX32 (only with separate approval) | *35.49* | Official, June 2026 | it exists |
+| Primary IPv4 | 0.50 | Third-party | allocated, even detached |
+| Volume, 50 GB (backups) | 2.50–3.00 | Third-party (about $0.12/GB) | it exists |
+| Snapshot before teardown or rebuild (optional) | about 1 | Per-GB price unverified | it exists |
+| Hetzner server backups | not used | +20 % of the server | — |
+| Object Storage base fee (1 TB stored and 1 TB egress included) | **4.99–6.49** | Third-party reports conflict: €4.99 (earlier) vs €6.49 (July 2026). Official page did not show the amount | **any bucket exists** |
+| Backblaze B2, under 50 GB, with read-back verification | under 0.50 | Official price list ($6.95/TB, 10 GB free, egress free to 3× stored). EU pricing unverified | data stored |
+| Server traffic | 0 | Included volume unverified; TEST use is far below it | — |
+| Resend, free plan (3,000/month, 100/day) | 0 | Official pricing page; Pro is $20/month | — |
+| Heartbeat and uptime service, free tier | 0 | Plan terms unverified | — |
+| Let's Encrypt | 0 | — | — |
+| Domain `munaxa-nonprod.com`, if not yet registered | about 1 | Registrar price unverified | yearly |
+| **Total, CX33** | **about 18–21.5** | | |
+| **Total, CX33, incl. 19 % VAT** | **about 21.5–25.5** | VAT rate assumes German VAT on a non-business account; a business with an EU VAT ID may be reverse-charged | |
+| Total, CPX32, incl. 19 % VAT | about 53.5–57.5 | | |
+
+**What this means:**
+
+- **CX33** stays under the €30 warning.
+- **CPX32** comes within about €3–7 of the €60 ceiling. Any snapshot, extra bucket or paid plan
+  would push it over. That is one more reason the CPX32 needs its own approval.
+
+**What could exceed the estimate:**
+
+- price changes;
+- a second Object Storage location or project, if the base fee applies to each [unverified];
+- snapshots or volumes left after testing;
+- B2 egress beyond three times the stored amount;
+- Resend above 100 messages a day;
+- a paid monitoring plan;
+- enabling Hetzner server backups.
+
+**Billable actions that each need a separate approval** (from §8):
+
+- ordering the server and its IPv4;
+- creating the volume;
+- taking a snapshot;
+- creating any Object Storage bucket (this starts the base fee);
+- creating the B2 bucket and storing data in it;
+- registering the domain;
+- any paid plan.
+
+DNS records, firewall rules, keys and accounts cost nothing, but they are outward-facing and also
+need approval.
+
+### 12.5 Gates still open before TEST holds data, and before production
+
+- **Security:**
+  - the hosting security review and the access-control review (A-4);
+  - the firewall and SSH checks (H-2);
+  - secrets only in `DOCS_CONFIG_DIR` and the password manager.
+- **Legal and data residency:**
+  - the DPA for Hetzner, Backblaze or Scaleway, the mail provider and the alert service (S-1, B-1,
+    E-4, A-4);
+  - EU locations confirmed in each console.
+- **Recovery:**
+  - the real restore and point-in-time recovery from B2 (B-7), with the RTO recorded;
+  - the object-store version restore (S-5);
+  - a rollback and a host rebuild (R-3);
+  - key escrow with two holders (B-6).
+- **Operations:**
+  - alerts reaching a person (M-2);
+  - three days of signature refresh (A-1);
+  - certificate renewal (H-5).
+
+### 12.6 Approvals the owner must give, one by one
+
+1. D-2, D-3, D-5, D-6, D-7 and D-8 as proposed in §12.2, or changes to any of them.
+2. TEST email: Resend with the non-production sender, or a named SMTP provider.
+3. The two backup key holders, and the alert recipient with a second person.
+4. Each billable action in §12.4, separately.
+5. The commit to publish, and then publishing the four images.
+6. Who performs the operator steps (Op) in §12.3.
