@@ -75,16 +75,21 @@ Nuremberg), close to the previously chosen Frankfurt region [verify current loca
 - The `worker` image is **not** deployed: it starts, logs that consumers run in the API process, and
   does nothing (`apps/worker/src/main.ts`), and it is not published [verified].
 
-**Routing** — ADR-0024 §2.3's rule, implemented in `infra/hetzner/Caddyfile` [verified, §10]:
+**Routing** — ADR-0024 §2.3's rule, implemented in `infra/hetzner/caddy/routes.caddy` (shared by
+`Caddyfile` and `Caddyfile.tls` since 2026-10-15) [verified, §10]:
 
 | Path | Goes to | Why |
 | --- | --- | --- |
 | `/api/v1/preview/stream*` | API | Browsers load previews from `STORAGE_PUBLIC_URL` + this path |
-| any other `/api/*` | **404 at the proxy** | `/api/health` and `/api/health/ready` name every tenant; `/api/metrics` is operator-only |
+| `/api/v1/downloads*` | API | Verified download links (§10) |
+| any other `/api/*` | **404 at the proxy** | The health routes are operator-only (they named every tenant until R-11 of the readiness report made them name databases by position); `/api/metrics` is operator-only |
 | everything else | web | The web server calls the API server-side |
 
-**TLS and DNS — the decision is open (§11, D-2).** The proxy does not terminate TLS, and its port
-stays on `127.0.0.1` until one of these is chosen:
+**TLS and DNS — the decision is open (§11, D-2).** The base template's proxy does not terminate TLS,
+and its port stays on `127.0.0.1` until an option is chosen. A third option, **direct TLS on the
+host** (Caddy with Let's Encrypt; option C of `docs/reports/hetzner-tls-decision.md`, which also
+weighs where each option decrypts traffic), is prepared as `infra/hetzner/compose.tls.yaml` and
+tested with a local certificate authority only (§10, 2026-10-15). The two Cloudflare options:
 
 | Option | How | Trade-off |
 | --- | --- | --- |
@@ -183,8 +188,10 @@ the reserved `.invalid` domain, which satisfies production validation honestly a
 ## 8. Deployment, migrations, provisioning and rollback
 
 - **Images:** the existing `publish-images.yml` (tag-triggered, digest-pinned, revision-label checked,
-  scanner probed with EICAR, pulled back with the production pull identity) is reused unchanged. A
-  deployment names images **by digest** only (`deploy.env`).
+  scanner probed with EICAR, pulled back with the production pull identity), with one addition on
+  2026-10-15: the template's PostgreSQL image as a fourth leg, accepted by
+  `infra/hetzner/postgres/verify-image.sh` (nothing published yet). A deployment names images **by
+  digest** only (`deploy.env`; `ops/check-deploy-env.sh` refuses a tag).
 - **Migrations:** `scripts/migrate-tenants.mjs`, unmodified, run as the `migrate` service from the
   **release's own API image** against the operator catalogue (owner credentials), which the running
   API never holds (ADR-0021 §3). The runner calls `pnpm exec prisma …`, and the image has no `pnpm`
@@ -238,7 +245,9 @@ the reserved `.invalid` domain, which satisfies production validation honestly a
 **Backups that must exist before the first customer** [proposal]:
 
 1. **PostgreSQL** — nightly logical dump of every tenant database as `edms_backup` plus the role
-   definitions, **and** continuous WAL archiving (pgBackRest or WAL-G) for point-in-time recovery,
+   definitions, **and** continuous WAL archiving for point-in-time recovery (built as the
+   template's own `age`-encrypted archiving and `db-backup` service, not pgBackRest or WAL-G —
+   backup-and-restore.md §5),
    encrypted, to storage **outside Hetzner** (the repository's targets: RPO 5 minutes, RTO 2 hours —
    `docs/operations/backup-and-restore.md` §1).
 2. **Documents** (including audit checkpoints) — bucket versioning plus a nightly copy to a second
@@ -256,7 +265,9 @@ A restore counts only when `scripts/dr-rehearsal.mjs` passes and the audit hash 
 
 **Monitoring** [proposal, free tiers]: an external uptime check on `/login`; a dead-man's-switch ping
 from every backup job; disk and memory alerts; optionally `METRICS_DRIVER=PROMETHEUS` scraped
-privately. None of this is built yet.
+privately. The server side is built and tested locally (`ops/host-check.sh`, `ops/monitor.sh`, the
+systemd timers; docs/operations/monitoring.md); no monitoring service, uptime check or alert
+recipient exists yet.
 
 ## 10. What is verified, the gates, and failure scenarios
 
@@ -798,15 +809,31 @@ deployment workflow itself (not written yet).
 | Redis lost | Queued but unconsumed jobs lost (notifications, previews); schedules and timers rebuilt automatically | None needed beyond restart (backup-and-restore.md §1) |
 | Object store unavailable | Uploads and downloads fail | Provider-dependent; the second-provider copy is the last resort |
 | Secrets lost | Signatures/MFA/checkpoints unverifiable — **irreversible** | Only the offsite secret copy prevents this |
-| Disk full | Writes fail, possible outage | Log limits are set; alerting and image pruning still to build |
+| Disk full | Writes fail, possible outage | Log limits are set; the host check reports a disk above 85 % (built, tested locally; its delivery needs a monitoring service); image pruning still to build |
 | Bad migration | Release fails | Restore the pre-deployment backup into a new database; redeploy the previous digests |
+
+### Pre-provisioning implementation (2026-10-15, local only)
+
+Recorded in full in `docs/reports/hetzner-test-deployment-readiness.md` §11. In short, and **all
+against local stand-ins** (MinIO for the backup provider and the object store, Caddy's own
+certificate authority for Let's Encrypt, a local receiver for the alert service):
+
+- the off-server copy of the encrypted backups, and recovery from it alone: a point-in-time
+  recovery from the fetched copy held every check of the backup drill (§9 item 1; G-4 locally);
+- direct TLS on the host as an overlay (§3; G-2 locally);
+- the host check and alert delivery, with systemd timers (§9);
+- storage readiness checks for Hetzner Object Storage through the product's adapter (G-1 prepared,
+  not run against Hetzner);
+- the PostgreSQL image as a fourth leg of `publish-images.yml` (§8; not published).
+
+No provider, DNS, certificate or image was created or published. Gates P-1 to P-5 stay open.
 
 ## 11. Decisions requiring the owner's approval
 
 | # | Decision | Recommendation |
 | --- | --- | --- |
 | D-1 | Accept Hetzner as the hosting direction (this ADR → Accepted) | After P-1 passes |
-| D-2 | TLS option (§3) | A: Cloudflare Tunnel |
+| D-2 | TLS option (§3) | Originally A: Cloudflare Tunnel. For TEST, the readiness report (§5.2) now recommends direct TLS on the host, because with either Cloudflare option Cloudflare decrypts all traffic, possibly outside the EU. The owner decides |
 | D-3 | Object storage provider (§6) | Decide after P-1; Hetzner Object Storage or R2, with the backup copy at the other |
 | D-4 | Mail provider (§7) | Resend, or an EU SMTP provider on 587 |
 | D-5 | Offsite backup target (§9) | A provider other than the one holding the live data |

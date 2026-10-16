@@ -522,10 +522,10 @@ last change to the file under test.
 
 | Test | Result |
 | --- | --- |
-| `testing/offsite/test-offsite.sh` (MinIO stand-in, versioned bucket, a no-delete key) | **57/57.** Earlier versions: 56/56 three times in a row after the pipefail fix; before it, one run with 3 failures (the race, then two test-script bugs: `grep -q` under pipefail and `mc ls` prefix matching) |
+| `testing/offsite/test-offsite.sh` (MinIO stand-in, versioned bucket, a no-delete key) | **57/57.** Earlier versions: 56/56 three times in a row after the pipefail fix. Before that, development runs failed 30, then 10, then 3 checks, on defects since fixed: an `awk` join that treated an empty record as "everything already copied", `timeout` unable to run a shell function (so the outage case never ran), a marker lookup that a listing of a missing key answered "present", the pipefail race, and two test-script bugs (`grep -q` under pipefail, `mc ls` matching by prefix) |
 | `testing/monitoring/test-monitor.sh` (local receiver) | **20/20**, first run. Negative control (the character filter removed): the hostile-text check fails, as it must |
 | `testing/deploy/test-check-deploy-env.sh` | **20/20**: a complete TEST file passes; 16 kinds of mistake refused by name; values never printed; both shipped examples refused |
-| `testing/tls/test-tls.sh` (Caddy's local CA; nothing published on the host) | **19/19**, three runs. The first run failed one check of the test's own (how curl prints certificate names) |
+| `testing/tls/test-tls.sh` (Caddy's local CA; nothing published on the host) | **19/19**, three runs locally. The first run failed one check of the test's own (how curl prints certificate names). **On GitHub at `3d0b84a` it failed 1 of 19**: the first HTTPS request came before Caddy had issued its local certificate (a fixed 2 s wait); see §11.7 |
 | `testing/storage/run-storage-readiness.sh` (MinIO, versioning + Object Lock, a scoped key, a second bucket) | **30/30**, two runs (after: the part size set to the 5 MiB minimum so multipart is really exercised; the Object Lock refusal judged by the version surviving, since MinIO answers 400 where S3 answers 403). Control without versioning or lock: 21 PASS, 2 UNSUPPORTED, exit 0; the same expecting them: 2 FAIL, exit 1 |
 | `postgres/verify-image.sh munaxa-docs-postgres:local` | **8/8** (after correcting the expected `age --version` string) |
 | `systemd-analyze verify` (the four units, in a scratch root holding the checkout's paths) | no errors |
@@ -534,11 +534,10 @@ last change to the file under test.
 | `pnpm format:check` | clean |
 | Stack test with the backup drill (`run-stack-test.sh`, backup volume on its own tmpfs so the same-device refusal is ON) | Run 1 **failed**, at the new outage step: it found defect 1 above. After the fix, run 2: **all stack checks passed, 66 PASS lines, no FAIL** — smoke 14/14; the off-server copy (17 files verified, base backup and dump set `COMPLETE`); the host check healthy, with a crossed limit, and with the store stopped, a copy failed and signatures 100 h old (three findings named, then cleared); unsafe settings refused 8/8; no credential (the off-server key included) in 571 log lines. The drill: PITR stopped "before commit of transaction 1062" at the target in 4 s; end of archive 3 s; the dump restore; and **step 6: base backup, 8 WAL files and the dump set fetched from the stand-in remote alone in 4 s, every byte matched, then PITR from that copy in 4 s with all 15 checks held** (changes A/B, each database identical at the target, RLS forced, `edms_app` isolated, audit chain from genesis). Laptop timings, not an RTO |
 
-**Not re-run, because no application, migration or package code changed in this revision**
+**Not re-run locally, because no application, migration or package code changed in this revision**
 (every change is under `infra/hetzner/`, `.github/workflows/` and `docs/`): the API, web, domain,
 contracts, i18n, utils and worker unit suites, lint and typecheck, the integration suite and the
-migration tests. Their last results are in §3 (`4725053`'s CI and the full integration run of
-58 files and 1310 tests).
+migration tests. **GitHub CI ran all of them on `3d0b84a` and every job passed** (§11.7).
 
 ### 11.3 What is now verified locally
 
@@ -609,3 +608,32 @@ timers run on the same server).
 
 Effort to provision and pass the gates: 2–4 working days, as before. **Nothing is created until the
 owner authorizes it.**
+
+### 11.7 CI on `3d0b84a`, and the final review (2026-10-16)
+
+**CI workflow** ([run 38826167040](https://github.com/munaxa/munaxa-docs/actions/runs/38826167040)),
+every job **PASS**:
+
+- lint, typecheck, unit tests, build, and the contrast and visual checks;
+- container images;
+- product isolation;
+- integration (real PostgreSQL, two tenants, MinIO, ICAP), which applies every migration first;
+- five end-to-end browser suites: signing, screens, recovery and data grid, delegations, session
+  states.
+
+**Hetzner template workflow** ([run 38826167082](https://github.com/munaxa/munaxa-docs/actions/runs/38826167082)):
+**FAIL**.
+
+- **Passed:** the image builds, the PostgreSQL image acceptance, the deploy.env tests and the alert
+  delivery tests.
+- **Failed:** the direct TLS test, 1 of 19 checks. The other 18 passed, including the redirect,
+  HSTS, the certificate's name and persistence.
+- **Skipped, so NOT RUN on GitHub for this SHA:** the backup script tests, the stack test with the
+  drill, the off-server copy, the storage readiness checks and the scanner watch tests. Locally they
+  passed (§11.2). The R2 job is skipped by design: it needs a `storage-test` tag.
+
+**Cause and fix.** The TLS test waited a fixed 2 seconds after starting Caddy before its first
+HTTPS request. On the GitHub runner, Caddy had not yet issued its local certificate. The fix waits
+until a request verifies against the root, at all three points where the test starts a proxy. It
+then passed 19/19 three times locally. A test defect, not a product one. The fix is in the commit
+that adds this section; CI on that commit is the evidence still to come.

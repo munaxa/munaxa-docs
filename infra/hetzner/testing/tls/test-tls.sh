@@ -183,7 +183,25 @@ fingerprint() {
   client --head --output /dev/null --write-out '%{certs}' "https://$host/" 2>/dev/null |
     sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p' | head -n 40 | sha256sum | cut -d' ' -f1
 }
-sleep 2
+# Caddy obtains the site's certificate from its local CA a moment after it starts; a fixed sleep
+# was too short on a GitHub runner. Waits until a request verifies against the root, then judges.
+read_root() {
+  for _ in $(seq 1 30); do
+    docker exec "$run_id-proxy" cat /data/caddy/pki/authorities/local/root.crt >"$work/root.crt" 2>/dev/null &&
+      [ -s "$work/root.crt" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+wait_tls() {
+  for _ in $(seq 1 60); do
+    client --output /dev/null "https://$host/" 2>/dev/null && return 0
+    sleep 1
+  done
+  echo "  (gave up waiting for a verified TLS answer)"
+  return 1
+}
+wait_tls
 [ "$(client "https://$host/" 2>&1)" = "web-answered" ] && pass "https://$host/ is served by the web, over a verified certificate" ||
   fail "the web did not answer over TLS: $(client "https://$host/" 2>&1 | tail -n 1)"
 [ "$(client "https://$host/api/v1/downloads/abc" 2>&1)" = "api-answered" ] && pass "a verified download goes to the API" || fail "downloads not routed"
@@ -204,7 +222,7 @@ docker logs "$run_id-proxy" 2>&1 | grep -q "TLS-TEST-CAPABILITY-$run_id" && fail
 before="$(fingerprint)"
 docker rm -f "$run_id-proxy" >/dev/null
 start_proxy -v "$run_id-data:/data"
-sleep 2
+wait_tls
 after="$(fingerprint)"
 [ -n "$before" ] && [ "$before" = "$after" ] && pass "after a restart the same certificate is served: /data persists (no new issuance)" ||
   fail "the certificate changed across a restart with the volume"
@@ -212,12 +230,13 @@ docker rm -f "$run_id-proxy" >/dev/null
 # The control: the base template's tmpfs /data. A restart loses the certificate (with a real CA,
 # every restart would be a new issuance, and the rate limits would follow).
 start_proxy --tmpfs /data
-sleep 2
-docker exec "$run_id-proxy" cat /data/caddy/pki/authorities/local/root.crt >"$work/root.crt" 2>/dev/null
+read_root
+wait_tls
 first="$(fingerprint)"
 docker restart "$run_id-proxy" >/dev/null
-sleep 3
-docker exec "$run_id-proxy" cat /data/caddy/pki/authorities/local/root.crt >"$work/root.crt" 2>/dev/null
+sleep 2
+read_root
+wait_tls
 second="$(fingerprint)"
 [ -n "$first" ] && [ -n "$second" ] && [ "$first" != "$second" ] &&
   pass "control: on tmpfs /data a restart produces a new certificate — the reason for the volume" ||
