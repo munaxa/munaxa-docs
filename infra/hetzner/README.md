@@ -410,7 +410,8 @@ C="docker compose --env-file deploy.env -f infra/hetzner/compose.yaml -f infra/h
 infra/hetzner/ops/check-deploy-env.sh deploy.env --on-host   # refuses a missing or example host name
 ```
 
-**Before the first start:** the A/AAAA record points at the server, ports 80 and 443 are open in
+**Before the first start:** the A record points at the server's IPv4 (DNS only, not proxied; no
+AAAA, because the overlay publishes on IPv4 only), ports 80 and 443 are open in
 the Hetzner Cloud Firewall, and — for the first issuance — `DOCS_ACME_CA` names Let's Encrypt's
 staging directory (`deploy.test.env.example`). **Tested** without any certificate authority or DNS:
 `testing/tls/test-tls.sh` (configuration, rendered ports and networks, routing, redirect, HSTS, the

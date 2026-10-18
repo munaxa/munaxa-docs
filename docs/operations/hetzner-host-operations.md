@@ -156,8 +156,10 @@ on this server and nobody else decrypts traffic.
 
 **Prerequisites, in this order:**
 
-1. The TEST host name (D-8) chosen; its A (and AAAA, if IPv6 is used) record points at the server's
-   address. Let's Encrypt checks it from several places on the internet.
+1. The TEST host name (D-8) chosen; its A record points at the server's primary IPv4, DNS only
+   (not proxied). No AAAA: the overlay publishes on `0.0.0.0`, IPv4 only, and Let's Encrypt
+   prefers IPv6 when an AAAA record exists. Let's Encrypt checks it from several places on the
+   internet.
 2. The Hetzner Cloud Firewall admits TCP 80 and 443 from anywhere (§1, column C). Port 80 must stay
    open: it answers the HTTP-01 challenge and redirects everything else.
 3. `deploy.env` names `DOCS_PUBLIC_HOSTNAME` and `DOCS_ACME_EMAIL`, and for the first start
