@@ -1055,3 +1055,83 @@ region and the S3 endpoint, which names the region.
   are unverified.
 - Object Lock means stored data is billed for the whole retention, even after the server stops
   needing it. The €0.50 estimate in §12.4 assumes under 50 GB.
+
+### 12.8 Follow-up evidence: domain options and server choice (checked 2026-10-18)
+
+Public sources only; nothing was registered, created, ordered or changed. §12.7 stands; this adds to
+it. Every decision stays **Proposed**.
+
+| # | Status | Next action | Responsible |
+| --- | --- | --- | --- |
+| H-1 option 1: `docs-nonprod.munaxa.com` | **REQUIRES USER CONFIRMATION** (control of `munaxa.com`), then **REQUIRES USER DECISION** | Confirm control in the Spaceship and Cloudflare consoles as below; then choose between option 1 and option 2 | O |
+| H-1 option 2: register `munaxa-nonprod.com` | **REQUIRES USER DECISION** (cost approval) | Still unregistered on 2026-10-18 | O |
+| C-2 | **UNVERIFIED — CONSOLE CHECK REQUIRED** | Unchanged; CPX32 now also reads as unavailable publicly | O |
+
+#### `munaxa.com`, public records
+
+- **Verisign RDAP** (`https://rdap.verisign.com/com/v1/domain/munaxa.com`, 2026-10-18 08:01 UTC):
+  registered 2026-05-25, expires **2027-05-25**; registrar **Spaceship, Inc.** (IANA 3862); status
+  `client transfer prohibited`; name servers `bristol.ns.cloudflare.com` and
+  `rick.ns.cloudflare.com`; DNSSEC not signed. The registrant is not shown.
+- **Public DNS** (Cloudflare and Google resolvers, same date):
+  - the zone is served by Cloudflare;
+  - `docs.munaxa.com` is a CNAME to the production AWS load balancer in `eu-central-1`;
+  - `docs-nonprod.munaxa.com`, `docs-test.munaxa.com`, `test.docs.munaxa.com`,
+    `staging.docs.munaxa.com` and `api.docs.munaxa.com` do not exist (NXDOMAIN);
+  - no CAA record, so any certificate authority, Let's Encrypt included, may issue;
+  - mail is Zoho; SPF includes Resend; DMARC is `p=quarantine` with strict alignment.
+- `munaxa-nonprod.com`: RDAP 404 again on 2026-10-18.
+
+**Limitations:** public records show who the registrar and DNS host are, not who holds the
+accounts. They do not show that the owner controls `munaxa.com`. ADR-0026 D-8's "existing
+Cloudflare zone" is a statement, not evidence.
+
+**Evidence that confirms control** (dated screenshots; no change made):
+
+1. Spaceship: the domain list shows `munaxa.com` in the owner's account, with its expiry and the two
+   Cloudflare name servers.
+2. Cloudflare: the `munaxa.com` zone is **Active** in the owner's account, and its assigned name
+   servers are `bristol` and `rick`.
+3. Cloudflare DNS records: no record named `docs-nonprod` (or the chosen label), and the production
+   `docs` record as it stands, for later comparison.
+4. Cloudflare members and API tokens: who can edit the zone, and every token with
+   `Zone:DNS:Edit` on it.
+
+For option 2, after an approved registration: the registrar shows the new domain in the owner's
+account, the new zone is Active in the DNS provider, and its name servers are delegated.
+
+#### Domain trade-offs (H-1, D-8)
+
+| | Option 1: `docs-nonprod.munaxa.com` | Option 2: `munaxa-nonprod.com` |
+| --- | --- | --- |
+| Cost | None | One-time registration, then yearly renewal. Reported, not reverified: US$10.46 a year at Cloudflare Registrar (third-party list, 2026-10-15). Spaceship's price not obtained (HTTP 403) |
+| DNS change | One `A` record (and `AAAA`) **in the production zone** | Records in a zone that holds nothing of production |
+| Accidental production change | Possible: the person adding the TEST record has edit rights over `docs`, mail, SPF and DMARC. Cloudflare API tokens are scoped per zone, not per record [not re-read] | Not possible from the TEST zone |
+| Access separation | A TEST operator needs production-zone access, or the owner makes every TEST DNS change | TEST zone access can be given without production access |
+| Browser separation | Same site as production (`munaxa.com`). Product cookies are host-only (no `Domain` attribute, `apps/web/src/lib/auth.ts`), so production cookies are not sent to TEST. But a compromised TEST host could set a cookie for `munaxa.com` that browsers then send to `docs.munaxa.com`, and `SameSite=Lax` does not separate the two | Different site; neither can set cookies for the other |
+| TLS | Caddy HTTP-01 from Let's Encrypt; no DNS credentials on the server. Let's Encrypt limits are per registered domain; production uses ACM, so no contention. A future CAA record for production would also have to allow Let's Encrypt | Same mechanism, independent of production |
+| Mail | A TEST sender under `munaxa.com` shares production's SPF and DMARC reputation | Its own SPF, DKIM and DMARC |
+| Time | Immediate, once control is confirmed | Registration and zone activation first |
+
+#### Server choice (C-2, D-7)
+
+Re-read 2026-10-18:
+
+- **CX33** (`https://www.hetzner.com/cloud/cost-optimized/`): Intel/AMD x86, 4 vCPU, 8 GB, 80 GB
+  NVMe, 20 TB traffic; locations "eu-central NBG1 HEL1"; "This product is currently unavailable.
+  Please check back later." No price amount rendered.
+- **CPX32** (`https://www.hetzner.com/cloud/regular-performance/`, previously HTTP 429): AMD x86,
+  4 vCPU, **8 GB**, 160 GB NVMe; locations NBG1, HEL1 and SIN1, not FSN1; the same "currently
+  unavailable" text.
+- **Prices** (official price-adjustment page, re-read): unchanged from §12.7; listed for Germany
+  (FSN/NBG) and Finland (HEL), so the price does not depend on choosing NBG1 or FSN1.
+- **Ubuntu 24.04:** the server overview names Ubuntu without versions. Still unverified.
+- **Architecture:** the images are built single-platform on GitHub's x86-64 runners
+  (`publish-images.yml`), so the server must be x86-64. ARM (CAX) is unsuitable.
+
+**Correction to D-7's fallback reasoning:** CPX32 has the **same 8 GB** as CX33. The Compose memory
+limits add up to about 7.25 GiB (`compose.yaml`: antivirus 2560m, API and PostgreSQL 1536m each,
+web 768m, Redis 384m, two backup jobs 256m each, proxy 128m), against roughly 3–4 GB used at rest
+(§5, the Headroom row). If CX33 proves short of **memory** during a ClamAV reload, CPX32 does not fix it;
+CX43 (16 GB, €15.99 excluding VAT and IPv4, the same unavailable product line) would. CPX32 helps
+only if CX33 cannot be ordered at all, or if CPU proves the limit.
