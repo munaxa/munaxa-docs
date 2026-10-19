@@ -101,12 +101,13 @@ reversed (go-live-runbook.md §20).
 TEST server that does not yet have the separate backup disk (§7) or the off-server copy:
 
 ```bash
+# deploy.env: DOCS_BACKUPS_DEFERRED=1 (read by the host check; refused for a non -test project)
 C="docker compose --env-file deploy.env -f infra/hetzner/compose.yaml -f infra/hetzner/compose.tls.yaml"
 C="$C -f infra/hetzner/compose.backups-deferred.yaml"
 infra/hetzner/ops/check-deploy-env.sh deploy.env --on-host --backups-deferred
 ```
 
-Then the commands above, unchanged. What the overlay and the flag do:
+Then the commands above, unchanged. What the overlay, the flag and the setting do:
 
 - **PostgreSQL** runs without WAL archiving and without the `${DOCS_BACKUP_DIR}/wal` mount.
   Without the overlay, every archive attempt is refused on the root disk and PostgreSQL keeps every
@@ -118,18 +119,26 @@ Then the commands above, unchanged. What the overlay and the flag do:
 - **`check-deploy-env.sh --backups-deferred`** is accepted only for a `DOCS_PROJECT_NAME` ending in
   `-test`. It reports the backup volume, `offsite.env` and the off-server state directory as
   `DEFERRED`; every other check still runs, `monitoring.env` included. Without the flag, all three
-  are still required.
+  are still required. It also requires `DOCS_BACKUPS_DEFERRED=1` in `deploy.env`, and refuses that
+  setting without the flag.
+- **The host check** (`ops/host-check.sh`, every 5 minutes) reads `DOCS_BACKUPS_DEFERRED=1` and,
+  for a `-test` project only, replaces its backup checks with one: that WAL archiving is off.
+  Monitoring itself is not deferred: every other check, the heartbeat and the alerts run as usual
+  ([monitoring.md §3.1](../../docs/operations/monitoring.md)). Install the `munaxa-host-check`
+  timer as on any server.
 - `deploy.env` still sets `DOCS_BACKUP_DIR` and two `DOCS_BACKUP_AGE_RECIPIENTS`, because
   `compose.yaml` will not render without them. Nothing reads them in this mode; generate two
   TEST-only age key pairs off the server.
 
 **What it means:** no backup of any kind is taken. Losing the server or its disk loses every
-document record. To end the deferral, set up §7, drop the overlay and the flag, and run
-`check-deploy-env.sh deploy.env --on-host` until it reports nothing wrong.
+document record. To end the deferral, set up §7, drop the overlay, the flag and
+`DOCS_BACKUPS_DEFERRED`, and run `check-deploy-env.sh deploy.env --on-host` until it reports
+nothing wrong.
 
 Tested by `testing/deploy/test-check-deploy-env.sh` (accepted for TEST, refused otherwise, normal
-mode unchanged) and `testing/deploy/test-backups-deferred.sh` (the rendered configuration with and
-without the overlay, and with Docker and a PostgreSQL image, the running server's settings).
+mode unchanged), `testing/deploy/test-backups-deferred.sh` (the rendered configuration with and
+without the overlay, and with Docker and a PostgreSQL image, the running server's settings) and
+`testing/monitoring/test-host-check-deferred.sh` (the host check and alert delivery in both modes).
 
 ### Verified downloads (ADR-0026 §10)
 

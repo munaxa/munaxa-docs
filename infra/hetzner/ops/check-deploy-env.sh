@@ -67,7 +67,17 @@ secrets="$(grep -E '^[A-Z_]*(PASSWORD|SECRET|TOKEN|_KEY_ID|ACCESS_KEY)[A-Z_]*=' 
 project="$(get DOCS_PROJECT_NAME)"
 printf '%s' "$project" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' && fine "DOCS_PROJECT_NAME set" ||
   problem "DOCS_PROJECT_NAME must be set (lower case, e.g. munaxa-docs-test)"
+# DOCS_BACKUPS_DEFERRED is what the host check reads (ops/host-check.sh), so it must agree with the
+# flag: set without it, the host check would skip backups this check requires; missing with it,
+# the host check would report the absent backups every five minutes.
+deferral_setting="$(get DOCS_BACKUPS_DEFERRED)"
+case "$deferral_setting" in
+  '' | 0 | 1) ;;
+  *) problem "DOCS_BACKUPS_DEFERRED must be 0 or 1" ;;
+esac
 if [ "$backups_deferred" -eq 1 ]; then
+  [ "$deferral_setting" = 1 ] ||
+    problem "--backups-deferred needs DOCS_BACKUPS_DEFERRED=1 in deploy.env, for the host check"
   case "$project" in
     *?-test) deferred "backups: TEST project; start it with compose.backups-deferred.yaml (README.md §4)" ;;
     *)
@@ -76,6 +86,8 @@ if [ "$backups_deferred" -eq 1 ]; then
       backups_deferred=0
       ;;
   esac
+elif [ "$deferral_setting" = 1 ]; then
+  problem "DOCS_BACKUPS_DEFERRED=1 needs --backups-deferred (TEST only); otherwise backups are required"
 fi
 for name in DOCS_CONFIG_DIR DOCS_BACKUP_DIR DOCS_OFFSITE_STATE_DIR; do
   value="$(get "$name")"

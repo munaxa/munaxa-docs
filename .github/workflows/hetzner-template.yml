@@ -147,6 +147,11 @@ jobs:
       - name: Alert delivery tests
         run: infra/hetzner/testing/monitoring/test-monitor.sh
 
+      # The host check and alert delivery with backups deferred (TEST only), against a stand-in
+      # docker: the deferral honoured for -test only, everything else still checked and alerted.
+      - name: Host check with backups deferred
+        run: infra/hetzner/testing/monitoring/test-host-check-deferred.sh
+
       # Direct TLS on the host (compose.tls.yaml, Caddyfile.tls) with Caddy's local CA instead of
       # Let's Encrypt: configuration, rendered ports and networks, routing, redirect, HSTS, persistence.
       - name: Direct TLS tests

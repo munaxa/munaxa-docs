@@ -79,6 +79,36 @@ how many times a signal appeared, never the line, because a line can name a file
 store stopped while an off-server copy runs and the signatures are made 100 h old (three named
 findings), then all cleared once they recover.
 
+### 3.1 A TEST with backups deferred: what is skipped, what stays active
+
+A disposable TEST may run without backups by an explicit owner decision
+(infra/hetzner/README.md §4, *TEST with backups deferred*). Deferring backups is **not** deferring
+monitoring.
+
+| | Backups deferred (`DOCS_BACKUPS_DEFERRED=1`, `-test` project) | Every other deployment |
+| --- | --- | --- |
+| `db-backup` running, the backup volume's disk, the last backup (M7–M8), WAL archiving (M9), the off-server copy (M16) | Not checked; one `DEFERRED` line each | Checked |
+| WAL archiving **off** | Checked: a finding if it is on, because the overlay is then not applied and `pg_wal` grows until the root disk is full | — |
+| Root disk, memory, every other container, PostgreSQL, readiness, object store, log signals, scanner signatures, TLS | Checked | Checked |
+| `monitor.sh`: configuration refusals, heartbeat, failure endpoint, webhook | Unchanged | Unchanged |
+
+**The setting is refused unless both hold:** `DOCS_BACKUPS_DEFERRED=1` (in `deploy.env`; `0` or
+absent is the normal mode) **and** a `DOCS_PROJECT_NAME` ending in `-test`. Refused, it is a finding
+of its own and every backup check still runs, so a misplaced setting pages rather than hides
+anything. Any other value is a finding too. `check-deploy-env.sh` refuses the setting without
+`--backups-deferred`, and the flag without the setting, so the two cannot drift apart.
+
+A `DEFERRED` line is never sent anywhere: only `FINDING` lines leave the server (§4). With backups
+deferred, a healthy TEST pings the heartbeat; any finding, backups aside, withholds it as usual.
+
+**Tested:** `infra/hetzner/testing/monitoring/test-host-check-deferred.sh` runs the real
+`host-check.sh` and `monitor.sh` against a stand-in `docker` (20 checks): the normal mode is
+unchanged; deferred and healthy is all well with one heartbeat ping; archiving on is a finding; the
+setting is refused for three non-TEST names and for an invalid value; an unready API, a stopped
+Redis and a full disk are still findings and alerted; a missing, placeholder, plain-http,
+world-readable or contact-less `monitoring.env` is still refused with nothing sent. Negative control:
+against the host check before this change, 7 checks fail.
+
 ## 4. Delivery
 
 `infra/hetzner/ops/monitor.sh`, started every 5 minutes by `ops/systemd/munaxa-host-check.timer`:

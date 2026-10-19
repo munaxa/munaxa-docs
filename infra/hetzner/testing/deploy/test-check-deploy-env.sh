@@ -98,7 +98,10 @@ out="$("$check_script" "$work/good.env" --bogus 2>&1)"
 [ $? -ne 0 ] && printf '%s' "$out" | grep -q '^usage:' && pass "an unknown option is refused" ||
   fail "an unknown option was accepted"
 
-out="$("$check_script" "$work/good.env" --backups-deferred 2>&1)"
+# The flag and DOCS_BACKUPS_DEFERRED=1 (read by ops/host-check.sh) go together.
+with_deferral() { sed '$a DOCS_BACKUPS_DEFERRED=1'; }
+good | with_deferral >"$work/good-deferred.env"
+out="$("$check_script" "$work/good-deferred.env" --backups-deferred 2>&1)"
 [ $? -eq 0 ] && printf '%s' "$out" | grep -q '^DEFERRED' && printf '%s' "$out" | grep -q 'BACKUPS DEFERRED' &&
   pass "--backups-deferred: a TEST project passes and says backups are deferred" ||
   fail "--backups-deferred: the TEST file was refused or not marked deferred: $out"
@@ -107,7 +110,8 @@ for name in munaxa-docs-prod munaxa-docs munaxa-docs-test-copy munaxa-docs-testi
   good | sed "s#^DOCS_PROJECT_NAME=.*#DOCS_PROJECT_NAME=$name#" >"$work/case.env"
   "$check_script" "$work/case.env" >/dev/null 2>&1
   normal=$?
-  out="$("$check_script" "$work/case.env" --backups-deferred 2>&1)"
+  with_deferral <"$work/case.env" >"$work/case-deferred.env"
+  out="$("$check_script" "$work/case-deferred.env" --backups-deferred 2>&1)"
   if [ $? -ne 0 ] && [ "$normal" -eq 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'must end in -test'; then
     pass "--backups-deferred refused for project $name (accepted without the flag)"
   else
@@ -116,10 +120,25 @@ for name in munaxa-docs-prod munaxa-docs munaxa-docs-test-copy munaxa-docs-testi
 done
 
 # The flag defers backups only: an unrelated mistake is still refused.
-good | sed 's#^DOCS_API_IMAGE=.*#DOCS_API_IMAGE=ghcr.io/munaxa/munaxa-docs-api:latest#' >"$work/case.env"
+good | sed 's#^DOCS_API_IMAGE=.*#DOCS_API_IMAGE=ghcr.io/munaxa/munaxa-docs-api:latest#' | with_deferral >"$work/case.env"
 out="$("$check_script" "$work/case.env" --backups-deferred 2>&1)"
 [ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'DOCS_API_IMAGE must name' &&
   pass "--backups-deferred still refuses an image by tag" || fail "--backups-deferred accepted an image by tag"
+
+# Flag and setting must agree, so the host check never skips backups this check requires.
+out="$("$check_script" "$work/good.env" --backups-deferred 2>&1)"
+[ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'needs DOCS_BACKUPS_DEFERRED=1' &&
+  pass "--backups-deferred without DOCS_BACKUPS_DEFERRED=1 is refused" || fail "the flag was accepted without the setting"
+out="$("$check_script" "$work/good-deferred.env" 2>&1)"
+[ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'needs --backups-deferred' &&
+  pass "DOCS_BACKUPS_DEFERRED=1 without --backups-deferred is refused" || fail "the setting was accepted without the flag"
+good | sed '$a DOCS_BACKUPS_DEFERRED=yes' >"$work/case.env"
+out="$("$check_script" "$work/case.env" 2>&1)"
+[ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'must be 0 or 1' &&
+  pass "DOCS_BACKUPS_DEFERRED=yes is refused" || fail "DOCS_BACKUPS_DEFERRED=yes was accepted"
+good | sed '$a DOCS_BACKUPS_DEFERRED=0' >"$work/case.env"
+"$check_script" "$work/case.env" >/dev/null 2>&1 && pass "DOCS_BACKUPS_DEFERRED=0 is the normal mode" ||
+  fail "DOCS_BACKUPS_DEFERRED=0 was refused"
 
 # On the host: a configuration directory as the server would hold it, but no backup volume, no
 # offsite.env and no off-server state directory. Modes only; no ownership change, so no root needed.
@@ -139,6 +158,7 @@ on_host() {
     -e "s#^DOCS_OFFSITE_STATE_DIR=.*#DOCS_OFFSITE_STATE_DIR=$work/no-offsite-state#"
 }
 on_host >"$work/host.env"
+on_host | with_deferral >"$work/host-deferred.env"
 
 # Normal mode still insists on every backup requirement.
 out="$("$check_script" "$work/host.env" --on-host 2>&1)"
@@ -148,7 +168,7 @@ for expect in 'offsite.env is missing' 'DOCS_BACKUP_DIR does not exist' 'DOCS_OF
     pass "normal mode on the host refuses: $expect" || fail "normal mode on the host did not refuse: $expect"
 done
 
-out="$("$check_script" "$work/host.env" --on-host --backups-deferred 2>&1)"
+out="$("$check_script" "$work/host-deferred.env" --on-host --backups-deferred 2>&1)"
 code=$?
 if [ "$code" -eq 0 ] && ! printf '%s' "$out" | grep -q 'PROBLEM'; then
   pass "deferred mode on the host passes without backup volume, offsite.env or off-server state"
@@ -161,27 +181,27 @@ for expect in 'offsite.env' 'DOCS_BACKUP_DIR' 'DOCS_OFFSITE_STATE_DIR'; do
 done
 
 # The option order does not matter.
-"$check_script" "$work/host.env" --backups-deferred --on-host >/dev/null 2>&1 &&
+"$check_script" "$work/host-deferred.env" --backups-deferred --on-host >/dev/null 2>&1 &&
   pass "the options are accepted in either order" || fail "--backups-deferred --on-host was refused"
 
 # Deferred mode on the host keeps every other requirement: monitoring is not deferred, modes and
 # placeholders are still checked, and a non-TEST project is still refused.
 mv "$cfg/monitoring.env" "$work/monitoring.env.aside"
-out="$("$check_script" "$work/host.env" --on-host --backups-deferred 2>&1)"
+out="$("$check_script" "$work/host-deferred.env" --on-host --backups-deferred 2>&1)"
 [ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'monitoring.env is missing' &&
   pass "deferred mode still requires monitoring.env" || fail "deferred mode accepted a missing monitoring.env"
 mv "$work/monitoring.env.aside" "$cfg/monitoring.env"
 chmod 0644 "$cfg/api.env"
-out="$("$check_script" "$work/host.env" --on-host --backups-deferred 2>&1)"
+out="$("$check_script" "$work/host-deferred.env" --on-host --backups-deferred 2>&1)"
 [ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'api.env is mode 644' &&
   pass "deferred mode still refuses a readable secret file" || fail "deferred mode accepted api.env at 0644"
 chmod 0600 "$cfg/api.env"
 printf 'HEARTBEAT_URL=<required>\n' >>"$cfg/monitoring.env"
-out="$("$check_script" "$work/host.env" --on-host --backups-deferred 2>&1)"
+out="$("$check_script" "$work/host-deferred.env" --on-host --backups-deferred 2>&1)"
 [ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'monitoring.env still holds a placeholder' &&
   pass "deferred mode still refuses a placeholder in monitoring.env" || fail "deferred mode accepted a monitoring.env placeholder"
 printf 'SETTING=fixture-value\n' >"$cfg/monitoring.env"
-on_host | sed 's#^DOCS_PROJECT_NAME=.*#DOCS_PROJECT_NAME=munaxa-docs-prod#' >"$work/host-prod.env"
+on_host | sed 's#^DOCS_PROJECT_NAME=.*#DOCS_PROJECT_NAME=munaxa-docs-prod#' | with_deferral >"$work/host-prod.env"
 out="$("$check_script" "$work/host-prod.env" --on-host --backups-deferred 2>&1)"
 [ $? -ne 0 ] && printf '%s' "$out" | grep -F 'PROBLEM' | grep -qF 'must end in -test' &&
   pass "deferred mode on the host is refused for a non-TEST project" || fail "deferred mode on the host accepted munaxa-docs-prod"

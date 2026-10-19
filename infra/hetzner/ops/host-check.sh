@@ -26,6 +26,15 @@
 #   LOG_WINDOW              how far back the log-derived checks look (default 10m)
 #   EXPECTED_SERVICES       the services that must be running
 #                           (default: proxy web api antivirus postgres redis db-backup)
+#
+# Backups deferred (a disposable TEST only; README.md §4, "TEST with backups deferred"):
+#   DOCS_BACKUPS_DEFERRED   1 in deploy.env, for a stack started with compose.backups-deferred.yaml.
+#                           Honoured only when DOCS_PROJECT_NAME ends in -test. It replaces the
+#                           backup checks — db-backup running, the backup volume's disk, the last
+#                           backup, WAL archiving, the off-server copy — with one check that WAL
+#                           archiving is OFF, i.e. that the overlay is really applied. Every other
+#                           check runs unchanged. For any other project name, or any value but 0 or
+#                           1, it is a finding of its own and every backup check runs as usual.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,7 +48,6 @@ offsite_max_age="${OFFSITE_MAX_AGE_HOURS:-2}"
 signature_max_age="${SIGNATURE_MAX_AGE_HOURS:-72}"
 tls_min_days="${TLS_MIN_DAYS:-14}"
 log_window="${LOG_WINDOW:-10m}"
-expected="${EXPECTED_SERVICES:-proxy web api antivirus postgres redis db-backup}"
 findings=0
 
 finding() {
@@ -47,6 +55,7 @@ finding() {
   findings=$((findings + 1))
 }
 ok() { echo "ok       $*"; }
+deferred() { echo "DEFERRED $*"; }
 now() { date +%s; }
 
 # A value from deploy.env (the environment wins), read without executing the file.
@@ -74,8 +83,30 @@ compose() {
   fi
 }
 
+# 0. Backups deferred? Only by the explicit setting, and only for a TEST project (see the header).
+backups_deferred=0
+case "$(setting DOCS_BACKUPS_DEFERRED)" in
+  '' | 0) ;;
+  1)
+    case "$(setting DOCS_PROJECT_NAME)" in
+      *?-test) backups_deferred=1 ;;
+      *) finding "backup: DOCS_BACKUPS_DEFERRED=1 is refused: DOCS_PROJECT_NAME must end in -test; backups are checked" ;;
+    esac
+    ;;
+  *) finding "backup: DOCS_BACKUPS_DEFERRED must be 0 or 1; backups are checked" ;;
+esac
+if [ "$backups_deferred" -eq 1 ]; then
+  expected="${EXPECTED_SERVICES:-proxy web api antivirus postgres redis}"
+else
+  expected="${EXPECTED_SERVICES:-proxy web api antivirus postgres redis db-backup}"
+fi
+
 # 1. Disks: the root filesystem (Docker's volumes live there) and the backup volume.
 backup_dir="$(setting DOCS_BACKUP_DIR)"
+if [ "$backups_deferred" -eq 1 ]; then
+  deferred "disk: the backup volume is not checked (backups deferred, TEST only)"
+  backup_dir=""
+fi
 for path in / ${backup_dir:+"$backup_dir"}; do
   used="$(df -P "$path" 2>/dev/null | awk 'NR == 2 { sub("%", "", $5); print $5 }')"
   if [ -z "$used" ]; then
@@ -135,8 +166,19 @@ else
   finding "database: PostgreSQL does not accept connections"
 fi
 
-# 5. Backups: the last successful run, and WAL archiving.
-if [ -n "$backup_dir" ]; then
+# 5. Backups: the last successful run, and WAL archiving. Deferred, the one thing left to check is
+#    that archiving is really off: with it on and no backup volume, every attempt fails and
+#    PostgreSQL keeps every WAL segment until the root disk is full.
+if [ "$backups_deferred" -eq 1 ]; then
+  deferred "backup: no backup is taken and db-backup is not expected (TEST only; compose.backups-deferred.yaml)"
+  # shellcheck disable=SC2016 # expanded inside the container, from postgres.env
+  archive_mode="$(compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d postgres -tA -c "SHOW archive_mode"' 2>/dev/null | tr -cd '[:lower:]')"
+  case "$archive_mode" in
+    off) ok "backup: WAL archiving is off, as the deferral overlay sets it" ;;
+    '') finding "backup: WAL archiving status cannot be read (is PostgreSQL up?)" ;;
+    *) finding "backup: backups are deferred but WAL archiving is on; start with compose.backups-deferred.yaml" ;;
+  esac
+elif [ -n "$backup_dir" ]; then
   status="$(compose exec -T db-backup cat /backup/status/backup.prom 2>/dev/null)"
   last="$(printf '%s\n' "$status" | sed -n 's/^munaxa_backup_last_success_timestamp_seconds //p')"
   if [ -z "$last" ] || [ "$last" -eq 0 ]; then
@@ -167,7 +209,9 @@ fi
 #    because a backup that exists only on this server is lost with it.
 offsite_dir="$(setting DOCS_OFFSITE_STATE_DIR)"
 offsite_dir="${offsite_dir:-/var/lib/munaxa-docs/offsite}"
-if [ -n "$backup_dir" ]; then
+if [ "$backups_deferred" -eq 1 ]; then
+  deferred "offsite: the off-server copy is not checked (backups deferred, TEST only)"
+elif [ -n "$backup_dir" ]; then
   prom="$offsite_dir/offsite.prom"
   if [ ! -r "$prom" ]; then
     finding "offsite: no status from the off-server copy (has it ever run?)"
