@@ -4,6 +4,10 @@
 #   infra/hetzner/ops/check-deploy-env.sh deploy.env            the file alone
 #   infra/hetzner/ops/check-deploy-env.sh deploy.env --on-host  also the server it will run on:
 #                                                               config files, modes, backup volume
+#   … --backups-deferred   a disposable TEST only (DOCS_PROJECT_NAME ending in -test), started with
+#                          compose.backups-deferred.yaml: the backup volume, offsite.env and the
+#                          off-server copy's state directory are reported DEFERRED instead of
+#                          checked. Every other check runs as usual; refused for any other project.
 #
 # The file is parsed, never executed, and no value is printed: a problem names the setting only.
 # Exit 0 when nothing is wrong; otherwise the number of problems.
@@ -19,9 +23,21 @@
 #     https:// ACME directory.
 set -uo pipefail
 
-file="${1:?usage: check-deploy-env.sh DEPLOY_ENV [--on-host]}"
+usage="usage: check-deploy-env.sh DEPLOY_ENV [--on-host] [--backups-deferred]"
+file="${1:?$usage}"
+shift
 on_host=0
-[ "${2:-}" = "--on-host" ] && on_host=1
+backups_deferred=0
+for option in "$@"; do
+  case "$option" in
+    --on-host) on_host=1 ;;
+    --backups-deferred) backups_deferred=1 ;;
+    *)
+      echo "$usage" >&2
+      exit 1
+      ;;
+  esac
+done
 problems=0
 
 problem() {
@@ -29,6 +45,7 @@ problem() {
   problems=$((problems + 1))
 }
 fine() { echo "ok       $*"; }
+deferred() { echo "DEFERRED $*"; }
 
 [ -r "$file" ] || {
   echo "PROBLEM  $file cannot be read"
@@ -50,6 +67,16 @@ secrets="$(grep -E '^[A-Z_]*(PASSWORD|SECRET|TOKEN|_KEY_ID|ACCESS_KEY)[A-Z_]*=' 
 project="$(get DOCS_PROJECT_NAME)"
 printf '%s' "$project" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' && fine "DOCS_PROJECT_NAME set" ||
   problem "DOCS_PROJECT_NAME must be set (lower case, e.g. munaxa-docs-test)"
+if [ "$backups_deferred" -eq 1 ]; then
+  case "$project" in
+    *?-test) deferred "backups: TEST project; start it with compose.backups-deferred.yaml (README.md §4)" ;;
+    *)
+      problem "--backups-deferred is for a TEST project only: DOCS_PROJECT_NAME must end in -test"
+      # Refused, so nothing is deferred either: the backup checks below run and report as usual.
+      backups_deferred=0
+      ;;
+  esac
+fi
 for name in DOCS_CONFIG_DIR DOCS_BACKUP_DIR DOCS_OFFSITE_STATE_DIR; do
   value="$(get "$name")"
   case "$value" in
@@ -129,7 +156,12 @@ fi
 # 6. On the server itself.
 if [ "$on_host" -eq 1 ]; then
   config_dir="$(get DOCS_CONFIG_DIR)"
-  for f in api.env postgres.env redis.env operator.env backup.env offsite.env monitoring.env tenants.json operator-tenants.json; do
+  files="api.env postgres.env redis.env operator.env backup.env offsite.env monitoring.env tenants.json operator-tenants.json"
+  if [ "$backups_deferred" -eq 1 ]; then
+    files="${files/offsite.env /}"
+    deferred "offsite.env: the off-server backup copy is not configured (compose.backups-deferred.yaml)"
+  fi
+  for f in $files; do
     path="$config_dir/$f"
     if [ ! -f "$path" ]; then
       problem "$f is missing from DOCS_CONFIG_DIR"
@@ -145,7 +177,10 @@ if [ "$on_host" -eq 1 ]; then
     fi
   done
   backup_dir="$(get DOCS_BACKUP_DIR)"
-  if [ -d "$backup_dir" ]; then
+  if [ "$backups_deferred" -eq 1 ]; then
+    deferred "DOCS_BACKUP_DIR: no backup volume is checked; nothing mounts or writes it in this mode"
+    deferred "DOCS_OFFSITE_STATE_DIR: the off-server copy does not run in this mode"
+  elif [ -d "$backup_dir" ]; then
     [ "$(stat -c '%u %a' "$backup_dir")" = "70 700" ] && fine "backup volume owned by uid 70, mode 0700" ||
       problem "DOCS_BACKUP_DIR must be owned by uid 70 with mode 0700"
     [ "$(stat -c %d "$backup_dir")" != "$(stat -c %d /var/lib/docker 2>/dev/null || stat -c %d /)" ] &&
@@ -154,14 +189,18 @@ if [ "$on_host" -eq 1 ]; then
   else
     problem "DOCS_BACKUP_DIR does not exist"
   fi
-  state_dir="$(get DOCS_OFFSITE_STATE_DIR)"
-  [ -d "$state_dir" ] && [ "$(stat -c '%u %a' "$state_dir")" = "70 700" ] &&
-    fine "off-server copy state directory ready" ||
-    problem "DOCS_OFFSITE_STATE_DIR must exist, owned by uid 70, mode 0700"
+  if [ "$backups_deferred" -eq 0 ]; then
+    state_dir="$(get DOCS_OFFSITE_STATE_DIR)"
+    [ -d "$state_dir" ] && [ "$(stat -c '%u %a' "$state_dir")" = "70 700" ] &&
+      fine "off-server copy state directory ready" ||
+      problem "DOCS_OFFSITE_STATE_DIR must exist, owned by uid 70, mode 0700"
+  fi
 fi
 
 echo
-if [ "$problems" -eq 0 ]; then
+if [ "$problems" -eq 0 ] && [ "$backups_deferred" -eq 1 ]; then
+  echo "deploy.env check: nothing wrong — BACKUPS DEFERRED (TEST only; no backup of any kind is taken)"
+elif [ "$problems" -eq 0 ]; then
   echo "deploy.env check: nothing wrong"
 else
   echo "deploy.env check: $problems problem(s)"

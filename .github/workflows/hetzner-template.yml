@@ -134,6 +134,14 @@ jobs:
       - name: deploy.env check tests
         run: infra/hetzner/testing/deploy/test-check-deploy-env.sh
 
+      # The TEST-only backup deferral (compose.backups-deferred.yaml), on the rendered configuration
+      # and, with the image built above, the running PostgreSQL. Uses the template's subnets, so it
+      # runs before the backup and stack tests, never beside them.
+      - name: Backups-deferred overlay tests
+        env:
+          POSTGRES_IMAGE: munaxa-docs-postgres:stacktest
+        run: infra/hetzner/testing/deploy/test-backups-deferred.sh
+
       # Alert delivery (ops/monitor.sh) against a local receiver: refusals, heartbeat, findings,
       # hostile text, delivery failure, no URL token printed.
       - name: Alert delivery tests

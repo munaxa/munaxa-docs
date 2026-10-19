@@ -13,6 +13,7 @@ The decision record is [ADR-0026](../../docs/architecture/adr/0026-hetzner-hosti
 | --- | --- |
 | `compose.yaml` | The production-shaped stack: proxy, web, api, antivirus, postgres, db-backup, redis, plus the one-off `ops` commands (`offsite` among them) |
 | `compose.tls.yaml`, `Caddyfile.tls` | Direct TLS on the host: automatic HTTPS, ports 80/443, a volume for certificates (§9). Not used until D-2 |
+| `compose.backups-deferred.yaml` | **TEST only.** No WAL archiving, no backup mount, `db-backup` and `offsite` inert, for a disposable TEST with no backup disk yet (§4, *TEST with backups deferred*) |
 | `Caddyfile`, `caddy/routes.caddy` | The plain-HTTP entry point, and ADR-0024's routing rule shared by both Caddyfiles |
 | `deploy.env.example`, `deploy.test.env.example` | Which images and which secret directory one environment uses (not secret); the second is the TEST environment's, with direct TLS |
 | `offsite/offsite.sh` | The off-server backup copy and its recovery (`fetch`) (§7) |
@@ -93,6 +94,42 @@ $C exec api node -e "fetch('http://127.0.0.1:3001/api/health/ready').then(r=>r.t
 
 Rollback is the previous release's digests in `deploy.env` and `$C up -d`; migrations are never
 reversed (go-live-runbook.md §20).
+
+### TEST with backups deferred
+
+**A disposable TEST with test data only, by an explicit owner decision. Never production.** For a
+TEST server that does not yet have the separate backup disk (§7) or the off-server copy:
+
+```bash
+C="docker compose --env-file deploy.env -f infra/hetzner/compose.yaml -f infra/hetzner/compose.tls.yaml"
+C="$C -f infra/hetzner/compose.backups-deferred.yaml"
+infra/hetzner/ops/check-deploy-env.sh deploy.env --on-host --backups-deferred
+```
+
+Then the commands above, unchanged. What the overlay and the flag do:
+
+- **PostgreSQL** runs without WAL archiving and without the `${DOCS_BACKUP_DIR}/wal` mount.
+  Without the overlay, every archive attempt is refused on the root disk and PostgreSQL keeps every
+  WAL segment until the disk is full. Durability is unchanged: `fsync`, `synchronous_commit` and
+  `full_page_writes` stay at their default, on.
+- **`db-backup` and `offsite`** are in their own profile, so neither `up` nor `--profile ops`
+  starts them. Started by name, each exits 64 having done nothing: no volume, no env file, no
+  restart. `offsite.env` is not needed; do not install the `munaxa-offsite` timer.
+- **`check-deploy-env.sh --backups-deferred`** is accepted only for a `DOCS_PROJECT_NAME` ending in
+  `-test`. It reports the backup volume, `offsite.env` and the off-server state directory as
+  `DEFERRED`; every other check still runs, `monitoring.env` included. Without the flag, all three
+  are still required.
+- `deploy.env` still sets `DOCS_BACKUP_DIR` and two `DOCS_BACKUP_AGE_RECIPIENTS`, because
+  `compose.yaml` will not render without them. Nothing reads them in this mode; generate two
+  TEST-only age key pairs off the server.
+
+**What it means:** no backup of any kind is taken. Losing the server or its disk loses every
+document record. To end the deferral, set up §7, drop the overlay and the flag, and run
+`check-deploy-env.sh deploy.env --on-host` until it reports nothing wrong.
+
+Tested by `testing/deploy/test-check-deploy-env.sh` (accepted for TEST, refused otherwise, normal
+mode unchanged) and `testing/deploy/test-backups-deferred.sh` (the rendered configuration with and
+without the overlay, and with Docker and a PostgreSQL image, the running server's settings).
 
 ### Verified downloads (ADR-0026 §10)
 

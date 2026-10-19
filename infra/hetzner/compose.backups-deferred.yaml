@@ -1,0 +1,53 @@
+# BACKUPS DEFERRED — a disposable TEST environment only, never production
+# (README.md §4, "TEST with backups deferred").
+#
+# For a TEST server that has no separate backup disk and no off-server copy yet, by an explicit owner
+# decision, holding test data only. An overlay, so compose.yaml keeps backups on by default:
+#
+#   docker compose --env-file deploy.env -f infra/hetzner/compose.yaml -f infra/hetzner/compose.tls.yaml \
+#     -f infra/hetzner/compose.backups-deferred.yaml up -d
+#   infra/hetzner/ops/check-deploy-env.sh deploy.env --on-host --backups-deferred   # -test projects only
+#
+# What it changes, and nothing else:
+#   - postgres: no WAL archiving (archive_mode stays at its default, off) and no mount of
+#     ${DOCS_BACKUP_DIR}/wal. Without this, every archive attempt is refused on the root disk
+#     (postgres/archive-wal.sh) and PostgreSQL keeps every WAL segment until the disk is full.
+#     Durability is unchanged: compose.yaml sets none of fsync, synchronous_commit or
+#     full_page_writes, and neither does this file, so all three stay at PostgreSQL's default, on.
+#   - db-backup and offsite: moved to their own profile, so neither `up` nor `--profile ops` starts
+#     them, and made inert if named explicitly: no volumes, no env file, no restart, and an entrypoint
+#     that exits 64 having done nothing. offsite.env is not needed in this mode.
+#
+# compose.yaml still interpolates DOCS_BACKUP_DIR and DOCS_BACKUP_AGE_RECIPIENTS (`:?`), so deploy.env
+# must still set them; nothing reads them here.
+#
+# Syntax: `!override` replaces a list where Compose would otherwise merge it (command, volumes and
+# profiles are merged by default); `!reset` removes a key. Both need Docker Compose 2.24.4 or later.
+# testing/deploy/test-backups-deferred.sh checks the rendered configuration, not this file's intent.
+
+x-backups-deferred: &backups-deferred
+  profiles: !override ['backups-deferred']
+  restart: 'no'
+  entrypoint:
+    [
+      '/bin/sh',
+      '-c',
+      'echo "backups are deferred on this TEST deployment (compose.backups-deferred.yaml)" >&2; exit 64',
+    ]
+  command: !reset []
+  env_file: !reset []
+  volumes: !reset []
+  healthcheck: !reset {}
+
+services:
+  postgres:
+    command: !override
+      - postgres
+      - -c
+      - hba_file=/etc/munaxa-postgres/pg_hba.conf
+    volumes: !override
+      - postgres-data:/var/lib/postgresql/data
+
+  db-backup: *backups-deferred
+
+  offsite: *backups-deferred
