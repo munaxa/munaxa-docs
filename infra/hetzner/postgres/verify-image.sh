@@ -36,7 +36,7 @@ password="$(openssl rand -hex 24)"
 docker run -d --name "$name" --network none -e POSTGRES_PASSWORD="$password" "$image" >/dev/null
 ready=0
 for _ in $(seq 1 60); do
-  if docker exec "$name" pg_isready -q -U postgres 2>/dev/null; then
+  if docker exec "$name" pg_isready -q -h 127.0.0.1 -U postgres 2>/dev/null; then
     ready=1
     break
   fi
