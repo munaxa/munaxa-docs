@@ -8,12 +8,18 @@
 #   2. with it: PostgreSQL has no archiving and no backup mount and sets none of fsync,
 #      synchronous_commit or full_page_writes (so all stay on); neither `up` nor `--profile ops`
 #      includes db-backup or offsite; both render without backup.env or offsite.env; named
-#      explicitly, each is inert (no volume, no env file, no restart, an entrypoint that exits 64);
+#      explicitly, each is inert (no volume, env file, command, health check or restart; an
+#      entrypoint that exits 64);
 #   3. with a PostgreSQL image (POSTGRES_IMAGE, default: the local build munaxa-docs-postgres:16.10),
 #      the running server: archive_mode off, fsync, synchronous_commit and full_page_writes on; and
-#      db-backup, started by name, exits 64 without restarting. Skipped when Docker has no daemon.
+#      db-backup and offsite, each started by name, run and exit 64 without restarting, with no
+#      mount and no health check, creating nothing on the host. Skipped when Docker has no daemon.
 #
 #   infra/hetzner/testing/deploy/test-backups-deferred.sh
+#
+# Compose versions differ in how they apply `!reset` and `!override` (compose.backups-deferred.yaml),
+# so run it under each version in use: CI runs it with the runner's Compose; DOCKER_CONFIG pointing
+# at a directory whose cli-plugins/ holds another docker-compose runs it with that one.
 #
 # Uses the template's fixed subnets (172.28.10–14.0/24): never run beside the stack test.
 set -uo pipefail
@@ -26,9 +32,9 @@ work="$(mktemp -d)"
 failures=0
 
 cleanup() {
-  [ -f "$work/deploy.env" ] &&
-    docker compose --env-file "$work/deploy.env" -f "$template/compose.yaml" -f "$template/compose.backups-deferred.yaml" \
-      --profile backups-deferred down -v --remove-orphans >/dev/null 2>&1
+  # By project name only, from Docker's own labels: no configuration is rendered, so a broken
+  # overlay cannot leave this run's containers holding the template's subnets for the next one.
+  docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -54,6 +60,7 @@ DOCS_WEB_IMAGE=web@sha256:$(printf '%064d' 0)
 DOCS_ANTIVIRUS_IMAGE=antivirus@sha256:$(printf '%064d' 0)
 DOCS_POSTGRES_IMAGE=$postgres_image
 DOCS_BACKUP_DIR=$work/no-backup-volume
+DOCS_OFFSITE_STATE_DIR=$work/no-offsite-state
 DOCS_BACKUP_AGE_RECIPIENTS=age1fixtureone,age1fixturetwo
 EOF
 base=(docker compose --env-file "$work/deploy.env" -f "$template/compose.yaml")
@@ -111,7 +118,7 @@ for path in sys.argv[1:]:
     assert "postgres" in services and "api" in services, services
     assert "db-backup" not in services and "offsite" not in services, (path, services)
 EOF
-python3 - "$work/named.json" <<'EOF' && pass "named explicitly, db-backup and offsite are inert: no volume, env file or restart; exit 64" || fail "a backup service named explicitly is not inert"
+python3 - "$work/named.json" <<'EOF' && pass "named explicitly, db-backup and offsite are inert: no volume, env file, command, health check or restart; exit 64" || fail "a backup service named explicitly is not inert"
 import json, sys
 c = json.load(open(sys.argv[1]))
 for name in ("db-backup", "offsite"):
@@ -122,7 +129,7 @@ for name in ("db-backup", "offsite"):
     assert not s.get("command"), (name, s.get("command"))
     assert s.get("restart") == "no", (name, s.get("restart"))
     assert s["entrypoint"][:2] == ["/bin/sh", "-c"] and s["entrypoint"][2].endswith("exit 64"), (name, s["entrypoint"])
-    assert "healthcheck" not in s or not s["healthcheck"].get("test"), (name, s.get("healthcheck"))
+    assert s.get("healthcheck") in (None, {"disable": True}), (name, s.get("healthcheck"))
 EOF
 
 echo "=== 3. the running server"
@@ -138,17 +145,44 @@ else
   expected="$(printf 'archive_mode=off\nfsync=on\nfull_page_writes=on\nsynchronous_commit=on')"
   [ "$settings" = "$expected" ] && pass "the server runs with archive_mode=off and fsync, full_page_writes, synchronous_commit on" ||
     fail "the server's settings are not as expected: $settings"
-  "${deferred[@]}" up -d --no-deps db-backup >/dev/null 2>&1
-  sleep 3
-  id="$("${deferred[@]}" ps -a -q db-backup 2>/dev/null)"
-  if [ -n "$id" ] && [ "$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}' "$id")" = "exited 64 0" ] &&
-    docker logs "$id" 2>&1 | grep -q 'backups are deferred'; then
-    pass "db-backup started by name exits 64, says why, and does not restart"
-  else
-    fail "db-backup started by name did not stay inert: $([ -n "$id" ] && docker inspect --format '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}' "$id")"
-  fi
-  [ ! -e "$work/no-backup-volume" ] && pass "nothing created the backup directory on the host" ||
-    fail "the backup directory was created on the host"
+  # Each backup service started by name: it must run (so the checks below are not vacuous), exit 64
+  # with its message, never restart, have no health check, and mount nothing from the host or the
+  # stack. The only mount allowed is an anonymous volume at a path the IMAGE declares (VOLUME): the
+  # PostgreSQL image declares /var/lib/postgresql/data, so Docker gives every container of it an
+  # empty one of its own — not postgres-data, not the backup directory.
+  for service in db-backup offsite; do
+    "${deferred[@]}" up -d --no-deps "$service" >"$work/$service.log" 2>&1
+    sleep 3
+    id="$("${deferred[@]}" ps -a -q "$service" 2>/dev/null)"
+    if [ -z "$id" ]; then
+      fail "$service started by name did not run at all: $(tail -n 3 "$work/$service.log")"
+      continue
+    fi
+    shape="$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}} {{.RestartCount}} health={{if .Config.Healthcheck}}{{.Config.Healthcheck.Test}}{{else}}none{{end}}' "$id")"
+    docker inspect --format '{{json .Mounts}}' "$id" >"$work/$service.mounts.json"
+    docker image inspect --format '{{json .Config.Volumes}}' "$(docker inspect --format '{{.Image}}' "$id")" >"$work/$service.image-volumes.json"
+    mounts="$(python3 - "$work/$service.mounts.json" "$work/$service.image-volumes.json" <<'EOF'
+import json, re, sys
+mounts = json.load(open(sys.argv[1])) or []
+declared = json.load(open(sys.argv[2])) or {}
+bad = [m for m in mounts if not (m.get("Type") == "volume" and re.fullmatch(r"[0-9a-f]{64}", m.get("Name", ""))
+       and m.get("Destination") in declared)]
+print("ok" if not bad else "; ".join(f'{m.get("Type")} {m.get("Name") or m.get("Source")} -> {m.get("Destination")}' for m in bad))
+EOF
+    )"
+    case "$shape" in
+      "exited 64 0 health=none" | "exited 64 0 health=[NONE]") ;;
+      *) mounts="state: $shape; mounts: $mounts" ;;
+    esac
+    if [ "$mounts" = ok ] && docker logs "$id" 2>&1 | grep -q 'backups are deferred'; then
+      pass "$service started by name: exits 64, says why, no restart, no health check, no host or stack mount"
+    else
+      fail "$service started by name did not stay inert: $mounts"
+    fi
+  done
+  [ ! -e "$work/no-backup-volume" ] && [ ! -e "$work/no-offsite-state" ] &&
+    pass "neither started service created the backup directory or the off-server state directory" ||
+    fail "a started backup service created a directory on the host"
 fi
 
 echo

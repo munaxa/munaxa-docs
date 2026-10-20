@@ -15,15 +15,19 @@
 #     Durability is unchanged: compose.yaml sets none of fsync, synchronous_commit or
 #     full_page_writes, and neither does this file, so all three stay at PostgreSQL's default, on.
 #   - db-backup and offsite: moved to their own profile, so neither `up` nor `--profile ops` starts
-#     them, and made inert if named explicitly: no volumes, no env file, no restart, and an entrypoint
-#     that exits 64 having done nothing. offsite.env is not needed in this mode.
+#     them, and made inert if named explicitly: no volumes, no env file, no command, no health check,
+#     no restart, and an entrypoint that exits 64 having done nothing. offsite.env is not needed.
 #
 # compose.yaml still interpolates DOCS_BACKUP_DIR and DOCS_BACKUP_AGE_RECIPIENTS (`:?`), so deploy.env
 # must still set them; nothing reads them here.
 #
-# Syntax: `!override` replaces a list where Compose would otherwise merge it (command, volumes and
-# profiles are merged by default); `!reset` removes a key. Both need Docker Compose 2.24.4 or later.
-# testing/deploy/test-backups-deferred.sh checks the rendered configuration, not this file's intent.
+# Syntax: `!override` replaces a key's value where Compose would otherwise merge it (command,
+# volumes, env_file and profiles are merged by default). Every key here uses `!override`, never
+# `!reset`: on Docker Compose 2.38 (GitHub's runners) `!reset` left these services' volumes,
+# command, health check and env files in place — a named db-backup would still have bind-mounted
+# the backup directory — while Compose 5.6 (the TEST server) removed them. `!override` behaves the
+# same on both. Needs Compose 2.24.4 or later. testing/deploy/test-backups-deferred.sh checks the
+# rendered configuration, not this file's intent; run it under each Compose version in use.
 
 x-backups-deferred: &backups-deferred
   profiles: !override ['backups-deferred']
@@ -34,10 +38,11 @@ x-backups-deferred: &backups-deferred
       '-c',
       'echo "backups are deferred on this TEST deployment (compose.backups-deferred.yaml)" >&2; exit 64',
     ]
-  command: !reset []
-  env_file: !reset []
-  volumes: !reset []
-  healthcheck: !reset {}
+  command: !override []
+  env_file: !override []
+  volumes: !override []
+  healthcheck: !override
+    disable: true
 
 services:
   postgres:
