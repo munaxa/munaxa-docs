@@ -1,0 +1,15 @@
+{
+  "resource_changes": [
+    {
+      "address": "aws_db_instance.main",
+      "type": "aws_db_instance",
+      "change": { "actions": ["delete", "create"] }
+    },
+    {
+      "address": "module.app.aws_secretsmanager_secret.app",
+      "type": "aws_secretsmanager_secret",
+      "change": { "actions": ["delete"] }
+    },
+    { "address": "aws_vpc.main", "type": "aws_vpc", "change": { "actions": ["update"] } }
+  ]
+}

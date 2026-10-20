@@ -1,0 +1,22 @@
+{
+  "resource_changes": [
+    {
+      "address": "aws_budgets_budget.production",
+      "type": "aws_budgets_budget",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "name": "munaxa-docs-eu-prod-monthly",
+          "limit_amount": "130.0",
+          "notification": [{ "subscriber_email_addresses": ["alerts@example.com"] }]
+        },
+        "after": {
+          "name": "munaxa-docs-eu-prod-monthly",
+          "limit_amount": "130.0",
+          "notification": [{ "subscriber_email_addresses": ["ops@munaxa.example"] }]
+        },
+        "after_unknown": {}
+      }
+    }
+  ]
+}

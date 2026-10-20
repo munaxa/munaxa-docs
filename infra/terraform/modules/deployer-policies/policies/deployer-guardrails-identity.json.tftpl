@@ -1,0 +1,74 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "IamWritesOnlyInside${environment}WorkloadPath",
+      "Effect": "Deny",
+      "Action": ${iam_write_actions_json},
+      "NotResource": [
+        "arn:aws:iam::${account_id}:role/munaxa-docs/${env_path}/*",
+        "arn:aws:iam::${account_id}:policy/munaxa-docs/${env_path}/*",
+        "arn:aws:iam::${account_id}:role/aws-service-role/*"
+      ]
+    },
+    {
+      "Sid": "WorkloadRolesMustCarryWorkloadBoundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary": "${workload_boundary_arn}"
+        }
+      }
+    },
+    {
+      "Sid": "PassRoleOnlyToWorkloadServices",
+      "Effect": "Deny",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PassedToService": ${pass_role_services_json}
+        }
+      }
+    },
+    {
+      "Sid": "ServiceLinkedRolesOnlyForUsedServices",
+      "Effect": "Deny",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:AWSServiceName": ${service_linked_role_json}
+        }
+      }
+    },
+    {
+      "Sid": "NoUsersKeysOrIdentityProviders",
+      "Effect": "Deny",
+      "Action": ${identity_escalation_json},
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoOrganizationsBillingOrAccountSecurityControls",
+      "Effect": "Deny",
+      "Action": ${account_level_controls_json},
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoRoleAssumptionFromDeployerSessions",
+      "Effect": "Deny",
+      "Action": [
+        "sts:AssumeRole",
+        "sts:AssumeRoleWithWebIdentity",
+        "sts:AssumeRoleWithSAML",
+        "sts:GetFederationToken"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

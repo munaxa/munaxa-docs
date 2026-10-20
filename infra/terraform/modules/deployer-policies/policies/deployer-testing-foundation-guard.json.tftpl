@@ -1,0 +1,201 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "NoNetworkChangesAtAll",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:Create*",
+        "ec2:Delete*",
+        "ec2:Modify*",
+        "ec2:Associate*",
+        "ec2:Disassociate*",
+        "ec2:Attach*",
+        "ec2:Detach*",
+        "ec2:Authorize*",
+        "ec2:Revoke*",
+        "ec2:Replace*",
+        "ec2:Update*",
+        "ec2:Allocate*",
+        "ec2:Release*",
+        "ec2:Run*",
+        "ec2:Terminate*",
+        "ec2:Accept*",
+        "ec2:Enable*",
+        "ec2:Disable*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoClusterChanges",
+      "Effect": "Deny",
+      "Action": [
+        "ecs:CreateCluster",
+        "ecs:DeleteCluster",
+        "ecs:UpdateCluster",
+        "ecs:UpdateClusterSettings",
+        "ecs:PutClusterCapacityProviders",
+        "ecs:CreateCapacityProvider",
+        "ecs:DeleteCapacityProvider",
+        "ecs:UpdateCapacityProvider",
+        "ecs:DeregisterTaskDefinition",
+        "ecs:DeleteTaskDefinitions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoHostedZoneChanges",
+      "Effect": "Deny",
+      "Action": [
+        "route53:Create*",
+        "route53:Delete*",
+        "route53:Update*",
+        "route53:Associate*",
+        "route53:Disassociate*",
+        "route53:ChangeTagsForResource",
+        "route53:Enable*",
+        "route53:Disable*",
+        "route53:Activate*",
+        "route53:Deactivate*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoCertificateChanges",
+      "Effect": "Deny",
+      "Action": [
+        "acm:RequestCertificate",
+        "acm:ImportCertificate",
+        "acm:DeleteCertificate",
+        "acm:RenewCertificate",
+        "acm:UpdateCertificateOptions",
+        "acm:AddTagsToCertificate",
+        "acm:RemoveTagsFromCertificate",
+        "acm:ExportCertificate",
+        "acm:PutAccountConfiguration"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoS3OutsideOwnSessionState",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "NotResource": [
+        "arn:aws:s3:::${state_bucket}",
+        "arn:aws:s3:::${state_bucket}/${state_key_prefix}/*"
+      ]
+    },
+    {
+      "Sid": "NoStateBucketConfiguration",
+      "Effect": "Deny",
+      "NotAction": [
+        "s3:ListBucket",
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${state_bucket}",
+        "arn:aws:s3:::${state_bucket}/*"
+      ]
+    },
+    {
+      "Sid": "NoKeyAdministration",
+      "Effect": "Deny",
+      "Action": [
+        "kms:CreateKey",
+        "kms:CreateAlias",
+        "kms:DeleteAlias",
+        "kms:UpdateAlias",
+        "kms:ScheduleKeyDeletion",
+        "kms:CancelKeyDeletion",
+        "kms:DisableKey",
+        "kms:EnableKey",
+        "kms:DisableKeyRotation",
+        "kms:EnableKeyRotation",
+        "kms:RotateKeyOnDemand",
+        "kms:PutKeyPolicy",
+        "kms:UpdateKeyDescription",
+        "kms:TagResource",
+        "kms:UntagResource",
+        "kms:ImportKeyMaterial",
+        "kms:DeleteImportedKeyMaterial",
+        "kms:ReplicateKey",
+        "kms:UpdatePrimaryRegion",
+        "kms:RetireGrant",
+        "kms:RevokeGrant"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoLogGroupChanges",
+      "Effect": "Deny",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:PutRetentionPolicy",
+        "logs:DeleteRetentionPolicy",
+        "logs:AssociateKmsKey",
+        "logs:DisassociateKmsKey",
+        "logs:TagResource",
+        "logs:UntagResource",
+        "logs:TagLogGroup",
+        "logs:UntagLogGroup",
+        "logs:PutResourcePolicy",
+        "logs:DeleteResourcePolicy",
+        "logs:PutDataProtectionPolicy",
+        "logs:DeleteDataProtectionPolicy",
+        "logs:PutSubscriptionFilter",
+        "logs:DeleteSubscriptionFilter",
+        "logs:PutMetricFilter",
+        "logs:DeleteMetricFilter",
+        "logs:CreateExportTask"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoServiceDiscoveryChanges",
+      "Effect": "Deny",
+      "Action": [
+        "servicediscovery:Create*",
+        "servicediscovery:Delete*",
+        "servicediscovery:Update*",
+        "servicediscovery:TagResource",
+        "servicediscovery:UntagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoFoundationDatabaseGroupsOrSnapshots",
+      "Effect": "Deny",
+      "Action": [
+        "rds:CreateDBSubnetGroup",
+        "rds:ModifyDBSubnetGroup",
+        "rds:DeleteDBSubnetGroup",
+        "rds:CreateDBParameterGroup",
+        "rds:ModifyDBParameterGroup",
+        "rds:DeleteDBParameterGroup",
+        "rds:ResetDBParameterGroup",
+        "rds:CopyDBParameterGroup",
+        "rds:CreateDBSnapshot",
+        "rds:CopyDBSnapshot",
+        "rds:DeleteDBSnapshot",
+        "rds:ModifyDBSnapshotAttribute",
+        "rds:RestoreDBInstanceFromDBSnapshot",
+        "rds:RestoreDBInstanceToPointInTime"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoIamChangesBeyondPassRole",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:Get*",
+        "iam:List*",
+        "iam:PassRole",
+        "iam:CreateServiceLinkedRole"
+      ],
+      "Resource": "arn:aws:iam::${account_id}:*"
+    }
+  ]
+}

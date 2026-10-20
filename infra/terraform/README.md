@@ -27,9 +27,25 @@ region `eu-central-1`, as decided in ADR-0022, ADR-0023, ADR-0024 and ADR-0025.
 
 ## Layout and state
 
+Two environments (see [ci-cd-two-environments.md](../../docs/operations/ci-cd-two-environments.md)):
+PRODUCTION in 800728620253 and TEST in `munaxa-nonprod` 657878534449.
+
 ```
 infra/terraform/
-├── bootstrap/            applied once by an administrator identity; never by CI
+├── bootstrap/            PRODUCTION bootstrap, 800728620253; administrator only, never CI
+├── bootstrap-eu-test/    TEST bootstrap, 657878534449; administrator only, never CI
+├── modules/
+│   ├── deployer-policies/  the deployer policies and boundaries, rendered per environment
+│   ├── github-oidc-ci/     GitHub OIDC provider + one CI role (environment, main only)
+│   ├── app-service/        the application stack (secrets, ALB, ECS, operator tasks); TEST uses it
+│   └── ecs-service/
+├── eu-test/
+│   ├── ci.s3.tfbackend   TEST CI backend (Testing CI role → TEST deployer)
+│   ├── foundation/       persistent, ≈ $3–3.50/month idle: network (no NAT), cluster, DNS zone, Cloud Map,
+│   │                     certificate, data key, document bucket, workload roles
+│   │                     (administrator-applied: scripts/bootstrap/plan-test-foundation.sh)
+│   └── session/          ephemeral: database, load balancer, services; created and destroyed by
+│                         test-session.yml, never by hand
 ├── eu-prod/
 │   ├── ci.s3.tfbackend       partial backend config: assume the deployer from the GitHub
 │   │                         Actions CI role (source identity github-actions)
@@ -40,7 +56,6 @@ infra/terraform/
 │   ├── core/             applied by the deployer role
 │   ├── data/             applied by the deployer role
 │   └── service/          applied by the deployer role
-└── modules/ecs-service/
 ```
 
 | Root | State object (bucket `munaxa-docs-tfstate-eu-prod-800728620253`) | Applied by |
@@ -49,6 +64,12 @@ infra/terraform/
 | `eu-prod/core` | `eu-prod/core/terraform.tfstate` | Deployer role |
 | `eu-prod/data` | `eu-prod/data/terraform.tfstate` | Deployer role |
 | `eu-prod/service` | `eu-prod/service/terraform.tfstate` | Deployer role |
+
+TEST has its own bucket in its own account, `munaxa-docs-tfstate-eu-test-657878534449`
+(key `alias/munaxa-docs-eu-test-tfstate`), with the same rules: `bootstrap/terraform.tfstate` for
+the administrator only, `eu-test/foundation/terraform.tfstate` for the administrator only (the
+persistent foundation), and `eu-test/session/terraform.tfstate` for the TEST deployer only. No TEST
+principal can reach the Production bucket, and no Production principal the TEST bucket.
 
 - **Bucket:** versioned, Block Public Access on, ACLs disabled, HTTPS only, SSE-KMS with the
   dedicated key `alias/munaxa-docs-eu-prod-tfstate`. Only the deployer and the administrator
@@ -128,59 +149,78 @@ bootstrap. Its deployer sessions are role chaining and last at most one hour.
 For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and set the
 `admin.tamer` values. No MFA condition is applied, by owner decision.
 
-### 4. Who runs what (migration away from the `claude-munaxa-docs` IAM user)
+### 4. TEST bootstrap (once, admin.tamer through OrganizationAccountAccessRole)
+
+The TEST bootstrap is administrator-controlled like Production's. It is run by `admin.tamer` in
+AWS CloudShell of the management account, through
+`arn:aws:iam::657878534449:role/OrganizationAccountAccessRole`:
+- that role was created with the account;
+- the `MunaxaNonProductionBaseline` SCP stops anyone in 657878534449 from changing it;
+- it is also the state bucket's administrator (`state_admin_principal_arns`).
+
+The engineering permission set (`MunaxaAWSEngineeringAdmin`) is not used: it is the identity
+Claude works with. Why, in full:
+[bootstrap-plan-runbooks.md](../../docs/operations/bootstrap-plan-runbooks.md).
+
+**Plan first, without any AWS write:** `bash scripts/bootstrap/plan-testing.sh`
+(runbook §2). The checker must print `OVERALL: PASS`.
+
+**The first apply has two steps**, so that every policy is reviewed in full before it exists
+(runbook §3). The deployer's state, guardrail and boundary documents name the state key's ARN,
+which exists only once the key does. Run it with approval, with the same temporary profile the
+plan script uses:
+
+```bash
+cd infra/terraform/bootstrap-eu-test
+cat > /tmp/test-bootstrap.config <<'EOF'
+[profile test-bootstrap]
+role_arn = arn:aws:iam::657878534449:role/OrganizationAccountAccessRole
+credential_source = EcsContainer
+role_session_name = admin.tamer-bootstrap-eu-test
+duration_seconds = 3600
+region = eu-central-1
+EOF
+export AWS_CONFIG_FILE=/tmp/test-bootstrap.config AWS_PROFILE=test-bootstrap
+aws sts get-caller-identity          # assumed-role/OrganizationAccountAccessRole/admin.tamer-bootstrap-eu-test
+cp terraform.tfvars.example terraform.tfvars     # edit: create_budget, budget_alert_emails (not committed)
+mv backend.tf backend.tf.off && terraform init
+terraform plan -target=aws_kms_key.state -target=aws_kms_alias.state -out=key.tfplan   # 2 to add
+terraform apply key.tfplan
+terraform plan -out=bootstrap.tfplan          # everything else; every document visible in full
+terraform show -json bootstrap.tfplan > plan.json && ../../../scripts/ci/bootstrap-plan-check.sh testing plan.json
+terraform apply bootstrap.tfplan
+mv backend.tf.off backend.tf && terraform init -migrate-state
+rm -f terraform.tfstate terraform.tfstate.backup key.tfplan bootstrap.tfplan plan.json /tmp/test-bootstrap.config
+```
+
+Every trust policy is visible in full in both plans. The CI role and deployer ARNs are constructed
+from fixed parts, creation order is explicit, and postconditions check the created ARNs.
+
+### 5. Who runs what
 
 | Path | Used for | Identity chain |
 | --- | --- | --- |
-| **GitHub Actions** (`.github/workflows/terraform-eu-prod.yml`) | Terraform `plan` and `apply` of `eu-prod/core`, `eu-prod/data` and `eu-prod/service`: the Production execution path | GitHub OIDC → `munaxa-docs-eu-prod-ci` → deployer (source identity `github-actions`, session `gha-run-*`) |
-| **Claude engineering role** (`MunaxaAWSEngineeringAdmin`, user `munaxa-org-operator`) | Interactive work: reading, inspecting, operator checks; may assume the deployer | Identity Center → engineering role → deployer (source identity `munaxa-org-operator`, session `claude-*`) |
+| **GitHub Actions `production`** (`release.yml` → `deploy-release.yml`, `terraform-infra.yml`) | Approved releases and approved infrastructure changes in PRODUCTION | GitHub OIDC (`environment:production`, `refs/heads/main`) → `munaxa-docs-eu-prod-ci` → Production deployer (source identity `github-actions`, session `gha-run-*`) |
+| **GitHub Actions `testing`** (`release.yml` / `test-environment.yml` → `test-session.yml`) | TEST sessions only (create, release, extend, destroy, hourly expiry); the session-only TEST deployer cannot change the foundation | GitHub OIDC (`environment:testing`, `refs/heads/main`) → `munaxa-docs-eu-test-ci` → TEST deployer (source identity `github-actions`, session `gha-run-*`) |
+| **Claude engineering role** (`MunaxaAWSEngineeringAdmin`, user `munaxa-org-operator`) | Interactive work: reading, inspecting, operator checks; may assume the Production deployer | Identity Center → engineering role → deployer (source identity `munaxa-org-operator`, session `claude-*`) |
 | **`admin.tamer`** in AWS CloudShell | `bootstrap/` plans and applies, and break-glass | IAM user console session; no access keys copied anywhere |
-| **`claude-munaxa-docs`** | **Temporary fallback during the migration only.** It stays active, with its trust statements and state access, until the CI path has been proven; it is removed in a later stage | IAM user access key → deployer (source identity `claude-munaxa-docs`) |
+| **`admin.tamer` → `OrganizationAccountAccessRole`** in 657878534449 | `bootstrap-eu-test/` plans and applies | IAM user console session in the management account's CloudShell → role created with the account and protected by the `MunaxaNonProductionBaseline` SCP |
+| **`claude-munaxa-docs`** | **Still active; migration pending.** Its trust statements and state access are unchanged until the CI path has been proven | IAM user access key → deployer (source identity `claude-munaxa-docs`) |
 
-**The CI role** (`bootstrap/github_oidc.tf`):
+**The CI roles** (`modules/github-oidc-ci`):
 
-- **Trust:** GitHub's OIDC provider, with `aud = sts.amazonaws.com`,
-  `sub = repo:munaxa/munaxa-docs:environment:production` and `ref = refs/heads/main`, all exact.
-  Only jobs in the protected `production` environment of this repository, running on `main`, can
-  use it. No other repository, branch, pull-request or wildcard subject can.
-- **Permissions:** `sts:AssumeRole` and `sts:SetSourceIdentity` on the deployer, nothing else.
-  The same document is its permissions boundary.
-- **No direct access:** none to Terraform state, the state key, any service or bootstrap.
-- **Protected:** it lives under `/munaxa-docs/bootstrap/`, so the deployer is denied every
-  action on it, as it is on the OIDC provider.
-- **Sessions:** last at most one hour. The deployer session Terraform opens from it is role
-  chaining, so it also lasts at most one hour.
+- **Trust:** exact `aud = sts.amazonaws.com`, `sub = repo:munaxa/munaxa-docs:environment:<env>`
+  and `ref = refs/heads/main`. No wildcard.
+- **Permissions:** `sts:AssumeRole` and `sts:SetSourceIdentity` on their own environment's
+  deployer, nothing else. The same document is their permissions boundary.
+- **Protected:** they live under `/munaxa-docs/bootstrap/`, which each deployer is denied, as it
+  is every OIDC provider action.
+- **Sessions:** at most one hour, and the chained deployer session at most one hour.
 
-**The workflow:**
-
-- **How it starts:** it is dispatched by hand, with a root from a fixed list (`core`, `data`,
-  `service`) and `plan` or `apply`.
-- **Credentials:** `configure-aws-credentials` assumes the CI role through OIDC (no stored AWS
-  credentials). Terraform's own `assume_role` (provider and `ci.s3.tfbackend`) then opens the
-  deployer session with source identity `github-actions`, because the action cannot set a source
-  identity.
-- **Approval:** every job that can obtain credentials runs in the `production` environment and
-  waits for its required reviewers.
-- **Branch:** `plan` and `apply` run only from `main`. The workflow refuses other branches
-  before approval, and the CI role's trust refuses them in AWS.
-- **Apply:** applies the saved plan from the same job.
-  Run `plan` first and review it before approving an `apply`.
-- **Summary:** the job summary lists the planned actions and resource addresses only, never
-  attribute values.
-- **Never** runs `bootstrap/`.
-
-GitHub settings the workflow relies on (not stored in this repository):
-
-- the `production` environment;
-- required reviewers on it;
-- its deployment branches limited to `main`.
-
-The role ARN is not a secret and is written in the workflow. No AWS secret is stored in GitHub.
-
-The `bootstrap/` changes that create the OIDC provider and the CI role, and add the
-`GitHubActionsSessions` and `GitHubActionsSourceIdentity` statements to the deployer trust, are
-applied by `admin.tamer` like any other bootstrap change. Until then the workflow cannot obtain
-credentials.
+The workflows, the promotion of one immutable artifact from TEST to PRODUCTION, the GitHub
+settings to make by hand and the order of the remaining steps are in
+[ci-cd-two-environments.md](../../docs/operations/ci-cd-two-environments.md). Bootstrap is never
+run by CI.
 
 ## The deployer's permission model
 
@@ -210,7 +250,8 @@ apply to it. Isolation is enforced entirely in IAM, in four layers:
    a workload role granted `*:*` reaches only Production storage, secrets, keys, logs and the
    Production services, and never IAM, STS, Organizations or Non-Production.
 
-Policies are templates in `bootstrap/policies/`, rendered and minified by Terraform; each has a
+Policies are templates in `modules/deployer-policies/policies/` (shared by Production and TEST; the
+environment tag and path are parameters), rendered and minified by Terraform; each has a
 precondition enforcing the 6,144-character managed-policy limit.
 
 **Known limits, accepted:**

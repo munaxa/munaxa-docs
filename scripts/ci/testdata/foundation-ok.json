@@ -1,0 +1,25 @@
+{
+  "resource_changes": [
+    {
+      "address": "aws_service_discovery_private_dns_namespace.main",
+      "type": "aws_service_discovery_private_dns_namespace",
+      "change": { "actions": ["create"] }
+    },
+    {
+      "address": "aws_service_discovery_service.internal[\"api\"]",
+      "type": "aws_service_discovery_service",
+      "change": { "actions": ["create"] }
+    },
+    {
+      "address": "aws_cloudwatch_log_group.service[\"api\"]",
+      "type": "aws_cloudwatch_log_group",
+      "change": { "actions": ["update"] }
+    },
+    {
+      "address": "data.aws_route53_zone.parent",
+      "type": "aws_route53_zone",
+      "change": { "actions": ["read"] }
+    },
+    { "address": "aws_vpc.main", "type": "aws_vpc", "change": { "actions": ["no-op"] } }
+  ]
+}
