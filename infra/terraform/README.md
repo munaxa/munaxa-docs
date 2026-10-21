@@ -21,7 +21,7 @@ applies in that original account and are kept as history. In `229251310592`:
 
 | Root | Contents | Status |
 | --- | --- | --- |
-| `bootstrap/` | State bucket and key, deployer role, boundaries and policies, GitHub OIDC provider and CI role, CloudTrail, Production and whole-account budgets | Not applied. Applied by **root in AWS CloudShell** (see below) |
+| `bootstrap/` | State bucket and key, deployer role, boundaries and policies, GitHub OIDC provider and CI role, CloudTrail, Production and whole-account budgets | **Applied 2026-10-21** by root in AWS CloudShell (46 + 1 resources); post-apply plan: no changes. Verified read-only: state bucket versioned, public access blocked, SSE-KMS with rotating key; trail multi-region, logging, file validation; deployer trusts only the CI role; CI role trusts only `munaxa/munaxa-docs`, environment `production`, `refs/heads/main`; both $10 budgets present. Cost allocation tags not yet activated (`activate_cost_allocation_tags`, once the keys appear in Billing) |
 | `eu-prod/core/` | Production workload IAM roles and the network (VPC `10.121.0.0/16`, public and isolated DB subnets, IGW, S3 gateway endpoint, security groups) | Not applied. GitHub Actions only |
 | `eu-prod/data/` | Data KMS key, RDS PostgreSQL 16, document bucket, AWS Backup | Not applied. GitHub Actions only |
 | `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | Backend, conventions and release inputs only |
