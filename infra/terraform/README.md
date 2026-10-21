@@ -163,9 +163,13 @@ For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and
 **The CI role** (`bootstrap/github_oidc.tf`):
 
 - **Trust:** GitHub's OIDC provider, with `aud = sts.amazonaws.com`,
-  `sub = repo:munaxa/munaxa-docs:environment:production` and `ref = refs/heads/main`, all exact.
+  `sub = repo:munaxa@311481412/munaxa-docs@1318346271:environment:production`,
+  `repository_owner_id = 311481412`, `repository_id = 1318346271` and `ref = refs/heads/main`,
+  all exact. GitHub issues this repository the immutable subject form (owner and repository
+  names with their numeric IDs), which is what AWS receives; the plain-name form never matches.
   Only jobs in the protected `production` environment of this repository, running on `main`, can
-  use it. No other repository, branch, pull-request or wildcard subject can.
+  use it. No other repository, branch, pull-request or wildcard subject can, nor a re-created
+  organization or repository that reuses the name.
 - **Permissions:** `sts:AssumeRole` and `sts:SetSourceIdentity` on the deployer, nothing else.
   The same document is its permissions boundary.
 - **No direct access:** none to Terraform state, the state key, any service or bootstrap.

@@ -34,11 +34,26 @@ data "aws_iam_policy_document" "ci_trust" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Only jobs that run in the protected production environment of this one repository.
+    # Only jobs that run in the protected production environment of this one repository. GitHub
+    # issues this repository the immutable subject form, owner@<owner id>/name@<repository id>,
+    # so a renamed or re-created repository or organization of the same name can never match.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${var.github_environment}"]
+      values   = ["repo:${local.github_owner}@${var.github_owner_id}/${local.github_repository_name}@${var.github_repository_id}:environment:${var.github_environment}"]
+    }
+
+    # The same immutable identifiers as their own claims, as AWS recommends.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_owner_id"
+      values   = [var.github_owner_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_repository_id]
     }
 
     # The environment subject does not carry the branch, so it is pinned here as well: AWS refuses
