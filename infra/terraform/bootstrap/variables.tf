@@ -1,7 +1,7 @@
 variable "account_id" {
   description = "The AWS account that hosts Munaxa Docs. The provider refuses to run against any other."
   type        = string
-  default     = "800728620253"
+  default     = "229251310592"
 }
 
 variable "region" {
@@ -16,21 +16,21 @@ variable "region" {
 }
 
 variable "claude_principal_arn" {
-  description = "The Claude agent's IAM user. It may assume the deployer only with source identity claude-munaxa-docs and a claude-* session name."
+  description = "The Claude agent's IAM user. It may assume the deployer only with source identity claude-munaxa-docs and a claude-* session name. Optional: null (the default) leaves its trust statements out, since IAM refuses a trust policy naming a principal that does not exist."
   type        = string
-  default     = "arn:aws:iam::800728620253:user/claude-munaxa-docs"
+  default     = null
 }
 
 variable "break_glass_principal_arn" {
-  description = "The human break-glass IAM user. It may assume the deployer with source identity admin.tamer. No MFA condition, by owner decision."
+  description = "The human break-glass IAM user. It may assume the deployer with source identity admin.tamer. No MFA condition, by owner decision. Optional: null (the default) leaves its trust statements out, since IAM refuses a trust policy naming a principal that does not exist."
   type        = string
-  default     = "arn:aws:iam::800728620253:user/admin.tamer"
+  default     = null
 }
 
 variable "engineering_principal_arn" {
-  description = "Claude's Identity Center engineering role. It may assume the deployer only with source identity munaxa-org-operator and a claude-* session name."
+  description = "Claude's Identity Center engineering role. It may assume the deployer only with source identity munaxa-org-operator and a claude-* session name. Optional: null (the default) leaves its trust statements out, since IAM refuses a trust policy naming a principal that does not exist."
   type        = string
-  default     = "arn:aws:iam::800728620253:role/aws-reserved/sso.amazonaws.com/eu-central-1/AWSReservedSSO_MunaxaAWSEngineeringAdmin_94ab1f7586187adb"
+  default     = null
 }
 
 variable "github_repository" {
@@ -68,21 +68,32 @@ variable "github_ref" {
 
 variable "protected_vpc_ids" {
   description = <<-EOT
-    VPCs the deployer must never change: the Non-Production VPC and the account's default VPC in
+    VPCs the deployer must never change: the account's default VPC in
     eu-central-1. They appear here only as deny-list entries. Nothing in this tree may reference
     them for any other purpose.
   EOT
   type        = list(string)
   default = [
-    "vpc-0b749fc532d67e1cb", # munaxa-docs-nonprod (Non-Production)
-    "vpc-03e938747ee50ab8e", # default VPC
+    "vpc-0ed30515ad9631ea6", # default VPC
   ]
 }
 
 variable "monthly_budget_usd" {
   description = "Monthly cost budget for resources tagged Environment=Production."
   type        = number
-  default     = 130
+  default     = 10
+}
+
+variable "monthly_account_budget_usd" {
+  description = "Monthly cost budget for the whole account, tagged or not. Catches any cost the Production filter cannot see."
+  type        = number
+  default     = 10
+}
+
+variable "activate_cost_allocation_tags" {
+  description = "Activate Environment and Project as cost allocation tags. Leave false until both keys appear in AWS Billing > Cost allocation tags (up to 24 hours in a new account)."
+  type        = bool
+  default     = false
 }
 
 variable "budget_alert_emails" {

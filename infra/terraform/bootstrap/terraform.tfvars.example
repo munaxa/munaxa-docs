@@ -1,6 +1,7 @@
 # Copy to terraform.tfvars (not committed) and fill in. No credentials belong here.
-budget_alert_emails = ["alerts@example.com"]
+budget_alert_emails = ["admin@munaxa.com"]
 
 # Defaults, shown for reference:
-# monthly_budget_usd        = 130
+# monthly_budget_usd         = 10
+# monthly_account_budget_usd = 10
 # cloudtrail_retention_days = 365

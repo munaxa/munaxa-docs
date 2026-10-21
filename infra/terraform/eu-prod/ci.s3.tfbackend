@@ -4,7 +4,7 @@
 # deployer from there, exactly like engineering.s3.tfbackend; the CI role itself has no access to
 # the state bucket or its key.
 assume_role = {
-  role_arn        = "arn:aws:iam::800728620253:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer"
+  role_arn        = "arn:aws:iam::229251310592:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer"
   session_name    = "gha-run-terraform-state"
   source_identity = "github-actions"
 }

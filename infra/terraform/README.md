@@ -1,6 +1,6 @@
 # Munaxa Docs — Production infrastructure (Terraform)
 
-Terraform for the **Production** environment of Munaxa Docs in AWS account `800728620253`,
+Terraform for the **Production** environment of Munaxa Docs in AWS account `229251310592`,
 region `eu-central-1`, as decided in ADR-0022, ADR-0023, ADR-0024 and ADR-0025.
 
 > **Non-Production must never be referenced.** No root, module, variable or data source in this
@@ -15,15 +15,38 @@ region `eu-central-1`, as decided in ADR-0022, ADR-0023, ADR-0024 and ADR-0025.
 
 ## Status
 
+**Moved to account `229251310592` on 2026-10-21.** The original account `800728620253` became
+inaccessible; nothing was carried over from it. The evidence reports linked below describe the
+applies in that original account and are kept as history. In `229251310592`:
+
 | Root | Contents | Status |
 | --- | --- | --- |
-| `bootstrap/` | State bucket and key, deployer role, boundaries and policies, CloudTrail, budget | **Applied 2026-10-04** at `6dac383` ([evidence](../../docs/reports/production-bootstrap-apply-evidence.md)); `deployer-network` corrected at `37ffec5` ([evidence](../../docs/reports/production-bootstrap-network-fix-evidence.md)) |
-| `eu-prod/core/` | Production workload IAM roles (`/munaxa-docs/eu-prod/`): web, API, scanner and three operator-task execution roles; API and tunnel task roles; Scheduler role. Every role carries the workload boundary. The network: VPC `10.121.0.0/16`, public and isolated DB subnets, IGW, route tables, S3 gateway endpoint, one security group per tier | **Applied 2026-10-04**: roles at `4e728bb` ([evidence](../../docs/reports/production-core-apply-evidence.md)), network at `2b214e9` ([evidence](../../docs/reports/production-core-network-evidence.md)) |
-| `eu-prod/data/` | Production data KMS key, RDS PostgreSQL 16, document bucket, AWS Backup (monthly, 12 months) and its service role | **Applied 2026-10-04** at `8a8c240` ([evidence](../../docs/reports/production-data-apply-evidence.md)) |
+| `bootstrap/` | State bucket and key, deployer role, boundaries and policies, GitHub OIDC provider and CI role, CloudTrail, Production and whole-account budgets | **Applied 2026-10-21** by root in AWS CloudShell (46 + 1 resources); post-apply plan: no changes. Verified read-only: state bucket versioned, public access blocked, SSE-KMS with rotating key; trail multi-region, logging, file validation; deployer trusts only the CI role; CI role trusts only `munaxa/munaxa-docs`, environment `production`, `refs/heads/main`; both $10 budgets present. Cost allocation tags not yet activated (`activate_cost_allocation_tags`, once the keys appear in Billing) |
+| `eu-prod/core/` | Production workload IAM roles and the network (VPC `10.121.0.0/16`, public and isolated DB subnets, IGW, S3 gateway endpoint, security groups) | Not applied. GitHub Actions only |
+| `eu-prod/data/` | Data KMS key, RDS PostgreSQL 16, document bucket, AWS Backup | Not applied. GitHub Actions only |
 | `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | Backend, conventions and release inputs only |
 | `modules/ecs-service/` | Input contract for the three ECS services | Variables only |
 
-`bootstrap/`, `eu-prod/core/` and `eu-prod/data/` have been applied; `eu-prod/service/` has not been started. Production remains **NOT READY**.
+**No IAM users and no access keys exist in this account, by owner decision.** Until the build is
+finished, the only human identity is root (MFA on). Root cannot call `sts:AssumeRole`, so:
+
+- `bootstrap/` is planned and applied by root in AWS CloudShell, with no credentials copied anywhere;
+- every `eu-prod/` root runs only through GitHub Actions (OIDC → CI role → deployer);
+- `claude_principal_arn`, `break_glass_principal_arn` and `engineering_principal_arn` default to
+  `null`, which leaves their deployer trust statements and state-bucket entries out. Set one and
+  re-apply bootstrap once that identity exists.
+
+The account is the AWS Organizations management account (`o-6i2zz7t70i`), so service control
+policies do not apply to it.
+
+History in `800728620253`: bootstrap applied 2026-10-04 at `6dac383`
+([evidence](../../docs/reports/production-bootstrap-apply-evidence.md),
+[network fix](../../docs/reports/production-bootstrap-network-fix-evidence.md)); core at `4e728bb`
+and `2b214e9` ([roles](../../docs/reports/production-core-apply-evidence.md),
+[network](../../docs/reports/production-core-network-evidence.md)); data at `8a8c240`
+([evidence](../../docs/reports/production-data-apply-evidence.md)).
+
+Production remains **NOT READY**.
 
 ## Layout and state
 
@@ -43,7 +66,7 @@ infra/terraform/
 └── modules/ecs-service/
 ```
 
-| Root | State object (bucket `munaxa-docs-tfstate-eu-prod-800728620253`) | Applied by |
+| Root | State object (bucket `munaxa-docs-tfstate-eu-prod-229251310592`) | Applied by |
 | --- | --- | --- |
 | `bootstrap` | `bootstrap/terraform.tfstate` | An administrator (`admin.tamer`, or `claude-munaxa-docs` until it is retired), **never the deployer, the engineering role or CI** |
 | `eu-prod/core` | `eu-prod/core/terraform.tfstate` | Deployer role |
@@ -108,7 +131,7 @@ terraform apply core.tfplan
 ```
 
 The provider and backend both assume
-`arn:aws:iam::800728620253:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer`.
+`arn:aws:iam::229251310592:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer`.
 
 | Caller | Source identity | Session name | Files |
 | --- | --- | --- | --- |
