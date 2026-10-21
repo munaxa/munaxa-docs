@@ -90,6 +90,12 @@ variable "monthly_account_budget_usd" {
   default     = 10
 }
 
+variable "activate_cost_allocation_tags" {
+  description = "Activate Environment and Project as cost allocation tags. Leave false until both keys appear in AWS Billing > Cost allocation tags (up to 24 hours in a new account)."
+  type        = bool
+  default     = false
+}
+
 variable "budget_alert_emails" {
   description = "Addresses that receive budget alerts. Supplied in terraform.tfvars (not committed)."
   type        = list(string)
