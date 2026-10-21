@@ -1,7 +1,7 @@
 variable "account_id" {
   description = "The AWS account that hosts Munaxa Docs. The provider refuses to run against any other."
   type        = string
-  default     = "800728620253"
+  default     = "229251310592"
 }
 
 variable "region" {

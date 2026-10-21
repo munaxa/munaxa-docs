@@ -13,100 +13,120 @@ data "aws_iam_policy_document" "deployer_trust" {
   # is evaluated only for AssumeRole. The two actions are therefore separate statements: the
   # session-name condition stays on AssumeRole, and SetSourceIdentity is allowed only for the
   # claude-munaxa-docs value (it grants nothing on its own).
-  statement {
-    sid     = "ClaudeAgentSessions"
-    actions = ["sts:AssumeRole"]
+  dynamic "statement" {
+    for_each = var.claude_principal_arn == null ? [] : [var.claude_principal_arn]
 
-    principals {
-      type        = "AWS"
-      identifiers = [var.claude_principal_arn]
-    }
+    content {
+      sid     = "ClaudeAgentSessions"
+      actions = ["sts:AssumeRole"]
 
-    condition {
-      test     = "StringEquals"
-      variable = "sts:SourceIdentity"
-      values   = ["claude-munaxa-docs"]
-    }
+      principals {
+        type        = "AWS"
+        identifiers = [statement.value]
+      }
 
-    condition {
-      test     = "StringLike"
-      variable = "sts:RoleSessionName"
-      values   = ["claude-*"]
+      condition {
+        test     = "StringEquals"
+        variable = "sts:SourceIdentity"
+        values   = ["claude-munaxa-docs"]
+      }
+
+      condition {
+        test     = "StringLike"
+        variable = "sts:RoleSessionName"
+        values   = ["claude-*"]
+      }
     }
   }
 
-  statement {
-    sid     = "ClaudeAgentSourceIdentity"
-    actions = ["sts:SetSourceIdentity"]
+  dynamic "statement" {
+    for_each = var.claude_principal_arn == null ? [] : [var.claude_principal_arn]
 
-    principals {
-      type        = "AWS"
-      identifiers = [var.claude_principal_arn]
-    }
+    content {
+      sid     = "ClaudeAgentSourceIdentity"
+      actions = ["sts:SetSourceIdentity"]
 
-    condition {
-      test     = "StringEquals"
-      variable = "sts:SourceIdentity"
-      values   = ["claude-munaxa-docs"]
+      principals {
+        type        = "AWS"
+        identifiers = [statement.value]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "sts:SourceIdentity"
+        values   = ["claude-munaxa-docs"]
+      }
     }
   }
 
   # Human break-glass. No MFA condition, by owner decision; the source identity still names the
   # person on every event.
-  statement {
-    sid     = "HumanBreakGlass"
-    actions = ["sts:AssumeRole", "sts:SetSourceIdentity"]
+  dynamic "statement" {
+    for_each = var.break_glass_principal_arn == null ? [] : [var.break_glass_principal_arn]
 
-    principals {
-      type        = "AWS"
-      identifiers = [var.break_glass_principal_arn]
-    }
+    content {
+      sid     = "HumanBreakGlass"
+      actions = ["sts:AssumeRole", "sts:SetSourceIdentity"]
 
-    condition {
-      test     = "StringEquals"
-      variable = "sts:SourceIdentity"
-      values   = ["admin.tamer"]
+      principals {
+        type        = "AWS"
+        identifiers = [statement.value]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "sts:SourceIdentity"
+        values   = ["admin.tamer"]
+      }
     }
   }
 
   # Claude's permanent engineering role (Identity Center permission set MunaxaAWSEngineeringAdmin,
   # user munaxa-org-operator). Same shape as the Claude agent statements: the exact role ARN, its
   # own source identity, and a claude-* session name on AssumeRole.
-  statement {
-    sid     = "EngineeringRoleSessions"
-    actions = ["sts:AssumeRole"]
+  dynamic "statement" {
+    for_each = var.engineering_principal_arn == null ? [] : [var.engineering_principal_arn]
 
-    principals {
-      type        = "AWS"
-      identifiers = [var.engineering_principal_arn]
-    }
+    content {
+      sid     = "EngineeringRoleSessions"
+      actions = ["sts:AssumeRole"]
 
-    condition {
-      test     = "StringEquals"
-      variable = "sts:SourceIdentity"
-      values   = ["munaxa-org-operator"]
-    }
+      principals {
+        type        = "AWS"
+        identifiers = [statement.value]
+      }
 
-    condition {
-      test     = "StringLike"
-      variable = "sts:RoleSessionName"
-      values   = ["claude-*"]
+      condition {
+        test     = "StringEquals"
+        variable = "sts:SourceIdentity"
+        values   = ["munaxa-org-operator"]
+      }
+
+      condition {
+        test     = "StringLike"
+        variable = "sts:RoleSessionName"
+        values   = ["claude-*"]
+      }
     }
   }
 
-  statement {
-    sid     = "EngineeringRoleSourceIdentity"
-    actions = ["sts:SetSourceIdentity"]
+  dynamic "statement" {
+    for_each = var.engineering_principal_arn == null ? [] : [var.engineering_principal_arn]
 
-    principals {
-      type        = "AWS"
-      identifiers = [var.engineering_principal_arn]
-    }
+    content {
+      sid     = "EngineeringRoleSourceIdentity"
+      actions = ["sts:SetSourceIdentity"]
 
-    condition {
-      test     = "StringEquals"
-      variable = "sts:SourceIdentity"
-      values   = ["munaxa-org-operator"]
+      principals {
+        type        = "AWS"
+        identifiers = [statement.value]
+      }
+
+      condition {
+        test     = "StringEquals"
+        variable = "sts:SourceIdentity"
+        values   = ["munaxa-org-operator"]
+      }
     }
   }
 

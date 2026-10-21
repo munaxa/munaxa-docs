@@ -56,3 +56,29 @@ resource "aws_budgets_budget" "production" {
 
   depends_on = [aws_ce_cost_allocation_tag.environment]
 }
+
+# The whole account, unfiltered: anything not tagged Environment=Production (or created before the
+# tag was active) still counts here.
+resource "aws_budgets_budget" "account" {
+  name         = "munaxa-account-monthly"
+  budget_type  = "COST"
+  limit_amount = format("%.2f", var.monthly_account_budget_usd)
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = var.budget_alert_emails
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "FORECASTED"
+    subscriber_email_addresses = var.budget_alert_emails
+  }
+}

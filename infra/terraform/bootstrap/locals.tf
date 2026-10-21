@@ -18,7 +18,7 @@ locals {
   cloudtrail_bucket           = "munaxa-docs-cloudtrail-${var.account_id}"
   cloudtrail_name             = "munaxa-docs-account-trail"
   cloudmap_namespace          = "prod.munaxa-docs.internal"
-  state_admin_principal_arns  = [var.claude_principal_arn, var.break_glass_principal_arn, "arn:aws:iam::${var.account_id}:root"]
+  state_admin_principal_arns  = compact([var.claude_principal_arn, var.break_glass_principal_arn, "arn:aws:iam::${var.account_id}:root"])
   workload_pass_role_services = ["ecs-tasks.amazonaws.com", "scheduler.amazonaws.com", "backup.amazonaws.com", "events.amazonaws.com"]
   service_linked_role_names   = ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "backup.amazonaws.com"]
 

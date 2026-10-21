@@ -8,12 +8,12 @@
 # has no assume_role block.
 terraform {
   backend "s3" {
-    bucket              = "munaxa-docs-tfstate-eu-prod-800728620253"
+    bucket              = "munaxa-docs-tfstate-eu-prod-229251310592"
     key                 = "bootstrap/terraform.tfstate"
     region              = "eu-central-1"
     encrypt             = true
-    kms_key_id          = "arn:aws:kms:eu-central-1:800728620253:alias/munaxa-docs-eu-prod-tfstate"
+    kms_key_id          = "arn:aws:kms:eu-central-1:229251310592:alias/munaxa-docs-eu-prod-tfstate"
     use_lockfile        = true
-    allowed_account_ids = ["800728620253"]
+    allowed_account_ids = ["229251310592"]
   }
 }
