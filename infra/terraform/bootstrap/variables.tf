@@ -44,6 +44,28 @@ variable "github_repository" {
   }
 }
 
+variable "github_owner_id" {
+  description = "GitHub's immutable numeric ID for the repository owner (the munaxa organization), as it appears in the OIDC subject."
+  type        = string
+  default     = "311481412"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_owner_id))
+    error_message = "Use the numeric owner ID."
+  }
+}
+
+variable "github_repository_id" {
+  description = "GitHub's immutable numeric ID for github_repository, as it appears in the OIDC subject."
+  type        = string
+  default     = "1318346271"
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "Use the numeric repository ID."
+  }
+}
+
 variable "github_environment" {
   description = "The protected GitHub environment whose jobs may assume the CI role."
   type        = string

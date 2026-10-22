@@ -1,6 +1,9 @@
 locals {
   prefix = "munaxa-docs-eu-prod"
 
+  github_owner           = split("/", var.github_repository)[0]
+  github_repository_name = split("/", var.github_repository)[1]
+
   # Paths: the deployer lives under bootstrap/ and can never change it; the workload roles it
   # manages live under eu-prod/.
   bootstrap_path = "/munaxa-docs/bootstrap/"

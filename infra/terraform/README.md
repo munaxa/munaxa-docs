@@ -22,7 +22,7 @@ applies in that original account and are kept as history. In `229251310592`:
 | Root | Contents | Status |
 | --- | --- | --- |
 | `bootstrap/` | State bucket and key, deployer role, boundaries and policies, GitHub OIDC provider and CI role, CloudTrail, Production and whole-account budgets | **Applied 2026-10-21** by root in AWS CloudShell (46 + 1 resources); post-apply plan: no changes. Verified read-only: state bucket versioned, public access blocked, SSE-KMS with rotating key; trail multi-region, logging, file validation; deployer trusts only the CI role; CI role trusts only `munaxa/munaxa-docs`, environment `production`, `refs/heads/main`; both $10 budgets present. Cost allocation tags not yet activated (`activate_cost_allocation_tags`, once the keys appear in Billing) |
-| `eu-prod/core/` | Production workload IAM roles and the network (VPC `10.121.0.0/16`, public and isolated DB subnets, IGW, S3 gateway endpoint, security groups) | Not applied. GitHub Actions only |
+| `eu-prod/core/` | Production workload IAM roles and the network (VPC `10.121.0.0/16`, public and isolated DB subnets, IGW, S3 gateway endpoint, security groups) | **Applied 2026-10-21** by GitHub Actions ([run 39668262903](https://github.com/munaxa/munaxa-docs/actions/runs/39668262903), `main` at `0181d4e`): 59 added, 0 changed, 0 destroyed. Verified read-only: VPC `vpc-06ed50fc514fb4f21`, five subnets with no automatic public IPs, the only internet route on the public route table, S3 gateway endpoint, six tier security groups (8 ingress, 11 egress; only the ALB open to the internet, on 80 and 443), no NAT gateway or Elastic IP, nine roles under `/munaxa-docs/eu-prod/` each with the workload boundary |
 | `eu-prod/data/` | Data KMS key, RDS PostgreSQL 16, document bucket, AWS Backup | Not applied. GitHub Actions only |
 | `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | Backend, conventions and release inputs only |
 | `modules/ecs-service/` | Input contract for the three ECS services | Variables only |
@@ -163,9 +163,13 @@ For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and
 **The CI role** (`bootstrap/github_oidc.tf`):
 
 - **Trust:** GitHub's OIDC provider, with `aud = sts.amazonaws.com`,
-  `sub = repo:munaxa/munaxa-docs:environment:production` and `ref = refs/heads/main`, all exact.
+  `sub = repo:munaxa@311481412/munaxa-docs@1318346271:environment:production`,
+  `repository_owner_id = 311481412`, `repository_id = 1318346271` and `ref = refs/heads/main`,
+  all exact. GitHub issues this repository the immutable subject form (owner and repository
+  names with their numeric IDs), which is what AWS receives; the plain-name form never matches.
   Only jobs in the protected `production` environment of this repository, running on `main`, can
-  use it. No other repository, branch, pull-request or wildcard subject can.
+  use it. No other repository, branch, pull-request or wildcard subject can, nor a re-created
+  organization or repository that reuses the name.
 - **Permissions:** `sts:AssumeRole` and `sts:SetSourceIdentity` on the deployer, nothing else.
   The same document is its permissions boundary.
 - **No direct access:** none to Terraform state, the state key, any service or bootstrap.
