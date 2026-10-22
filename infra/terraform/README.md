@@ -209,6 +209,48 @@ The `bootstrap/` changes that create the OIDC provider and the CI role, and add 
 applied by `admin.tamer` like any other bootstrap change. Until then the workflow cannot obtain
 credentials.
 
+### 5. Images in ECR (ADR-0024 amendment, 2026-10-22)
+
+Production images are in ECR in this account: `munaxa-docs/api`, `munaxa-docs/web` and
+`munaxa-docs/antivirus` (`bootstrap/ecr.tf`). There is no registry credential anywhere.
+
+- **Push:** `.github/workflows/publish-images.yml` assumes the image publisher role
+  (`/munaxa-docs/bootstrap/munaxa-docs-eu-prod-image-publisher`) through GitHub OIDC.
+  - Its trust requires all of these: `aud = sts.amazonaws.com`; `repository_owner_id = 311481412`;
+    `repository_id = 1318346271`; `sub` matching
+    `repo:munaxa@311481412/munaxa-docs@1318346271:ref:refs/tags/image/*`; and `job_workflow_ref`
+    matching `munaxa/munaxa-docs/.github/workflows/publish-images.yml@refs/tags/image/*`.
+  - It may push to, read back and describe those three repositories, and nothing else.
+  - `ecr:GetAuthorizationToken` is on `*`, because AWS does not support a resource for it.
+- **Pull:** the core execution roles that start application images (web, API, scanner,
+  ops-provision) may sign in to ECR and pull from those three repositories. The workload boundary
+  allows the same, and nothing more.
+- **Repositories:** tags are immutable, basic scanning runs on push, and a lifecycle rule removes
+  untagged images after 7 days and keeps the newest 20 releases.
+
+Rollout, in this order:
+
+1. **Bootstrap, as root in AWS CloudShell** (eu-central-1). First update `~/bootstrap` to this
+   commit's `infra/terraform/bootstrap/`; it already holds the S3 backend and `terraform.tfvars`.
+   ```bash
+   cd ~/bootstrap
+   terraform init -input=false
+   terraform plan -input=false -no-color -out=ecr.tfplan
+   # Review: about 9 to add (3 repositories, 3 lifecycle policies, the publisher role, its policy
+   # and boundary), 1 to change (the workload boundary policy), 0 to destroy.
+   terraform apply -input=false ecr.tfplan   # only after the plan is reviewed and approved
+   terraform plan -input=false -detailed-exitcode -no-color | tail -3   # expect "No changes"
+   ```
+2. **Core, through GitHub Actions**, once this change is on `main`: run **Terraform eu-prod** with
+   root `core` and action `plan`.
+   - Review: about 11 in-place changes and nothing added or destroyed. That is 4 execution-role
+     policies, 4 execution-role descriptions, and the descriptions of 3 HTTPS egress rules.
+   - Then run `core` / `apply`, after approval.
+3. **Publish** a release, after approval: push the tag `image/<full SHA>` and record its ECR
+   digests in a new release package.
+4. **Remove the old credentials**, after the first ECR release: the repository secrets
+   `DOCS_PRODUCTION_PULL_USER` and `DOCS_PRODUCTION_PULL_TOKEN`, and the GitHub token behind them.
+
 ## The deployer's permission model
 
 The account is the AWS Organizations management account, so service control policies do not

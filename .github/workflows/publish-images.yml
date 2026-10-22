@@ -50,7 +50,6 @@ permissions:
 
 env:
   AWS_REGION: eu-central-1
-  AWS_ACCOUNT_ID: '229251310592'
   REGISTRY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com
   PUBLISHER_ROLE_ARN: arn:aws:iam::229251310592:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-image-publisher
 
@@ -58,6 +57,8 @@ jobs:
   source:
     name: Resolve the source commit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # no registry, no AWS
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       short: ${{ steps.resolve.outputs.short }}

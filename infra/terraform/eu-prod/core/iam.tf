@@ -7,12 +7,12 @@
 #
 # | Role                       | Used by                                   | Why                                    |
 # | -------------------------- | ----------------------------------------- | -------------------------------------- |
-# | web-execution              | Web service                               | GHCR pull, web logs                    |
-# | api-execution              | API service (API + Redis containers)      | GHCR pull, app secret, API/Redis logs  |
-# | scanner-execution          | Scanner service                           | GHCR pull, scanner logs                |
+# | web-execution              | Web service                               | ECR pull, web logs                     |
+# | api-execution              | API service (API + Redis containers)      | ECR pull, app secret, API/Redis logs   |
+# | scanner-execution          | Scanner service                           | ECR pull, scanner logs                 |
 # | api-task                   | API service; tenant provisioning task     | The document bucket (S3 adapter)       |
 # | ops-dbadmin-execution      | Short-lived database-administration task  | RDS master and operator secrets, logs  |
-# | ops-provision-execution    | Short-lived tenant provisioning task      | GHCR pull, app and provisioning secret |
+# | ops-provision-execution    | Short-lived tenant provisioning task      | ECR pull, app and provisioning secret  |
 # | ops-tunnel-execution       | Short-lived migration tunnel task         | Logs only                              |
 # | ops-tunnel-task            | Short-lived migration tunnel task         | ECS Exec channels (SSM port forward)   |
 # | scheduler                  | EventBridge Scheduler                     | Daily scanner replacement              |

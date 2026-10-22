@@ -142,7 +142,7 @@ resource "aws_vpc_endpoint" "s3" {
 # | alb     | 443, 80 from 0.0.0.0/0     | 3000 to web; 3001 to api                         |
 # | web     | 3000 from alb              | 3001 to api; 443 to 0.0.0.0/0                    |
 # | api     | 3001 from alb and web      | 5432 to rds; 1344 to scanner; 443 and 587 out    |
-# | scanner | 1344 from api              | 443 to 0.0.0.0/0 (GHCR, signatures, logs)        |
+# | scanner | 1344 from api              | 443 to 0.0.0.0/0 (ECR, signatures, logs)         |
 # | rds     | 5432 from api and ops      | none                                             |
 # | ops     | none                       | 5432 to rds; 443 to 0.0.0.0/0                    |
 #
@@ -173,12 +173,12 @@ locals {
     alb_to_web     = { sg = "alb", port = 3000, to_sg = "web", cidr = null, description = "To web" }
     alb_to_api     = { sg = "alb", port = 3001, to_sg = "api", cidr = null, description = "To the API (preview streams)" }
     web_to_api     = { sg = "web", port = 3001, to_sg = "api", cidr = null, description = "To the API" }
-    web_https      = { sg = "web", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: GHCR, Secrets Manager, CloudWatch Logs" }
+    web_https      = { sg = "web", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: ECR, Secrets Manager, CloudWatch Logs" }
     api_to_rds     = { sg = "api", port = 5432, to_sg = "rds", cidr = null, description = "To PostgreSQL" }
     api_to_scanner = { sg = "api", port = 1344, to_sg = "scanner", cidr = null, description = "To the scanner (ICAP)" }
-    api_https      = { sg = "api", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: GHCR, S3, Secrets Manager, CloudWatch Logs" }
+    api_https      = { sg = "api", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: ECR, S3, Secrets Manager, CloudWatch Logs" }
     api_smtp       = { sg = "api", port = 587, to_sg = null, cidr = local.anywhere_ipv4, description = "SMTP submission with STARTTLS (ADR-0025)" }
-    scanner_https  = { sg = "scanner", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: GHCR, signature downloads, CloudWatch Logs" }
+    scanner_https  = { sg = "scanner", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: ECR, signature downloads, CloudWatch Logs" }
     ops_to_rds     = { sg = "ops", port = 5432, to_sg = "rds", cidr = null, description = "To PostgreSQL" }
     ops_https      = { sg = "ops", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: image pulls, Secrets Manager, SSM, CloudWatch Logs" }
   }
