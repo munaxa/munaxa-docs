@@ -60,6 +60,31 @@
       ]
     },
     {
+      "Sid": "EcrSignInImagePullingExecutionRoles",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*",
+      "Condition": {
+        "ArnEquals": {
+          "aws:PrincipalArn": ${ecr_pull_role_arns_json}
+        }
+      }
+    },
+    {
+      "Sid": "PullProductionImagesImagePullingExecutionRoles",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+      ],
+      "Resource": ${ecr_repository_arns_json},
+      "Condition": {
+        "ArnEquals": {
+          "aws:PrincipalArn": ${ecr_pull_role_arns_json}
+        }
+      }
+    },
+    {
       "Sid": "EcsExecSessionChannels",
       "Effect": "Allow",
       "Action": [

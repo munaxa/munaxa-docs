@@ -32,3 +32,13 @@ output "policy_sizes" {
   description = "Minified size of each managed policy (limit 6,144)."
   value       = { for name, doc in local.policy_documents : name => length(doc) }
 }
+
+output "image_publisher_role_arn" {
+  description = "Role the image publishing workflow assumes through GitHub OIDC to push to ECR."
+  value       = aws_iam_role.image_publisher.arn
+}
+
+output "ecr_repository_urls" {
+  description = "Production ECR repositories, by image name."
+  value       = { for name, repo in aws_ecr_repository.images : name => repo.repository_url }
+}

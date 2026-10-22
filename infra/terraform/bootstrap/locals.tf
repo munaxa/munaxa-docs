@@ -38,6 +38,8 @@ locals {
     protected_vpc_ids_json        = jsonencode(var.protected_vpc_ids)
     protected_vpc_arns_json       = jsonencode([for id in var.protected_vpc_ids : "arn:aws:ec2:${var.region}:${var.account_id}:vpc/${id}"])
     pass_role_services_json       = jsonencode(local.workload_pass_role_services)
+    ecr_repository_arns_json      = jsonencode(local.ecr_repository_arns)
+    ecr_pull_role_arns_json       = jsonencode(local.ecr_pull_role_arns)
     service_linked_role_json      = jsonencode(local.service_linked_role_names)
     non_production_tag_values     = jsonencode(["NonProduction", "nonprod", "non-production"])
     non_production_name_arns_json = jsonencode(local.non_production_name_arns)

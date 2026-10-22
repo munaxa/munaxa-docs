@@ -1,6 +1,7 @@
 # ADR-0024 — The first-customer launch uses the minimum-cost AWS architecture
 
-- **Status:** Accepted (product-owner decision)
+- **Status:** Accepted (product-owner decision). **Amended 2026-10-22:** images move from GHCR to
+  Amazon ECR, pulled with IAM; see [Amendment 2026-10-22](#amendment-2026-10-22-images-in-amazon-ecr).
 - **Date:** 2026-10-04
 - **Phase:** Production Phase 0 (go-live decisions)
 - **Builds on:** [ADR-0021](./0021-multi-tenant-hosted-launch.md),
@@ -201,11 +202,12 @@ Internet ──443──▶ ALB (ACM certificate, 80→443) ── /api/v1/previ
 
 #### 2.8 Secrets
 
-Four Secrets Manager secrets. No sensitive value is placed in a plain ECS environment variable.
+Three Secrets Manager secrets, plus the one RDS manages. No sensitive value is placed in a plain ECS
+environment variable. **No registry credential:** since the 2026-10-22 amendment, execution roles pull
+from Amazon ECR with IAM permissions (the GHCR pull credential this table first listed is gone).
 
 | Secret | Read by | Holds |
 | --- | --- | --- |
-| GHCR pull credential | ECS execution roles, for image pulls | Registry `username` and `password` |
 | Application bundle | API execution role | `JWT_ACCESS_SECRET`, `SIGNATURE_WITNESS_SECRET`, `AUDIT_CHECKPOINT_SECRET`, `MFA_TOTP_SEALING_KEY`, `DATABASE_URL`, `REDIS_URL`, mail credentials, metrics token, **and the tenant catalogue** |
 | Operator bundle | Operators and short-lived operator tasks only, **never the API** | `edms_owner` and `edms_backup` connection strings, and the operator catalogue (ADR-0021 §3) |
 | RDS-managed master secret | Operators | Created and rotated by RDS |
@@ -315,7 +317,9 @@ and a single point of failure.
 
 Three task addresses cost $10.95 per month. A NAT Gateway costs about $41.61 plus $0.052 per GB.
 
-IPv6-only egress is not possible: the images are pulled from GHCR over IPv4.
+IPv6-only egress was not possible while the images came from GHCR, which is IPv4-only. They now come
+from ECR (2026-10-22 amendment); IPv6-only egress is still not assumed, and is reconsidered only on the
+NAT trigger in §6.
 
 **The security consequence:** the security group is the only barrier between the internet and each
 task. It is controlled by:
@@ -367,7 +371,8 @@ Tax and AWS Support are excluded. **These are estimates, not a guaranteed bill.*
 | RDS `db.t4g.micro` Single-AZ + 20 GB gp3 | 16.61 | Fixed |
 | ALB (hourly + two public IPv4 + about 0.5 capacity units) | ~27.51 | Fixed + **usage** |
 | Cloud Map namespace and two registrations | ~0.70 | Fixed |
-| Secrets Manager (4) | 1.60 | Fixed |
+| Secrets Manager (4; 3 after the 2026-10-22 amendment, plus the RDS-managed one) | 1.60 | Fixed |
+| ECR storage (added 2026-10-22; shared layers are stored once) | ~0.10–2 | **Usage** |
 | Route 53 public hosted zone (or $0 if DNS stays with the existing provider) | 0.50 | Fixed |
 | CloudWatch alarms (~8) and logs (~0.5–1 GB) | ~1.40 | **Usage** |
 | S3, SES, CloudTrail log storage, other | ~0.60 | **Usage** |
@@ -511,3 +516,34 @@ Fargate, and the full API start.
 | NAT Gateway with private task subnets | +$31 or more | §3.3; a later upgrade |
 | ElastiCache Serverless | ≥ $7.37 | Needs a code change (§3.4) |
 | Docker Compose on one EC2 host | ~−$20 to −$40 | Leaves ECS and loses the ECS task-role credential endpoint, so S3 would need static keys again |
+
+## Amendment 2026-10-22: images in Amazon ECR
+
+- **Decision (product owner):** the three production images are published to and pulled from
+  **Amazon ECR** in the production account, not GHCR. §2.1's rule is unchanged: every task definition
+  names `image@sha256:<digest>`.
+- **Why:** GHCR needs a long-lived registry credential in Secrets Manager, and a separate long-lived
+  pull token in GitHub, to verify releases. ECR removes both. The publishing workflow pushes through
+  GitHub OIDC, and ECS execution roles pull with IAM. No registry credential exists anywhere.
+- **Where (in Terraform):**
+  - `bootstrap/ecr.tf`: the repositories `munaxa-docs/api`, `munaxa-docs/web` and
+    `munaxa-docs/antivirus`. Tags are immutable, basic scanning runs on push, and a lifecycle rule
+    removes untagged images and keeps the newest 20 releases.
+  - The same file holds the image publisher role. Only `publish-images.yml` may assume it, from an
+    `image/*` tag of this repository, in the protected `image-release` environment. It can push only
+    to those repositories.
+  - The workload boundary admits ECR only for the four execution roles that start these images.
+  - In core, each of those roles pulls only its own image's repository and drops the `ghcr-pull`
+    secret, and the S3 gateway endpoint gains read-only access to ECR's layer bucket.
+- **Release authorisation:** a tag ruleset limits who may create `image/*` tags, and the
+  `image-release` environment requires approval before any job gets credentials. The workflow also
+  refuses a tag that does not point at the commit it names, or a commit not on `main`. Details and
+  limits are in `infra/terraform/README.md` §5.
+- **What it changes here:**
+  - §2.8 loses the GHCR pull credential.
+  - §3.3's IPv4 reason now rests on the NAT trigger, not on GHCR.
+  - §4 gains ECR storage, about $0.10–2 a month.
+- **Releases published before this amendment are GHCR-only and cannot be deployed:** the release
+  packages for `041e827` and `4e8e1ca`, and the image digests quoted in the go-live runbook. A
+  release is republished to ECR from its commit before it is deployed.
+

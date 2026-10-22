@@ -77,6 +77,17 @@ variable "github_environment" {
   }
 }
 
+variable "github_image_environment" {
+  description = "The protected GitHub environment whose jobs may assume the image publisher (required reviewer, deployment rule limited to image/* tags)."
+  type        = string
+  default     = "image-release"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+$", var.github_image_environment))
+    error_message = "Use a single environment name, with no wildcard."
+  }
+}
+
 variable "github_ref" {
   description = "The only Git ref whose runs may assume the CI role."
   type        = string

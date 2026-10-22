@@ -103,7 +103,10 @@ resource "aws_route_table_association" "db" {
 }
 
 # S3 gateway endpoint (no charge) on the public route table. Its policy admits only the
-# Production document bucket and only the object actions the API task role is granted.
+# Production document bucket, with only the object actions the API task role is granted, and
+# read-only access to the bucket in which ECR serves image layers in this region. Every S3 request
+# from the public subnets goes through this endpoint, so without the second statement an ECR pull
+# gets the manifest and is then refused the layers (AWS documents this exact ARN and action).
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${var.region}.s3"
@@ -127,6 +130,12 @@ resource "aws_vpc_endpoint" "s3" {
         "arn:aws:s3:::${local.docs_bucket}",
         "arn:aws:s3:::${local.docs_bucket}/*",
       ]
+      }, {
+      Sid       = "EcrImageLayersReadOnly"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = ["s3:GetObject"]
+      Resource  = ["arn:aws:s3:::prod-${var.region}-starport-layer-bucket/*"]
     }]
   })
 
@@ -142,7 +151,7 @@ resource "aws_vpc_endpoint" "s3" {
 # | alb     | 443, 80 from 0.0.0.0/0     | 3000 to web; 3001 to api                         |
 # | web     | 3000 from alb              | 3001 to api; 443 to 0.0.0.0/0                    |
 # | api     | 3001 from alb and web      | 5432 to rds; 1344 to scanner; 443 and 587 out    |
-# | scanner | 1344 from api              | 443 to 0.0.0.0/0 (GHCR, signatures, logs)        |
+# | scanner | 1344 from api              | 443 to 0.0.0.0/0 (ECR, signatures, logs)         |
 # | rds     | 5432 from api and ops      | none                                             |
 # | ops     | none                       | 5432 to rds; 443 to 0.0.0.0/0                    |
 #
@@ -173,12 +182,12 @@ locals {
     alb_to_web     = { sg = "alb", port = 3000, to_sg = "web", cidr = null, description = "To web" }
     alb_to_api     = { sg = "alb", port = 3001, to_sg = "api", cidr = null, description = "To the API (preview streams)" }
     web_to_api     = { sg = "web", port = 3001, to_sg = "api", cidr = null, description = "To the API" }
-    web_https      = { sg = "web", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: GHCR, Secrets Manager, CloudWatch Logs" }
+    web_https      = { sg = "web", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: ECR, Secrets Manager, CloudWatch Logs" }
     api_to_rds     = { sg = "api", port = 5432, to_sg = "rds", cidr = null, description = "To PostgreSQL" }
     api_to_scanner = { sg = "api", port = 1344, to_sg = "scanner", cidr = null, description = "To the scanner (ICAP)" }
-    api_https      = { sg = "api", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: GHCR, S3, Secrets Manager, CloudWatch Logs" }
+    api_https      = { sg = "api", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: ECR, S3, Secrets Manager, CloudWatch Logs" }
     api_smtp       = { sg = "api", port = 587, to_sg = null, cidr = local.anywhere_ipv4, description = "SMTP submission with STARTTLS (ADR-0025)" }
-    scanner_https  = { sg = "scanner", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: GHCR, signature downloads, CloudWatch Logs" }
+    scanner_https  = { sg = "scanner", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: ECR, signature downloads, CloudWatch Logs" }
     ops_to_rds     = { sg = "ops", port = 5432, to_sg = "rds", cidr = null, description = "To PostgreSQL" }
     ops_https      = { sg = "ops", port = 443, to_sg = null, cidr = local.anywhere_ipv4, description = "HTTPS: image pulls, Secrets Manager, SSM, CloudWatch Logs" }
   }
