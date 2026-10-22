@@ -43,37 +43,43 @@ locals {
   # to the containers.
   execution_roles = {
     web = {
-      description = "Starts Production web tasks: GHCR pull credential and web logs. No application secrets."
-      secrets     = [local.secret_arns.ghcr_pull]
+      description = "Starts Production web tasks: web image from ECR and web logs. No application secrets."
+      ecr_pull    = true
+      secrets     = []
       rds_secret  = false
       log_groups  = ["web"]
     }
     api = {
-      description = "Starts Production API tasks: GHCR pull credential, application secret, API and Redis logs."
-      secrets     = [local.secret_arns.ghcr_pull, local.secret_arns.app]
+      description = "Starts Production API tasks: API image from ECR, application secret, API and Redis logs."
+      ecr_pull    = true
+      secrets     = [local.secret_arns.app]
       rds_secret  = false
       log_groups  = ["api", "redis"]
     }
     scanner = {
-      description = "Starts Production scanner tasks: GHCR pull credential and scanner logs. No application secrets."
-      secrets     = [local.secret_arns.ghcr_pull]
+      description = "Starts Production scanner tasks: scanner image from ECR and scanner logs. No application secrets."
+      ecr_pull    = true
+      secrets     = []
       rds_secret  = false
       log_groups  = ["scanner"]
     }
     ops-dbadmin = {
       description = "Starts the short-lived Production database-administration task: RDS master and operator secrets, ops logs. Never the API secret."
+      ecr_pull    = false
       secrets     = [local.secret_arns.operator]
       rds_secret  = true
       log_groups  = ["ops"]
     }
     ops-provision = {
-      description = "Starts the short-lived Production tenant-provisioning task: GHCR pull credential, application and provisioning secrets, ops logs."
-      secrets     = [local.secret_arns.ghcr_pull, local.secret_arns.app, local.secret_arns.provision]
+      description = "Starts the short-lived Production tenant-provisioning task: API image from ECR, application and provisioning secrets, ops logs."
+      ecr_pull    = true
+      secrets     = [local.secret_arns.app, local.secret_arns.provision]
       rds_secret  = false
       log_groups  = ["ops"]
     }
     ops-tunnel = {
       description = "Starts the short-lived Production migration tunnel task: ops logs only."
+      ecr_pull    = false
       secrets     = []
       rds_secret  = false
       log_groups  = ["ops"]
@@ -128,6 +134,28 @@ resource "aws_iam_role" "execution" {
 
 data "aws_iam_policy_document" "execution" {
   for_each = local.execution_roles
+
+  # Image pulls with IAM (ECR, bootstrap's repositories), instead of a registry credential.
+  # GetAuthorizationToken has no resource-level permissions; AWS requires "*".
+  dynamic "statement" {
+    for_each = each.value.ecr_pull ? [1] : []
+
+    content {
+      sid       = "EcrSignIn"
+      actions   = ["ecr:GetAuthorizationToken"]
+      resources = ["*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = each.value.ecr_pull ? [1] : []
+
+    content {
+      sid       = "PullProductionImages"
+      actions   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+      resources = local.ecr_repository_arns
+    }
+  }
 
   dynamic "statement" {
     for_each = length(each.value.secrets) > 0 ? [1] : []

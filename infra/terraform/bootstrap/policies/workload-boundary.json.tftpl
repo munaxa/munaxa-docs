@@ -60,6 +60,21 @@
       ]
     },
     {
+      "Sid": "EcrSignIn",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PullProductionImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
+      ],
+      "Resource": ${ecr_repository_arns_json}
+    },
+    {
       "Sid": "EcsExecSessionChannels",
       "Effect": "Allow",
       "Action": [

@@ -1,11 +1,16 @@
-# Publishing the production images to GHCR, so a deployment pulls an artifact that was built and
-# verified here rather than building one itself — and pins it by digest.
+# Publishing the production images to Amazon ECR, so a deployment pulls an artifact that was built
+# and verified here rather than building one itself — and pins it by digest.
 #
-# Three images, each from one named commit:
+# Three images, each from one named commit, in 229251310592.dkr.ecr.eu-central-1.amazonaws.com:
 #
-#   ghcr.io/munaxa/munaxa-docs-api        the `api` target of ./Dockerfile
-#   ghcr.io/munaxa/munaxa-docs-web        the `web` target of ./Dockerfile
-#   ghcr.io/munaxa/munaxa-docs-antivirus  ./infra/antivirus — c-icap in front of ClamAV
+#   munaxa-docs/api        the `api` target of ./Dockerfile
+#   munaxa-docs/web        the `web` target of ./Dockerfile
+#   munaxa-docs/antivirus  ./infra/antivirus — c-icap in front of ClamAV
+#
+# **No registry credential exists.** Each job assumes the image publisher role
+# (infra/terraform/bootstrap/ecr.tf) through GitHub OIDC; its trust accepts only this workflow file
+# on an image/<sha> tag of this repository, and it may only push to those three repositories.
+# Production pulls with the ECS execution roles' IAM permissions.
 #
 # **Tag-triggered, and the tag names the commit to build.** Publishing is a decision about one
 # validated commit, not something every push should do — the convention munaxa-work's own
@@ -40,10 +45,14 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
+  packages: read # the @munaxa/* npm packages on GitHub Packages, read during the build
+  id-token: write # GitHub OIDC, for the image publisher role
 
 env:
-  REGISTRY: ghcr.io
+  AWS_REGION: eu-central-1
+  AWS_ACCOUNT_ID: '229251310592'
+  REGISTRY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com
+  PUBLISHER_ROLE_ARN: arn:aws:iam::229251310592:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-image-publisher
 
 jobs:
   source:
@@ -52,13 +61,11 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       short: ${{ steps.resolve.outputs.short }}
-      owner: ${{ steps.resolve.outputs.owner }}
     steps:
       - name: Read the commit from the tag name
         id: resolve
         env:
           REF_NAME: ${{ github.ref_name }}
-          OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           sha="${REF_NAME#image/}"
@@ -69,8 +76,6 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
-          # GHCR repository names must be lower case.
-          echo "owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v6
         with:
@@ -94,13 +99,15 @@ jobs:
       matrix:
         include:
           - image: munaxa-docs-api
+            repository: munaxa-docs/api
             target: api
           - image: munaxa-docs-web
+            repository: munaxa-docs/web
             target: web
     env:
       SHA: ${{ needs.source.outputs.sha }}
       SHORT: ${{ needs.source.outputs.short }}
-      REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/${{ matrix.image }}
+      REPOSITORY: ${{ env.REGISTRY }}/${{ matrix.repository }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -118,13 +125,16 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Authenticate to GHCR
-        uses: docker/login-action@v3
+      - name: Assume the image publisher role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          # The per-run token, scoped by `packages: write` above. Nothing longer-lived is needed.
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ env.PUBLISHER_ROLE_ARN }}
+          role-session-name: gha-publish-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Authenticate to ECR
+        # A 12-hour registry token from the role's session, piped straight to docker; never echoed.
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
       - name: Build and push
         id: build
@@ -258,7 +268,7 @@ jobs:
     env:
       SHA: ${{ needs.source.outputs.sha }}
       SHORT: ${{ needs.source.outputs.short }}
-      REPOSITORY: ghcr.io/${{ needs.source.outputs.owner }}/munaxa-docs-antivirus
+      REPOSITORY: ${{ env.REGISTRY }}/munaxa-docs/antivirus
     steps:
       - uses: actions/checkout@v6
         with:
@@ -328,12 +338,16 @@ jobs:
             || { docker logs av-candidate | tail -40; exit 1; }
           docker rm -f av-candidate >/dev/null
 
-      - name: Authenticate to GHCR
-        uses: docker/login-action@v3
+      - name: Assume the image publisher role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          role-to-assume: ${{ env.PUBLISHER_ROLE_ARN }}
+          role-session-name: gha-publish-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Authenticate to ECR
+        # A 12-hour registry token from the role's session, piped straight to docker; never echoed.
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
       # The probed image itself is pushed — tagged and pushed, not rebuilt — so the digest in the
       # registry is the image the probes above accepted, layer for layer.
@@ -398,11 +412,12 @@ jobs:
           retention-days: 90
 
   pull-identity:
-    name: Pull with the production identity
+    name: Confirm the release in ECR
     needs: [source, application, antivirus]
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -422,22 +437,21 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # The deployment pulls with its own read-only identity, not with this run's token. It is an
-      # operator-provisioned secret pair; nothing here invents one. Without it the job says so and
-      # fails, because "the registry has the images" and "production can pull them" are different
-      # claims and only the second one matters on the night.
-      - name: Pull every digest with the production pull identity
-        env:
-          PULL_USER: ${{ secrets.DOCS_PRODUCTION_PULL_USER }}
-          PULL_TOKEN: ${{ secrets.DOCS_PRODUCTION_PULL_TOKEN }}
+      # Production pulls with the ECS execution roles, which only ECS can assume, so this job checks
+      # the registry itself: every published digest exists in its ECR repository.
+      - name: Assume the image publisher role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.PUBLISHER_ROLE_ARN }}
+          role-session-name: gha-publish-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Every digest is in ECR
         run: |
           set -euo pipefail
-          if [ -z "$PULL_USER" ] || [ -z "$PULL_TOKEN" ]; then
-            echo "::error::DOCS_PRODUCTION_PULL_USER / DOCS_PRODUCTION_PULL_TOKEN are not configured. Provision a read:packages identity for the production host and add both as repository secrets, then re-run this job."
-            echo "| production pull identity | NOT CONFIGURED — operator action |" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          printf '%s' "$PULL_TOKEN" | docker login ghcr.io -u "$PULL_USER" --password-stdin
-          for ref in $(cat digests/api digests/web digests/antivirus); do docker pull "$ref"; done
-          docker logout ghcr.io
-          echo "| production pull identity | pulled all three digests as \`$PULL_USER\` |" >> "$GITHUB_STEP_SUMMARY"
+          for ref in $(cat digests/api digests/web digests/antivirus); do
+            repo="${ref#"$REGISTRY"/}"; repo="${repo%@*}"; digest="${ref#*@}"
+            aws ecr describe-images --repository-name "$repo" --image-ids imageDigest="$digest" \
+              --query 'imageDetails[0].imageDigest' --output text | grep -qx "$digest"
+            echo "| $repo | \`$digest\` present in ECR |" >> "$GITHUB_STEP_SUMMARY"
+          done
