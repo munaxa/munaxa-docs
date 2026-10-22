@@ -27,6 +27,34 @@ applies in that original account and are kept as history. In `229251310592`:
 | `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | Backend, conventions and release inputs only |
 | `modules/ecs-service/` | Input contract for the three ECS services | Variables only |
 
+**Images moved to ECR on 2026-10-22** (§5, ADR-0024 amendment), on top of the applies above:
+
+- **`bootstrap/`:** applied by root in AWS CloudShell from `72cbc8e` (the head of #141, which `main`
+  now carries).
+  - Result: 9 added, 1 changed, 0 destroyed; the post-apply plan shows no changes.
+  - Verified read-only:
+    - `munaxa-docs/{api,web,antivirus}` have immutable tags, scan on push, AES256, 2 lifecycle rules
+      each, no repository policy, and no images yet;
+    - the image publisher role is at `/munaxa-docs/bootstrap/`, with its own boundary, 1-hour
+      sessions, and the trust in §5;
+    - the workload boundary has 15 statements, including the 2 ECR statements limited to the four
+      image-pulling execution roles.
+- **`eu-prod/core/`:** applied by GitHub Actions
+  ([run 39849287105](https://github.com/munaxa/munaxa-docs/actions/runs/39849287105), `main` at
+  `a04723a`).
+  - Result: 0 added, 12 changed, 0 destroyed. The 12 are 4 execution-role descriptions, 3 egress-rule
+    descriptions, 4 execution-role policies and the S3 endpoint policy.
+  - Verified read-only:
+    - the web, api, scanner and ops-provision execution policies grant ECR sign-in and pulls from
+      their own image's repository only;
+    - no role reads `ghcr-pull`;
+    - web and scanner read no secret at all;
+    - the S3 endpoint adds read-only `s3:GetObject` on `prod-eu-central-1-starport-layer-bucket/*`;
+    - `simulate-principal-policy` (§5 step 4) gives exactly the expected allows and denies, and a
+      request from another region is still explicitly denied.
+- **Not yet done:** no image has been published to ECR, and the first real pull through the S3
+  endpoint is untested until the first task runs.
+
 **No IAM users and no access keys exist in this account, by owner decision.** Until the build is
 finished, the only human identity is root (MFA on). Root cannot call `sts:AssumeRole`, so:
 
@@ -208,6 +236,158 @@ The `bootstrap/` changes that create the OIDC provider and the CI role, and add 
 `GitHubActionsSessions` and `GitHubActionsSourceIdentity` statements to the deployer trust, are
 applied by `admin.tamer` like any other bootstrap change. Until then the workflow cannot obtain
 credentials.
+
+### 5. Images in ECR (ADR-0024 amendment, 2026-10-22)
+
+Production images are in ECR in this account: `munaxa-docs/api`, `munaxa-docs/web` and
+`munaxa-docs/antivirus` (`bootstrap/ecr.tf`). There is no registry credential anywhere.
+
+**Who may push.** `.github/workflows/publish-images.yml` assumes the image publisher role
+(`/munaxa-docs/bootstrap/munaxa-docs-eu-prod-image-publisher`) through GitHub OIDC. Its trust
+requires, all exactly:
+
+- `aud` = `sts.amazonaws.com`;
+- `sub` = `repo:munaxa@311481412/munaxa-docs@1318346271:environment:image-release`;
+- `repository_owner_id` = `311481412` and `repository_id` = `1318346271`;
+- `ref` like `refs/tags/image/*`;
+- `job_workflow_ref` like `munaxa/munaxa-docs/.github/workflows/publish-images.yml@refs/tags/image/*`.
+
+These claim names and formats were observed in this repository's own tokens on 2026-10-22, from a
+temporary probe on the PR branch that never touched AWS. `sub` uses the immutable owner and
+repository IDs. `job_workflow_ref` is present for an ordinary workflow and uses names. AWS documents
+`ref`, `environment` and `job_workflow_ref` as GitHub condition keys.
+
+The role may push to, read back and describe those three repositories only. `ecr:GetAuthorizationToken`
+is on `*`, because AWS has no resource for it.
+
+**Release authorisation.** A tag runs the workflow file as it is at the tagged commit. A check inside
+the workflow is therefore advisory: whoever creates the tag can edit it. Enforcement sits outside the
+workflow, in three layers:
+
+1. **Tag ruleset** (GitHub, to be created by a repository admin). Target: tags, `refs/tags/image/*`.
+   Rules: restrict creations, restrict updates, restrict deletions, block force pushes. Bypass: the
+   Repository admin role only. Proposed definition:
+   ```json
+   {
+     "name": "Release image tags",
+     "target": "tag",
+     "enforcement": "active",
+     "conditions": { "ref_name": { "include": ["refs/tags/image/*"], "exclude": [] } },
+     "rules": [
+       { "type": "creation" }, { "type": "update" }, { "type": "deletion" }, { "type": "non_fast_forward" }
+     ],
+     "bypass_actors": [ { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" } ]
+   }
+   ```
+2. **Environment `image-release`** (GitHub, to be created by a repository admin). Required reviewer:
+   the release owner. Deployment branches and tags: selected, the tag pattern `image/*` only.
+   - Every job that touches ECR declares it.
+   - GitHub issues the `environment:image-release` subject only after approval, and only on an
+     allowed ref.
+   - Until this environment and the ruleset exist, publishing cannot obtain AWS credentials.
+3. **The publisher trust above.** It requires that environment, an `image/*` tag and this workflow
+   file.
+
+The workflow adds two checks on top: the tag must point at the commit it names, and that commit must
+be on `main`, which accepts only reviewed pull requests (ruleset "Protect main"). Together they
+mean the workflow that runs is itself reviewed code.
+
+**Limits.**
+
+- This repository has one admin. The same person can create the tag and approve the environment, so
+  the controls ensure a deliberate act by an authorised person, not two-person review. "Prevent
+  self-review" can be turned on once there is a second reviewer.
+- AWS cannot check a commit's ancestry, and `job_workflow_sha` is not an AWS condition key.
+
+**Who may pull.**
+
+- **Workload boundary:** admits ECR sign-in and pulls (three repositories) only for the four
+  execution roles that start an image from these repositories: web, API, scanner and ops-provision.
+- **No ECR at all for the other six workload roles**, whatever their own policies say: the ops-dbadmin
+  and ops-tunnel execution roles (other images), the API and tunnel task roles, the scheduler role
+  and the backup role.
+- **Each execution role's own policy** names only its own image's repository: web → `web`; API and
+  ops-provision → `api`; scanner → `antivirus`.
+- **S3 gateway endpoint:** allows read-only `s3:GetObject` on
+  `arn:aws:s3:::prod-eu-central-1-starport-layer-bucket/*`, where ECR serves image layers. Without it,
+  every pull from the public subnets would be refused at the layer download.
+
+**Verified before any apply** (2026-10-22, IAM `SimulateCustomPolicy`, read-only, on the rendered
+draft boundary):
+
+- The four execution roles may sign in and pull from the three repositories, and nothing else, even
+  under an `ecr:*` grant.
+- A repository outside the three is refused.
+- The other six roles are refused every ECR action, even under an `ecr:*` on `*` grant.
+
+The S3 endpoint and a real pull cannot be simulated; see step 4 below.
+
+**Repositories:** tags are immutable, basic scanning runs on push, and a lifecycle rule removes
+untagged images after 7 days and keeps the newest 20 releases.
+
+**Rollout.** Each stage needs the owner's approval, and nothing is applied before its plan is
+reviewed.
+
+Progress as of 2026-10-22:
+
+- **Done:** stages 1, 2, 3 and 4, recorded under Status.
+- **Not started:** stages 5 and 6.
+
+1. **Bootstrap, as root in AWS CloudShell** (eu-central-1). First update `~/bootstrap` to this
+   change's `infra/terraform/bootstrap/`; it already holds the S3 backend and `terraform.tfvars`.
+   ```bash
+   cd ~/bootstrap
+   terraform init -input=false
+   terraform plan -input=false -no-color -out=ecr.tfplan
+   # Review: about 9 to add (3 repositories, 3 lifecycle policies, the publisher role, its policy
+   # and boundary), 1 to change (the workload boundary policy), 0 to destroy.
+   terraform apply -input=false ecr.tfplan   # only after the plan is reviewed and approved
+   terraform plan -input=false -detailed-exitcode -no-color | tail -3   # expect "No changes"
+   ```
+2. **GitHub settings, by a repository admin:** the tag ruleset and the `image-release` environment
+   above.
+3. **Core, through GitHub Actions**, once this change is on `main`: run **Terraform eu-prod** with
+   root `core` and action `plan`.
+   - Review: about 12 in-place changes and nothing added or destroyed. That is 4 execution-role
+     policies, 4 execution-role descriptions, the S3 endpoint policy, and 3 HTTPS egress-rule
+     descriptions.
+   - Then run `core` / `apply`, after approval.
+4. **Verify pulls, read-only, after stages 1 and 3.** As root in CloudShell.
+   - **Context entries are required.** The workload boundary denies every request whose
+     `aws:RequestedRegion` is not `eu-central-1` (`StringNotEquals`). The simulator leaves that key
+     unset unless it is given, and IAM treats a missing key as not equal. So a run without
+     `--context-entries` reports `explicitDeny` for everything, from the boundary.
+   - Real requests from the ECS agent always carry the region and the role's ARN; the command below
+     supplies both.
+   ```bash
+   for r in web api scanner ops-provision ops-dbadmin ops-tunnel; do
+     arn="arn:aws:iam::229251310592:role/munaxa-docs/eu-prod/munaxa-docs-eu-prod-$r-execution"
+     echo "== $r"
+     aws iam simulate-principal-policy \
+       --policy-source-arn "$arn" \
+       --context-entries "ContextKeyName=aws:RequestedRegion,ContextKeyValues=eu-central-1,ContextKeyType=string" \
+                         "ContextKeyName=aws:PrincipalArn,ContextKeyValues=$arn,ContextKeyType=string" \
+       --action-names ecr:GetAuthorizationToken ecr:BatchGetImage ecr:GetDownloadUrlForLayer \
+       --resource-arns "arn:aws:ecr:eu-central-1:229251310592:repository/munaxa-docs/web" \
+                       "arn:aws:ecr:eu-central-1:229251310592:repository/munaxa-docs/api" \
+                       "arn:aws:ecr:eu-central-1:229251310592:repository/munaxa-docs/antivirus" \
+       --query 'EvaluationResults[].[EvalActionName,EvalDecision,ResourceSpecificResults[].[EvalResourceName,EvalResourceDecision]]' \
+       --output json
+   done
+   ```
+   Expected:
+   - each of web, API, scanner and ops-provision is allowed sign-in and its own repository only;
+   - ops-dbadmin and ops-tunnel are refused everything.
+   - Run with `aws:RequestedRegion=us-east-1` instead, every role must be `explicitDeny`, which
+     shows the region guard.
+
+   The first real pull, through the S3 endpoint, is the first task started during launch
+   preparation. It is not tested by publishing a release now.
+5. **Publish** a release, after approval: push the tag `image/<full SHA of a commit on main>`, approve
+   the `image-release` environment for the run's jobs, and record the ECR digests in a new release
+   package.
+6. **Remove the old credentials**, after the first ECR release: the repository secrets
+   `DOCS_PRODUCTION_PULL_USER` and `DOCS_PRODUCTION_PULL_TOKEN`, and the GitHub token behind them.
 
 ## The deployer's permission model
 

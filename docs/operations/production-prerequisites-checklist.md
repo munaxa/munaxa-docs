@@ -41,7 +41,7 @@ Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 
 ## 2. Images and publication
 
-**Registry:** `ghcr.io/munaxa` — `munaxa-docs-api`, `munaxa-docs-web`, `munaxa-docs-antivirus`.
+**Registry:** Amazon ECR in `229251310592` — `munaxa-docs/api`, `munaxa-docs/web`, `munaxa-docs/antivirus` (ADR-0024 amendment, 2026-10-22). Until 2026-10-22 it was `ghcr.io/munaxa`. The GHCR digests below are historical and must be republished to ECR before deployment.
 **Process:** `.github/workflows/publish-images.yml`, started by pushing a tag `image/<full SHA>`. It
 builds exactly that commit, tags each image `<short>` and `sha-<full SHA>` — **never `latest`** — and
 verifies each **pulled digest**: revision label, non-root, no credential in history or filesystem, the

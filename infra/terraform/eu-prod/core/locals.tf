@@ -12,10 +12,14 @@ locals {
   log_group_prefix   = "/munaxa-docs/eu-prod"
   secret_arn_prefix  = "arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${local.prefix}"
 
+  # Bootstrap's ECR repositories (bootstrap/ecr.tf), by name.
+  ecr_repository_arn = {
+    for name in ["api", "web", "antivirus"] : name => "arn:aws:ecr:${var.region}:${var.account_id}:repository/munaxa-docs/${name}"
+  }
+
   # Secret containers (created later, values supplied outside Terraform). The trailing -* matches
   # the six random characters Secrets Manager appends to every secret ARN.
   secret_arns = {
-    ghcr_pull = "${local.secret_arn_prefix}/ghcr-pull-*"
     app       = "${local.secret_arn_prefix}/app-*"
     operator  = "${local.secret_arn_prefix}/operator-*"
     provision = "${local.secret_arn_prefix}/provision/*"

@@ -243,7 +243,7 @@ recorded as READY.
 | **Purpose** | Deploy exactly the validated artifacts, by immutable digest, with credentials never in Git and configuration traceable |
 | **Operator action** | 1. Registry `<REGISTRY_HOST>` with three repositories: **API** `<REGISTRY_HOST>/<API_REPOSITORY>`, **web** `<REGISTRY_HOST>/<WEB_REPOSITORY>`, **antivirus** `<REGISTRY_HOST>/<AV_REPOSITORY>`. Tags immutable (if supported). Pull access restricted.<br>2. A **push identity** for the release engineer or build system only.<br>3. A **separate production pull identity**, read-only, used by the runtime.<br>4. Signing, if `<SIGNING_POLICY>` requires it.<br>5. A secret store holding every secret in §C.<br>6. Configuration versioning: the non-secret configuration for API, web and catalogue in a versioned store, with the version recorded per deployment |
 | **Required inputs** | `<REGISTRY_HOST>`, the three repository names, `<PUSH_IDENTITY>`, `<PULL_IDENTITY>`, `<SIGNING_POLICY>`, `<SECRET_STORE>`, `<CONFIG_REPOSITORY>` |
-| **Owner / Blocking** | `<PLATFORM_OWNER>` · **Yes.** Registry chosen: GHCR `munaxa` (`ghcr.io/munaxa/munaxa-docs-{api,web,antivirus}`). Publishing (9d) and the production pull identity are **done** for release `4e8e1ca`. Still **OPERATOR ACTION REQUIRED**: signing policy, secret store (9b), configuration versioning (9c), confirmation of the pull token's expiry |
+| **Owner / Blocking** | `<PLATFORM_OWNER>` · **Yes.** Registry chosen: GHCR `munaxa` (`ghcr.io/munaxa/munaxa-docs-{api,web,antivirus}`), **replaced on 2026-10-22 by Amazon ECR** (`munaxa-docs/{api,web,antivirus}` in `229251310592`, OIDC push, IAM pull, no pull identity: ADR-0024 amendment). The GHCR status below is historical. Publishing (9d) and the production pull identity are **done** for release `4e8e1ca`. Still **OPERATOR ACTION REQUIRED**: signing policy, secret store (9b), configuration versioning (9c), confirmation of the pull token's expiry |
 
 **9d. Publishing the images — `.github/workflows/publish-images.yml`**
 
@@ -262,7 +262,7 @@ git tag image/<full SHA> <full SHA>
 git push origin image/<full SHA>
 ```
 
-The run publishes `ghcr.io/munaxa/munaxa-docs-api`, `-web` and `-antivirus`, each tagged `<short>`
+The run publishes `munaxa-docs/api`, `munaxa-docs/web` and `munaxa-docs/antivirus` to ECR (before 2026-10-22: `ghcr.io/munaxa/munaxa-docs-*`), each tagged `<short>`
 and `sha-<full SHA>`, and prints the three `image@sha256:<digest>` references in its summary (and as the
 `digest-*` artifacts). It fails — publishing nothing it has not verified — unless each **pulled
 digest** carries the revision label, runs as non-root, holds no credential, and (API) carries its query
@@ -491,7 +491,7 @@ change approver, and does not count as READY.
 
 **BLOCKED — ENVIRONMENT:**
 
-- **9a/9d: registry and images done; signing policy open.** GHCR `munaxa` is configured and release
+- **9a/9d (historical; the registry is now ECR, ADR-0024 amendment 2026-10-22).** GHCR `munaxa` was configured and release
   `4e8e1ca` is published and verified by digest with the production pull identity. The signing
   policy is not supplied, and D2, D5 (the scanner by digest **in the production network**) and D10
   (the restored API by digest) still need the production environment.

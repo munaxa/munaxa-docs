@@ -24,6 +24,12 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 
 ## 1. Scope and release identity
 
+> **Registry changed (ADR-0024 amendment, 2026-10-22).** Production images now come from Amazon ECR
+> (`229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/{api,web,antivirus}`), pulled with
+> IAM. The `ghcr.io` digests quoted in this runbook identify release `4e8e1ca` as it was published
+> and verified. They cannot be deployed: republish the release to ECR and use the ECR digests from
+> its new release package.
+
 | Item | Value |
 | --- | --- |
 | Release to deploy | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) — published as three immutable images by run `36819091004` ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
@@ -493,9 +499,10 @@ Keep the scanner on a network only the API can reach, and do not route ICAP over
 **The images are already built and published.** `.github/workflows/publish-images.yml`, started by
 the tag `image/<full SHA>`, builds API, web and scanner from that exact commit, verifies each pulled
 digest (revision label, non-root, no credentials, the API's query engine, the web's brand artwork,
-and for the scanner its versions, `verify-container.sh` and `probe.mjs`), pushes them to GHCR
-(`ghcr.io/munaxa`), never as `latest`, and pulls all three with the production pull identity. The
-release `4e8e1ca` was published by run `36819091004`; its three digests are in §1 and in
+and for the scanner its versions, `verify-container.sh` and `probe.mjs`), pushes them to Amazon ECR
+(`munaxa-docs/{api,web,antivirus}`) through GitHub OIDC, never as `latest`, and confirms each
+digest is in ECR. Production pulls with the ECS execution roles. No registry credential exists.
+Before the registry change, release `4e8e1ca` was published to GHCR by run `36819091004`; its three digests are in §1 and in
 [production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md). Do not
 rebuild them for production: a rebuild is a new artifact.
 

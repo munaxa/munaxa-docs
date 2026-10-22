@@ -40,32 +40,32 @@ variable "deployer_session_name" {
 # ---------------------------------------------------------------------------------------------
 
 variable "api_image" {
-  description = "API image, by digest: ghcr.io/munaxa/munaxa-docs-api@sha256:<64 hex>."
+  description = "API image, by digest: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/api@sha256:<64 hex>."
   type        = string
 
   validation {
-    condition     = can(regex("^ghcr\\.io/munaxa/munaxa-docs-api@sha256:[0-9a-f]{64}$", var.api_image))
-    error_message = "api_image must be ghcr.io/munaxa/munaxa-docs-api@sha256:<digest>; tags are not accepted."
+    condition     = can(regex("^229251310592\\.dkr\\.ecr\\.eu-central-1\\.amazonaws\\.com/munaxa-docs/api@sha256:[0-9a-f]{64}$", var.api_image))
+    error_message = "api_image must be the munaxa-docs/api ECR repository @sha256:<digest>; tags are not accepted."
   }
 }
 
 variable "web_image" {
-  description = "Web image, by digest: ghcr.io/munaxa/munaxa-docs-web@sha256:<64 hex>."
+  description = "Web image, by digest: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/web@sha256:<64 hex>."
   type        = string
 
   validation {
-    condition     = can(regex("^ghcr\\.io/munaxa/munaxa-docs-web@sha256:[0-9a-f]{64}$", var.web_image))
-    error_message = "web_image must be ghcr.io/munaxa/munaxa-docs-web@sha256:<digest>; tags are not accepted."
+    condition     = can(regex("^229251310592\\.dkr\\.ecr\\.eu-central-1\\.amazonaws\\.com/munaxa-docs/web@sha256:[0-9a-f]{64}$", var.web_image))
+    error_message = "web_image must be the munaxa-docs/web ECR repository @sha256:<digest>; tags are not accepted."
   }
 }
 
 variable "antivirus_image" {
-  description = "Scanner image, by digest: ghcr.io/munaxa/munaxa-docs-antivirus@sha256:<64 hex>."
+  description = "Scanner image, by digest: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:<64 hex>."
   type        = string
 
   validation {
-    condition     = can(regex("^ghcr\\.io/munaxa/munaxa-docs-antivirus@sha256:[0-9a-f]{64}$", var.antivirus_image))
-    error_message = "antivirus_image must be ghcr.io/munaxa/munaxa-docs-antivirus@sha256:<digest>; tags are not accepted."
+    condition     = can(regex("^229251310592\\.dkr\\.ecr\\.eu-central-1\\.amazonaws\\.com/munaxa-docs/antivirus@sha256:[0-9a-f]{64}$", var.antivirus_image))
+    error_message = "antivirus_image must be the munaxa-docs/antivirus ECR repository @sha256:<digest>; tags are not accepted."
   }
 }
 
