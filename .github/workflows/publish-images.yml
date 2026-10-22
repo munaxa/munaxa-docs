@@ -7,21 +7,25 @@
 #   munaxa-docs/web        the `web` target of ./Dockerfile
 #   munaxa-docs/antivirus  ./infra/antivirus — c-icap in front of ClamAV
 #
-# **No registry credential exists.** Each job assumes the image publisher role
-# (infra/terraform/bootstrap/ecr.tf) through GitHub OIDC; its trust accepts only this workflow file
-# on an image/<sha> tag of this repository, and it may only push to those three repositories.
-# Production pulls with the ECS execution roles' IAM permissions.
+# **No registry credential exists.** Every job that touches ECR runs in the protected
+# `image-release` environment and assumes the image publisher role
+# (infra/terraform/bootstrap/ecr.tf) through GitHub OIDC. The role's trust requires that environment,
+# an image/* tag, this workflow file and this repository's IDs, and the role may only push to those
+# three repositories. Production pulls with the ECS execution roles' IAM permissions.
 #
 # **Tag-triggered, and the tag names the commit to build.** Publishing is a decision about one
-# validated commit, not something every push should do — the convention munaxa-work's own
-# publish-images.yml set. `workflow_dispatch` is only offered by GitHub for workflows on the default
-# branch, and the release lineage sits on an unmerged branch, so the trigger is a tag of the form
+# validated commit, not something every push should do. The trigger is a tag of the form
 #
 #   image/<full 40-character commit SHA>
 #
-# pushed on any commit that carries this file. The tag's *name* is the source; the tagged commit only
-# has to carry the workflow. `.github/` is in .dockerignore, so which commit the workflow file lives on
-# cannot change a byte of what is built.
+# **Only reviewed history is published.** The tag must point at the commit it names, and that commit
+# must be on `main`, which only accepts reviewed pull requests (the "Protect main" ruleset). So the
+# workflow that runs is also the reviewed one. These checks run inside the workflow, which a tag on an
+# unreviewed commit could change. The enforcement that cannot be edited away sits outside it:
+#
+# - the tag ruleset that limits who may create image/* tags;
+# - the `image-release` environment's required reviewer and its image/* deployment rule;
+# - the publisher role's trust in AWS.
 #
 # **No `latest`, ever.** Two immutable tags per image (`<short>`, `sha-<full>`) for humans, and the
 # digest for machines: a production manifest names `image@sha256:<digest>` and nothing else.
@@ -75,12 +79,29 @@ jobs:
           if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "::error::tag must be image/<40-hex commit SHA>, got '$REF_NAME'"; exit 1
           fi
+          # The tag must point at the commit it names: the workflow that runs is then the one in the
+          # release commit, which the ancestry check below ties to reviewed history.
+          if [ "$GITHUB_SHA" != "$sha" ]; then
+            echo "::error::tag $REF_NAME points at $GITHUB_SHA, not at the commit it names"; exit 1
+          fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v6
         with:
           ref: ${{ steps.resolve.outputs.sha }}
+          fetch-depth: 0 # the whole history, for the ancestry check against main
+
+      - name: Confirm the commit is in reviewed history (on main)
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main: only merged, reviewed commits are published"; exit 1
+          fi
+          echo "$SHA is on main"
 
       - name: Confirm the checkout is that commit and is clean
         env:
@@ -95,6 +116,7 @@ jobs:
     name: ${{ matrix.image }}
     needs: source
     runs-on: ubuntu-latest
+    environment: image-release # required reviewer; the publisher trust requires this subject
     strategy:
       fail-fast: false # one image failing should not hide the other's result
       matrix:
@@ -108,7 +130,8 @@ jobs:
     env:
       SHA: ${{ needs.source.outputs.sha }}
       SHORT: ${{ needs.source.outputs.short }}
-      REPOSITORY: ${{ env.REGISTRY }}/${{ matrix.repository }}
+      # Job-level env cannot read the env context; the registry host is written out.
+      REPOSITORY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/${{ matrix.repository }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -262,6 +285,7 @@ jobs:
     name: munaxa-docs-antivirus
     needs: source
     runs-on: ubuntu-latest
+    environment: image-release
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       clamav: ${{ steps.versions.outputs.clamav }}
@@ -269,7 +293,7 @@ jobs:
     env:
       SHA: ${{ needs.source.outputs.sha }}
       SHORT: ${{ needs.source.outputs.short }}
-      REPOSITORY: ${{ env.REGISTRY }}/munaxa-docs/antivirus
+      REPOSITORY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus
     steps:
       - uses: actions/checkout@v6
         with:
@@ -416,6 +440,7 @@ jobs:
     name: Confirm the release in ECR
     needs: [source, application, antivirus]
     runs-on: ubuntu-latest
+    environment: image-release
     permissions:
       contents: read
       id-token: write

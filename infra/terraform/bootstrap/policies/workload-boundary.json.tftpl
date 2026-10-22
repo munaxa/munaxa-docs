@@ -60,19 +60,29 @@
       ]
     },
     {
-      "Sid": "EcrSignIn",
+      "Sid": "EcrSignInImagePullingExecutionRoles",
       "Effect": "Allow",
       "Action": "ecr:GetAuthorizationToken",
-      "Resource": "*"
+      "Resource": "*",
+      "Condition": {
+        "ArnEquals": {
+          "aws:PrincipalArn": ${ecr_pull_role_arns_json}
+        }
+      }
     },
     {
-      "Sid": "PullProductionImages",
+      "Sid": "PullProductionImagesImagePullingExecutionRoles",
       "Effect": "Allow",
       "Action": [
         "ecr:BatchGetImage",
         "ecr:GetDownloadUrlForLayer"
       ],
-      "Resource": ${ecr_repository_arns_json}
+      "Resource": ${ecr_repository_arns_json},
+      "Condition": {
+        "ArnEquals": {
+          "aws:PrincipalArn": ${ecr_pull_role_arns_json}
+        }
+      }
     },
     {
       "Sid": "EcsExecSessionChannels",

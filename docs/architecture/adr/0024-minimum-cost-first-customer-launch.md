@@ -529,10 +529,16 @@ Fargate, and the full API start.
   - `bootstrap/ecr.tf`: the repositories `munaxa-docs/api`, `munaxa-docs/web` and
     `munaxa-docs/antivirus`. Tags are immutable, basic scanning runs on push, and a lifecycle rule
     removes untagged images and keeps the newest 20 releases.
-  - The same file holds the image publisher role. Only `publish-images.yml`, on an `image/<sha>`
-    tag of this repository, may assume it, and it can push only to those repositories.
-  - The workload boundary allows ECR sign-in and pulls from those repositories.
-  - In core, the execution roles drop the `ghcr-pull` secret and gain those pulls.
+  - The same file holds the image publisher role. Only `publish-images.yml` may assume it, from an
+    `image/*` tag of this repository, in the protected `image-release` environment. It can push only
+    to those repositories.
+  - The workload boundary admits ECR only for the four execution roles that start these images.
+  - In core, each of those roles pulls only its own image's repository and drops the `ghcr-pull`
+    secret, and the S3 gateway endpoint gains read-only access to ECR's layer bucket.
+- **Release authorisation:** a tag ruleset limits who may create `image/*` tags, and the
+  `image-release` environment requires approval before any job gets credentials. The workflow also
+  refuses a tag that does not point at the commit it names, or a commit not on `main`. Details and
+  limits are in `infra/terraform/README.md` §5.
 - **What it changes here:**
   - §2.8 loses the GHCR pull credential.
   - §3.3's IPv4 reason now rests on the NAT trigger, not on GHCR.

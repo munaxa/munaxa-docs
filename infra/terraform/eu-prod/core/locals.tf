@@ -13,9 +13,9 @@ locals {
   secret_arn_prefix  = "arn:aws:secretsmanager:${var.region}:${var.account_id}:secret:${local.prefix}"
 
   # Bootstrap's ECR repositories (bootstrap/ecr.tf), by name.
-  ecr_repository_arns = [
-    for name in ["api", "web", "antivirus"] : "arn:aws:ecr:${var.region}:${var.account_id}:repository/munaxa-docs/${name}"
-  ]
+  ecr_repository_arn = {
+    for name in ["api", "web", "antivirus"] : name => "arn:aws:ecr:${var.region}:${var.account_id}:repository/munaxa-docs/${name}"
+  }
 
   # Secret containers (created later, values supplied outside Terraform). The trailing -* matches
   # the six random characters Secrets Manager appends to every secret ARN.

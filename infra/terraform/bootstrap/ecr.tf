@@ -14,6 +14,14 @@ locals {
     for name in local.ecr_repositories : "arn:aws:ecr:${var.region}:${var.account_id}:repository/${local.ecr_prefix}/${name}"
   ]
   image_publisher_role_name = "${local.prefix}-image-publisher"
+
+  # The only workload roles the boundary lets reach ECR: the execution roles of the tasks that run
+  # an image from these repositories (core, eu-prod/core/iam.tf). ops-dbadmin and ops-tunnel run
+  # other images; task roles, the scheduler and the backup role never pull.
+  ecr_pull_execution_roles = ["web", "api", "scanner", "ops-provision"]
+  ecr_pull_role_arns = [
+    for name in local.ecr_pull_execution_roles : "arn:aws:iam::${var.account_id}:role${local.workload_path}${local.prefix}-${name}-execution"
+  ]
 }
 
 # IMMUTABLE: a tag can never be moved to another image once pushed. Production still deploys by
@@ -67,8 +75,19 @@ resource "aws_ecr_lifecycle_policy" "images" {
   })
 }
 
-# Only the publishing workflow, run from an image/<sha> tag of this repository (immutable IDs,
-# as for the CI role), may assume the publisher.
+# Who may push. Claim names and formats were observed in this repository's own OIDC tokens
+# (2026-10-22): `sub` uses the immutable owner@id/repo@id form, `job_workflow_ref` is present for an
+# ordinary (non-reusable) workflow and uses names (owner/repo/.github/workflows/<file>@<ref>).
+#
+# A tag runs the workflow file as it is at the tagged commit, so checks inside the workflow can be
+# edited away by whoever creates the tag. The controls that cannot be are here and in GitHub:
+#
+# - `sub` must be the protected `image-release` environment of this repository. GitHub only issues
+#   that subject to a job that declares the environment, after its required reviewer approves and
+#   only on a ref its deployment rules allow (image/* tags).
+# - `ref` must be an image/* tag, and `job_workflow_ref` must be publish-images.yml on such a tag,
+#   so no other workflow and no branch run can push even with the environment approved.
+# - The repository and owner IDs, so a renamed or re-created repository can never match.
 data "aws_iam_policy_document" "image_publisher_trust" {
   statement {
     sid     = "GitHubActionsImagePublishing"
@@ -86,9 +105,9 @@ data "aws_iam_policy_document" "image_publisher_trust" {
     }
 
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${local.github_owner}@${var.github_owner_id}/${local.github_repository_name}@${var.github_repository_id}:ref:refs/tags/image/*"]
+      values   = ["repo:${local.github_owner}@${var.github_owner_id}/${local.github_repository_name}@${var.github_repository_id}:environment:${var.github_image_environment}"]
     }
 
     condition {
@@ -103,7 +122,12 @@ data "aws_iam_policy_document" "image_publisher_trust" {
       values   = [var.github_repository_id]
     }
 
-    # The workflow file itself, so no other workflow running on an image tag can push.
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:ref"
+      values   = ["refs/tags/image/*"]
+    }
+
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:job_workflow_ref"

@@ -103,7 +103,10 @@ resource "aws_route_table_association" "db" {
 }
 
 # S3 gateway endpoint (no charge) on the public route table. Its policy admits only the
-# Production document bucket and only the object actions the API task role is granted.
+# Production document bucket, with only the object actions the API task role is granted, and
+# read-only access to the bucket in which ECR serves image layers in this region. Every S3 request
+# from the public subnets goes through this endpoint, so without the second statement an ECR pull
+# gets the manifest and is then refused the layers (AWS documents this exact ARN and action).
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${var.region}.s3"
@@ -127,6 +130,12 @@ resource "aws_vpc_endpoint" "s3" {
         "arn:aws:s3:::${local.docs_bucket}",
         "arn:aws:s3:::${local.docs_bucket}/*",
       ]
+      }, {
+      Sid       = "EcrImageLayersReadOnly"
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = ["s3:GetObject"]
+      Resource  = ["arn:aws:s3:::prod-${var.region}-starport-layer-bucket/*"]
     }]
   })
 
