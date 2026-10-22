@@ -1,0 +1,28 @@
+# TEMPORARY review probe for PR #141; removed again before review completes. It records which
+# claims GitHub puts in this repository's OIDC token (claim names and values only, never the token
+# itself) so the ECR publisher trust can be written against observed values. It contacts no cloud
+# provider and assumes no role.
+name: OIDC claims probe (temporary)
+
+on:
+  push:
+    branches: [claude/ecr-migration]
+    paths: [.github/workflows/oidc-claims-probe.yml]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print the non-secret claims of an sts.amazonaws.com token
+        run: |
+          set -euo pipefail
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null \
+            | jq '{sub, aud, iss, ref, ref_type, ref_protected, event_name, workflow, workflow_ref, job_workflow_ref, repository, repository_id, repository_owner, repository_owner_id, environment, runner_environment, claim_names: (keys)}' \
+            || { echo "::error::could not decode"; exit 1; }
+          unset token
