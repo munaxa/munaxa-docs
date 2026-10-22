@@ -27,6 +27,34 @@ applies in that original account and are kept as history. In `229251310592`:
 | `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | Backend, conventions and release inputs only |
 | `modules/ecs-service/` | Input contract for the three ECS services | Variables only |
 
+**Images moved to ECR on 2026-10-22** (§5, ADR-0024 amendment), on top of the applies above:
+
+- **`bootstrap/`:** applied by root in AWS CloudShell from `72cbc8e` (the head of #141, which `main`
+  now carries).
+  - Result: 9 added, 1 changed, 0 destroyed; the post-apply plan shows no changes.
+  - Verified read-only:
+    - `munaxa-docs/{api,web,antivirus}` have immutable tags, scan on push, AES256, 2 lifecycle rules
+      each, no repository policy, and no images yet;
+    - the image publisher role is at `/munaxa-docs/bootstrap/`, with its own boundary, 1-hour
+      sessions, and the trust in §5;
+    - the workload boundary has 15 statements, including the 2 ECR statements limited to the four
+      image-pulling execution roles.
+- **`eu-prod/core/`:** applied by GitHub Actions
+  ([run 39849287105](https://github.com/munaxa/munaxa-docs/actions/runs/39849287105), `main` at
+  `a04723a`).
+  - Result: 0 added, 12 changed, 0 destroyed. The 12 are 4 execution-role descriptions, 3 egress-rule
+    descriptions, 4 execution-role policies and the S3 endpoint policy.
+  - Verified read-only:
+    - the web, api, scanner and ops-provision execution policies grant ECR sign-in and pulls from
+      their own image's repository only;
+    - no role reads `ghcr-pull`;
+    - web and scanner read no secret at all;
+    - the S3 endpoint adds read-only `s3:GetObject` on `prod-eu-central-1-starport-layer-bucket/*`;
+    - `simulate-principal-policy` (§5 step 4) gives exactly the expected allows and denies, and a
+      request from another region is still explicitly denied.
+- **Not yet done:** no image has been published to ECR, and the first real pull through the S3
+  endpoint is untested until the first task runs.
+
 **No IAM users and no access keys exist in this account, by owner decision.** Until the build is
 finished, the only human identity is root (MFA on). Root cannot call `sts:AssumeRole`, so:
 
@@ -300,6 +328,11 @@ untagged images after 7 days and keeps the newest 20 releases.
 **Rollout.** Each stage needs the owner's approval, and nothing is applied before its plan is
 reviewed.
 
+Progress as of 2026-10-22:
+
+- **Done:** stages 1, 2, 3 and 4, recorded under Status.
+- **Not started:** stages 5 and 6.
+
 1. **Bootstrap, as root in AWS CloudShell** (eu-central-1). First update `~/bootstrap` to this
    change's `infra/terraform/bootstrap/`; it already holds the S3 backend and `terraform.tfvars`.
    ```bash
@@ -319,11 +352,21 @@ reviewed.
      policies, 4 execution-role descriptions, the S3 endpoint policy, and 3 HTTPS egress-rule
      descriptions.
    - Then run `core` / `apply`, after approval.
-4. **Verify pulls, read-only, after stages 1 and 3.** As root in CloudShell:
+4. **Verify pulls, read-only, after stages 1 and 3.** As root in CloudShell.
+   - **Context entries are required.** The workload boundary denies every request whose
+     `aws:RequestedRegion` is not `eu-central-1` (`StringNotEquals`). The simulator leaves that key
+     unset unless it is given, and IAM treats a missing key as not equal. So a run without
+     `--context-entries` reports `explicitDeny` for everything, from the boundary.
+   - Real requests from the ECS agent always carry the region and the role's ARN; the command below
+     supplies both.
    ```bash
    for r in web api scanner ops-provision ops-dbadmin ops-tunnel; do
+     arn="arn:aws:iam::229251310592:role/munaxa-docs/eu-prod/munaxa-docs-eu-prod-$r-execution"
+     echo "== $r"
      aws iam simulate-principal-policy \
-       --policy-source-arn "arn:aws:iam::229251310592:role/munaxa-docs/eu-prod/munaxa-docs-eu-prod-$r-execution" \
+       --policy-source-arn "$arn" \
+       --context-entries "ContextKeyName=aws:RequestedRegion,ContextKeyValues=eu-central-1,ContextKeyType=string" \
+                         "ContextKeyName=aws:PrincipalArn,ContextKeyValues=$arn,ContextKeyType=string" \
        --action-names ecr:GetAuthorizationToken ecr:BatchGetImage ecr:GetDownloadUrlForLayer \
        --resource-arns "arn:aws:ecr:eu-central-1:229251310592:repository/munaxa-docs/web" \
                        "arn:aws:ecr:eu-central-1:229251310592:repository/munaxa-docs/api" \
@@ -335,6 +378,8 @@ reviewed.
    Expected:
    - each of web, API, scanner and ops-provision is allowed sign-in and its own repository only;
    - ops-dbadmin and ops-tunnel are refused everything.
+   - Run with `aws:RequestedRegion=us-east-1` instead, every role must be `explicitDeny`, which
+     shows the region guard.
 
    The first real pull, through the S3 endpoint, is the first task started during launch
    preparation. It is not tested by publishing a release now.
