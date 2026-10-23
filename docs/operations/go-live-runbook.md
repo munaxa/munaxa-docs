@@ -24,16 +24,31 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 
 ## 1. Scope and release identity
 
-> **Registry changed (ADR-0024 amendment, 2026-10-22).** Production images now come from Amazon ECR
-> (`229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/{api,web,antivirus}`), pulled with
-> IAM. The `ghcr.io` digests quoted in this runbook identify release `4e8e1ca` as it was published
-> and verified. They cannot be deployed: republish the release to ECR and use the ECR digests from
-> its new release package.
+> **Registry changed (ADR-0024 amendment, 2026-10-22). Release selection is open.** Production
+> images come only from Amazon ECR, by digest:
+> `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/{api,web,antivirus}@sha256:<digest>`.
+> ECS execution roles pull them with IAM; there is no registry credential.
+>
+> - `4e8e1ca` (below) and `041e827` were published to GHCR only. Their GHCR digests are historical
+>   and stay in their release packages; **they cannot be deployed**. Republishing either to ECR
+>   is not possible as is: an `image/<sha>` tag runs `publish-images.yml` as it is at the tagged
+>   commit, and at those commits it pushes to GHCR.
+> - The only images in ECR are release `db97825` (run
+>   [39929830650](https://github.com/munaxa/munaxa-docs/actions/runs/39929830650), 2026-10-23):
+>   API `sha256:e8f641e608b38e9366c88e714f07a0851bd7066f64f0964f5b188bd211d78b47`, web
+>   `sha256:0703fafa9f887d5c815d18b0752c5de6431f40f7c279988d31b0c30757e755b3`, antivirus
+>   `sha256:1278da65948893cf62c799c19cf003296154f84489192af99f627b3dec827e22`. Its application
+>   code is `041e827` plus the Docs v2 web design (#137). CI was green on each of those
+>   commits, but no release package and no staging smoke cover it. Its antivirus image has two
+>   Ubuntu fixes pending (#143). **It is not the approved release.**
+>
+> Until a release is selected and has an ECR release package, every image reference below is a
+> placeholder for that package's ECR digest.
 
 | Item | Value |
 | --- | --- |
-| Release to deploy | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) — published as three immutable images by run `36819091004` ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
-| Images | API `ghcr.io/munaxa/munaxa-docs-api@sha256:6c1a6b31fa3502ddfe6df2fdc9d6c723edc7def711bd90f5d8525f2247872f10`; web `ghcr.io/munaxa/munaxa-docs-web@sha256:815a4aa28cf75c58bd4cd4cb4031db26ef60acaa9ba7649f7b6c0a710341d4eb`; antivirus `ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc` — all labelled `org.opencontainers.image.revision=4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`, verified by digest and pulled with the production pull identity |
+| Release to deploy | **Not selected for ECR yet** (note above). The last approved release is **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`), published to GHCR only, by run `36819091004` ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)). Where this runbook names `4e8e1ca`, read the selected release's commit once one has an ECR release package |
+| Images | **ECR by digest, from the release package of the selected release** (`munaxa-docs/api`, `munaxa-docs/web`, `munaxa-docs/antivirus` in `229251310592`, eu-central-1), each labelled `org.opencontainers.image.revision=<release commit>`. Not yet selected (see the note above). `4e8e1ca`'s GHCR digests are historical: [production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md) |
 | Application code | Identical to the approved application release **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`): `4e8e1ca` adds only the non-root antivirus image and documentation |
 | Validated by | CI run 554 on `27a8daa`, 9/9 jobs green (lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner, a real object store and two tenant databases; five end-to-end shards; visual regression; three container images; product isolation), plus the local gate and the staging smoke in [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md) |
 | Staging gate | The full gate passed on `416ca94` ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md)); `f5d5bb2` added the web image's brand artwork (STG-12); `c87519e` added the tenant-resolution and TOTP-enrolment fixes; `27a8daa` adds the web sign-out revocation (WEB-1) and numbering-collision (NUM-1) fixes and repeats the §16 smoke (29/29, browser 8/8) on its own images |
@@ -60,11 +75,11 @@ images were built from. Never use a later documentation commit's SHA as the rele
 | Superseded release candidate | `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`) | `f5d5bb2` plus `6f135e5` and `14311c2`, CI run 552, staging smoke 27/27 ([production-release-package-c87519e.md](../reports/production-release-package-c87519e.md)). **Superseded — do not deploy**: web sign-out does not revoke the session at the API (WEB-1), and colliding numbering rules answer 500 (NUM-1) |
 | Approved application release | `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke 29/29, browser 8/8 ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)). Its application code is published as `4e8e1ca`; no image was ever published from `27a8daa` itself |
 | Superseded image line | `8cb4c14454e2e0e3b4508ef4e6eba76d3e1b0051` (`8cb4c14`) | Published by run `36722457128`. **Superseded — do not deploy**: its antivirus image (`sha256:02298beca666…`) is the old **root-starting** scanner |
-| **Production release** | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) | `27a8daa`'s application code plus the non-root antivirus image. Published by run `36819091004`. **Deploy this, by the digests above** ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
+| **Production release** | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) | `27a8daa`'s application code plus the non-root antivirus image. Published to GHCR by run `36819091004`. **Approved, but GHCR-only: it cannot be deployed from ECR** (note above) ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
 
 | Scanner | Value |
 | --- | --- |
-| **Image to deploy** | `ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc`: **ClamAV 1.5.4, c-icap 0.5.10**, runs as **UID/GID 101:102** (`clamav`) with no UID 0 process (§9.2) |
+| **Image to deploy** | `munaxa-docs/antivirus@sha256:<digest>` from the selected release's ECR release package. It must report **ClamAV 1.5.4 and c-icap 0.5.10**, or record the difference, and run as **UID/GID 101:102** (`clamav`) with no UID 0 process (§9.2). The `4e8e1ca` scanner (`ghcr.io/…@sha256:9920e034…`, historical) was the validated one |
 | **Do not use** | The root-starting scanner images: `…munaxa-docs-antivirus@sha256:02298beca666d7db346de82e42cab2f692faa4ed417fa7259e3b1ff3999e33d4` (`8cb4c14`) and the staging-gate build `munaxa-antivirus:7442853` (local image `sha256:805574b9…`), which validated the scanning behaviour but started as root |
 | Its sources | `infra/antivirus/` at `4e8e1ca`; scanning configuration unchanged since `7442853`, process user changed by #118 |
 | Version pinning | **None.** The Dockerfile is `FROM ubuntu:24.04` with unpinned `apt-get install clamav-daemon clamav-freshclam c-icap …`. A rebuild can therefore carry different ClamAV or c-icap versions |
@@ -396,8 +411,9 @@ Use `infra/antivirus/`. Its image is validated in the RC gate, and its `c-icap.c
 carry the four fail-closed properties marked `REQUIRED`.
 
 Deploy the **published release image by digest**:
-`ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc`
-(ClamAV 1.5.4 / c-icap 0.5.10, release `4e8e1ca`). **Do not use the old root-starting scanner**
+`229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:<digest>`, the
+digest from the selected release's ECR release package (§1). It must report ClamAV 1.5.4 and
+c-icap 0.5.10, as the validated `4e8e1ca` scanner did, or the difference must be recorded. **Do not use the old root-starting scanner**
 (`sha256:02298beca666…` from `8cb4c14`, or a `7442853` build). A rebuild is a new artifact: the
 packages are unpinned (§1), so record `clamd --version` and `c-icap -V` and pass §9.6 and
 `infra/antivirus/verify-container.sh` before using it.
@@ -422,7 +438,7 @@ packages are unpinned (§1), so record `clamd --version` and `c-icap -V` and pas
 docker run -d --name munaxa-antivirus --restart unless-stopped \
   -p <private-address>:1344:1344 \
   -v munaxa-antivirus-signatures:/var/lib/clamav \
-  ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc
+  229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:<digest>
 ```
 
 `<private-address>`, the orchestration and the restart policy are **[PRODUCTION-SPECIFIC]**. Inside
@@ -502,16 +518,18 @@ digest (revision label, non-root, no credentials, the API's query engine, the we
 and for the scanner its versions, `verify-container.sh` and `probe.mjs`), pushes them to Amazon ECR
 (`munaxa-docs/{api,web,antivirus}`) through GitHub OIDC, never as `latest`, and confirms each
 digest is in ECR. Production pulls with the ECS execution roles. No registry credential exists.
-Before the registry change, release `4e8e1ca` was published to GHCR by run `36819091004`; its three digests are in §1 and in
-[production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md). Do not
-rebuild them for production: a rebuild is a new artifact.
+Before the registry change, release `4e8e1ca` was published to GHCR by run `36819091004`
+([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)).
+Those GHCR images are historical and are never deployed. A release reaches Production only from
+ECR, by the digests in its own release package. A rebuild is a new artifact.
 
 **Deploy by digest.**
 
 - Record the three `image@sha256:…` references in the change record.
 - Deploy with `image@sha256:…`, never with a mutable tag.
 - Before go-live, verify that the API, web and scanner images carry the label
-  `org.opencontainers.image.revision=4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`.
+  `org.opencontainers.image.revision=<release commit>` (the commit named by the release package).
+- Before go-live, run the runtime pull verification (§10.1) and record its result.
 - Before go-live, verify that the published web image serves `/branding/docs/favicon/favicon-32.png`
   (the CI step "The web image serves the brand artwork its pages reference").
 - Keep the previous production images, by digest, available for rollback (§20).
@@ -534,6 +552,37 @@ Run the API with the environment in §5.1 and the web with §5.2. Both images ru
 `node` user and support a read-only root filesystem (only `STORAGE_DRIVER=LOCAL` writes, to its mounted
 volume). The API image's `HEALTHCHECK` probes `/api/health/live`. Probe the web container from the
 orchestrator (§18).
+
+### 10.1 Runtime image-pull verification (ECR)
+
+**Not yet run.** No ECS task has pulled any image from ECR. IAM simulation and the live policies
+show that the pull is authorised, but a real pull has not been tested. Prove it before go-live,
+with an explicitly approved, short-lived test:
+
+1. **Authorisation.** Each ECS execution role may pull only its own image:
+   - web → `munaxa-docs/web`;
+   - api and ops-provision → `munaxa-docs/api`;
+   - scanner → `munaxa-docs/antivirus`.
+
+   Re-check it read-only with the simulator command in `infra/terraform/README.md` §5, which
+   passes the `aws:RequestedRegion` context.
+2. **Pull path.** Tasks run in the public subnets with no NAT. The ECR API is reached over the
+   internet, and image layers through the S3 gateway endpoint. The endpoint allows only
+   `s3:GetObject` on `arn:aws:s3:::prod-eu-central-1-starport-layer-bucket/*`, plus the document
+   bucket.
+3. **Test.** Start one task per image, by digest, with its own execution role and its intended
+   security group, subnets and log group. Record each task's `pullStartedAt`, `pullStoppedAt`, the
+   image digest it reports and its first log lines. Then stop the task and remove everything the
+   test created.
+4. **Pass criteria.**
+   - All three tasks reach `RUNNING`, or for the scanner, start its entrypoint.
+   - The reported digests equal the release package's.
+   - There are no `CannotPullContainerError` or `AccessDenied` events in CloudTrail.
+
+**The GHCR pull identity stays until this passes.** The GitHub secrets
+`DOCS_PRODUCTION_PULL_USER` and `DOCS_PRODUCTION_PULL_TOKEN`, and the GitHub token behind them,
+are not used by the ECR path. Remove or revoke them only after this verification has passed and
+the removal has been explicitly authorised.
 
 ## 11. Worker deployment
 
