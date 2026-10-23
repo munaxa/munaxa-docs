@@ -107,7 +107,8 @@ for attempt in $(seq 1 60); do
 done
 pg() { docker exec -i smoke-postgres psql -h 127.0.0.1 -U edms_owner -d postgres -v ON_ERROR_STOP=1 -q "$@"; }
 pg -c 'CREATE DATABASE smoke_edms_acme OWNER edms_owner' \
-  -c 'CREATE DATABASE smoke_edms_docs OWNER edms_owner'
+  -c 'CREATE DATABASE smoke_edms_docs OWNER edms_owner' \
+  -c 'CREATE DATABASE smoke_edms_pending OWNER edms_owner'
 pg <infra/sql/cluster/01-roles.sql
 
 export MC_HOST_smoke="http://smoke:$store_password@127.0.0.1:9000"
@@ -121,12 +122,16 @@ unset MC_HOST_smoke
 
 acme_id=$(cat /proc/sys/kernel/random/uuid)
 docs_id=$(cat /proc/sys/kernel/random/uuid)
+# `pending` is in the catalogue and migrated but never provisioned: the state a tenant is in between
+# the operator's migration and its first administrator (go-live §6). A7 signs in to it.
+pending_id=$(cat /proc/sys/kernel/random/uuid)
 catalogue=$(cat <<JSON
 {"defaults":{"databaseUrlTemplate":"postgresql://edms_app@127.0.0.1:5432/smoke_edms_{slug}",
 "migrationUrlTemplate":"postgresql://edms_owner@127.0.0.1:5432/smoke_edms_{slug}",
 "storage":{"driver":"S3","container":"munaxa-docs","region":"us-east-1","prefixTemplate":"{slug}"},
 "search":{"indexTemplate":"{slug}"}},
-"tenants":[{"id":"$acme_id","slug":"acme","name":"Acme"},{"id":"$docs_id","slug":"docs","name":"Decoy"}]}
+"tenants":[{"id":"$acme_id","slug":"acme","name":"Acme"},{"id":"$docs_id","slug":"docs","name":"Decoy"},
+{"id":"$pending_id","slug":"pending","name":"Pending"}]}
 JSON
 )
 
@@ -184,18 +189,25 @@ AUDIT_CHECKPOINT_SECRET=$(secret)
 MFA_TOTP_SEALING_KEY=$(secret)
 ENV
 
-echo "== First administrator (the image's provision.js)"
+echo "== First administrators (the image's provision.js): acme, and the decoy tenant docs"
 # Single-tenant form, as the Production ops-provision task runs it (finding D-1: provision.js cannot
 # run beside a catalogue): the same configuration without TENANT_CATALOGUE, the ON_PREMISE profile,
-# and acme's catalogue id, so the API finds the tenant it provisions. Prefix and index derive from
-# the slug either way.
+# the tenant's own database, and its catalogue id, so the API finds the tenant it provisions.
+# Prefix and index derive from the slug either way. The decoy gets its own administrator, as in the
+# c87519e and 27a8daa release smoke runs, so A4 asks a real second tenant.
 provision_env="$work/provision.env"
 grep -v -E '^(TENANT_CATALOGUE|DEPLOYMENT_PROFILE)=' "$api_env" >"$provision_env"
-docker run --rm --network host --env-file "$provision_env" \
-  -e DEPLOYMENT_PROFILE=ON_PREMISE -e QUEUE_CONSUMERS_ENABLED=false \
-  -e TENANT_ID="$acme_id" -e TENANT_SLUG=acme -e TENANT_NAME=Acme \
-  -e ADMIN_EMAIL="$admin_email" -e ADMIN_NAME="Smoke Admin" -e ADMIN_PASSWORD="$admin_password" \
-  --entrypoint node "$API_IMAGE" apps/api/dist/provision.js
+provision() {
+  local id="$1" slug="$2" name="$3" email="$4" password="$5"
+  docker run --rm --network host --env-file "$provision_env" \
+    -e DEPLOYMENT_PROFILE=ON_PREMISE -e QUEUE_CONSUMERS_ENABLED=false \
+    -e DATABASE_URL="postgresql://edms_app@127.0.0.1:5432/smoke_edms_$slug" \
+    -e TENANT_ID="$id" -e TENANT_SLUG="$slug" -e TENANT_NAME="$name" \
+    -e ADMIN_EMAIL="$email" -e ADMIN_NAME="Smoke Admin" -e ADMIN_PASSWORD="$password" \
+    --entrypoint node "$API_IMAGE" apps/api/dist/provision.js
+}
+provision "$acme_id" acme Acme "$admin_email" "$admin_password"
+provision "$docs_id" docs Decoy "decoy-admin@docs.test" "$(secret)"
 
 echo "== API and web (release images)"
 docker run -d --name smoke-api --network host --env-file "$api_env" "$API_IMAGE" >/dev/null
@@ -209,6 +221,6 @@ done
 
 echo "== Smoke"
 SMOKE_API_URL=http://127.0.0.1:3001 SMOKE_WEB_URL=http://127.0.0.1:3000 \
-  SMOKE_TENANT=acme SMOKE_DECOY_TENANT=docs \
+  SMOKE_TENANT=acme SMOKE_DECOY_TENANT=docs SMOKE_UNPROVISIONED_TENANT=pending \
   SMOKE_ADMIN_EMAIL="$admin_email" SMOKE_ADMIN_PASSWORD="$admin_password" \
   node scripts/release-smoke/smoke.mjs

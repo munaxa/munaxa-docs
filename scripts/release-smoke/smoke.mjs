@@ -8,7 +8,8 @@
 //   SMOKE_API_URL        e.g. http://127.0.0.1:3001
 //   SMOKE_WEB_URL        e.g. http://127.0.0.1:3000
 //   SMOKE_TENANT         the tenant the administrator belongs to (acme)
-//   SMOKE_DECOY_TENANT   a second tenant in the catalogue, slugged `docs` (RC-1)
+//   SMOKE_DECOY_TENANT   a second, provisioned tenant in the catalogue, slugged `docs` (RC-1)
+//   SMOKE_UNPROVISIONED_TENANT  a catalogue tenant that is migrated but has no administrator yet
 //   SMOKE_ADMIN_EMAIL / SMOKE_ADMIN_PASSWORD   the provisioned administrator
 //
 // Every check is recorded. A failed check marked `blocking` makes the run exit 1; the summary is
@@ -29,6 +30,7 @@ const API = env('SMOKE_API_URL');
 const WEB = env('SMOKE_WEB_URL');
 const TENANT = env('SMOKE_TENANT');
 const DECOY = env('SMOKE_DECOY_TENANT');
+const UNPROVISIONED = env('SMOKE_UNPROVISIONED_TENANT');
 const ADMIN = { email: env('SMOKE_ADMIN_EMAIL'), password: env('SMOKE_ADMIN_PASSWORD') };
 
 /** The EICAR test file, assembled at runtime so no file in this repository is itself detected. */
@@ -55,6 +57,14 @@ async function check(id, title, blocking, body) {
   const mark = outcome.pass ? 'PASS' : blocking ? 'FAIL (blocking)' : 'FAIL';
   process.stdout.write(`${mark.padEnd(16)} ${id.padEnd(6)} ${title}  ${outcome.evidence}\n`);
   return outcome.pass;
+}
+
+/** Throws when an earlier check this one depends on did not produce its result. */
+function needs(value, what) {
+  if (value === undefined || value === null) {
+    throw new Error(`not run: ${what} failed earlier`);
+  }
+  return value;
 }
 
 function expectStatus(reply, ...wanted) {
@@ -91,13 +101,19 @@ function signIn(tenant) {
   return call('POST', '/api/v1/auth/login', undefined, { ...ADMIN, tenant });
 }
 
-/** Open an upload, PUT the bytes to the presigned target, complete it — as the web client does. */
+/**
+ * Open an upload, PUT the bytes to the presigned target, complete it — as the web client does
+ * (apps/web/src/features/documents/upload.ts), including the SHA-256 it announces: on S3 the digest
+ * is signed into the presigned PUT, so the store checks the bytes against it and the API can read
+ * it back at completion.
+ */
 async function upload(token, bytes, filename, mimeType) {
   const opened = await call('POST', '/api/v1/uploads', token, {
     filename,
     mimeType,
     sizeBytes: bytes.length,
     magicBytes: bytes.subarray(0, 64).toString('base64'),
+    checksumSha256: sha256(bytes),
   });
   expectStatus(opened, 201);
   if (opened.body.alreadyStored) {
@@ -161,9 +177,11 @@ await check('A2', 'GET /auth/me answers for the signed-in administrator', true, 
   return reply.body?.email === ADMIN.email ? 'right user' : false;
 });
 
-await check('A3', 'A blank organisation resolves no tenant (RC-1)', true, async () =>
-  expectStatus(await signIn(''), 400, 401),
-);
+await check('A3', 'A blank organisation is refused and issues no token (RC-1)', true, async () => {
+  const reply = await signIn('');
+  const status = expectStatus(reply, 400, 401, 422);
+  return reply.body?.accessToken === undefined ? `${status}, no token` : false;
+});
 
 await check('A4', 'The same credentials do not open the decoy tenant `docs`', true, async () =>
   expectStatus(await signIn(DECOY), 401),
@@ -175,6 +193,15 @@ await check('A5', 'Refresh without a tenant is refused (RC-4)', true, async () =
     400,
     401,
   ),
+);
+
+await check(
+  'A7',
+  'A catalogue tenant with no administrator yet answers 401 to a sign-in (finding SMK-1)',
+  // Non-blocking until the owner decides: the first CI run found 500 here, because the rejected
+  // sign-in's audit event references a tenant row that provisioning has not created yet.
+  false,
+  async () => expectStatus(await signIn(UNPROVISIONED), 401),
 );
 
 // --- Configuration the document steps need (an empty tenant has none) -------------------------
@@ -249,7 +276,7 @@ await check('S2', 'File the clean upload as a document', true, async () => {
     folderId: config.folderId,
     documentTypeId: config.documentTypeId,
     title: `Smoke ${run}`,
-    fileObjectId: cleanUpload.fileObjectId,
+    fileObjectId: needs(cleanUpload?.fileObjectId, 'S1'),
     filename: `smoke-${run}.pdf`,
     acknowledgeDuplicate: true,
   });
@@ -259,7 +286,11 @@ await check('S2', 'File the clean upload as a document', true, async () => {
 });
 
 await check('S3', 'Download: the stored bytes hash to the uploaded SHA-256', true, async () => {
-  const link = await call('POST', `/api/v1/documents/${documentId}/content`, session.accessToken);
+  const link = await call(
+    'POST',
+    `/api/v1/documents/${needs(documentId, 'S2')}/content`,
+    session.accessToken,
+  );
   expectStatus(link, 200, 201);
   const fetched = await fetch(link.body.url);
   if (!fetched.ok) {
@@ -292,7 +323,7 @@ await check('V2', 'The infected file cannot be filed (409 CONTENT_NOT_SCANNED)',
     folderId: config.folderId,
     documentTypeId: config.documentTypeId,
     title: `Infected ${run}`,
-    fileObjectId: infected.fileObjectId,
+    fileObjectId: needs(infected?.fileObjectId, 'V1'),
     filename: 'eicar.txt',
     acknowledgeDuplicate: true,
   });
