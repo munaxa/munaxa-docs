@@ -103,6 +103,14 @@ RUN apt-get update \
  && apt-get install --yes --no-install-recommends dumb-init ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# Nothing in these images changes user: they run as `node` from the first process and carry no
+# sudo. The base image's setuid and setgid programs (mount, umount, su, passwd, chsh, chfn,
+# gpasswd, newgrp, chage, expiry, unix_chkpwd) are therefore only a way for code running as
+# `node` to reach root, and mount's open util-linux CVEs are exactly that. Clear the bits, and
+# fail the build if any remain.
+RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} + \
+ && test -z "$(find / -xdev -type f -perm /6000)"
+
 ENV NODE_ENV=production
 # Node's own default heap is a fraction of the container's memory limit and it does not read the
 # cgroup, so a container with a 1 GB limit runs a garbage collector sized for the host. Stated here
