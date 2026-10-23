@@ -97,14 +97,18 @@ MINIO_ROOT_USER=smoke MINIO_ROOT_PASSWORD="$store_password" nohup "$OBJECT_STORE
   "$work/store" --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 >"$work/minio.log" 2>&1 &
 pids+=($!)
 
-for _ in $(seq 1 60); do
-  docker exec smoke-postgres pg_isready -U edms_owner -d postgres >/dev/null 2>&1 && break
+# Over TCP, not the socket: the image's entrypoint first runs a socket-only server to initialise
+# the cluster and then restarts it, so a socket check can pass against the temporary server and the
+# next command land in the restart. Only the final server listens on 127.0.0.1.
+for attempt in $(seq 1 60); do
+  docker exec smoke-postgres pg_isready -h 127.0.0.1 -U edms_owner -d postgres >/dev/null 2>&1 && break
+  [ "$attempt" -lt 60 ] || { echo "FAIL - PostgreSQL never accepted TCP connections"; exit 1; }
   sleep 1
 done
-docker exec -i smoke-postgres psql -U edms_owner -d postgres -v ON_ERROR_STOP=1 -q \
-  -c 'CREATE DATABASE smoke_edms_acme OWNER edms_owner' \
+pg() { docker exec -i smoke-postgres psql -h 127.0.0.1 -U edms_owner -d postgres -v ON_ERROR_STOP=1 -q "$@"; }
+pg -c 'CREATE DATABASE smoke_edms_acme OWNER edms_owner' \
   -c 'CREATE DATABASE smoke_edms_docs OWNER edms_owner'
-docker exec -i smoke-postgres psql -U edms_owner -d postgres -v ON_ERROR_STOP=1 -q <infra/sql/cluster/01-roles.sql
+pg <infra/sql/cluster/01-roles.sql
 
 export MC_HOST_smoke="http://smoke:$store_password@127.0.0.1:9000"
 for attempt in $(seq 1 40); do
