@@ -40,14 +40,19 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 >   `sha256:1278da65948893cf62c799c19cf003296154f84489192af99f627b3dec827e22`. Its application
 >   code is `041e827` plus the Docs v2 web design (#137). CI was green on each of those
 >   commits, but no release package and no staging smoke cover it. Its antivirus image has two
->   Ubuntu fixes pending (#143). **It is not the approved release.**
+>   Ubuntu fixes pending (#143). **It is not a selected release.**
+> - `041e827` was the release selected for the hosted environment
+>   ([package](../reports/production-release-package-041e827.md)). `4e8e1ca` is superseded for
+>   it: it predates ECS task-role S3 credentials and the pool-size fix, so it cannot run the
+>   ADR-0024 architecture. The `4e8e1ca` sections of this runbook remain the validated
+>   procedure; apply them to the selected release's commit.
 >
 > Until a release is selected and has an ECR release package, every image reference below is a
 > placeholder for that package's ECR digest.
 
 | Item | Value |
 | --- | --- |
-| Release to deploy | **Not selected for ECR yet** (note above). The last approved release is **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`), published to GHCR only, by run `36819091004` ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)). Where this runbook names `4e8e1ca`, read the selected release's commit once one has an ECR release package |
+| Release to deploy | **Not selected for ECR yet** (note above). The last release selected for the hosted environment is `041e827` ([package](../reports/production-release-package-041e827.md)), and the last fully staged one is `4e8e1ca` ([package](../reports/production-release-package-4e8e1ca.md)), superseded for the hosted environment. Both are GHCR-only. Where this runbook names `4e8e1ca`, read the selected release's commit once one has an ECR release package |
 | Images | **ECR by digest, from the release package of the selected release** (`munaxa-docs/api`, `munaxa-docs/web`, `munaxa-docs/antivirus` in `229251310592`, eu-central-1), each labelled `org.opencontainers.image.revision=<release commit>`. Not yet selected (see the note above). `4e8e1ca`'s GHCR digests are historical: [production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md) |
 | Application code | Identical to the approved application release **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`): `4e8e1ca` adds only the non-root antivirus image and documentation |
 | Validated by | CI run 554 on `27a8daa`, 9/9 jobs green (lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner, a real object store and two tenant databases; five end-to-end shards; visual regression; three container images; product isolation), plus the local gate and the staging smoke in [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md) |
@@ -75,7 +80,7 @@ images were built from. Never use a later documentation commit's SHA as the rele
 | Superseded release candidate | `c87519eeade4392ab656d9bfef5ff694b9c4c594` (`c87519e`) | `f5d5bb2` plus `6f135e5` and `14311c2`, CI run 552, staging smoke 27/27 ([production-release-package-c87519e.md](../reports/production-release-package-c87519e.md)). **Superseded — do not deploy**: web sign-out does not revoke the session at the API (WEB-1), and colliding numbering rules answer 500 (NUM-1) |
 | Approved application release | `27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5` (`27a8daa`) | `c87519e` plus `efcb955` (WEB-1) and `27a8daa` (NUM-1), CI run 554, staging smoke 29/29, browser 8/8 ([production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md)). Its application code is published as `4e8e1ca`; no image was ever published from `27a8daa` itself |
 | Superseded image line | `8cb4c14454e2e0e3b4508ef4e6eba76d3e1b0051` (`8cb4c14`) | Published by run `36722457128`. **Superseded — do not deploy**: its antivirus image (`sha256:02298beca666…`) is the old **root-starting** scanner |
-| **Production release** | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) | `27a8daa`'s application code plus the non-root antivirus image. Published to GHCR by run `36819091004`. **Approved, but GHCR-only: it cannot be deployed from ECR** (note above) ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
+| **Production release** | **`4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`** (`4e8e1ca`) | `27a8daa`'s application code plus the non-root antivirus image. Published to GHCR by run `36819091004`. **Superseded for the hosted (ECS) environment by `041e827`, and GHCR-only: it cannot be deployed from ECR** (note above) ([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) |
 
 | Scanner | Value |
 | --- | --- |
