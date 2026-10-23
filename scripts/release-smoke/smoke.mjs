@@ -375,6 +375,19 @@ await check(
 // --- Summary -----------------------------------------------------------------------------------
 
 const failedBlocking = results.filter((r) => !r.pass && r.blocking);
+const failedOther = results.filter((r) => !r.pass && !r.blocking);
+const passed = results.length - failedBlocking.length - failedOther.length;
+const verdict = [
+  `${String(passed)}/${String(results.length)} passed`,
+  failedBlocking.length > 0
+    ? `${String(failedBlocking.length)} blocking failed: NO-GO`
+    : 'every blocking check passed',
+  ...(failedOther.length > 0
+    ? [
+        `${String(failedOther.length)} non-blocking failed (${failedOther.map((r) => r.id).join(', ')})`,
+      ]
+    : []),
+].join('; ');
 const lines = [
   '### Release smoke',
   '',
@@ -385,9 +398,7 @@ const lines = [
       `| ${r.id} ${r.title} | ${r.pass ? 'PASS' : r.blocking ? '**FAIL (blocking)**' : 'FAIL'} | ${r.evidence.replaceAll('|', '\\|').slice(0, 200)} |`,
   ),
   '',
-  failedBlocking.length === 0
-    ? `**${String(results.length)}/${String(results.length)} passed.**`
-    : `**${String(failedBlocking.length)} blocking check(s) failed: NO-GO.**`,
+  `**${verdict}.**`,
 ];
 process.stdout.write(`\n${lines.join('\n')}\n`);
 if (process.env.GITHUB_STEP_SUMMARY) {
