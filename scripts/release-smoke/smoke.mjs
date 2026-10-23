@@ -304,13 +304,10 @@ await check('S3', 'Download: the stored bytes hash to the uploaded SHA-256', tru
 
 let infected;
 await check('V1', 'EICAR upload is scanned INFECTED', true, async () => {
-  const marker = Buffer.from(`\n${run}\n`);
-  infected = await upload(
-    session.accessToken,
-    Buffer.concat([EICAR, marker]),
-    'eicar.txt',
-    'text/plain',
-  );
+  // Exactly the 68-byte EICAR file. The EICAR standard allows only whitespace after the string, so
+  // appending a marker for uniqueness makes it, correctly, not a test virus (a run found exactly
+  // that). Each run's databases are fresh, so no earlier upload of these bytes exists to dedupe on.
+  infected = await upload(session.accessToken, EICAR, 'eicar.txt', 'text/plain');
   return infected.scanStatus === 'INFECTED'
     ? 'INFECTED'
     : (() => {
