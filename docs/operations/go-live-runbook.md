@@ -528,6 +528,9 @@ Before the registry change, release `4e8e1ca` was published to GHCR by run `3681
 Those GHCR images are historical and are never deployed. A release reaches Production only from
 ECR, by the digests in its own release package. A rebuild is a new artifact.
 
+The release steps, the release package and the staging smoke for the next release (Option A) are in
+[release-validation-option-a.md](./release-validation-option-a.md). None of them has run yet.
+
 **Deploy by digest.**
 
 - Record the three `image@sha256:…` references in the change record.
