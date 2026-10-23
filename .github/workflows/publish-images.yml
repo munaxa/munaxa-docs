@@ -481,3 +481,124 @@ jobs:
               --query 'imageDetails[0].imageDigest' --output text | grep -qx "$digest"
             echo "| $repo | \`$digest\` present in ECR |" >> "$GITHUB_STEP_SUMMARY"
           done
+
+  # The release smoke on the digests this run pushed (scripts/release-smoke/): a staging-shaped stack
+  # from the three images, as pulled from ECR, and the blocking checks of runbook §16 and the release
+  # package. A failure fails the run, and digests whose run failed are never deployed.
+  #
+  # Credentials: the publisher role is assumed only to pull the three digests. Before any image is
+  # run or any test executes, the job logs out of ECR, blanks the AWS credentials in the job
+  # environment and proves no AWS call succeeds. The stack itself has no AWS access: it runs on the
+  # runner with its own generated secrets, a local object store and a local mail capture.
+  release-smoke:
+    name: Release smoke on the published digests
+    needs: [source, pull-identity]
+    runs-on: ubuntu-latest
+    environment: image-release # the publisher trust requires this subject, even to pull
+    permissions:
+      contents: read
+      packages: read # pnpm install, for the repository's migration runner
+      id-token: write
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: Assume the image publisher role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.PUBLISHER_ROLE_ARN }}
+          role-session-name: gha-smoke-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Pull the three published digests
+        id: pull
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+          for name in api web antivirus; do
+            ref=$(head -1 "digests/$name")
+            printf '%s' "$ref" | grep -Eq "^$REGISTRY/munaxa-docs/$name@sha256:[0-9a-f]{64}$" \
+              || { echo "::error::digests/$name is not an ECR digest reference: $ref"; exit 1; }
+            docker pull "$ref"
+            echo "$name=$ref" >> "$GITHUB_OUTPUT"
+          done
+
+      # Nothing after this step can reach AWS: the registry login is removed and the role session's
+      # variables are overwritten for every later step.
+      - name: Drop the registry login and the AWS credentials
+        run: |
+          set -euo pipefail
+          docker logout "$REGISTRY" >/dev/null
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+            echo "$name=" >> "$GITHUB_ENV"
+          done
+
+      - name: Confirm no AWS credential remains
+        run: |
+          if aws sts get-caller-identity >/dev/null 2>&1; then
+            echo "::error::an AWS credential is still usable; refusing to run the smoke with it"; exit 1
+          fi
+          echo "no AWS credential is usable"
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '10.33.0'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@munaxa'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore the object store binaries
+        id: object-store-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/object-store/bin
+          key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
+
+      - uses: actions/setup-go@v6
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Build the object store from its pinned source
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        run: bash scripts/release-smoke/build-object-store.sh "$RUNNER_TEMP/object-store"
+
+      - name: Release smoke
+        run: |
+          set -euo pipefail
+          {
+            echo "### Release smoke inputs"
+            echo ""
+            echo "| image | digest pulled from ECR |"
+            echo "| --- | --- |"
+            echo "| api | \`$API_IMAGE\` |"
+            echo "| web | \`$WEB_IMAGE\` |"
+            echo "| antivirus | \`$AV_IMAGE\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/release-smoke/run.sh
+        env:
+          API_IMAGE: ${{ steps.pull.outputs.api }}
+          WEB_IMAGE: ${{ steps.pull.outputs.web }}
+          AV_IMAGE: ${{ steps.pull.outputs.antivirus }}
+          EXPECTED_REVISION: ${{ needs.source.outputs.sha }}
+          OBJECT_STORE_BIN: ${{ runner.temp }}/object-store/bin

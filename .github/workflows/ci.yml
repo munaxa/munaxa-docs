@@ -769,6 +769,114 @@ jobs:
           [ "$failed" = 0 ] || { echo "FAIL - the web image does not serve its brand artwork."; docker logs web-ci | tail -20; exit 1; }
           echo "OK - every branding asset the login page references is served."
 
+  release-smoke:
+    name: Release smoke · images from this commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    # The release smoke (scripts/release-smoke/), run here on images built from this commit so the
+    # harness is exercised on every change and is known to work before a release depends on it. The
+    # publishing workflow runs the same script against the digests it pushed to ECR; this job never
+    # touches a registry or AWS. It is not a required check: the release gate is the publishing run.
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Write the registry credential for the build secret
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          load: true
+          tags: munaxa-docs-api:smoke
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build the web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          load: true
+          tags: munaxa-docs-web:smoke
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build the antivirus image
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/antivirus
+          load: true
+          tags: munaxa-docs-antivirus:smoke
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      # Every Docker Hub pull of this job is done; the rest of the stack comes from public.ecr.aws.
+      - name: Drop the Docker Hub login
+        run: docker logout >/dev/null
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@munaxa'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same pinned object store as the integration job, from the same cache.
+      - name: Restore the object store binaries
+        id: object-store-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/object-store/bin
+          key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
+
+      - uses: actions/setup-go@v6
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Build the object store from its pinned source
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        run: bash scripts/release-smoke/build-object-store.sh "$RUNNER_TEMP/object-store"
+
+      - name: Release smoke
+        run: bash scripts/release-smoke/run.sh
+        env:
+          API_IMAGE: munaxa-docs-api:smoke
+          WEB_IMAGE: munaxa-docs-web:smoke
+          AV_IMAGE: munaxa-docs-antivirus:smoke
+          EXPECTED_REVISION: ${{ github.sha }}
+          OBJECT_STORE_BIN: ${{ runner.temp }}/object-store/bin
+
   boundaries:
     name: Product isolation
     runs-on: ubuntu-latest
