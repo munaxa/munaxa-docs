@@ -6,7 +6,12 @@
 # starts, into the `antivirus-signatures` volume, so a stale image never scans with stale signatures.
 FROM ubuntu:24.04
 
+# `upgrade` first: the base image only carries the updates published before it was built, so the
+# image takes Ubuntu's later security fixes for packages already in it (zlib and xz-utils on
+# 2026-10-23: CVE-2026-85091, USN-8945-1). It changes Ubuntu packages only, never ClamAV's or
+# c-icap's own version line.
 RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates clamav-daemon clamav-freshclam c-icap libc-icap-mod-virus-scan \
  && rm -rf /var/lib/apt/lists/*
