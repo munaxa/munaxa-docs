@@ -185,8 +185,15 @@ MFA_TOTP_SEALING_KEY=$(secret)
 ENV
 
 echo "== First administrator (the image's provision.js)"
-docker run --rm --network host --env-file "$api_env" \
-  -e QUEUE_CONSUMERS_ENABLED=false -e TENANT_SLUG=acme -e TENANT_NAME=Acme \
+# Single-tenant form, as the Production ops-provision task runs it (finding D-1: provision.js cannot
+# run beside a catalogue): the same configuration without TENANT_CATALOGUE, the ON_PREMISE profile,
+# and acme's catalogue id, so the API finds the tenant it provisions. Prefix and index derive from
+# the slug either way.
+provision_env="$work/provision.env"
+grep -v -E '^(TENANT_CATALOGUE|DEPLOYMENT_PROFILE)=' "$api_env" >"$provision_env"
+docker run --rm --network host --env-file "$provision_env" \
+  -e DEPLOYMENT_PROFILE=ON_PREMISE -e QUEUE_CONSUMERS_ENABLED=false \
+  -e TENANT_ID="$acme_id" -e TENANT_SLUG=acme -e TENANT_NAME=Acme \
   -e ADMIN_EMAIL="$admin_email" -e ADMIN_NAME="Smoke Admin" -e ADMIN_PASSWORD="$admin_password" \
   --entrypoint node "$API_IMAGE" apps/api/dist/provision.js
 
