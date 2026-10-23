@@ -4,6 +4,9 @@
 #   API_IMAGE  WEB_IMAGE  AV_IMAGE   image references (a digest in the publishing workflow)
 #   EXPECTED_REVISION                the commit the images must be labelled with
 #   OBJECT_STORE_BIN                 a directory holding the `minio` and `mc` binaries
+#   POSTGRES_IMAGE  REDIS_IMAGE      optional; default postgres:16-alpine and redis:7-alpine, the
+#                                    images the CI integration job uses (pre-pull them where a
+#                                    registry login is available, as ci.yml does)
 #
 # Run from the repository root of that commit, after `pnpm install --frozen-lockfile` (the tenant
 # migrations use the repository's own runner, scripts/migrate-tenants.mjs).
@@ -45,6 +48,22 @@ trap cleanup EXIT
 
 secret() { openssl rand -hex 32; }
 
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
+REDIS_IMAGE="${REDIS_IMAGE:-redis:7-alpine}"
+
+# Pulls with a few retries: anonymous registry pulls from shared runners are rate limited.
+pull() {
+  local ref="$1"
+  docker image inspect "$ref" >/dev/null 2>&1 && return 0
+  for attempt in 1 2 3 4 5; do
+    docker pull -q "$ref" >/dev/null && return 0
+    echo "pull of $ref failed (attempt $attempt); retrying"
+    sleep $((attempt * 10))
+  done
+  echo "FAIL - could not pull $ref"
+  return 1
+}
+
 # --- Image properties, before anything runs -----------------------------------------------------
 
 echo "== Image checks"
@@ -64,11 +83,13 @@ done
 # --- Dependencies -------------------------------------------------------------------------------
 
 echo "== PostgreSQL, Redis, object store"
+pull "$POSTGRES_IMAGE"
+pull "$REDIS_IMAGE"
 docker run -d --name smoke-postgres --network host \
   -e POSTGRES_USER=edms_owner -e POSTGRES_PASSWORD="$(secret)" -e POSTGRES_HOST_AUTH_METHOD=trust \
-  -e POSTGRES_DB=postgres public.ecr.aws/docker/library/postgres:16-alpine >/dev/null
+  -e POSTGRES_DB=postgres "$POSTGRES_IMAGE" >/dev/null
 redis_password="$(secret)"
-docker run -d --name smoke-redis --network host public.ecr.aws/docker/library/redis:7-alpine \
+docker run -d --name smoke-redis --network host "$REDIS_IMAGE" \
   redis-server --bind 127.0.0.1 --port 6379 --requirepass "$redis_password" --save '' >/dev/null
 
 store_password="$(secret)"

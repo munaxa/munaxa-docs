@@ -830,9 +830,14 @@ jobs:
           tags: munaxa-docs-antivirus:smoke
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
-      # Every Docker Hub pull of this job is done; the rest of the stack comes from public.ecr.aws.
-      - name: Drop the Docker Hub login
-        run: docker logout >/dev/null
+      # PostgreSQL and Redis are the integration job's images, pulled while the optional Docker Hub
+      # login is active; after this, nothing in the job pulls from Docker Hub.
+      - name: Pull the smoke stack's database and cache images
+        run: |
+          set -euo pipefail
+          docker pull -q postgres:16-alpine
+          docker pull -q redis:7-alpine
+          docker logout >/dev/null
 
       - uses: pnpm/action-setup@v6
         with:
