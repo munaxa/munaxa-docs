@@ -67,9 +67,15 @@ function needs(value, what) {
   return value;
 }
 
+/** A reply body as evidence, with any token or secret in it replaced: evidence reaches the log. */
+const redacted = (body) =>
+  JSON.stringify(body, (key, value) =>
+    /token|secret|password/i.test(key) && value !== undefined ? '[redacted]' : value,
+  );
+
 function expectStatus(reply, ...wanted) {
   if (!wanted.includes(reply.status)) {
-    const detail = reply.body === null ? '' : ` ${JSON.stringify(reply.body).slice(0, 300)}`;
+    const detail = reply.body === null ? '' : ` ${redacted(reply.body).slice(0, 300)}`;
     throw new Error(`answered ${String(reply.status)}, expected ${wanted.join(' or ')}.${detail}`);
   }
   return `HTTP ${String(reply.status)}`;
@@ -92,7 +98,7 @@ async function call(method, path, token, body) {
   } catch {
     parsed = null;
   }
-  return { status: response.status, body: parsed };
+  return { status: response.status, headers: response.headers, body: parsed };
 }
 
 const items = (body) => (Array.isArray(body) ? body : (body?.items ?? body?.data ?? []));
@@ -197,11 +203,28 @@ await check('A5', 'Refresh without a tenant is refused (RC-4)', true, async () =
 
 await check(
   'A7',
-  'A catalogue tenant with no administrator yet answers 401 to a sign-in (finding SMK-1)',
-  // Non-blocking until the owner decides: the first CI run found 500 here, because the rejected
-  // sign-in's audit event references a tenant row that provisioning has not created yet.
-  false,
-  async () => expectStatus(await signIn(UNPROVISIONED), 401),
+  'A catalogue tenant with no administrator yet refuses sign-in: 401, no token, no 500 (SMK-1)',
+  // Blocking since #148: before it, the rejected sign-in's audit event referenced a tenant row
+  // that provisioning had not created yet, and the request answered 500. A tenant in that window is
+  // refused exactly as an unknown tenant is.
+  true,
+  async () => {
+    const reply = await signIn(UNPROVISIONED);
+    if (reply.status >= 500) {
+      throw new Error(`answered ${String(reply.status)}: a server error, not a refusal`);
+    }
+    const status = expectStatus(reply, 401);
+    if (reply.body?.code !== 'UNAUTHENTICATED') {
+      throw new Error(`code ${String(reply.body?.code)}, expected UNAUTHENTICATED`);
+    }
+    if (reply.body?.accessToken !== undefined || reply.body?.refreshToken !== undefined) {
+      throw new Error('the refusal carried a token');
+    }
+    if (reply.headers.get('set-cookie') !== null) {
+      throw new Error('the refusal set a cookie');
+    }
+    return `${status} UNAUTHENTICATED, no token, no cookie`;
+  },
 );
 
 // --- Configuration the document steps need (an empty tenant has none) -------------------------
