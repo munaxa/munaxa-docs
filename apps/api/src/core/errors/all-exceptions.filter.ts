@@ -204,7 +204,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 export function malformedIdentifierCode(
   exception: unknown,
-  params: Readonly<Record<string, string>> | undefined,
+  params: Readonly<Record<string, unknown>> | undefined,
 ): typeof ErrorCode.NOT_FOUND | typeof ErrorCode.VALIDATION_FAILED | null {
   if (
     !(exception instanceof Error) ||
@@ -214,7 +214,8 @@ export function malformedIdentifierCode(
     return null;
   }
   const malformedInPath = Object.entries(params ?? {}).some(
-    ([name, value]) => (name === 'id' || name.endsWith('Id')) && !UUID.test(value),
+    ([name, value]) =>
+      (name === 'id' || name.endsWith('Id')) && (typeof value !== 'string' || !UUID.test(value)),
   );
   return malformedInPath ? ErrorCode.NOT_FOUND : ErrorCode.VALIDATION_FAILED;
 }
