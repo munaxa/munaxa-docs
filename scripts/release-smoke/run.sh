@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Release smoke: starts a staging-shaped stack from three image references and runs smoke.mjs.
 #
-#   API_IMAGE  WEB_IMAGE  AV_IMAGE   image references (a digest in the publishing workflow)
+#   API_IMAGE  WEB_IMAGE  AV_IMAGE   image references (in the publishing workflow, local tags of
+#                                    the ECR digests, checked against them before this runs)
 #   EXPECTED_REVISION                the commit the images must be labelled with
 #   OBJECT_STORE_BIN                 a directory holding the `minio` and `mc` binaries
 #   POSTGRES_IMAGE  REDIS_IMAGE      optional; default postgres:16-alpine and redis:7-alpine, the
