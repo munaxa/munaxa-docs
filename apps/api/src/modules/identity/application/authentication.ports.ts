@@ -91,6 +91,16 @@ export interface RefreshTokenFactory {
  */
 export interface TenantDirectory {
   findIdBySlug(slug: string): Promise<TenantId | null>;
+
+  /**
+   * Whether the tenant's own database holds its `tenant` row — read inside the tenant transaction.
+   *
+   * The registry knows a tenant from the moment it is in the catalogue, but its row is written only
+   * when it is provisioned, and every audit record references that row. Between the two (migrated,
+   * no administrator yet: go-live §6) the tenant has nobody who can sign in and nothing an audit
+   * record could belong to, so authentication treats it exactly as an unknown tenant (SMK-1).
+   */
+  isProvisioned(tenantId: TenantId): Promise<boolean>;
 }
 
 /** What a successful sign-in or refresh hands back. */
