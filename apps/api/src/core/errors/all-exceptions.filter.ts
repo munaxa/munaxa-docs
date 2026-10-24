@@ -73,7 +73,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const correlationId = correlationIdOf(request);
     const locale = negotiateLocale(request.headers['accept-language']);
 
-    const problem = this.toProblem(exception, correlationId, locale);
+    const problem = this.toProblem(exception, correlationId, locale, request.params);
 
     if (problem.status >= SERVER_ERROR_THRESHOLD) {
       this.logger.error('Unhandled request failure', {
@@ -98,9 +98,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
     exception: unknown,
     correlationId: string,
     locale: ReturnType<typeof negotiateLocale>,
+    params: Request['params'] | undefined,
   ): ProblemDetails {
     if (isDomainError(exception)) {
       return this.fromDomainError(exception, correlationId, locale);
+    }
+    const malformed = malformedIdentifierCode(exception, params);
+    if (malformed !== null) {
+      return this.fromDomainError(
+        new DomainError(malformed, 'A malformed identifier'),
+        correlationId,
+        locale,
+      );
     }
     const clientStatus = bodyReaderRefusal(exception);
     if (clientStatus !== null) {
@@ -164,6 +173,51 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
     return problem;
   }
+}
+
+/** The canonical text form of a UUID: the only form the database's `uuid` columns are given. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The refusal a malformed identifier becomes, or null for any other failure (finding D-10).
+ *
+ * Route parameters and body references are handed to the database as given, and a value that is not
+ * a UUID makes Prisma raise `P2023` ("Inconsistent column data: Error creating UUID") from the
+ * query. That reached this filter as an unrecognised error and answered **500**, for nothing more
+ * than `/documents/undefined`: a client mistake counted against the server-error rate 17 §9 alerts
+ * on. Nothing leaked; the answer was simply wrong.
+ *
+ * The answer is the one the same reference gets when it is well formed but names nothing, so a
+ * malformed value tells the caller no more than an unknown one:
+ *
+ * - **in the path** (`id`, or a parameter named `…Id`), `404 NOT_FOUND`, as for an unknown id — the
+ *   path names a resource, and no resource has that name;
+ * - **anywhere else** (a body or query reference), `422 VALIDATION_FAILED`, as the services answer an
+ *   unknown reference there ("That folder does not exist.").
+ *
+ * Not 400: this API answers 400 only when the body cannot be read at all; a request it can read
+ * but must refuse is 422.
+ *
+ * Recognised by shape, as the repositories recognise `P2002`, and only for the UUID conversion: the
+ * columns are `uuid`, so the database cannot hold a value that fails it, and the value must have
+ * come from the request. Every other `P2023` stays a server error.
+ */
+export function malformedIdentifierCode(
+  exception: unknown,
+  params: Readonly<Record<string, unknown>> | undefined,
+): typeof ErrorCode.NOT_FOUND | typeof ErrorCode.VALIDATION_FAILED | null {
+  if (
+    !(exception instanceof Error) ||
+    (exception as Error & { code?: unknown }).code !== 'P2023' ||
+    !exception.message.includes('Error creating UUID')
+  ) {
+    return null;
+  }
+  const malformedInPath = Object.entries(params ?? {}).some(
+    ([name, value]) =>
+      (name === 'id' || name.endsWith('Id')) && (typeof value !== 'string' || !UUID.test(value)),
+  );
+  return malformedInPath ? ErrorCode.NOT_FOUND : ErrorCode.VALIDATION_FAILED;
 }
 
 /**
