@@ -12,6 +12,7 @@ import {
 } from '@edms/domain';
 
 import type { AuditActor, AuditEntry, AuditWriter } from '../../../core/audit/audit-writer.port';
+import { UnauthenticatedError } from '../../../core/errors/application-errors';
 import type { Logger } from '../../../core/observability/logger';
 import type { UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { FakeClock } from '../../../testing/fake-ports';
@@ -107,7 +108,10 @@ describe('DefaultAuthenticationService', () => {
       revokeAllForUser: vi.fn().mockResolvedValue(undefined),
     };
 
-    tenants = { findIdBySlug: vi.fn().mockResolvedValue(TENANT) };
+    tenants = {
+      findIdBySlug: vi.fn().mockResolvedValue(TENANT),
+      isProvisioned: vi.fn().mockResolvedValue(true),
+    };
 
     passwords = {
       hash: vi.fn().mockResolvedValue('new-hash'),
@@ -260,6 +264,44 @@ describe('DefaultAuthenticationService', () => {
       await service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' });
 
       expect(credentials.updatePasswordHash).toHaveBeenCalledWith(USER, 'new-hash', clock.now());
+    });
+  });
+
+  describe('a tenant in the catalogue that is not provisioned yet (SMK-1)', () => {
+    beforeEach(() => {
+      vi.mocked(tenants.isProvisioned).mockResolvedValue(false);
+    });
+
+    it('refuses sign-in as an unknown tenant: same message, nothing read, issued or audited', async () => {
+      const unprovisioned = await service
+        .signIn({ ...context, email: 'ada@acme.test', password: 'pw' })
+        .catch((error: Error) => error);
+
+      vi.mocked(tenants.isProvisioned).mockResolvedValue(true);
+      vi.mocked(tenants.findIdBySlug).mockResolvedValue(null);
+      const unknown = await service
+        .signIn({ ...context, email: 'ada@acme.test', password: 'pw' })
+        .catch((error: Error) => error);
+
+      expect(unprovisioned).toBeInstanceOf(UnauthenticatedError);
+      expect((unprovisioned as Error).message).toBe((unknown as Error).message);
+      // Refused before the transaction's work: no credential read, no session, no token, and no
+      // audit record — there is no tenant row for one to reference.
+      expect(credentials.findByEmail).not.toHaveBeenCalled();
+      expect(sessions.createFamily).not.toHaveBeenCalled();
+      expect(issuedFor).toEqual([]);
+      expect(audited).toEqual([]);
+    });
+
+    it('refuses refresh and sign-out the same way', async () => {
+      await expect(service.refresh('refresh-plain', context)).rejects.toBeInstanceOf(
+        UnauthenticatedError,
+      );
+      await expect(service.signOut('refresh-plain', context)).rejects.toBeInstanceOf(
+        UnauthenticatedError,
+      );
+      expect(sessions.findByTokenHash).not.toHaveBeenCalled();
+      expect(audited).toEqual([]);
     });
   });
 

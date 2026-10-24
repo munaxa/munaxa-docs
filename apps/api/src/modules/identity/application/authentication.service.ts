@@ -312,7 +312,20 @@ export class DefaultAuthenticationService implements AuthenticationService {
       locale: context.locale,
     };
 
-    return runWithContext(requestContext, () => this.unitOfWork.run(() => work(tenantId)));
+    return runWithContext(requestContext, () =>
+      this.unitOfWork.run(async () => {
+        // In the catalogue but not yet provisioned (SMK-1): there is no tenant row, so nobody can
+        // sign in and no audit record can reference it. Refused exactly as an unknown tenant is,
+        // before anything is read or written — not as a 500 from the audit write's foreign key.
+        if (!(await this.tenants.isProvisioned(tenantId))) {
+          this.logger.warn('Sign-in against a tenant that is not provisioned yet', {
+            correlationId: context.correlationId,
+          });
+          throw new UnauthenticatedError(failureMessage);
+        }
+        return work(tenantId);
+      }),
+    );
   }
 
   /**

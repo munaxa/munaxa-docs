@@ -13,7 +13,7 @@ import { type Observable, catchError, tap, throwError } from 'rxjs';
 import { isDomainError } from '@edms/domain';
 
 import { CLOCK_PORT, type ClockPort } from '../../ports/clock.port';
-import { STATUS_BY_CODE } from '../errors/all-exceptions.filter';
+import { malformedIdentifierCode, STATUS_BY_CODE } from '../errors/all-exceptions.filter';
 import { correlationIdOf, traceContextOf } from '../http/correlation-id.middleware';
 import { currentContext } from '../tenancy/tenant-context';
 import { LOGGER, type Logger } from './logger';
@@ -73,7 +73,7 @@ export class RequestObservabilityInterceptor implements NestInterceptor {
         // Read from the error rather than from the response: the exception filter has not run
         // yet, so `response.statusCode` is still 200 at this point and would report every
         // refusal in the product as a success.
-        this.record(request, routeOf(request), statusOf(error), startedAt);
+        this.record(request, routeOf(request), statusOf(error, request), startedAt);
         return throwError(() => error);
       }),
     );
@@ -137,11 +137,16 @@ function routeOf(request: Request): string {
  * the noise. `statusClass` reads the number this function returns, so the label was wrong too.
  *
  * The mapping is imported rather than re-stated, so the log, the metric and the response can never
- * disagree about what a code means.
+ * disagree about what a code means. The same holds for a malformed identifier (D-10), which the
+ * filter answers as a refusal although it arrives as a database error.
  */
-function statusOf(error: unknown): number {
+function statusOf(error: unknown, request: Request): number {
   if (isDomainError(error)) {
     return STATUS_BY_CODE[error.code];
+  }
+  const malformed = malformedIdentifierCode(error, request.params);
+  if (malformed !== null) {
+    return STATUS_BY_CODE[malformed];
   }
   return error instanceof HttpException ? error.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 }
