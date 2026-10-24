@@ -245,6 +245,21 @@ async function blobRow(tenancy: Tenancy, id: string) {
   return tenancy.owner.fileObject.findUniqueOrThrow({ where: { id } });
 }
 
+/**
+ * Where an event sits among those published in the same batch.
+ *
+ * `PrismaOutboxWriter.publish` writes a batch with one `created_at`, and the batch's ids are UUIDv7
+ * drawn in the same millisecond with no counter, so nothing in the table records the order of a
+ * verdict and the quarantine it causes. Ordering by `created_at` alone left a tie to the database,
+ * and the scanner-recovery assertions failed when it came back the other way round. The tie is
+ * broken here in the order the product means them: the verdict, then what it causes. Events from
+ * different batches keep the order of their timestamps.
+ */
+const BATCH_ORDER: Readonly<Record<string, number>> = {
+  'storage.scan-completed': 0,
+  'storage.file-quarantined': 1,
+};
+
 async function scanEvents(tenancy: Tenancy, fileObjectId: string) {
   const rows = await tenancy.owner.outboxMessage.findMany({
     where: {
@@ -253,6 +268,12 @@ async function scanEvents(tenancy: Tenancy, fileObjectId: string) {
     },
     orderBy: { createdAt: 'asc' },
   });
+  // Stable, and a no-op except within a tie.
+  rows.sort(
+    (a, b) =>
+      a.createdAt.getTime() - b.createdAt.getTime() ||
+      (BATCH_ORDER[a.eventType] ?? 0) - (BATCH_ORDER[b.eventType] ?? 0),
+  );
   return rows.map((row) => {
     const payload = row.payload as { status?: string; threat?: string };
     return { type: row.eventType, status: payload.status ?? null, threat: payload.threat ?? null };

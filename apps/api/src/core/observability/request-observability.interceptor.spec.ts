@@ -71,6 +71,23 @@ describe('the status an observed request is recorded as', () => {
     expect(recorded.logged?.status).toBe(500);
     expect(recorded.labels?.status).toBe('5xx');
   });
+
+  // D-10: the filter answers a malformed identifier as a refusal although it arrives as a database
+  // error, so the log and the metric must say the same, not count it against the 5xx rate.
+  it.each([
+    [{ id: 'undefined' }, 404],
+    [{ id: '019489f0-0000-7000-8000-00000000d0c5' }, 422],
+  ])('records a malformed identifier with route params %j as %i', async (params, status) => {
+    const { interceptor, recorded } = build();
+    const malformed = Object.assign(new Error('Inconsistent column data: Error creating UUID'), {
+      code: 'P2023',
+    });
+
+    await expect(run(interceptor, malformed, params)).rejects.toBe(malformed);
+
+    expect(recorded.logged?.status).toBe(status);
+    expect(recorded.labels?.status).toBe('4xx');
+  });
 });
 
 function build(): {
@@ -110,8 +127,9 @@ function build(): {
 async function run(
   interceptor: RequestObservabilityInterceptor,
   failure: unknown,
+  params: Record<string, string> = {},
 ): Promise<unknown> {
-  const request = { method: 'POST', headers: {}, route: { path: '/api/v1/auth/login' } };
+  const request = { method: 'POST', headers: {}, params, route: { path: '/api/v1/auth/login' } };
   const context = {
     getType: () => 'http',
     switchToHttp: () => ({
