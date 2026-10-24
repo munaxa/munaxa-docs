@@ -37,32 +37,51 @@ Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 | 6 | Object storage | **MISSING** (no production bucket or origin supplied) | Bucket CORS for the web origin (browser upload), versioning, replication failover, `STORAGE_PUBLIC_URL` previews, independent store probe | Production bucket and its scope. Credentials scoped to it. `STORAGE_PUBLIC_URL` = the production web origin. CORS allowing `PUT`/`GET` from **the actual production origin** (supplied by the operator). Versioning on. Replication configured. Capacity and quota known. Independent monitoring (item 3) | Operator (storage) |
 | 7 | Backup / PITR / failover | **MISSING** (no production database provider, restore destination or credentials supplied) | `edms_backup` backups, verify, a scheduled backup with `BackupFailed` alert, zero-difference DR restore, PITR to a timestamp (cluster-level), one tenant restored to a point in time by extraction from the recovered cluster, replica failover | `edms_backup` created (runbook §6 step 1b). Scheduled backups with verification. WAL archiving/PITR on. Replication. A written failover procedure. Backup alerts reaching on-call. A restore destination and restore credentials. **If the provider's PITR/failover cannot be rehearsed before go-live, this stays NOT READY** and the risk goes to the change approver. No destructive production tests | Operator (DBA) |
 | 8 | Production load baseline | **MISSING** (no production-sized infrastructure; no approved thresholds) | 100 identities, 29,551 requests, 0 failures, 0 rate-limited. **Latency targets missed** on a single 4-CPU host. This does **not** establish production capacity | The measurement in §5 on production-sized infrastructure, compared against thresholds **supplied or approved by the operator** (or existing capacity requirements) | Operator (capacity owner) + release engineer |
-| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry and images done: GHCR `munaxa`, release `4e8e1ca` published by digest and pulled with the production pull identity, §2. Secret store, versioned configuration and signing policy still open) | Images build reproducibly from `27a8daa` (CI run 554) and ran the §16 smoke 29/29 and browser 8/8 in a staging-shaped deployment; release `4e8e1ca` was published and verified by run `36819091004` (§2) | ☑ A registry with immutable digests and access control. ☑ API, web and scanner pushed and verified **by digest**. ☑ A deployment identity for pulls (`DOCS_PRODUCTION_PULL_USER`/`_TOKEN`, pulled all three digests; confirm the token's expiry). ☐ Signing, if policy requires. ☐ A secret store holding every secret in §3. ☐ Configuration versioned. ☐ A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
+| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry: Amazon ECR, applied 2026-10-22; first ECR publication `db97825`, which is not a selected release; no ECS pull tested yet, §2. Secret store, versioned configuration and signing policy still open) | Images build reproducibly from `27a8daa` (CI run 554) and ran the §16 smoke 29/29 and browser 8/8 in a staging-shaped deployment; release `4e8e1ca` was published to GHCR by run `36819091004` (historical); `db97825` was published to ECR by run `39929830650` (§2) | ☑ A registry with immutable digests and access control (ECR, IMMUTABLE tags, push only by the OIDC publisher role). ☑ API, web and scanner pushed and verified **by digest** (`db97825`; not a selected release). ☐ A selected release with an ECR release package. ☐ Pulls by the ECS execution roles proven by a real task (runbook §10.1); IAM simulation passes. The GHCR pull identity (`DOCS_PRODUCTION_PULL_USER`/`_TOKEN`) stays until then. ☐ Signing, if policy requires. ☐ A secret store holding every secret in §3. ☐ Configuration versioned. ☐ A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
 
 ## 2. Images and publication
 
-**Registry:** Amazon ECR in `229251310592` — `munaxa-docs/api`, `munaxa-docs/web`, `munaxa-docs/antivirus` (ADR-0024 amendment, 2026-10-22). Until 2026-10-22 it was `ghcr.io/munaxa`. The GHCR digests below are historical and must be republished to ECR before deployment.
+**Registry:** Amazon ECR in `229251310592` — `munaxa-docs/api`, `munaxa-docs/web`, `munaxa-docs/antivirus` (ADR-0024 amendment, 2026-10-22). Until 2026-10-22 it was `ghcr.io/munaxa`. GHCR images are historical and are never deployed.
 **Process:** `.github/workflows/publish-images.yml`, started by pushing a tag `image/<full SHA>`. It
 builds exactly that commit, tags each image `<short>` and `sha-<full SHA>` — **never `latest`** — and
 verifies each **pulled digest**: revision label, non-root, no credential in history or filesystem, the
 API's query engine, the web image's branding, and for the scanner the recorded ClamAV/c-icap versions,
 `verify-container.sh` (non-root, no UID 0 process, `freshclam` as the container user) and `probe.mjs`
-(candidate, after an unclean restart, and pulled digest). A final job pulls all three with the
-production pull identity.
+(candidate, after an unclean restart, and pulled digest). The images are pushed to ECR through
+GitHub OIDC by the publisher role, which may only push to the three repositories. A final job
+confirms each digest in ECR. No registry credential is involved.
 
-**Publication status: PUBLISHED AND VERIFIED** — release `4e8e1ca`, tag
-`image/4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`, run `36819091004` (every job succeeded):
+**ECR publication status: PUBLISHED, NOT A SELECTED RELEASE.** Tag
+`image/db97825d26195666e7415735f0769d1c10bbbf4d`, run
+[39929830650](https://github.com/munaxa/munaxa-docs/actions/runs/39929830650), 2026-10-23
+(every job succeeded). All pushes came from the publisher role (CloudTrail):
 
-| Image | Digest | Revision label |
-| --- | --- | --- |
-| API | `ghcr.io/munaxa/munaxa-docs-api@sha256:6c1a6b31fa3502ddfe6df2fdc9d6c723edc7def711bd90f5d8525f2247872f10` | `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` |
-| Web | `ghcr.io/munaxa/munaxa-docs-web@sha256:815a4aa28cf75c58bd4cd4cb4031db26ef60acaa9ba7649f7b6c0a710341d4eb` | `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` |
-| Antivirus | `ghcr.io/munaxa/munaxa-docs-antivirus@sha256:9920e03462439db55b40f6929e8fb60f11f72ddcc104d0320d171b28b8d194dc` | `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` |
+| Image | Digest | Tags | ECR basic scan (2026-10-23) |
+| --- | --- | --- | --- |
+| API | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/api@sha256:e8f641e608b38e9366c88e714f07a0851bd7066f64f0964f5b188bd211d78b47` | `db97825`, `sha-db97825d26195666e7415735f0769d1c10bbbf4d` | HIGH 7, MEDIUM 2, LOW 2 (Debian 12 util-linux and zlib; no Debian fix yet) |
+| Web | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/web@sha256:0703fafa9f887d5c815d18b0752c5de6431f40f7c279988d31b0c30757e755b3` | same | HIGH 7, MEDIUM 2, LOW 2 (same) |
+| Antivirus | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:1278da65948893cf62c799c19cf003296154f84489192af99f627b3dec827e22` | same | HIGH 2, UNDEFINED 2 (zlib CVE-2026-85091 and xz USN-8945-1; Ubuntu fixes available, PR #143) |
 
-All three were pulled with the production pull identity (`DOCS_PRODUCTION_PULL_USER` /
-`DOCS_PRODUCTION_PULL_TOKEN`). The antivirus image runs as **UID/GID 101:102** (`clamav`) with no
-UID 0 process; clean file passed, EICAR blocked, `freshclam` and the unclean-restart check passed.
-Its signature volume must be writable by 101:102 (runbook §9.2).
+`db97825`'s application code is `041e827` plus the Docs v2 web design (#137). CI passed on each
+of those commits, but no release package and no staging smoke cover them. A release is deployable
+only after it has been selected and has an ECR release package with its digests.
+
+**Not yet proven:**
+
+- that ECS can pull these images. The pull is authorised by IAM (simulated) and by the S3 endpoint
+  policy, but no task has run (runbook §10.1);
+- that the antivirus fix in #143 works in a published image.
+
+**Historical (GHCR, not deployable):**
+
+- release `4e8e1ca` (run `36819091004`) and release `041e827` (run `36948766244`), with digests in
+  their release packages;
+- both were pulled at the time with the GHCR pull identity (`DOCS_PRODUCTION_PULL_USER` /
+  `DOCS_PRODUCTION_PULL_TOKEN`).
+
+Those secrets are not used by ECR. They stay until the ECS pull test (runbook §10.1) has passed,
+and are removed only with explicit authorisation. The antivirus image runs as **UID/GID 101:102**
+(`clamav`). Its signature volume must be writable by 101:102 (runbook §9.2).
 
 **Superseded — do not deploy:** the `8cb4c14` images (run `36722457128`). Its antivirus image
 `sha256:02298beca666d7db346de82e42cab2f692faa4ed417fa7259e3b1ff3999e33d4` is the **old
