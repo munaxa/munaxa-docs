@@ -132,10 +132,9 @@ been started since. Re-reading them on 2026-10-25 (§3) found them unchanged; it
 image and the Debian security tracker, 2026-10-24) and the exposure analysis are in
 [image-vulnerability-assessment-c6a6d8c.md](./image-vulnerability-assessment-c6a6d8c.md).
 
-**Dependency:** that file is added by
-[PR #151](https://github.com/munaxa/munaxa-docs/pull/151). The link resolves only once #151 is
-merged, so #151 must merge before this package. Until then, read the file on #151's branch,
-`claude/runtime-image-cve-assessment`.
+That file was added by [PR #151](https://github.com/munaxa/munaxa-docs/pull/151), merged to `main`
+as `b3ad127` on 2026-10-25. #151 changes only the `Dockerfile` for **future** builds and adds this
+report. It does not change the published `c6a6d8c` images, which remain the release.
 
 **What these results are not.** They are the BASIC scanner's operating-system findings. They are
 not a statement that the images are free of vulnerabilities, and no finding has been suppressed or
