@@ -129,9 +129,22 @@ browser checks (Docs v2 screens, cookies, TOTP enrolment) or any Tier B row.
 
 ## 6. Residual vulnerability risk: proposed acceptance for this release
 
-**Decision recorded (owner, Option A):** release `c6a6d8c` keeps its published Debian 12 images,
-with the residual risk documented. **This is not a remediation and not a permanent waiver.** It
-applies only to the three digests in §2.
+**Status: NOT ACCEPTED.** The residual risk below is proposed for acceptance and is not accepted
+until the authorised person completes the governance table at the end of this section. Choosing
+Option A (keep the published Debian 12 images and document the residual risk) is a direction, not
+an acceptance. No PR state, CI result or merge counts as acceptance.
+
+**Scope, limits and conditions:**
+
+- **Scope:** only the three digests in §2. No other image, rebuild or release is covered.
+- **The seven HIGH findings stay unresolved.** Nothing in this release fixes them.
+- **Mitigations reduce exposure but do not fix the CVEs.**
+- **No scanner finding may be suppressed or re-rated.** ECR results are reported as the scanner
+  gives them.
+- **This is not a permanent waiver.** It ends at the review date or expiry below, or earlier when
+  a reassessment trigger occurs.
+- **Reassessment is required** when Debian publishes a fix for any of the seven, and before any
+  further release from the same base image.
 
 **The risk**
 
@@ -160,15 +173,21 @@ applies only to the three digests in §2.
   #151 makes the next build take Debian's updates; a rebuilt image needs a new release and a new
   scan.
 
-**Governance: to be completed by the owner**
+**Governance: OWNER INPUT REQUIRED**
+
+The repository records no named risk owner, approver, date, expiry or change reference for this
+release. It names only the role: the change approver may accept a risk only in writing
+([production-infrastructure-implementation.md](../operations/production-infrastructure-implementation.md),
+item 7b and D14). The acceptance takes effect only when every field below is completed by the
+authorised person.
 
 | Field | Value |
 | --- | --- |
-| Risk owner | ☐ *to be completed* |
-| Accepted by (name, role) | ☐ *to be completed* |
-| Date of acceptance | ☐ *to be completed* |
-| Review date or expiry | ☐ *to be completed* (it must be before any later release from this base) |
-| Change or ticket reference | ☐ *to be completed* |
+| Risk owner | `OWNER INPUT REQUIRED` |
+| Accepted by (name, role) | `OWNER INPUT REQUIRED` |
+| Date of acceptance | `OWNER INPUT REQUIRED` |
+| Review date or expiry | `OWNER INPUT REQUIRED` (before any later release from this base image) |
+| Change or ticket reference | `OWNER INPUT REQUIRED` |
 
 ## 7. Not yet proven on this release
 
