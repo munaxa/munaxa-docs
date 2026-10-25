@@ -1,10 +1,10 @@
 # Release candidate: the remediated runtime (after #154)
 
-**Status (2026-10-25): CANDIDATE, NOT PUBLISHED.** This record prepares the next release under the
+**Status (2026-10-25): PUBLISHED, NOT DEPLOYED.** This record covers the next release under the
 Option A process ([release-validation-option-a.md](../operations/release-validation-option-a.md)
-§2). Nothing below has been tagged, published, scanned in ECR, planned or deployed. Every value that
-only a publication can produce is marked **PENDING**. None is a placeholder that could be mistaken
-for a real digest.
+§2). `R` = `f8a8bea` is tagged and its three images are published and scanned on push in ECR (§2,
+§3). Nothing has been planned, applied or deployed. The Terraform inputs are unchanged until the
+release package PR. Risk acceptance is NOT ACCEPTED (§6).
 
 **Why a new release.** Release `c6a6d8c` was published before #154. Its API and web images are built
 on `node:22-bookworm-slim` and carry util-linux and zlib, so they keep the seven HIGH findings ECR
@@ -18,8 +18,8 @@ built from a commit that contains #154.
 | **Release commit `R`** | **`f8a8bea62256abb80ad4e33e367ba03bd426d1d8`**: `main` after #152, the squash of reviewed head `7ee0fc2` (identical tree). The owner chose option B on 2026-10-25 |
 | Option A (not chosen) | `6c79358753961c8fe7947548640f069774086485`, `main` after #154 |
 | CI on `R` | "CI" run [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678) (push to `main`): passed |
-| Release tag | PENDING: `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8`, created by the owner |
-| Publishing run | PENDING: "Publish images" on that tag |
+| Release tag | `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8`, pushed by the owner, pointing at `R` |
+| Publishing run | "Publish images" [40225272398](https://github.com/munaxa/munaxa-docs/actions/runs/40225272398): success |
 
 **What `R` contains compared with `c6a6d8c`** (`git diff c6a6d8c f8a8bea`):
 
@@ -41,9 +41,23 @@ built from a commit that contains #154.
 
 | Image | Immutable reference | Revision label | Publishing run |
 | --- | --- | --- | --- |
-| API | PENDING | PENDING (must equal `R`) | PENDING |
-| Web | PENDING | PENDING (must equal `R`) | PENDING |
-| Antivirus | PENDING | PENDING (must equal `R`) | PENDING |
+| API | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/api@sha256:e61494a2fc44b7f488e8a04226b309fb8a20b39cc2b2db1f9b9cfddfcc5abcc8` | `R`, checked by the run ("Pull by digest and verify the revision label") | [40225272398](https://github.com/munaxa/munaxa-docs/actions/runs/40225272398) |
+| Web | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/web@sha256:0f32ac71d392a374c2a8367684c861d8937b57ff490e1d5d49388fcedc6e08a8` | `R`, checked by the run (same step) | [40225272398](https://github.com/munaxa/munaxa-docs/actions/runs/40225272398) |
+| Antivirus | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:fe60b49b0266196188ee0bc8b31d8e8546ac76ecf409ce4082660d0c12b4dfdb` | `R`, checked by the run ("Verify the pushed digest is the image that was probed") | [40225272398](https://github.com/munaxa/munaxa-docs/actions/runs/40225272398) |
+
+**Publication (2026-10-25).**
+- **Tag.** `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8` points at `R`. The owner pushed it and
+  approved the `image-release` jobs.
+- **"Publish images" run [40225272398](https://github.com/munaxa/munaxa-docs/actions/runs/40225272398): success, all six jobs:**
+  - the source commit on `main`;
+  - the API, web and antivirus builds and pushes;
+  - "Confirm the release in ECR";
+  - "Release smoke on the published digests": **18/18 passed**, and "api and web ran read-only with
+    no capabilities; no write was refused".
+- **Digests.** Read from ECR on 2026-10-25, by tag. In each repository, both `f8a8bea` and
+  `sha-f8a8bea62256abb80ad4e33e367ba03bd426d1d8` name the one digest above.
+- **Repositories.** All three are `IMMUTABLE` with scan on push.
+- **Revision label.** Checked by the publishing run, not read from ECR directly.
 
 The antivirus source is unchanged since `c6a6d8c`. It still gets a new digest, because every
 published image carries the release commit in its label. **The `c6a6d8c` digests must not be
@@ -82,15 +96,30 @@ Fill §2 from that run's summary, and §3 from ECR. Copy the digests only from t
 
 | Image | Scan status | CRITICAL | HIGH | MEDIUM | LOW |
 | --- | --- | --- | --- | --- | --- |
-| API | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Web | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Antivirus | PENDING | PENDING | PENDING | PENDING | PENDING |
+| API | COMPLETE (scan on push, 19:20:07 UTC) | 0 | 0 | 1 | 2 |
+| Web | COMPLETE (scan on push, 19:21:03 UTC) | 0 | 0 | 1 | 2 |
+| Antivirus | COMPLETE (scan on push, 19:19:14 UTC) | 0 | 0 | 0 | 0 |
 
-**Expected, not yet observed.** Trivy and Grype scans of runtimes built from the same Dockerfile
-report none of the seven util-linux and zlib CVEs (§4). ECR BASIC (Clair) has not scanned an image of
-this shape. Whether it reads the runtime's `/var/lib/dpkg/status` is part of what the scan will show.
-**If ECR reports no packages at all for the API or web image, treat that as a failed scan, not a
-clean result.**
+**Findings on the API and web digests** (identical on both):
+
+| Finding | Severity | Package |
+| --- | --- | --- |
+| CVE-2026-86805 | MEDIUM | glibc `2.36-9+deb12u14` |
+| CVE-2026-97399 | LOW | glibc `2.36-9+deb12u14` |
+| CVE-2026-95818 | LOW | glibc `2.36-9+deb12u14` |
+
+**What this shows (read 2026-10-25, read-only; no scan was started):**
+- **The seven HIGH findings are absent.** ECR reports none of the seven util-linux and zlib CVEs on
+  the new API and web digests, and no CRITICAL or HIGH finding. These are the first ECR results for
+  images that contain the remediation.
+- **It is not an empty scan.** ECR identified glibc `2.36-9+deb12u14` from the runtime's
+  `/var/lib/dpkg/status`, so it read the package list.
+- **ECR and the local scanners disagree.** ECR BASIC does not report the libc6, gcc-12 and libssl3
+  findings the local Trivy and Grype scans listed (§4.3). That is a difference between the scanners'
+  databases, not a fix. §4.3 still describes what
+  is installed.
+- **What ECR cannot show.** A scanner reports what it finds, so ECR alone does not prove util-linux
+  and zlib are absent. That comes from the runtime's contents (§5).
 
 ## 4. Vulnerability disposition
 
@@ -119,7 +148,7 @@ All seven, including the confirmed CVE-2026-53613 and -53615 and the partly pres
 | Where the removal has been shown | Result |
 | --- | --- |
 | The `runtime` target built from `6c79358` (§5) | Shown |
-| ECR for the published digests | **PENDING** (§3) |
+| ECR for the published digests | **Shown** (§3): none of the seven, no CRITICAL or HIGH |
 
 ### 4.3 Remaining findings on the candidate runtime
 
@@ -132,9 +161,9 @@ target built from `6c79358`.
 | CVE-2026-102010, -95619 | gcc-12 runtime libraries `12.2.0-14+deb12u1` | won't fix | yes |
 | CVE-2026-84782 (DTLS) | libssl3 `3.0.22-1~deb12u1` | no fix yet | yes |
 
-**No finding on the candidate runtime has a Debian fix that is not applied.** ECR BASIC's view of
-these is PENDING. If ECR reports any of them as HIGH or CRITICAL, the owner needs a new residual-risk
-record (§6).
+**No finding on the candidate runtime has a Debian fix that is not applied.** ECR BASIC does not report
+them on the published digests (§3). It reports three glibc findings instead, at MEDIUM and LOW.
+Neither result is an acceptance; the decision is the owner's (§6).
 
 ## 5. Evidence so far
 
@@ -182,6 +211,9 @@ What needs a decision depends on the ECR result (§3). That decision is the owne
 | Change or ticket reference | `OWNER INPUT REQUIRED` |
 
 ## 7. Next steps and their approvals
+
+**Done on 2026-10-25:** steps 1 to 5: `R` chosen, CI green, tag pushed, published, ECR read (§2, §3).
+**Open:** steps 6 to 8.
 
 Steps 1 to 4 and 7 to 8 each need the owner's explicit authorisation. This record performs none of
 them.
