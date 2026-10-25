@@ -82,8 +82,14 @@ for ref in "$API_IMAGE" "$WEB_IMAGE" "$AV_IMAGE"; do
   case "${user%%:*}" in '' | 0 | root) echo "FAIL - $ref declares no non-root USER"; exit 1 ;; esac
   echo "OK   $ref: revision $revision, USER $user"
 done
+# Read from the image's filesystem rather than from a shell inside it: the API and web runtimes
+# carry no shell, and a check that cannot start must fail rather than report nothing found.
 for ref in "$API_IMAGE" "$WEB_IMAGE"; do
-  left=$(docker run --rm --entrypoint sh "$ref" -c 'find / -xdev -type f -perm /6000 2>/dev/null' || true)
+  cid=$(docker create "$ref")
+  listing=$(docker export "$cid" | tar -tvf -)
+  docker rm "$cid" >/dev/null
+  [ -n "$listing" ] || { echo "FAIL - could not read the filesystem of $ref"; exit 1; }
+  left=$(printf '%s\n' "$listing" | awk '$1 ~ /^-/ && $1 ~ /[sS]/ { print $NF }')
   [ -z "$left" ] || { echo "FAIL - $ref carries setuid/setgid files:"; echo "$left"; exit 1; }
   echo "OK   $ref: no setuid or setgid file"
 done
