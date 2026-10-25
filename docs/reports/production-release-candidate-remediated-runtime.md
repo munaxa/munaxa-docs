@@ -15,20 +15,24 @@ built from a commit that contains #154.
 
 | Item | Value |
 | --- | --- |
-| **Release commit `R`** | **PENDING: the owner chooses `R` before tagging** |
-| Option A | `6c79358753961c8fe7947548640f069774086485`, `main` after #154 |
-| Option B | `main` after #152 (ECS hardening), if it is merged first. `publish-images.yml` then runs the hardened release smoke (`--read-only`, `--cap-drop ALL`) on the published digests |
-| CI on `R` | For option A: "CI" run [40218617539](https://github.com/munaxa/munaxa-docs/actions/runs/40218617539) (push to `main`), passed 10/10. For option B: PENDING, CI on `main` after #152 |
-| Release tag | PENDING: `image/<full R>`, created by the owner |
+| **Release commit `R`** | **`f8a8bea62256abb80ad4e33e367ba03bd426d1d8`**: `main` after #152, the squash of reviewed head `7ee0fc2` (identical tree). The owner chose option B on 2026-10-25 |
+| Option A (not chosen) | `6c79358753961c8fe7947548640f069774086485`, `main` after #154 |
+| CI on `R` | "CI" run [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678) (push to `main`): see §5. The tag must wait until it passes |
+| Release tag | PENDING: `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8`, created by the owner |
 | Publishing run | PENDING: "Publish images" on that tag |
 
-**What `R` contains compared with `c6a6d8c`** (`git diff c6a6d8c 6c79358`):
+**What `R` contains compared with `c6a6d8c`** (`git diff c6a6d8c f8a8bea`):
 
 - **#151.** The runtime takes Debian 12 updates at build time, and adds
   [image-vulnerability-assessment-c6a6d8c.md](./image-vulnerability-assessment-c6a6d8c.md).
 - **#154.** The API and web runtime is a minimal Debian 12 tree: no shell, package manager, util-linux,
   zlib or setuid file. The checks that ran a shell inside the image are rewritten
   ([image-vulnerability-remediation-2026-10-25.md](./image-vulnerability-remediation-2026-10-25.md)).
+- **#152.** ECS task definitions (not applied):
+  - web, api and ops-provision run on a read-only root with all Linux capabilities dropped;
+  - the scanner and both Redis sidecars drop all capabilities and keep a writable root;
+  - the release smoke runs the stack the same way, so `publish-images.yml` tests the published
+    digests under these settings.
 - **No change** to application code, migrations, SQL, the scanner image source or the lockfile.
   Nothing under `apps/`, `packages/`, `prisma/`, `infra/sql/` or `infra/antivirus/`, and no change to
   `pnpm-lock.yaml`.
@@ -136,6 +140,9 @@ record (§6).
 
 | Check | Result |
 | --- | --- |
+| CI on `R` = `f8a8bea` (push to `main`) | Run [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678): **PENDING**, queued at 18:42 UTC. Record its result here before tagging |
+| `7ee0fc2` and `f8a8bea` trees | Identical (`git diff 7ee0fc2 f8a8bea` is empty). #152 was squash-merged pinned to `7ee0fc2` after its head, mergeability and 20/20 checks were re-checked |
+| Redis sidecar as the task definition runs it (local) | The pinned `redis` digest with `--user 999:999 --cap-drop ALL` and the task's `sh -c` command: running, no effective capabilities, `/tmp/redis.conf` mode 600, password not in the process arguments, the task's health check passes, an unauthenticated ping gets `NOAUTH` |
 | PR #154 CI on `8cebc37` (20 checks) | Passed. Release smoke 18/18 on the shell-less API and web images. Web artwork served. Prisma engine check, integration and every end-to-end shard passed |
 | `8cebc37` and `6c79358` trees | Identical (`git diff 8cebc37 6c79358` is empty) |
 | CI on `6c79358` (push to `main`) | Run [40218617539](https://github.com/munaxa/munaxa-docs/actions/runs/40218617539): **passed, 10 of 10 jobs.** These include the release smoke, the image builds (API, web and worker), the Prisma engine check, integration, every end-to-end shard and "Lint · Typecheck · Test · Build" with its visual-regression step |
@@ -143,6 +150,21 @@ record (§6).
 | Native modules on that runtime (local) | Lockfile versions: Prisma 6.19.3, `sharp` 0.34.5, `msgpackr-extract` 3.0.4. Run with `--read-only --cap-drop ALL --security-opt no-new-privileges`, Node v22.23.4 selects the `debian-openssl-3.0.x` engine, connects to PostgreSQL 16 with `sslmode=require` and writes; `sharp` and `msgpackr-extract` load; HTTPS works; `dumb-init` forwards SIGTERM |
 | Rewritten checks (local) | Setuid: fails `node:22-bookworm-slim`, passes the runtime. Engine: passes an image with the engine, fails one without. `.npmrc`: fails an image with a planted token |
 | #152 hardened smoke on the new runtime | **Passed.** `main` was merged into #152 as `7ee0fc2`; its push run and PR run ([40218768937](https://github.com/munaxa/munaxa-docs/actions/runs/40218768937)) passed 20/20 checks. Run [40218763269](https://github.com/munaxa/munaxa-docs/actions/runs/40218763269) built the API and web images from this runtime and ran api, web and provisioning with `--read-only --cap-drop ALL --security-opt no-new-privileges`, Redis and the scanner with `--cap-drop ALL`: 18/18, and "no write was refused". That is Docker on a CI runner, not Fargate |
+
+**Not verified on Fargate.** No task of this release has run on Fargate. AWS documents
+`readonlyRootFilesystem` and dropping capabilities as supported on Fargate (only *adding* is limited,
+to `SYS_PTRACE`), but that is documentation, not an observed run. In particular:
+
+- **The scanner's signature writes.** On Fargate the scanner downloads its signatures into
+  `/var/lib/clamav` in its own container layer. In the smoke that path was a Docker volume, which takes
+  the image's ownership (clamav), so the same result is expected, but it has not been observed.
+- **Behaviour beyond the smoke.** Only the web sign-in page was exercised. That the other screens
+  write nothing to disk comes from reading the code: no ISR, `revalidate`, `unstable_cache` or
+  `next/image`, and the LibreOffice and Tesseract drivers are off by default.
+- **`ops-dbadmin` and `ops-tunnel`** are unchanged by #152 and use their own images, but have never
+  been run.
+
+A Tier B run on Fargate is what proves these.
 
 ## 6. Residual risk for this candidate
 
@@ -164,18 +186,27 @@ What needs a decision depends on the ECR result (§3). That decision is the owne
 Steps 1 to 4 and 7 to 8 each need the owner's explicit authorisation. This record performs none of
 them.
 
-1. **Choose `R`** (§1). If option B, review #152 once its CI is green and merge it first.
-2. **CI on `R`** must be green.
+1. **Choose `R`.** Done: option B, `R` = `f8a8bea62256abb80ad4e33e367ba03bd426d1d8` (§1).
+2. **CI on `R`** must be green: run
+   [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678).
 3. **Tag (owner):**
    ```
    git fetch origin main
-   git tag image/<full R> <full R>
-   git push origin image/<full R>
+   test "$(git rev-parse origin/main)" = f8a8bea62256abb80ad4e33e367ba03bd426d1d8 || echo "main has moved: stop"
+   git tag image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8 f8a8bea62256abb80ad4e33e367ba03bd426d1d8
+   git push origin image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8
    ```
-   The `image/*` ruleset restricts tag creation to administrators. Never move or reuse an existing
-   tag.
-4. **Publish (owner).** Approve the `image-release` environment for the "Publish images" run the tag
-   starts. Every job must be green, including the release smoke on the published digests.
+   If `main` has moved, `R` stays valid as long as it is on `main`; the workflow checks that. The
+   `image/*` ruleset restricts tag creation to administrators. Never move or reuse an existing tag.
+4. **Publish (owner).** Pushing the tag starts `.github/workflows/publish-images.yml` ("Publish
+   images"). No other trigger exists. Three of its jobs run in the protected `image-release`
+   environment and each waits for its required reviewer:
+   - "application" (the API and web images) and "antivirus": these push to ECR;
+   - "pull-identity": pulls the three digests back and checks them.
+
+   The "source" job runs first, with no environment: it refuses a tag that does not name a full commit
+   on `main`. The "release-smoke" job runs last, with no AWS access: it runs the hardened smoke on
+   the published digests. Every job must be green.
 5. **Read ECR** (read-only), account `229251310592`, `eu-central-1`. For each of the three digests:
    - `describe-images`: the digest, its two tags, and that neither tag is on another digest;
    - `describe-image-scan-findings`: status `COMPLETE`, severities and findings.
@@ -205,7 +236,8 @@ them.
    changing them. Check in particular:
    - the `web`, `api` and `scanner` task definitions and `ops-provision` reference exactly the three
      digests of `R`;
-   - if #152 was merged, the read-only roots and dropped capabilities appear.
+   - the read-only roots and dropped capabilities of #152 appear (web, api, ops-provision read-only;
+     every service container and both Redis sidecars `drop ["ALL"]`).
 
    Review the plan before any apply, which is separately authorised.
 
