@@ -703,24 +703,29 @@ jobs:
       # This asks the image the question the deployment asks: which engine does *your* runtime
       # require, and do you carry it? It needs no database and no network, so it is a build-time
       # gate rather than one more thing a release engineer discovers under pressure.
+      #
+      # The image's filesystem is read from outside: the runtime carries no shell to run `ls` and
+      # `find` in.
       - name: The API image carries the query engine its own runtime asks for
         run: |
-          docker run --rm --entrypoint sh munaxa-docs-api:ci -eu -c '
-            ssl=$(ls /usr/lib/x86_64-linux-gnu/libssl.so.* 2>/dev/null | sed -n "s/.*libssl\.so\.\([0-9]\).*/\1/p" | head -1)
-            case "${ssl:-}" in
-              3) want=debian-openssl-3.0.x ;;
-              1) want=debian-openssl-1.1.x ;;
-              *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
-            esac
-            echo "This runtime requires: $want"
-            if find /app/node_modules -name "libquery_engine-$want.so.node" | grep -q .; then
-              echo "OK - the image carries the query engine its own runtime asks for."
-            else
-              echo "FAIL - no libquery_engine-$want.so.node in this image. Present instead:"
-              find /app/node_modules -name "libquery_engine-*" -printf "  %f\n" | sort -u
-              exit 1
-            fi
-          '
+          set -euo pipefail
+          cid=$(docker create munaxa-docs-api:ci)
+          files=$(docker export "$cid" | tar -tf -)
+          docker container rm "$cid" >/dev/null
+          ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          case "${ssl:-}" in
+            3) want=debian-openssl-3.0.x ;;
+            1) want=debian-openssl-1.1.x ;;
+            *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
+          esac
+          echo "This runtime requires: $want"
+          if grep -q "^app/node_modules/.*/libquery_engine-$want\.so\.node$" <<<"$files"; then
+            echo "OK - the image carries the query engine its own runtime asks for."
+          else
+            echo "FAIL - no libquery_engine-$want.so.node in this image. Present instead:"
+            printf '%s\n' "$files" | grep -o 'libquery_engine-[^/]*$' | sort -u | sed 's/^/  /'
+            exit 1
+          fi
 
       - name: Build the worker image
         uses: docker/build-push-action@v6
