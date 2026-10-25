@@ -26,7 +26,7 @@
 | CI on the exact commit | "CI" run [40130559927](https://github.com/munaxa/munaxa-docs/actions/runs/40130559927) (push to `main`): **success**, every job |
 | Release tag | `image/c6a6d8cefe14f26670de9e8a413bcdd87851306d` → `c6a6d8cefe14f26670de9e8a413bcdd87851306d` (verified with `git ls-remote`, 2026-10-25). Pushed by the owner |
 | Publishing run | "Publish images" run [40133309866](https://github.com/munaxa/munaxa-docs/actions/runs/40133309866), 2026-10-24: **success**, all six jobs |
-| Accepted launch limitations | WF-1, KEY-1 and D-1 (go-live runbook §1a), unchanged; D-4 as recorded in the RC validation. **Plus the residual image risk in §6, which awaits sign-off** |
+| Launch limitations (not yet signed off) | WF-1, KEY-1 and D-1 (go-live runbook §1a), unchanged and still **subject to formal sign-off**; D-4 as recorded in the RC validation. **Plus the residual image risk in §6, which is not accepted** |
 
 ## 2. Published images
 
@@ -101,6 +101,9 @@ package by package (§4).
   `40133309866`).
 
 ## 4. ECR scan results (BASIC; scans COMPLETE, 2026-10-24)
+
+These are the **push-time scans of 2026-10-24**. BASIC scanning runs on push only, and no scan has
+been started since. Re-reading them on 2026-10-25 (§3) found them unchanged; it did not rescan.
 
 | Image | Scan completed (UTC) | CRITICAL | HIGH | MEDIUM | LOW |
 | --- | --- | --- | --- | --- | --- |
