@@ -99,7 +99,15 @@ WORKDIR /app
 # `dumb-init` because Node is a poor PID 1: it does not reap zombies and it does not forward
 # signals to children, and 20 §4 requires workers to drain in-flight jobs before exiting — which
 # they can only do if SIGTERM reaches them.
+#
+# `upgrade` first, as the antivirus image does: the base image carries only the Debian updates
+# published before it was built, so the runtime takes bookworm's later security fixes for packages
+# already in it. It moves Debian 12 packages within Debian 12 only; it pins nothing and adds no
+# repository. On 2026-10-24 no bookworm fix existed for the util-linux and zlib findings ECR reports
+# (docs/reports/image-vulnerability-assessment-c6a6d8c.md); this is what picks them up when one is
+# published.
 RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
  && apt-get install --yes --no-install-recommends dumb-init ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
