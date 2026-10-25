@@ -100,7 +100,12 @@ three digests before this package is approved.
 
 **Where the evidence is.** The per-CVE status, how it was checked (`apt-cache policy` in the base
 image and the Debian security tracker, 2026-10-24) and the exposure analysis are in
-[image-vulnerability-assessment-c6a6d8c.md](./image-vulnerability-assessment-c6a6d8c.md) (PR #151).
+[image-vulnerability-assessment-c6a6d8c.md](./image-vulnerability-assessment-c6a6d8c.md).
+
+**Dependency:** that file is added by
+[PR #151](https://github.com/munaxa/munaxa-docs/pull/151). The link resolves only once #151 is
+merged, so #151 must merge before this package. Until then, read the file on #151's branch,
+`claude/runtime-image-cve-assessment`.
 
 **What these results are not.** They are the BASIC scanner's operating-system findings. They are
 not a statement that the images are free of vulnerabilities, and no finding has been suppressed or
@@ -132,7 +137,8 @@ browser checks (Docs v2 screens, cookies, TOTP enrolment) or any Tier B row.
 **Status: NOT ACCEPTED.** The residual risk below is proposed for acceptance and is not accepted
 until the authorised person completes the governance table at the end of this section. Choosing
 Option A (keep the published Debian 12 images and document the residual risk) is a direction, not
-an acceptance. No PR state, CI result or merge counts as acceptance.
+an acceptance. No PR state (including "ready for review"), CI result, PR authorship or merge
+counts as acceptance.
 
 **Scope, limits and conditions:**
 

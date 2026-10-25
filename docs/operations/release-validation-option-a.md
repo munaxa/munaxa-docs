@@ -12,8 +12,8 @@ security fixes and this validation.
 
 | Item | Value |
 | --- | --- |
-| Application code | `main` as of `db97825`: release `041e827` (ECS task-role S3 credentials, pool-size fix) plus the Docs v2 web design (#137), the i18n catalogues and `@munaxa/platform` 1.7.0. No API, Prisma or SQL change since `041e827` |
-| Security fixes to include | #143 (antivirus: Ubuntu zlib and xz-utils updates) and #145 (runtime image: no setuid/setgid programs), once approved and merged |
+| Application code | `c6a6d8c`: release `041e827` (ECS task-role S3 credentials, pool-size fix) plus the Docs v2 web design (#137), the i18n catalogues, `@munaxa/platform` 1.7.0, the SMK-1 sign-in fix (#148) and the D-10 fix (#150) ([package](../reports/production-release-package-c6a6d8c.md) §1). *As planned on 2026-10-23, at `db97825`:* no API, Prisma or SQL change since `041e827`; #148 and #150 changed the API after that |
+| Security fixes to include | #143 (antivirus: Ubuntu zlib and xz-utils updates) and #145 (runtime image: no setuid/setgid programs): both merged and in `c6a6d8c` |
 | Release commit | **`c6a6d8cefe14f26670de9e8a413bcdd87851306d`**: `main` after #143, #145, #148, #149, #150, #144, #146 and #147. CI run 40130559927 green |
 | Not the release | `db97825` (its images lack both fixes), `041e827` and `4e8e1ca` (GHCR only) |
 

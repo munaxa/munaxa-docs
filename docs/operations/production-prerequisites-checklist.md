@@ -1,9 +1,15 @@
-# Production Prerequisites Checklist — release `4e8e1ca`
+# Production Prerequisites Checklist — selected release `c6a6d8c`
 
-**Release:** `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` (`4e8e1ca`), **published and verified** as
-three immutable images by run `36819091004`
-([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)). Its
-application code is the approved `27a8daa`; it supersedes `c87519e`, `f5d5bb2` and the `8cb4c14`
+**Selected release:** `c6a6d8cefe14f26670de9e8a413bcdd87851306d` (`c6a6d8c`, Option A), published to Amazon ECR
+as three immutable images by run `40133309866`
+([production-release-package-c6a6d8c.md](../reports/production-release-package-c6a6d8c.md)).
+**Its approval gates are open:** the 2026-10-25 ECR re-read, the residual-risk acceptance (package
+§6, not accepted), Tier B, the Terraform plan, the ECS pull test and any apply. Nothing is deployed.
+
+*Historical:* release `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` (`4e8e1ca`) was published to GHCR
+by run `36819091004`
+([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) and
+cannot be deployed from ECR. Its application code was the approved `27a8daa`; it superseded `c87519e`, `f5d5bb2` and the `8cb4c14`
 image line, which are historical and not deployable. Launch limitations WF-1, KEY-1 and D-1, subject to formal sign-off before go-live, are in runbook §1a. See
 [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md), the
 [staging acceptance report](../reports/staging-acceptance-gate-e94c295.md), the
@@ -18,11 +24,11 @@ credentials are invented here, and no secret value belongs in Git or in this fil
 
 Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 
-**Recorded 2026-09-29; release identity updated 2026-09-30; release publication recorded 2026-10-01.**
+**Recorded 2026-09-29; release identity updated 2026-09-30; release publication recorded 2026-10-01; selected ECR release `c6a6d8c` recorded 2026-10-25.**
 
 | Area | Status |
 | --- | --- |
-| **Release artifacts** (§2) | **PUBLISHED AND VERIFIED.** API, web and scanner of `4e8e1ca` by digest, revision-labelled, pulled with the production pull identity |
+| **Release artifacts** (§2) | **PUBLISHED; APPROVAL GATES OPEN.** API, web and scanner of `c6a6d8c` in ECR by digest, revision-labelled, release smoke 18/18 on the published digests. ECR re-read of 2026-10-25 pending; residual risk not accepted; no ECS pull tested. *Historical:* `4e8e1ca` (GHCR), published and verified, not deployable from ECR |
 | **Production infrastructure** (§1) | **NOT READY.** No production environment, domain, relay, on-call destination or provider has been supplied, and none was reachable from the release engineering environment. Every item in §1 is therefore not READY |
 
 ## 1. Prerequisite matrix
@@ -80,7 +86,7 @@ Details, the CVE-by-CVE assessment and the open gates are in
 of those commits, but no release package and no staging smoke cover them. A release is deployable
 only after it has been selected and has an ECR release package with its digests.
 
-**Not yet proven:**
+**Not yet proven (as recorded for `db97825`; for `c6a6d8c` see its package §7):**
 
 - that ECS can pull these images. The pull is authorised by IAM (simulated) and by the S3 endpoint
   policy, but no task has run (runbook §10.1);
@@ -106,7 +112,7 @@ the three `image@sha256:…` references in the change record.
 
 Deployment manifests reference **`image@sha256:<digest>` only** — never a tag.
 
-| Release candidate evidence (not deliverable artifacts) | Value |
+| Historical release candidate evidence for `27a8daa` (not deliverable artifacts, not evidence for `c6a6d8c`) | Value |
 | --- | --- |
 | Local API/web images of `27a8daa` used for the staging smoke | Built from a clean checkout of `27a8daa`, labelled `org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`; release package §4 |
 | Scanner rebuilt from `infra/antivirus` at `27a8daa` | ClamAV **1.5.4**, c-icap **0.5.10**; `probe.mjs` exit 0 |
@@ -122,7 +128,7 @@ kept as evidence and **not** to be published or deployed:
 
 At go-live, on the **published digests**, re-confirm (the publishing run verified each already):
 
-- the API, web and scanner images carry `org.opencontainers.image.revision=4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`;
+- the API, web and scanner images carry `org.opencontainers.image.revision=c6a6d8cefe14f26670de9e8a413bcdd87851306d`;
 - the web image serves `/branding/docs/favicon/favicon-32.png`;
 - the scanner's recorded versions match the workflow run, and `probe.mjs` passes;
 - §16 smoke passes on these digests.
@@ -231,9 +237,9 @@ harness's built-in targets are not approved thresholds, and the staging result s
 
 | Requirement | Evidence | Status | Owner |
 | --- | --- | --- | --- |
-| Release `4e8e1ca` images published by registry digest | digests, image labels (§2) | **READY** (published and verified, run `36819091004`) | Platform |
-| Release `4e8e1ca` deployed by those digests in production | deployment manifests, running image IDs | NOT READY (not deployed) | Platform |
-| Staging gate (`416ca94` full; `f5d5bb2` STG-12 targeted; `27a8daa` §16 smoke 29/29 and browser 8/8 on its own images) | staging report §1, §14; release package | READY (staging evidence) | Release engineer |
+| Release `c6a6d8c` images published by registry digest | digests, image labels (§2), [package](../reports/production-release-package-c6a6d8c.md) | NOT READY: published by run `40133309866` (release smoke 18/18); ECR re-read of 2026-10-25 pending and residual risk not accepted (package §6) | Platform |
+| Release `c6a6d8c` deployed by those digests in production | deployment manifests, running image IDs | NOT READY (not deployed) | Platform |
+| Staging smoke (Tier B) on the `c6a6d8c` digests | Tier B results ([release-validation-option-a.md](./release-validation-option-a.md) §2 step 7) | NOT READY (not run). Historical evidence (`416ca94` full gate; `f5d5bb2` STG-12; `27a8daa` §16 smoke 29/29 and browser 8/8) does not count for `c6a6d8c` | Release engineer |
 | Production DNS and public TLS | cert chain, HTTPS | NOT READY | Network/PKI |
 | Monitoring stack, signals in §4 | targets up, rules loaded | NOT READY | SRE |
 | Scanner DEGRADED alert reaches the **production** on-call | test alert acknowledged by on-call | NOT READY | On-call owner |
@@ -242,7 +248,7 @@ harness's built-in targets are not approved thresholds, and the staging result s
 | Scanner UP on the private network; `probe.mjs` passes from the API network | probe output, `/api/health` | NOT READY | Network + release engineer |
 | Backup taken, verified and confirmed by a named person | backup IDs, verify output | NOT READY (at go-live) | DBA + named person |
 | PITR/recovery requirements satisfied | archiver status, procedure, rehearsal or recorded risk | NOT READY | DBA |
-| Migration procedure ready (checkout of `4e8e1ca`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
+| Migration procedure ready (checkout of `c6a6d8c`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
 | All required secrets present (§3) | API starts under `NODE_ENV=production` | NOT READY | Platform |
 | Production load/capacity requirements established | §5 results against approved thresholds | NOT READY | Capacity owner |
 | Rollback path (the previous production release's digest, or "no rollback target — first deployment" recorded) | registry, runbook §20 | NOT READY | Release engineer |
