@@ -40,7 +40,7 @@ Each step needs the owner's approval where marked. Nothing is skipped or reorder
 | 2 | Done: `R` = `c6a6d8c`, CI run 40130559927 green |
 | 3 | Done: the owner pushed `image/c6a6d8cefe14f26670de9e8a413bcdd87851306d` |
 | 4 | Done: run 40133309866 green, including the release smoke on the published digests (18/18) |
-| 5 | Done 2026-10-24: digests and scans read from ECR. **The 2026-10-25 re-read is pending** (AWS connector re-authorisation) |
+| 5 | Done 2026-10-24, and re-read 2026-10-25: digests, tags and scans unchanged (package §3). BASIC scanning has not rescanned since the push |
 | 6 | In review: the release package PR. **The residual-risk sign-off (package §6) is the owner's** |
 | 7 | Tier A, automated part: done by step 4's release smoke. Tier A browser rows: not run. Tier B: not run (**owner authorises; costs money**) |
 | 8 | Done in the release package PR (runbook §1 and the prerequisites checklist name `c6a6d8c`) |

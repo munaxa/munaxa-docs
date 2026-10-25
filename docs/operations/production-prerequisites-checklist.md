@@ -3,7 +3,7 @@
 **Selected release:** `c6a6d8cefe14f26670de9e8a413bcdd87851306d` (`c6a6d8c`, Option A), published to Amazon ECR
 as three immutable images by run `40133309866`
 ([production-release-package-c6a6d8c.md](../reports/production-release-package-c6a6d8c.md)).
-**Its approval gates are open:** the 2026-10-25 ECR re-read, the residual-risk acceptance (package
+**Its approval gates are open:** the residual-risk acceptance (package
 §6, not accepted), Tier B, the Terraform plan, the ECS pull test and any apply. Nothing is deployed.
 
 *Historical:* release `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` (`4e8e1ca`) was published to GHCR
@@ -28,7 +28,7 @@ Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 
 | Area | Status |
 | --- | --- |
-| **Release artifacts** (§2) | **PUBLISHED; APPROVAL GATES OPEN.** API, web and scanner of `c6a6d8c` in ECR by digest, revision-labelled, release smoke 18/18 on the published digests. ECR re-read of 2026-10-25 pending; residual risk not accepted; no ECS pull tested. *Historical:* `4e8e1ca` (GHCR), published and verified, not deployable from ECR |
+| **Release artifacts** (§2) | **PUBLISHED; APPROVAL GATES OPEN.** API, web and scanner of `c6a6d8c` in ECR by digest, revision-labelled, release smoke 18/18 on the published digests. ECR re-read 2026-10-25: unchanged. Residual risk not accepted; no ECS pull tested. *Historical:* `4e8e1ca` (GHCR), published and verified, not deployable from ECR |
 | **Production infrastructure** (§1) | **NOT READY.** No production environment, domain, relay, on-call destination or provider has been supplied, and none was reachable from the release engineering environment. Every item in §1 is therefore not READY |
 
 ## 1. Prerequisite matrix
@@ -237,7 +237,7 @@ harness's built-in targets are not approved thresholds, and the staging result s
 
 | Requirement | Evidence | Status | Owner |
 | --- | --- | --- | --- |
-| Release `c6a6d8c` images published by registry digest | digests, image labels (§2), [package](../reports/production-release-package-c6a6d8c.md) | NOT READY: published by run `40133309866` (release smoke 18/18); ECR re-read of 2026-10-25 pending and residual risk not accepted (package §6) | Platform |
+| Release `c6a6d8c` images published by registry digest | digests, image labels (§2), [package](../reports/production-release-package-c6a6d8c.md) | NOT READY: published by run `40133309866` (release smoke 18/18) and re-read from ECR 2026-10-25 (unchanged); residual risk not accepted (package §6) | Platform |
 | Release `c6a6d8c` deployed by those digests in production | deployment manifests, running image IDs | NOT READY (not deployed) | Platform |
 | Staging smoke (Tier B) on the `c6a6d8c` digests | Tier B results ([release-validation-option-a.md](./release-validation-option-a.md) §2 step 7) | NOT READY (not run). Historical evidence (`416ca94` full gate; `f5d5bb2` STG-12; `27a8daa` §16 smoke 29/29 and browser 8/8) does not count for `c6a6d8c` | Release engineer |
 | Production DNS and public TLS | cert chain, HTTPS | NOT READY | Network/PKI |

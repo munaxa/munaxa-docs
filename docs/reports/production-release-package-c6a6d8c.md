@@ -65,13 +65,40 @@ Rows come from run `40133309866`'s job logs unless stated otherwise.
 **Image IDs** of the pulled digests, as loaded by the smoke: API `sha256:789a49d8…`, web
 `sha256:957bad46…`, antivirus `sha256:56c1f344…`.
 
-**Direct ECR reads (2026-10-24, account `229251310592`, `eu-central-1`, read-only):**
+**First direct ECR reads (2026-10-24, account `229251310592`, `eu-central-1`, read-only):**
 - each digest exists with the two tags above;
 - pushed at 21:16:33 (antivirus), 21:17:21 (API) and 21:17:30 (web) UTC.
 
-**Re-verification on 2026-10-25: PENDING.** The AWS connector needed re-authorisation, so the ECR
-reads could not be repeated. Repeat `describe-images` and `describe-image-scan-findings` for the
-three digests before this package is approved.
+**Re-verification on 2026-10-25: DONE** (read-only: `sts get-caller-identity`, ECR
+`describe-repositories`, `describe-images`, `batch-get-image`, `describe-image-scan-findings`,
+`get-registry-scanning-configuration`):
+
+| Check | API | Web | Antivirus |
+| --- | --- | --- | --- |
+| Account and region | `229251310592`, `eu-central-1` | same | same |
+| Digest present in its repository | yes, `munaxa-docs/api` | yes, `munaxa-docs/web` | yes, `munaxa-docs/antivirus` |
+| Tags on the digest | `c6a6d8c`, `sha-c6a6d8cefe14f26670de9e8a413bcdd87851306d` | same | same |
+| Those tags on any other digest | no | no | no |
+| Pushed (UTC) | 2026-10-24 21:17:21 | 2026-10-24 21:17:30 | 2026-10-24 21:16:33 |
+| Image config digest (= image ID) | `sha256:789a49d8…` | `sha256:957bad46…` | `sha256:56c1f344…` |
+| Repository | `IMMUTABLE`, scan on push, AES256 | same | same |
+| Scan status | `COMPLETE` | `COMPLETE` | `COMPLETE` |
+| Scan completed (UTC) | 2026-10-24 21:17:41 | 2026-10-24 21:17:51 | 2026-10-24 21:16:41 |
+| CRITICAL / HIGH / MEDIUM / LOW | 0 / 7 / 2 / 2 | 0 / 7 / 2 / 2 | 0 / 0 / 0 / 0 |
+
+Registry scanning is `BASIC`.
+
+**Differences from the 2026-10-24 evidence:** none. The findings list is identical, CVE by CVE and
+package by package (§4).
+
+**Two limits on this re-read:**
+- **The scan has not been repeated.** BASIC scanning runs on push only, so these results are the
+  2026-10-24 scan, read again. A fresh scan (`start-image-scan`) was not authorised and was not run.
+- **The revision label was not read from ECR directly.** The connector cannot download the image
+  config blob. It is verified indirectly: each digest's config digest equals the image ID that the
+  release smoke checked, and the smoke read
+  `org.opencontainers.image.revision=c6a6d8cefe14f26670de9e8a413bcdd87851306d` from it (run
+  `40133309866`).
 
 ## 4. ECR scan results (BASIC; scans COMPLETE, 2026-10-24)
 
