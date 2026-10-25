@@ -49,6 +49,13 @@ trap cleanup EXIT
 
 secret() { openssl rand -hex 32; }
 
+# The ECS runtime hardening (infra/terraform/eu-prod/service/ecs.tf): every service container drops
+# all Linux capabilities, and the api and web containers (and the provisioning task, which runs the
+# api image) run on a read-only root filesystem with no writable mount at all, as on Fargate. The
+# smoke runs the stack the same way, so a write the hardening would break fails here first.
+no_caps=(--cap-drop ALL --security-opt no-new-privileges)
+read_only=(--read-only "${no_caps[@]}")
+
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7-alpine}"
 
@@ -96,7 +103,9 @@ docker run -d --name smoke-postgres --network host \
   -e POSTGRES_USER=edms_owner -e POSTGRES_PASSWORD="$(secret)" -e POSTGRES_HOST_AUTH_METHOD=trust \
   -e POSTGRES_DB=postgres "$POSTGRES_IMAGE" >/dev/null
 redis_password="$(secret)"
-docker run -d --name smoke-redis --network host "$REDIS_IMAGE" \
+# As the ECS task runs it: as 999:999 with no capabilities (the image's entrypoint would otherwise
+# start as root and switch users, which needs them).
+docker run -d --name smoke-redis --network host --user 999:999 "${no_caps[@]}" "$REDIS_IMAGE" \
   redis-server --bind 127.0.0.1 --port 6379 --requirepass "$redis_password" --save '' >/dev/null
 
 store_password="$(secret)"
@@ -148,7 +157,7 @@ TENANT_CATALOGUE="$catalogue" node scripts/migrate-tenants.mjs | tee "$work/migr
 
 echo "== Scanner (release image)"
 docker volume create smoke-av-signatures >/dev/null
-docker run -d --name smoke-scanner --network host -v smoke-av-signatures:/var/lib/clamav "$AV_IMAGE" >/dev/null
+docker run -d --name smoke-scanner --network host "${no_caps[@]}" -v smoke-av-signatures:/var/lib/clamav "$AV_IMAGE" >/dev/null
 node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 600
 
 echo "== Mail capture (stands in for Resend; no key, nothing leaves the host)"
@@ -206,7 +215,7 @@ provision_env="$work/provision.env"
 grep -v -E '^(TENANT_CATALOGUE|DEPLOYMENT_PROFILE)=' "$api_env" >"$provision_env"
 provision() {
   local id="$1" slug="$2" name="$3" email="$4" password="$5"
-  docker run --rm --network host --env-file "$provision_env" \
+  docker run --rm --network host "${read_only[@]}" --env-file "$provision_env" \
     -e DEPLOYMENT_PROFILE=ON_PREMISE -e QUEUE_CONSUMERS_ENABLED=false \
     -e DATABASE_URL="postgresql://edms_app@127.0.0.1:5432/smoke_edms_$slug" \
     -e TENANT_ID="$id" -e TENANT_SLUG="$slug" -e TENANT_NAME="$name" \
@@ -217,8 +226,8 @@ provision "$acme_id" acme Acme "$admin_email" "$admin_password"
 provision "$docs_id" docs Decoy "decoy-admin@docs.test" "$(secret)"
 
 echo "== API and web (release images)"
-docker run -d --name smoke-api --network host --env-file "$api_env" "$API_IMAGE" >/dev/null
-docker run -d --name smoke-web --network host \
+docker run -d --name smoke-api --network host "${read_only[@]}" --env-file "$api_env" "$API_IMAGE" >/dev/null
+docker run -d --name smoke-web --network host "${read_only[@]}" \
   -e NODE_ENV=production -e PORT=3000 -e NEXT_PUBLIC_API_URL=http://127.0.0.1:3001 "$WEB_IMAGE" >/dev/null
 for _ in $(seq 1 120); do
   curl -sf -o /dev/null http://127.0.0.1:3001/api/health/live \
@@ -231,3 +240,13 @@ SMOKE_API_URL=http://127.0.0.1:3001 SMOKE_WEB_URL=http://127.0.0.1:3000 \
   SMOKE_TENANT=acme SMOKE_DECOY_TENANT=docs SMOKE_UNPROVISIONED_TENANT=pending \
   SMOKE_ADMIN_EMAIL="$admin_email" SMOKE_ADMIN_PASSWORD="$admin_password" \
   node scripts/release-smoke/smoke.mjs
+
+echo "== Read-only root filesystem: no write was refused"
+# A refused write need not fail a request (a cache that cannot be written is skipped), so look for it.
+if docker logs smoke-api 2>&1 | grep -E 'EROFS|[Rr]ead-only file system'; then
+  echo "FAIL - the api container tried to write to its read-only root filesystem"; exit 1
+fi
+if docker logs smoke-web 2>&1 | grep -E 'EROFS|[Rr]ead-only file system'; then
+  echo "FAIL - the web container tried to write to its read-only root filesystem"; exit 1
+fi
+echo "OK   api and web ran read-only with no capabilities; no write was refused"
