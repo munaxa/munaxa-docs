@@ -33,27 +33,30 @@ rotation), [backup-and-restore.md](./backup-and-restore.md) and
 >   and stay in their release packages; **they cannot be deployed**. Republishing either to ECR
 >   is not possible as is: an `image/<sha>` tag runs `publish-images.yml` as it is at the tagged
 >   commit, and at those commits it pushes to GHCR.
-> - The only images in ECR are release `db97825` (run
->   [39929830650](https://github.com/munaxa/munaxa-docs/actions/runs/39929830650), 2026-10-23):
->   API `sha256:e8f641e608b38e9366c88e714f07a0851bd7066f64f0964f5b188bd211d78b47`, web
->   `sha256:0703fafa9f887d5c815d18b0752c5de6431f40f7c279988d31b0c30757e755b3`, antivirus
->   `sha256:1278da65948893cf62c799c19cf003296154f84489192af99f627b3dec827e22`. Its application
->   code is `041e827` plus the Docs v2 web design (#137). CI was green on each of those
->   commits, but no release package and no staging smoke cover it. Its antivirus image has two
->   Ubuntu fixes pending (#143). **It is not a selected release.**
+> - **Selected release: `c6a6d8c`** (Option A), published to ECR by run
+>   [40133309866](https://github.com/munaxa/munaxa-docs/actions/runs/40133309866) (2026-10-24)
+>   from tag `image/c6a6d8cefe14f26670de9e8a413bcdd87851306d`. Its digests, publishing checks,
+>   release smoke (18/18), ECR scans and the residual-risk acceptance that still awaits the owner's
+>   sign-off are in [production-release-package-c6a6d8c.md](../reports/production-release-package-c6a6d8c.md).
+>   Its approval gates are listed there and in
+>   [release-validation-option-a.md](./release-validation-option-a.md) §2.
+> - `db97825` (run [39929830650](https://github.com/munaxa/munaxa-docs/actions/runs/39929830650),
+>   2026-10-23) was the first ECR publication. It is superseded and **not deployable**: its images
+>   predate #143, #145, #148 and #150. Its digests stay in ECR and in the prerequisites checklist §2
+>   as history.
 > - `041e827` was the release selected for the hosted environment
 >   ([package](../reports/production-release-package-041e827.md)). `4e8e1ca` is superseded for
 >   it: it predates ECS task-role S3 credentials and the pool-size fix, so it cannot run the
 >   ADR-0024 architecture. The `4e8e1ca` sections of this runbook remain the validated
 >   procedure; apply them to the selected release's commit.
 >
-> Until a release is selected and has an ECR release package, every image reference below is a
-> placeholder for that package's ECR digest.
+> Every image reference below means the digest in the selected release's package
+> (`c6a6d8c`). Nothing may be deployed until that package's approval gates are complete.
 
 | Item | Value |
 | --- | --- |
-| Release to deploy | **Not selected for ECR yet** (note above). The last release selected for the hosted environment is `041e827` ([package](../reports/production-release-package-041e827.md)), and the last fully staged one is `4e8e1ca` ([package](../reports/production-release-package-4e8e1ca.md)), superseded for the hosted environment. Both are GHCR-only. Where this runbook names `4e8e1ca`, read the selected release's commit once one has an ECR release package |
-| Images | **ECR by digest, from the release package of the selected release** (`munaxa-docs/api`, `munaxa-docs/web`, `munaxa-docs/antivirus` in `229251310592`, eu-central-1), each labelled `org.opencontainers.image.revision=<release commit>`. Not yet selected (see the note above). `4e8e1ca`'s GHCR digests are historical: [production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md) |
+| Release to deploy | **`c6a6d8cefe14f26670de9e8a413bcdd87851306d`** (`c6a6d8c`), selected under Option A, pending its approval gates ([package](../reports/production-release-package-c6a6d8c.md)). Earlier releases (`041e827` and `4e8e1ca`, GHCR only) are historical. Where this runbook names `4e8e1ca`, read `c6a6d8c` |
+| Images | **ECR by digest, from [production-release-package-c6a6d8c.md](../reports/production-release-package-c6a6d8c.md) §2** (`munaxa-docs/api`, `munaxa-docs/web`, `munaxa-docs/antivirus` in `229251310592`, eu-central-1), each labelled `org.opencontainers.image.revision=c6a6d8cefe14f26670de9e8a413bcdd87851306d`. `4e8e1ca`'s GHCR digests are historical: [production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md) |
 | Application code | Identical to the approved application release **`27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`** (`27a8daa`): `4e8e1ca` adds only the non-root antivirus image and documentation |
 | Validated by | CI run 554 on `27a8daa`, 9/9 jobs green (lint, typecheck, test and build; integration with a real ClamAV/c-icap scanner, a real object store and two tenant databases; five end-to-end shards; visual regression; three container images; product isolation), plus the local gate and the staging smoke in [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md) |
 | Staging gate | The full gate passed on `416ca94` ([staging-acceptance-gate-e94c295.md](../reports/staging-acceptance-gate-e94c295.md)); `f5d5bb2` added the web image's brand artwork (STG-12); `c87519e` added the tenant-resolution and TOTP-enrolment fixes; `27a8daa` adds the web sign-out revocation (WEB-1) and numbering-collision (NUM-1) fixes and repeats the §16 smoke (29/29, browser 8/8) on its own images |

@@ -1,9 +1,13 @@
-# PLAN INPUT ONLY - NOT THE RELEASE. These are the digests published to ECR by "Publish images"
-# run 39929830650 from db97825d26195666e7415735f0769d1c10bbbf4d (verified in ECR, 2026-10-23).
-# They let the service root be planned. They are not a selected release: the Option A release is
-# built from the main commit that carries the antivirus and runtime-image security fixes, and its
-# release package replaces all four values here before any apply.
-release_commit  = "db97825d26195666e7415735f0769d1c10bbbf4d"
-api_image       = "229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/api@sha256:e8f641e608b38e9366c88e714f07a0851bd7066f64f0964f5b188bd211d78b47"
-web_image       = "229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/web@sha256:0703fafa9f887d5c815d18b0752c5de6431f40f7c279988d31b0c30757e755b3"
-antivirus_image = "229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:1278da65948893cf62c799c19cf003296154f84489192af99f627b3dec827e22"
+# SELECTED RELEASE c6a6d8c (Option A), pending its approval gates
+# (docs/reports/production-release-package-c6a6d8c.md). These are the digests "Publish images" run
+# 40133309866 pushed from tag image/c6a6d8cefe14f26670de9e8a413bcdd87851306d on 2026-10-24. Each is
+# labelled with the release commit and was read back from ECR in account 229251310592 (eu-central-1).
+# The API and web images carry seven HIGH Debian 12 findings with no Debian fix yet; the residual
+# risk is proposed for acceptance in the release package (§6) and is not accepted until the owner
+# signs it.
+# The previous plan-only inputs (db97825, run 39929830650) are superseded and stay as history in
+# docs/operations/production-prerequisites-checklist.md §2.
+release_commit  = "c6a6d8cefe14f26670de9e8a413bcdd87851306d"
+api_image       = "229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/api@sha256:f8af3e0a0e78601c245c03123f032d6c859aa8e3a41f35ab2100423d664e41ae"
+web_image       = "229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/web@sha256:9e4345a11db5970fca23cd43a6045e393b96becb46a223d665ba776c20beac0e"
+antivirus_image = "229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:e7ad4aa889abd477624e35d421150b8e95825a2e67d5eb5114b7b8d03f39f4a6"

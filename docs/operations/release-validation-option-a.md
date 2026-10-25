@@ -1,9 +1,9 @@
 # Release validation — Option A (Docs v2 on the ECS architecture)
 
-**Status: PLAN. Nothing in this document has run.** No release tag exists, no image has been
-published for this release, and every test result below is `NOT RUN` until it has run against the
-**exact ECR digests** of the release. Results from CI, from local builds or from the `db97825`
-images do not count as release evidence.
+**Status (2026-10-25): release `c6a6d8c` is selected and published; its approval gates are open.**
+Its evidence is in
+[production-release-package-c6a6d8c.md](../reports/production-release-package-c6a6d8c.md).
+Results from CI, from local builds or from the `db97825` images do not count as release evidence.
 
 Owner decision (2026-10-23): release the current architecture with Docs v2 (Option A), after the
 security fixes and this validation.
@@ -14,7 +14,7 @@ security fixes and this validation.
 | --- | --- |
 | Application code | `main` as of `db97825`: release `041e827` (ECS task-role S3 credentials, pool-size fix) plus the Docs v2 web design (#137), the i18n catalogues and `@munaxa/platform` 1.7.0. No API, Prisma or SQL change since `041e827` |
 | Security fixes to include | #143 (antivirus: Ubuntu zlib and xz-utils updates) and #145 (runtime image: no setuid/setgid programs), once approved and merged |
-| Release commit | **The `main` commit after those merges.** Not known yet; never a documentation commit made later |
+| Release commit | **`c6a6d8cefe14f26670de9e8a413bcdd87851306d`**: `main` after #143, #145, #148, #149, #150, #144, #146 and #147. CI run 40130559927 green |
 | Not the release | `db97825` (its images lack both fixes), `041e827` and `4e8e1ca` (GHCR only) |
 
 ## 2. Release steps and their gates
@@ -31,6 +31,28 @@ Each step needs the owner's approval where marked. Nothing is skipped or reorder
 | 6 | Release package `docs/reports/production-release-package-<short R>.md` (§3) | Every row filled from evidence | Review in a docs PR |
 | 7 | Staging smoke on the release digests (§4) | Every NO-GO item passes | **Owner authorises the run** (tier B costs money) |
 | 8 | Update #144 (runbook and checklist) with the release digests | Digests copied from step 5 | Review |
+
+**Status of each step (2026-10-25):**
+
+| # | Status |
+| --- | --- |
+| 1 | Done: #143 and #145 merged (and #148, #149, #150, #144, #146, #147) |
+| 2 | Done: `R` = `c6a6d8c`, CI run 40130559927 green |
+| 3 | Done: the owner pushed `image/c6a6d8cefe14f26670de9e8a413bcdd87851306d` |
+| 4 | Done: run 40133309866 green, including the release smoke on the published digests (18/18) |
+| 5 | Done 2026-10-24: digests and scans read from ECR. **The 2026-10-25 re-read is pending** (AWS connector re-authorisation) |
+| 6 | In review: the release package PR. **The residual-risk sign-off (package §6) is the owner's** |
+| 7 | Tier A, automated part: done by step 4's release smoke. Tier A browser rows: not run. Tier B: not run (**owner authorises; costs money**) |
+| 8 | Done in the release package PR (runbook §1 and the prerequisites checklist name `c6a6d8c`) |
+
+**Gates after this plan (not in the table above):**
+
+| Gate | Approval |
+| --- | --- |
+| The Terraform plan of `eu-prod/service` with these inputs | Runs from `main` only, so the release package PR (with `release.auto.tfvars`) is merged first, and #152 stays out of this plan. Then the **owner starts** "Terraform eu-prod" (`terraform-eu-prod.yml`) with `root=service`, `action=plan`, and **approves the `production` environment**. A plan changes nothing; review its summary before any `apply` |
+| The ECS runtime pull test (runbook §10.1) | **Owner authorises** (creates resources; costs money) |
+| ECS hardening (#152) | Separate change; owner review and merge, then its own plan |
+| Any `apply` and the deployment | **Owner authorises each**; not covered by any approval so far |
 
 **What step 4 verifies by itself:**
 
