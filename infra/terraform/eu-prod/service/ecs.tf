@@ -56,6 +56,17 @@ locals {
     METRICS_DRIVER             = "PROMETHEUS"
   }
 
+  # Runtime hardening. Every service container drops all Linux capabilities: each runs as a non-root
+  # user (web and api as `node`, the scanner as clamav 101:102, Redis as 999:999), none switches user
+  # or binds a privileged port, and the images carry no setuid program. web and api also run on a
+  # read-only root filesystem with no writable mount: neither writes to its filesystem in Production
+  # (S3 storage, no LibreOffice or Tesseract in the api image). The scanner and Redis keep a writable
+  # one: the scanner writes signatures, pid files, logs and scan files under /var and /tmp, and a
+  # Fargate volume there would be root-owned unless the image declared it (a VOLUME), which is an
+  # image change; Redis writes its password file to /tmp. The release smoke runs the stack the same
+  # way (scripts/release-smoke/run.sh).
+  no_capabilities = { capabilities = { drop = ["ALL"] } }
+
   # Redis reads its password from the environment and writes it to a config file with a shell
   # built-in, so it never appears in a process argument list.
   redis_command = join(" && ", [
@@ -138,7 +149,8 @@ resource "aws_ecs_task_definition" "web" {
     name                   = "web"
     image                  = var.web_image
     essential              = true
-    readonlyRootFilesystem = false
+    readonlyRootFilesystem = true
+    linuxParameters        = local.no_capabilities
     portMappings           = [{ containerPort = 3000, protocol = "tcp" }]
     environment = [for k, v in {
       NODE_ENV            = "production"
@@ -171,7 +183,8 @@ resource "aws_ecs_task_definition" "api" {
       image                  = var.api_image
       essential              = true
       memory                 = 1792
-      readonlyRootFilesystem = false
+      readonlyRootFilesystem = true
+      linuxParameters        = local.no_capabilities
       portMappings           = [{ containerPort = 3001, protocol = "tcp" }]
       environment            = [for k, v in local.api_environment : { name = k, value = v }]
       secrets = [
@@ -195,7 +208,8 @@ resource "aws_ecs_task_definition" "api" {
       essential              = true
       memory                 = 256
       user                   = "999:999"
-      readonlyRootFilesystem = false
+      readonlyRootFilesystem = false # it writes its password file to /tmp (redis_command)
+      linuxParameters        = local.no_capabilities
       entryPoint             = ["sh", "-c"]
       command                = [local.redis_command]
       secrets                = [{ name = "REDIS_PASSWORD", valueFrom = local.app_secret_ref["REDIS_PASSWORD"] }]
@@ -226,10 +240,11 @@ resource "aws_ecs_task_definition" "scanner" {
   }
 
   container_definitions = jsonencode([{
-    name         = "scanner"
-    image        = var.antivirus_image
-    essential    = true
-    portMappings = [{ containerPort = 1344, protocol = "tcp" }]
+    name            = "scanner"
+    image           = var.antivirus_image
+    essential       = true
+    linuxParameters = local.no_capabilities
+    portMappings    = [{ containerPort = 1344, protocol = "tcp" }]
     # A real scan through c-icap and clamd, not an ICAP OPTIONS ping (§2.7). The start period covers
     # the first signature download into the task's own storage (no EFS).
     healthCheck = {

@@ -158,11 +158,13 @@ resource "aws_ecs_task_definition" "ops_provision" {
   # search index are its slug, matching the runtime catalogue. Queue consumers are off.
   container_definitions = jsonencode([
     {
-      name      = "provision"
-      image     = var.api_image
-      essential = true
-      memory    = 1792
-      command   = ["node", "apps/api/dist/provision.js"]
+      name                   = "provision"
+      image                  = var.api_image
+      essential              = true
+      memory                 = 1792
+      readonlyRootFilesystem = true
+      linuxParameters        = local.no_capabilities
+      command                = ["node", "apps/api/dist/provision.js"]
       environment = [for k, v in merge(local.api_environment, {
         DEPLOYMENT_PROFILE      = "ON_PREMISE"
         QUEUE_CONSUMERS_ENABLED = "false"
@@ -185,7 +187,8 @@ resource "aws_ecs_task_definition" "ops_provision" {
       essential              = false
       memory                 = 256
       user                   = "999:999"
-      readonlyRootFilesystem = false
+      readonlyRootFilesystem = false # it writes its password file to /tmp (redis_command)
+      linuxParameters        = local.no_capabilities
       entryPoint             = ["sh", "-c"]
       command                = [local.redis_command]
       secrets                = [{ name = "REDIS_PASSWORD", valueFrom = local.app_secret_ref["REDIS_PASSWORD"] }]
