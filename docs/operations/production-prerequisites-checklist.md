@@ -1,9 +1,21 @@
-# Production Prerequisites Checklist — release `4e8e1ca`
+# Production Prerequisites Checklist — selected release `f8a8bea`
 
-**Release:** `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` (`4e8e1ca`), **published and verified** as
-three immutable images by run `36819091004`
-([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)). Its
-application code is the approved `27a8daa`; it supersedes `c87519e`, `f5d5bb2` and the `8cb4c14`
+**Selected release:** `f8a8bea62256abb80ad4e33e367ba03bd426d1d8` (`f8a8bea`, Option A, remediated
+runtime). It was published to Amazon ECR as three immutable images by run `40225272398`
+([production-release-package-f8a8bea.md](../reports/production-release-package-f8a8bea.md)).
+- **Approval gates still open:**
+  - the residual-risk decision (package §6, NOT ACCEPTED);
+  - Tier B;
+  - the Terraform plan;
+  - the ECS pull test;
+  - any apply.
+- **Not deployed**, and nothing has run on Fargate.
+- **Superseded:** `c6a6d8c`, published 2026-10-24 (§2 history).
+
+*Historical:* release `4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b` (`4e8e1ca`) was published to GHCR
+by run `36819091004`
+([production-release-package-4e8e1ca.md](../reports/production-release-package-4e8e1ca.md)) and
+cannot be deployed from ECR. Its application code was the approved `27a8daa`; it superseded `c87519e`, `f5d5bb2` and the `8cb4c14`
 image line, which are historical and not deployable. Launch limitations WF-1, KEY-1 and D-1, subject to formal sign-off before go-live, are in runbook §1a. See
 [production-release-package-27a8daa.md](../reports/production-release-package-27a8daa.md), the
 [staging acceptance report](../reports/staging-acceptance-gate-e94c295.md), the
@@ -18,11 +30,11 @@ credentials are invented here, and no secret value belongs in Git or in this fil
 
 Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 
-**Recorded 2026-09-29; release identity updated 2026-09-30; release publication recorded 2026-10-01.**
+**Recorded 2026-09-29; release identity updated 2026-09-30; release publication recorded 2026-10-01; selected ECR release `c6a6d8c` recorded 2026-10-25, superseded the same day by `f8a8bea` (remediated runtime).**
 
 | Area | Status |
 | --- | --- |
-| **Release artifacts** (§2) | **PUBLISHED AND VERIFIED.** API, web and scanner of `4e8e1ca` by digest, revision-labelled, pulled with the production pull identity |
+| **Release artifacts** (§2) | **PUBLISHED; APPROVAL GATES OPEN.** API, web and scanner of `f8a8bea` in ECR by digest. The publishing run checked each revision label. Release smoke 18/18 on the published digests, read-only and with no capabilities. ECR scan on push: no CRITICAL or HIGH finding. Residual risk NOT ACCEPTED; no ECS pull tested; not deployed. `c6a6d8c` superseded. *Historical:* `4e8e1ca` (GHCR), published and verified, not deployable from ECR |
 | **Production infrastructure** (§1) | **NOT READY.** No production environment, domain, relay, on-call destination or provider has been supplied, and none was reachable from the release engineering environment. Every item in §1 is therefore not READY |
 
 ## 1. Prerequisite matrix
@@ -37,7 +49,7 @@ Statuses: **READY**, **MISSING**, **BLOCKED**, **OPERATOR ACTION REQUIRED**.
 | 6 | Object storage | **MISSING** (no production bucket or origin supplied) | Bucket CORS for the web origin (browser upload), versioning, replication failover, `STORAGE_PUBLIC_URL` previews, independent store probe | Production bucket and its scope. Credentials scoped to it. `STORAGE_PUBLIC_URL` = the production web origin. CORS allowing `PUT`/`GET` from **the actual production origin** (supplied by the operator). Versioning on. Replication configured. Capacity and quota known. Independent monitoring (item 3) | Operator (storage) |
 | 7 | Backup / PITR / failover | **MISSING** (no production database provider, restore destination or credentials supplied) | `edms_backup` backups, verify, a scheduled backup with `BackupFailed` alert, zero-difference DR restore, PITR to a timestamp (cluster-level), one tenant restored to a point in time by extraction from the recovered cluster, replica failover | `edms_backup` created (runbook §6 step 1b). Scheduled backups with verification. WAL archiving/PITR on. Replication. A written failover procedure. Backup alerts reaching on-call. A restore destination and restore credentials. **If the provider's PITR/failover cannot be rehearsed before go-live, this stays NOT READY** and the risk goes to the change approver. No destructive production tests | Operator (DBA) |
 | 8 | Production load baseline | **MISSING** (no production-sized infrastructure; no approved thresholds) | 100 identities, 29,551 requests, 0 failures, 0 rate-limited. **Latency targets missed** on a single 4-CPU host. This does **not** establish production capacity | The measurement in §5 on production-sized infrastructure, compared against thresholds **supplied or approved by the operator** (or existing capacity requirements) | Operator (capacity owner) + release engineer |
-| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry: Amazon ECR, applied 2026-10-22; first ECR publication `db97825`, which is not a selected release; no ECS pull tested yet, §2. Secret store, versioned configuration and signing policy still open) | Images build reproducibly from `27a8daa` (CI run 554) and ran the §16 smoke 29/29 and browser 8/8 in a staging-shaped deployment; release `4e8e1ca` was published to GHCR by run `36819091004` (historical); `db97825` was published to ECR by run `39929830650` (§2) | ☑ A registry with immutable digests and access control (ECR, IMMUTABLE tags, push only by the OIDC publisher role). ☑ API, web and scanner pushed and verified **by digest** (`db97825`; not a selected release). ☐ A selected release with an ECR release package. ☐ Pulls by the ECS execution roles proven by a real task (runbook §10.1); IAM simulation passes. The GHCR pull identity (`DOCS_PRODUCTION_PULL_USER`/`_TOKEN`) stays until then. ☐ Signing, if policy requires. ☐ A secret store holding every secret in §3. ☐ Configuration versioned. ☐ A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
+| 9 | Image registry / secrets / configuration | **OPERATOR ACTION REQUIRED** (registry: Amazon ECR, applied 2026-10-22; selected release `f8a8bea` published to ECR 2026-10-25 with a release package, pending its approval gates; `c6a6d8c` and `db97825` superseded; no ECS pull tested yet, §2. Secret store, versioned configuration and signing policy still open) | Images build reproducibly from `27a8daa` (CI run 554) and ran the §16 smoke 29/29 and browser 8/8 in a staging-shaped deployment; release `4e8e1ca` was published to GHCR by run `36819091004` (historical); `db97825` was published to ECR by run `39929830650` (§2) | ☑ A registry with immutable digests and access control (ECR, IMMUTABLE tags, push only by the OIDC publisher role). ☑ API, web and scanner pushed and verified **by digest** (`db97825`; not a selected release). ☑ A selected release with an ECR release package (`f8a8bea`, [package](../reports/production-release-package-f8a8bea.md); its residual-risk decision and Tier B gates are still open). ☐ Pulls by the ECS execution roles proven by a real task (runbook §10.1); IAM simulation passes. The GHCR pull identity (`DOCS_PRODUCTION_PULL_USER`/`_TOKEN`) stays until then. ☐ Signing, if policy requires. ☐ A secret store holding every secret in §3. ☐ Configuration versioned. ☐ A rollback target by digest (runbook §20): none for the first deployment, which must be recorded | Operator (platform) |
 
 ## 2. Images and publication
 
@@ -51,7 +63,38 @@ API's query engine, the web image's branding, and for the scanner the recorded C
 GitHub OIDC by the publisher role, which may only push to the three repositories. A final job
 confirms each digest in ECR. No registry credential is involved.
 
-**ECR publication status: PUBLISHED, NOT A SELECTED RELEASE.** Tag
+**Selected release: `f8a8bea` (Option A, remediated runtime), PUBLISHED, NOT DEPLOYED, APPROVAL
+GATES OPEN.** Tag `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8`, run
+[40225272398](https://github.com/munaxa/munaxa-docs/actions/runs/40225272398), 2026-10-25. All six
+jobs succeeded, including the release smoke on the published digests: 18/18, with api, web and
+provisioning read-only and with no capabilities.
+
+| Image | Digest | Tags | ECR basic scan on push (2026-10-25), C / H / M / L |
+| --- | --- | --- | --- |
+| API | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/api@sha256:e61494a2fc44b7f488e8a04226b309fb8a20b39cc2b2db1f9b9cfddfcc5abcc8` | `f8a8bea`, `sha-f8a8bea62256abb80ad4e33e367ba03bd426d1d8` | 0 / 0 / 1 / 2: glibc `2.36-9+deb12u14`, CVE-2026-86805 (MEDIUM), CVE-2026-97399 and CVE-2026-95818 (LOW) |
+| Web | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/web@sha256:0f32ac71d392a374c2a8367684c861d8937b57ff490e1d5d49388fcedc6e08a8` | same | 0 / 0 / 1 / 2 (same three) |
+| Antivirus | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:fe60b49b0266196188ee0bc8b31d8e8546ac76ecf409ce4082660d0c12b4dfdb` | same | 0 / 0 / 0 / 0 |
+
+- **The seven HIGH findings are gone from ECR's results.** They were the util-linux and zlib
+  findings on `c6a6d8c`'s API and web images, and ECR does not report them on these digests.
+- **The local scanners disagree.** Trivy and Grype list libc6, gcc-12 and libssl3 findings that ECR
+  does not report. That is a difference between scanner databases, not a fix.
+- **Risk acceptance is NOT ACCEPTED.**
+
+Details are in [production-release-package-f8a8bea.md](../reports/production-release-package-f8a8bea.md).
+
+**History: `c6a6d8c`, superseded, not deployable.** Tag
+`image/c6a6d8cefe14f26670de9e8a413bcdd87851306d`, run
+[40133309866](https://github.com/munaxa/munaxa-docs/actions/runs/40133309866), 2026-10-24. Its
+release package (#153) was never merged. Its API and web images carry the seven HIGH findings:
+
+| Image | Digest | Tags | ECR basic scan (2026-10-24) |
+| --- | --- | --- | --- |
+| API | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/api@sha256:f8af3e0a0e78601c245c03123f032d6c859aa8e3a41f35ab2100423d664e41ae` | `c6a6d8c`, `sha-c6a6d8cefe14f26670de9e8a413bcdd87851306d` | HIGH 7, MEDIUM 2, LOW 2 (Debian 12 util-linux and zlib) |
+| Web | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/web@sha256:9e4345a11db5970fca23cd43a6045e393b96becb46a223d665ba776c20beac0e` | same | HIGH 7, MEDIUM 2, LOW 2 (same) |
+| Antivirus | `229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus@sha256:e7ad4aa889abd477624e35d421150b8e95825a2e67d5eb5114b7b8d03f39f4a6` | same | none |
+
+**History: `db97825`, superseded, not deployable.** Tag
 `image/db97825d26195666e7415735f0769d1c10bbbf4d`, run
 [39929830650](https://github.com/munaxa/munaxa-docs/actions/runs/39929830650), 2026-10-23
 (every job succeeded). All pushes came from the publisher role (CloudTrail):
@@ -66,7 +109,7 @@ confirms each digest in ECR. No registry credential is involved.
 of those commits, but no release package and no staging smoke cover them. A release is deployable
 only after it has been selected and has an ECR release package with its digests.
 
-**Not yet proven:**
+**Not yet proven (as recorded for `db97825`; for `f8a8bea` see its package §5 and §7):**
 
 - that ECS can pull these images. The pull is authorised by IAM (simulated) and by the S3 endpoint
   policy, but no task has run (runbook §10.1);
@@ -92,7 +135,7 @@ the three `image@sha256:…` references in the change record.
 
 Deployment manifests reference **`image@sha256:<digest>` only** — never a tag.
 
-| Release candidate evidence (not deliverable artifacts) | Value |
+| Historical release candidate evidence for `27a8daa` (not deliverable artifacts, not evidence for `f8a8bea`) | Value |
 | --- | --- |
 | Local API/web images of `27a8daa` used for the staging smoke | Built from a clean checkout of `27a8daa`, labelled `org.opencontainers.image.revision=27a8daa69f878df56ddc8e8e6360ecec6c5ef1a5`; release package §4 |
 | Scanner rebuilt from `infra/antivirus` at `27a8daa` | ClamAV **1.5.4**, c-icap **0.5.10**; `probe.mjs` exit 0 |
@@ -108,7 +151,7 @@ kept as evidence and **not** to be published or deployed:
 
 At go-live, on the **published digests**, re-confirm (the publishing run verified each already):
 
-- the API, web and scanner images carry `org.opencontainers.image.revision=4e8e1ca825b4bc376dc15566c9ba9e5938a6ae7b`;
+- the API, web and scanner images carry `org.opencontainers.image.revision=f8a8bea62256abb80ad4e33e367ba03bd426d1d8`;
 - the web image serves `/branding/docs/favicon/favicon-32.png`;
 - the scanner's recorded versions match the workflow run, and `probe.mjs` passes;
 - §16 smoke passes on these digests.
@@ -217,9 +260,9 @@ harness's built-in targets are not approved thresholds, and the staging result s
 
 | Requirement | Evidence | Status | Owner |
 | --- | --- | --- | --- |
-| Release `4e8e1ca` images published by registry digest | digests, image labels (§2) | **READY** (published and verified, run `36819091004`) | Platform |
-| Release `4e8e1ca` deployed by those digests in production | deployment manifests, running image IDs | NOT READY (not deployed) | Platform |
-| Staging gate (`416ca94` full; `f5d5bb2` STG-12 targeted; `27a8daa` §16 smoke 29/29 and browser 8/8 on its own images) | staging report §1, §14; release package | READY (staging evidence) | Release engineer |
+| Release `f8a8bea` images published by registry digest | digests, image labels (§2), [package](../reports/production-release-package-f8a8bea.md) | NOT READY: published by run `40225272398` (release smoke 18/18, read-only, no capabilities) and read from ECR 2026-10-25 (no CRITICAL or HIGH); residual risk NOT ACCEPTED (package §6) | Platform |
+| Release `f8a8bea` deployed by those digests in production | deployment manifests, running image IDs | NOT READY (not deployed) | Platform |
+| Staging smoke (Tier B) on the `f8a8bea` digests, including Fargate behaviour of the read-only roots, dropped capabilities and the scanner's signature writes | Tier B results ([release-validation-option-a.md](./release-validation-option-a.md) §2 step 7) | NOT READY (not run). Historical evidence (`416ca94` full gate; `f5d5bb2` STG-12; `27a8daa` §16 smoke 29/29 and browser 8/8) does not count for `f8a8bea` | Release engineer |
 | Production DNS and public TLS | cert chain, HTTPS | NOT READY | Network/PKI |
 | Monitoring stack, signals in §4 | targets up, rules loaded | NOT READY | SRE |
 | Scanner DEGRADED alert reaches the **production** on-call | test alert acknowledged by on-call | NOT READY | On-call owner |
@@ -228,7 +271,7 @@ harness's built-in targets are not approved thresholds, and the staging result s
 | Scanner UP on the private network; `probe.mjs` passes from the API network | probe output, `/api/health` | NOT READY | Network + release engineer |
 | Backup taken, verified and confirmed by a named person | backup IDs, verify output | NOT READY (at go-live) | DBA + named person |
 | PITR/recovery requirements satisfied | archiver status, procedure, rehearsal or recorded risk | NOT READY | DBA |
-| Migration procedure ready (checkout of `4e8e1ca`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
+| Migration procedure ready (checkout of `f8a8bea`, migration URL, verified backup) | workstation, dry check | NOT READY | Release engineer |
 | All required secrets present (§3) | API starts under `NODE_ENV=production` | NOT READY | Platform |
 | Production load/capacity requirements established | §5 results against approved thresholds | NOT READY | Capacity owner |
 | Rollback path (the previous production release's digest, or "no rollback target — first deployment" recorded) | registry, runbook §20 | NOT READY | Release engineer |

@@ -1,9 +1,11 @@
 # Release validation — Option A (Docs v2 on the ECS architecture)
 
-**Status: PLAN. Nothing in this document has run.** No release tag exists, no image has been
-published for this release, and every test result below is `NOT RUN` until it has run against the
-**exact ECR digests** of the release. Results from CI, from local builds or from the `db97825`
-images do not count as release evidence.
+**Status (2026-10-25): release `f8a8bea` is selected and published, not deployed; its approval gates
+are open.** Its evidence is in
+[production-release-package-f8a8bea.md](../reports/production-release-package-f8a8bea.md).
+Results from CI, from local builds, or from the `db97825` and `c6a6d8c` images do not count as
+release evidence. `c6a6d8c` was published on 2026-10-24 and is superseded: its API and web images
+carry seven HIGH findings that `f8a8bea` removes (package §3, §4). Its package (#153) is not merged.
 
 Owner decision (2026-10-23): release the current architecture with Docs v2 (Option A), after the
 security fixes and this validation.
@@ -12,10 +14,10 @@ security fixes and this validation.
 
 | Item | Value |
 | --- | --- |
-| Application code | `main` as of `db97825`: release `041e827` (ECS task-role S3 credentials, pool-size fix) plus the Docs v2 web design (#137), the i18n catalogues and `@munaxa/platform` 1.7.0. No API, Prisma or SQL change since `041e827` |
-| Security fixes to include | #143 (antivirus: Ubuntu zlib and xz-utils updates) and #145 (runtime image: no setuid/setgid programs), once approved and merged |
-| Release commit | **The `main` commit after those merges.** Not known yet; never a documentation commit made later |
-| Not the release | `db97825` (its images lack both fixes), `041e827` and `4e8e1ca` (GHCR only) |
+| Application code | `f8a8bea`, the same as `c6a6d8c`: release `041e827` (ECS task-role S3 credentials, pool-size fix) plus the Docs v2 web design (#137), the i18n catalogues, `@munaxa/platform` 1.7.0, the SMK-1 sign-in fix (#148) and the D-10 fix (#150) ([package](../reports/production-release-package-f8a8bea.md) §1). *As planned on 2026-10-23, at `db97825`:* no API, Prisma or SQL change since `041e827`; #148 and #150 changed the API after that |
+| Security fixes to include | #143 (antivirus: Ubuntu zlib and xz-utils updates) and #145 (runtime image: no setuid/setgid programs), both in `c6a6d8c`. Then:<br>• #151: Debian 12 updates at build time;<br>• #154: an API and web runtime without util-linux, zlib, a shell or a package manager, which removes the seven HIGH findings;<br>• #152: ECS hardening (read-only roots, all capabilities dropped). |
+| Release commit | **`f8a8bea62256abb80ad4e33e367ba03bd426d1d8`**: `main` after #151, #154 and #152. CI run 40222555678 green |
+| Not the release | `c6a6d8c` (published 2026-10-24; its API and web images carry the seven HIGH findings), `db97825` (its images lack #143 and #145), `041e827` and `4e8e1ca` (GHCR only) |
 
 ## 2. Release steps and their gates
 
@@ -31,6 +33,28 @@ Each step needs the owner's approval where marked. Nothing is skipped or reorder
 | 6 | Release package `docs/reports/production-release-package-<short R>.md` (§3) | Every row filled from evidence | Review in a docs PR |
 | 7 | Staging smoke on the release digests (§4) | Every NO-GO item passes | **Owner authorises the run** (tier B costs money) |
 | 8 | Update #144 (runbook and checklist) with the release digests | Digests copied from step 5 | Review |
+
+**Status of each step (2026-10-25):**
+
+| # | Status |
+| --- | --- |
+| 1 | Done: #143 and #145 merged (and #148, #149, #150, #144, #146, #147), then #151, #154 and #152 |
+| 2 | Done: `R` = `f8a8bea`, CI run 40222555678 green. (`c6a6d8c`, an earlier `R`, was published and is superseded) |
+| 3 | Done: the owner pushed `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8` |
+| 4 | Done: run 40225272398 green, all six jobs. The release smoke on the published digests passed 18/18, with api, web and provisioning read-only and with no capabilities |
+| 5 | Done 2026-10-25, read twice (package §2, §3). Scans `COMPLETE` on push; no scan was started afterwards |
+| 6 | In review: the release package PR. **The residual-risk decision (package §6) is the owner's** |
+| 7 | Tier A, automated part: done by step 4's release smoke. Tier A browser rows: not run. Tier B: not run (**owner authorises; costs money**) |
+| 8 | Done in the release package PR (runbook §1 and the prerequisites checklist name `f8a8bea`) |
+
+**Gates after this plan (not in the table above):**
+
+| Gate | Approval |
+| --- | --- |
+| The Terraform plan of `eu-prod/service` with these inputs | Runs from `main` only, so the release package PR (with `release.auto.tfvars`) is merged first. The plan includes #152's hardening, which is part of `R`. Then the **owner starts** "Terraform eu-prod" (`terraform-eu-prod.yml`) with `root=service`, `action=plan`, and **approves the `production` environment**. A plan changes nothing; review its summary before any `apply` |
+| The ECS runtime pull test (runbook §10.1) | **Owner authorises** (creates resources; costs money) |
+| Fargate behaviour of #152's hardening: read-only roots, dropped capabilities, the scanner's signature writes into its own container layer | Not proven; shown only on Docker. Tier B (step 7) is what proves it (package §5) |
+| Any `apply` and the deployment | **Owner authorises each**; not covered by any approval so far |
 
 **What step 4 verifies by itself:**
 
@@ -55,7 +79,7 @@ It does **not** run the application against a database, object store or browser.
 | Publishing checks | Each check of §2 step 4, with the log line | Run log |
 | Scanner versions | `clamd --version`, `c-icap -V`, the package list | Run log (`antivirus-versions`) |
 | ECR scans | Per image: scan completion time, counts by severity, every HIGH and CRITICAL with its package and status | `ecr describe-image-scan-findings` |
-| Expected scan changes | Antivirus: CVE-2026-85091 and USN-8945-1 gone. API and web: the 6 util-linux and 1 zlib HIGH remain until Debian 12 ships fixes (no setuid path after #145) | §5 |
+| Expected scan changes | Antivirus: CVE-2026-85091 and USN-8945-1 gone. API and web: from `f8a8bea` on, the 6 util-linux and 1 zlib HIGH are gone (#154). *Before `f8a8bea`, as planned on 2026-10-23:* they remained until Debian 12 ships fixes | §5 |
 | Smoke results | Every §4 row with PASS/FAIL, timestamps and the digests it ran on | §4 records |
 | Accepted limitations | WF-1, KEY-1, D-1, D-4, and the open Debian 12 CVEs | Runbook §1a |
 | Not yet proven | Whatever §4 or the ECS pull test (runbook §10.1) has not covered | — |
@@ -134,7 +158,7 @@ Run after the ECS pull test (runbook §10.1). The service root runs in its stage
 | Docs v2 UI | No horizontal scroll at 320, 768 and 1280 px, in EN and AR | A | Browser | no |
 | Docs v2 UI | Brand assets served (5/5) | A, B | 200 `image/png` | yes |
 | Security | Security headers, TLS 1.2+ on the ALB (`ELBSecurityPolicy-TLS13-1-2-2021-06`), HTTP redirects to HTTPS | B | Runbook §17 | yes |
-| Security | No setuid/setgid file in the api and web images (#145) | A | `find / -perm /6000` empty | yes |
+| Security | No setuid/setgid file in the api and web images (#145) | A | None in the exported image filesystem (`docker export`, as `scripts/release-smoke/run.sh` checks). Since #154 the images have no shell, so `find` cannot run inside them | yes |
 
 CI already runs the Docs v2 end-to-end and visual-regression suites on every commit (`ci.yml`). They
 run on CI builds, not on the release digests, so they support the rows above but do not replace them.
@@ -151,7 +175,24 @@ For each run, record:
 
 A harness fix may be re-run. A product failure stops the release.
 
-## 5. Security status at the time of writing (2026-10-23)
+## 5. Security status
+
+**Release `f8a8bea`, ECR scan on push, read 2026-10-25** ([package](../reports/production-release-package-f8a8bea.md) §3):
+
+| Image | CRITICAL / HIGH / MEDIUM / LOW | Findings |
+| --- | --- | --- |
+| api | 0 / 0 / 1 / 2 | glibc `2.36-9+deb12u14`: CVE-2026-86805 (MEDIUM), CVE-2026-97399 (LOW), CVE-2026-95818 (LOW) |
+| web | 0 / 0 / 1 / 2 | the same three |
+| antivirus | 0 / 0 / 0 / 0 | none |
+
+- **The seven HIGH findings are gone from ECR's results.** They were six util-linux and one zlib
+  finding on the `c6a6d8c` API and web images, and none appears on `f8a8bea`'s.
+- **The local scanners disagree with ECR.** Trivy and Grype also list libc6, gcc-12 and libssl3
+  findings that ECR BASIC does not report (package §4.3). That difference comes from the scanners'
+  databases and is not evidence that those findings are fixed.
+- **Risk acceptance is NOT ACCEPTED** (package §6).
+
+*Historical, as written on 2026-10-23:*
 
 | Image | Expected after the release | Still open |
 | --- | --- | --- |
