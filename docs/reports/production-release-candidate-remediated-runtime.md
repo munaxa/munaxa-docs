@@ -18,7 +18,7 @@ built from a commit that contains #154.
 | **Release commit `R`** | **PENDING: the owner chooses `R` before tagging** |
 | Option A | `6c79358753961c8fe7947548640f069774086485`, `main` after #154 |
 | Option B | `main` after #152 (ECS hardening), if it is merged first. `publish-images.yml` then runs the hardened release smoke (`--read-only`, `--cap-drop ALL`) on the published digests |
-| CI on `R` | PENDING. For option A: "CI" run [40218617539](https://github.com/munaxa/munaxa-docs/actions/runs/40218617539) (push to `main`) |
+| CI on `R` | For option A: "CI" run [40218617539](https://github.com/munaxa/munaxa-docs/actions/runs/40218617539) (push to `main`), passed 10/10. For option B: PENDING, CI on `main` after #152 |
 | Release tag | PENDING: `image/<full R>`, created by the owner |
 | Publishing run | PENDING: "Publish images" on that tag |
 
@@ -138,11 +138,11 @@ record (§6).
 | --- | --- |
 | PR #154 CI on `8cebc37` (20 checks) | Passed. Release smoke 18/18 on the shell-less API and web images. Web artwork served. Prisma engine check, integration and every end-to-end shard passed |
 | `8cebc37` and `6c79358` trees | Identical (`git diff 8cebc37 6c79358` is empty) |
-| CI on `6c79358` (push to `main`) | Run [40218617539](https://github.com/munaxa/munaxa-docs/actions/runs/40218617539): 9 of 10 jobs passed, including the release smoke, the image builds (API, web and worker), the Prisma engine check, integration and every end-to-end shard. The tenth, "Lint · Typecheck · Test · Build", was still in its visual-regression step when this was written; lint, typecheck, unit tests and build had passed |
+| CI on `6c79358` (push to `main`) | Run [40218617539](https://github.com/munaxa/munaxa-docs/actions/runs/40218617539): **passed, 10 of 10 jobs.** These include the release smoke, the image builds (API, web and worker), the Prisma engine check, integration, every end-to-end shard and "Lint · Typecheck · Test · Build" with its visual-regression step |
 | `runtime` built from `6c79358` (local) | 9 Debian packages, current Debian 12 versions (`libssl3 3.0.22-1~deb12u1`, `libc6 2.36-9+deb12u14`, `ca-certificates 20250419~deb12u2`). No setuid or setgid file. No shell, package manager or `mount`. No util-linux or zlib file |
 | Native modules on that runtime (local) | Lockfile versions: Prisma 6.19.3, `sharp` 0.34.5, `msgpackr-extract` 3.0.4. Run with `--read-only --cap-drop ALL --security-opt no-new-privileges`, Node v22.23.4 selects the `debian-openssl-3.0.x` engine, connects to PostgreSQL 16 with `sslmode=require` and writes; `sharp` and `msgpackr-extract` load; HTTPS works; `dumb-init` forwards SIGTERM |
 | Rewritten checks (local) | Setuid: fails `node:22-bookworm-slim`, passes the runtime. Engine: passes an image with the engine, fails one without. `.npmrc`: fails an image with a planted token |
-| #152 hardened smoke on the new runtime | **Passed.** `main` was merged into #152 as `7ee0fc2`. Run [40218763269](https://github.com/munaxa/munaxa-docs/actions/runs/40218763269) built the API and web images from this runtime and ran api, web and provisioning with `--read-only --cap-drop ALL --security-opt no-new-privileges`, Redis and the scanner with `--cap-drop ALL`: 18/18, and "no write was refused". That is Docker on a CI runner, not Fargate |
+| #152 hardened smoke on the new runtime | **Passed.** `main` was merged into #152 as `7ee0fc2`; its push run and PR run ([40218768937](https://github.com/munaxa/munaxa-docs/actions/runs/40218768937)) passed 20/20 checks. Run [40218763269](https://github.com/munaxa/munaxa-docs/actions/runs/40218763269) built the API and web images from this runtime and ran api, web and provisioning with `--read-only --cap-drop ALL --security-opt no-new-privileges`, Redis and the scanner with `--cap-drop ALL`: 18/18, and "no write was refused". That is Docker on a CI runner, not Fargate |
 
 ## 6. Residual risk for this candidate
 
