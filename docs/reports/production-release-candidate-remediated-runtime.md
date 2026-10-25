@@ -17,7 +17,7 @@ built from a commit that contains #154.
 | --- | --- |
 | **Release commit `R`** | **`f8a8bea62256abb80ad4e33e367ba03bd426d1d8`**: `main` after #152, the squash of reviewed head `7ee0fc2` (identical tree). The owner chose option B on 2026-10-25 |
 | Option A (not chosen) | `6c79358753961c8fe7947548640f069774086485`, `main` after #154 |
-| CI on `R` | "CI" run [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678) (push to `main`): see §5. The tag must wait until it passes |
+| CI on `R` | "CI" run [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678) (push to `main`): passed |
 | Release tag | PENDING: `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8`, created by the owner |
 | Publishing run | PENDING: "Publish images" on that tag |
 
@@ -140,7 +140,7 @@ record (§6).
 
 | Check | Result |
 | --- | --- |
-| CI on `R` = `f8a8bea` (push to `main`) | Run [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678): **PENDING**, queued at 18:42 UTC. Record its result here before tagging |
+| CI on `R` = `f8a8bea` (push to `main`) | Run [40222555678](https://github.com/munaxa/munaxa-docs/actions/runs/40222555678): **passed** (completed 18:56 UTC), including the release smoke with api, web and provisioning read-only and no capabilities |
 | `7ee0fc2` and `f8a8bea` trees | Identical (`git diff 7ee0fc2 f8a8bea` is empty). #152 was squash-merged pinned to `7ee0fc2` after its head, mergeability and 20/20 checks were re-checked |
 | Redis sidecar as the task definition runs it (local) | The pinned `redis` digest with `--user 999:999 --cap-drop ALL` and the task's `sh -c` command: running, no effective capabilities, `/tmp/redis.conf` mode 600, password not in the process arguments, the task's health check passes, an unauthenticated ping gets `NOAUTH` |
 | PR #154 CI on `8cebc37` (20 checks) | Passed. Release smoke 18/18 on the shell-less API and web images. Web artwork served. Prisma engine check, integration and every end-to-end shard passed |
