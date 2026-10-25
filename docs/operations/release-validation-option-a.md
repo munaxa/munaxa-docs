@@ -51,10 +51,11 @@ Each step needs the owner's approval where marked. Nothing is skipped or reorder
 
 | Gate | Approval |
 | --- | --- |
-| The Terraform plan of `eu-prod/service` with these inputs | Runs from `main` only, so the release package PR (with `release.auto.tfvars`) is merged first. The plan includes #152's hardening, which is part of `R`. Then the **owner starts** "Terraform eu-prod" (`terraform-eu-prod.yml`) with `root=service`, `action=plan`, and **approves the `production` environment**. A plan changes nothing; review its summary before any `apply` |
+| The Terraform plan of `eu-prod/service` with these inputs | **Done 2026-10-25:** run [40236632802](https://github.com/munaxa/munaxa-docs/actions/runs/40236632802) on `3095f82` (after the release package merged). 22 to add, 0 to change, 0 to replace, 0 to destroy; nothing applied. See the package §7 for the resources and the estimated cost |
+| The apply of `eu-prod/service` (first stage) | **Owner authorises.** The apply follows the reviewed-plan sequence ([infra/terraform/README.md](../../infra/terraform/README.md), "Production plan and apply"):<br>1. Re-check the live AWS state.<br>2. Dispatch `root=service`, `action=apply` and approve the `plan` job.<br>3. Review the plan it publishes: it must again be 22 to add and nothing else.<br>4. Approve the `apply` job, which applies that exact saved plan.<br>5. Verify the resources read-only. |
 | The ECS runtime pull test (runbook §10.1) | **Owner authorises** (creates resources; costs money) |
 | Fargate behaviour of #152's hardening: read-only roots, dropped capabilities, the scanner's signature writes into its own container layer | Not proven; shown only on Docker. Tier B (step 7) is what proves it (package §5) |
-| Any `apply` and the deployment | **Owner authorises each**; not covered by any approval so far |
+| `enable_https`, `enable_services` and the deployment | **Owner authorises each**, each with its own plan, review and apply; not covered by any approval so far |
 
 **What step 4 verifies by itself:**
 

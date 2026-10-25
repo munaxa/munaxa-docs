@@ -916,3 +916,19 @@ jobs:
             exit 1
           fi
           echo "No cross-product imports."
+
+  # The Production Terraform workflow applies only a plan that was reviewed in the same run
+  # (.github/workflows/terraform-eu-prod.yml). These checks keep it that way: the workflow's
+  # safety properties, the saved-plan verification (missing, altered, expired or foreign plans
+  # are refused) and the sanitised plan summary. No AWS access; nothing is planned or applied.
+  terraform-workflow:
+    name: Production Terraform workflow
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Shell scripts pass shellcheck
+        run: shellcheck scripts/terraform/*.sh scripts/terraform/tests/*.sh
+      - name: Plan-review gate tests
+        run: bash scripts/terraform/tests/run.sh
