@@ -2,7 +2,10 @@
 # Tests for the Production Terraform plan-review gate:
 #   - plan-summary.sh: counts, replacements, and never an attribute value;
 #   - verify-saved-plan.sh: the reviewed plan is accepted; a missing, altered, expired, future,
-#     or other-commit, other-root or other-run plan is refused;
+#     or other-commit, other-root or other-run plan is refused, as is one not encrypted with the
+#     state key itself;
+#   - resolve-kms-key.sh: the state key's alias resolves to its key ARN; an AWS-managed,
+#     disabled, foreign or unparsable answer is refused;
 #   - check-workflow-policy.sh: the committed workflow passes; workflows that apply from the plan
 #     job, plan in the apply job, skip verification, run off main, upload an artifact or lose the
 #     approval are refused.
@@ -64,11 +67,16 @@ printf 'saved plan bytes\n' > "$work/tfplan"
 sha="$(sha256sum "$work/tfplan" | cut -d' ' -f1)"
 commit="3095f82bf5d89b297d4ada79585b62065459a2f5"
 now=2000000000
+state_key_id="1234abcd-12ab-34cd-56ef-1234567890ab"
+state_key="arn:aws:kms:eu-central-1:229251310592:key/$state_key_id"
+other_key="arn:aws:kms:eu-central-1:229251310592:key/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+state_alias="arn:aws:kms:eu-central-1:229251310592:alias/munaxa-docs-eu-prod-tfstate"
 base_env=(
   PLAN_FILE="$work/tfplan" EXPECTED_SHA256="$sha" EXPECTED_COMMIT="$commit" EXPECTED_ROOT=service
   PLAN_CREATED_AT=$((now - 600)) CURRENT_COMMIT="$commit" CURRENT_ROOT=service CURRENT_RUN_ID=42
   META_SHA256="$sha" META_COMMIT="$commit" META_ROOT=service META_RUN_ID=42
   MAX_PLAN_AGE_SECONDS=14400 "NOW=$now"
+  ENCRYPTION=aws:kms ACTUAL_KMS_KEY_ID="$state_key" EXPECTED_KMS_KEY_ARN="$state_key"
 )
 verify() { env -i PATH="$PATH" "${base_env[@]}" "$@" "$scripts/verify-saved-plan.sh"; }
 
@@ -91,6 +99,48 @@ expect_failure "a plan for another root is refused" verify CURRENT_ROOT=core
 expect_failure "a plan whose stored root differs is refused" verify META_ROOT=data
 expect_failure "a plan stored by another run is refused" verify META_RUN_ID=41
 expect_failure "missing metadata is refused" verify META_RUN_ID=
+
+# The KMS key the plan is encrypted with must be the state key itself.
+expect_success "a plan encrypted with the expected state key is accepted" verify
+expect_success "S3 reporting the same key as a bare key ID is accepted" verify ACTUAL_KMS_KEY_ID="$state_key_id"
+expect_failure "a plan encrypted with a different key is refused" verify ACTUAL_KMS_KEY_ID="$other_key"
+expect_failure "a different bare key ID is refused" verify ACTUAL_KMS_KEY_ID="${other_key##*/}"
+expect_failure "the same key ID in another account is refused" \
+  verify ACTUAL_KMS_KEY_ID="arn:aws:kms:eu-central-1:111122223333:key/$state_key_id"
+expect_failure "the same key ID in another region is refused" \
+  verify ACTUAL_KMS_KEY_ID="arn:aws:kms:eu-west-1:229251310592:key/$state_key_id"
+expect_failure "a missing reported key is refused" verify ACTUAL_KMS_KEY_ID=
+expect_failure "a missing expected key is refused" verify EXPECTED_KMS_KEY_ARN=
+expect_failure "an unresolved alias as the expected key is refused" verify EXPECTED_KMS_KEY_ARN="$state_alias"
+expect_failure "an alias reported by S3 is refused" verify ACTUAL_KMS_KEY_ID="$state_alias"
+expect_failure "the AWS-managed S3 key alias is refused" verify ACTUAL_KMS_KEY_ID="alias/aws/s3"
+expect_failure "SSE-S3 instead of SSE-KMS is refused" verify ENCRYPTION=AES256
+expect_failure "missing encryption information is refused" verify ENCRYPTION=
+
+# ---------------------------------------------------------------------------------------------
+echo "== resolve-kms-key.sh"
+
+describe() { # arn manager state
+  jq -n --arg arn "$1" --arg m "$2" --arg s "$3" '{KeyMetadata: {Arn: $arn, KeyManager: $m, KeyState: $s}}'
+}
+resolve() { EXPECTED_ACCOUNT=229251310592 EXPECTED_REGION=eu-central-1 "$scripts/resolve-kms-key.sh"; }
+
+describe "$state_key" CUSTOMER Enabled > "$work/describe.json"
+expect_success "the alias resolves to the state key ARN" \
+  diff <(echo "$state_key") <(resolve < "$work/describe.json")
+expect_success "a resolved key passes the plan verification" \
+  verify EXPECTED_KMS_KEY_ARN="$(resolve < "$work/describe.json")"
+expect_failure "an AWS-managed key is refused" resolve < <(describe "$state_key" AWS Enabled)
+expect_failure "a disabled key is refused" resolve < <(describe "$state_key" CUSTOMER Disabled)
+expect_failure "a key pending deletion is refused" resolve < <(describe "$state_key" CUSTOMER PendingDeletion)
+expect_failure "a key in another account is refused" \
+  resolve < <(describe "arn:aws:kms:eu-central-1:111122223333:key/$state_key_id" CUSTOMER Enabled)
+expect_failure "a key in another region is refused" \
+  resolve < <(describe "arn:aws:kms:eu-west-1:229251310592:key/$state_key_id" CUSTOMER Enabled)
+expect_failure "an alias ARN in place of a key ARN is refused" resolve < <(describe "$state_alias" CUSTOMER Enabled)
+expect_failure "a describe-key answer without a key is refused" resolve < <(echo '{"KeyMetadata": {}}')
+expect_failure "an empty describe-key answer is refused" resolve < /dev/null
+expect_failure "an unparsable describe-key answer is refused" resolve < <(echo 'AccessDenied')
 
 # ---------------------------------------------------------------------------------------------
 echo "== check-workflow-policy.sh"
@@ -136,6 +186,14 @@ expect_failure "refuses: a plan run that keeps a plan" \
   mutated '(.jobs.plan.steps[] | select(.id == "keep") | .if) = "steps.plan.outputs.changes == '"'"'true'"'"'"'
 expect_failure "refuses: a floating Terraform version" mutated '.env.TERRAFORM_VERSION = "latest"'
 expect_failure "refuses: a cancellable run" mutated '.concurrency["cancel-in-progress"] = true'
+expect_failure "refuses: verification without the expected key" \
+  mutated '(.jobs.apply.steps[] | select((.run // "") | contains("verify-saved-plan.sh")) | .env) |= del(.EXPECTED_KMS_KEY_ARN)'
+expect_failure "refuses: verification without the key S3 reports" \
+  mutated '(.jobs.apply.steps[] | select((.run // "") | contains("verify-saved-plan.sh")) | .env) |= del(.ACTUAL_KMS_KEY_ID)'
+expect_failure "refuses: the expected key taken from the alias string" \
+  mutated '(.jobs.apply.steps[] | select((.run // "") | contains("verify-saved-plan.sh")) | .env.EXPECTED_KMS_KEY_ARN) = "${{ env.STATE_KEY_ALIAS_ARN }}"'
+expect_failure "refuses: the key not resolved by KMS" \
+  mutated '(.jobs.apply.steps[] | select(.id == "fetch") | .run) |= gsub("aws kms describe-key"; "echo")'
 
 # ---------------------------------------------------------------------------------------------
 echo

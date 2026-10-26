@@ -276,7 +276,11 @@ GitHub settings the workflow relies on (not stored in this repository):
   `scripts/terraform/verify-saved-plan.sh`, which refuses the plan if any of these fail:
   - the hash matches the reviewed hash;
   - the commit, root and run match;
-  - the object is encrypted with SSE-KMS;
+  - the object is encrypted with the state key itself. KMS resolves the state key's alias
+    (`aws kms describe-key`) to its key ARN, which must be a customer-managed, enabled key in
+    this account and region (`scripts/terraform/resolve-kms-key.sh`). It is then compared, by
+    account, region and key ID, with the key S3 reports for the object; an alias or another key
+    is refused;
   - the plan is no older than four hours (`MAX_PLAN_AGE_SECONDS`) and not from the future.
 
   It then re-reads the plan's actions, and stops if they differ from the reviewed counts.

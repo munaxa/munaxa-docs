@@ -32,7 +32,8 @@ name: Terraform eu-prod
 #   2. review the plan in the run summary, then approve or reject the apply job.
 #   3. apply  (approval 2: applies that plan and nothing else)
 #             Fetches the kept plan, refuses it unless its hash, commit, root and run match the
-#             reviewed one and it is younger than MAX_PLAN_AGE_SECONDS, then runs
+#             reviewed one, it is encrypted with the state key itself (its alias resolved by KMS to
+#             the key ARN S3 reports) and it is younger than MAX_PLAN_AGE_SECONDS, then runs
 #             `terraform apply` on that saved plan. It never plans. If the state changed since the
 #             plan, Terraform refuses the stale plan and the job fails; run a new plan and review
 #             it. The kept plan is deleted at the end, whatever the result.
@@ -316,8 +317,15 @@ jobs:
             echo "meta_root=$(jq -r '.Metadata.root // ""' object.json)"
             echo "meta_run_id=$(jq -r '.Metadata["run-id"] // ""' object.json)"
             echo "encryption=$(jq -r '.ServerSideEncryption // ""' object.json)"
+            echo "kms_key_id=$(jq -r '.SSEKMSKeyId // ""' object.json)"
           } >> "$GITHUB_OUTPUT"
           rm -f object.json
+          # The key the plan must be encrypted with: the state key, resolved from its alias by KMS
+          # to its canonical key ARN (S3 reports key ARNs, never aliases).
+          expected_kms_key_arn="$(aws kms describe-key --key-id "$STATE_KEY_ALIAS_ARN" --output json |
+            EXPECTED_ACCOUNT="$AWS_ACCOUNT_ID" EXPECTED_REGION="$AWS_REGION" \
+              "$GITHUB_WORKSPACE/scripts/terraform/resolve-kms-key.sh")"
+          echo "expected_kms_key_arn=$expected_kms_key_arn" >> "$GITHUB_OUTPUT"
 
       - name: Verify it is the reviewed plan
         env:
@@ -334,13 +342,9 @@ jobs:
           META_ROOT: ${{ steps.fetch.outputs.meta_root }}
           META_RUN_ID: ${{ steps.fetch.outputs.meta_run_id }}
           ENCRYPTION: ${{ steps.fetch.outputs.encryption }}
-        run: |
-          set -euo pipefail
-          if [ "$ENCRYPTION" != "aws:kms" ]; then
-            echo "::error::Saved plan refused: it is not stored with SSE-KMS (got '$ENCRYPTION')."
-            exit 1
-          fi
-          "$GITHUB_WORKSPACE/scripts/terraform/verify-saved-plan.sh"
+          ACTUAL_KMS_KEY_ID: ${{ steps.fetch.outputs.kms_key_id }}
+          EXPECTED_KMS_KEY_ARN: ${{ steps.fetch.outputs.expected_kms_key_arn }}
+        run: '"$GITHUB_WORKSPACE/scripts/terraform/verify-saved-plan.sh"'
 
       # The same addresses and actions as the reviewed summary, read from the verified file.
       - name: Record the plan being applied and its approvals

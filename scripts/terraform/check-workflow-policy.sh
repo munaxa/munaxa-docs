@@ -11,7 +11,8 @@
 #   - the preflight job holds nothing and refuses any branch but main;
 #   - the plan job saves its plan and never applies; nothing uploads a workflow artifact;
 #   - the apply job runs only for action apply on main, after the plan job, in the protected
-#     environment; it never plans; it verifies the kept plan before the one `terraform apply`,
+#     environment; it never plans; it verifies the kept plan, including the KMS key it is
+#     encrypted with, before the one `terraform apply`,
 #     which applies that saved file; and it discards the plan whatever the result.
 # shellcheck disable=SC2016 # the single-quoted strings are jq programs, not shell
 set -euo pipefail
@@ -89,6 +90,16 @@ check "apply verifies the plan before applying it" \
    | ([$s | to_entries[] | select(.value | contains("verify-saved-plan.sh")) | .key] | min) as $verify
    | ([$s | to_entries[] | select(.value | test("terraform\\s+apply")) | .key] | min) as $apply
    | ($verify != null) and ($apply != null) and ($verify < $apply)'
+check "apply checks the plan's key against the state key resolved by KMS" \
+  '[.jobs.apply.steps[] | select((.run // "") | contains("verify-saved-plan.sh"))] | (length == 1)
+   and (.[0].env.ACTUAL_KMS_KEY_ID | tostring | contains("steps.fetch.outputs.kms_key_id"))
+   and (.[0].env.EXPECTED_KMS_KEY_ARN | tostring | contains("steps.fetch.outputs.expected_kms_key_arn"))
+   and (.[0].env.ENCRYPTION | tostring | contains("steps.fetch.outputs.encryption"))'
+check "the expected key is resolved by KMS, not taken from the alias string" \
+  '[.jobs.apply.steps[] | select(.id == "fetch") | .run] | (length == 1)
+   and (.[0] | test("aws kms describe-key[^\n]*STATE_KEY_ALIAS_ARN"))
+   and (.[0] | contains("resolve-kms-key.sh"))
+   and (.[0] | contains("SSEKMSKeyId"))'
 check "apply discards the plan whatever the result" \
   '[.jobs.apply.steps[] | select((.if // "") == "always()" and ((.run // "") | contains("delete-object")))] | length == 1'
 check "terraform apply appears nowhere but the apply job" \
