@@ -18,6 +18,10 @@ bootstrap_tenant = {
   database = "edms_munaxa_internal"
 }
 
+# Stage 2 (main.tf): the HTTPS listener, the preview rule and the HTTP→HTTPS redirect. The
+# docs.munaxa.com certificate is ISSUED (validated 2026-10-26). enable_services stays false.
+enable_https = true
+
 # The application bundle version every API and provisioning task is pinned to (ADR-0022
 # consequence 8). Set it once the bundle has a value in account 229251310592; the id from the
 # previous account does not exist here. Empty means the current version.
