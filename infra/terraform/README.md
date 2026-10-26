@@ -218,17 +218,106 @@ For break-glass, copy `claude.s3.tfbackend` and `claude.auto.tfvars.example` and
   waits for its required reviewers.
 - **Branch:** `plan` and `apply` run only from `main`. The workflow refuses other branches
   before approval, and the CI role's trust refuses them in AWS.
-- **Apply:** applies the saved plan from the same job.
-  Run `plan` first and review it before approving an `apply`.
+- **Apply: plan, review, then apply that exact plan.** An `apply` run has three jobs:
+  - `plan`: saves the plan and keeps it for review (below);
+  - a **review gate**: the second approval;
+  - `apply`: applies only the kept plan.
+
+  It never re-plans before applying (see "Production plan and apply" below).
 - **Summary:** the job summary lists the planned actions and resource addresses only, never
-  attribute values.
+  attribute values. Replacements are counted separately from additions and destructions.
 - **Never** runs `bootstrap/`.
 
 GitHub settings the workflow relies on (not stored in this repository):
 
 - the `production` environment;
-- required reviewers on it;
+- required reviewers on it, and no option to bypass them;
 - its deployment branches limited to `main`.
+
+#### Production plan and apply (the reviewed-plan gate)
+
+**The sequence for every Production change:**
+
+1. **Run the plan.** Dispatch "Terraform eu-prod" on `main` with the root and `action=plan`, and
+   approve the `plan` job's `production` environment. A `plan` run keeps nothing and has no apply
+   job.
+2. **Review the exact plan.** Read the run summary: the commit, every resource address and its
+   action, and the counts to add, change, replace and destroy. Compare them with the change you
+   intend.
+3. **Approve the reviewed plan.** When you are ready to apply:
+   - dispatch again with `action=apply`;
+   - approve the `plan` job (approval 1);
+   - read the plan it publishes;
+   - only if it is the reviewed change, approve the `apply` job (approval 2).
+
+   Rejecting approval 2, or letting it wait past four hours, applies nothing.
+4. **Apply that exact plan.** The `apply` job applies the plan the `plan` job saved, after
+   verifying it. It never runs `terraform plan`.
+5. **Verify the resources** with read-only checks (the release package lists them).
+6. **Then continue** with each later step only through its own documented gate: certificate
+   DNS validation, the ECS image-pull test, `enable_https`, `enable_services`.
+
+**How the reviewed plan is kept and bound to the review:**
+
+- **Storage.** A saved plan can contain sensitive values in plain text, so it never becomes a
+  workflow artifact and never leaves AWS. The `plan` job stores it in the state bucket:
+  - key `eu-prod/plans/<root>/<run id>-<attempt>/tfplan`, written only if no object exists there;
+  - encrypted with the state key (SSE-KMS);
+  - readable only by the deployer and administrators, as the bucket policy and the deployer's
+    `eu-prod/*` grant already allow. No IAM or trust change was needed.
+- **Binding.** The `plan` job records, as job outputs that only GitHub holds:
+  - the plan's SHA-256;
+  - the commit and the root;
+  - the run;
+  - the time it was created.
+
+  It writes the same values to the object's metadata.
+- **Checks in the `apply` job.** It fetches the object and runs
+  `scripts/terraform/verify-saved-plan.sh`, which refuses the plan if any of these fail:
+  - the hash matches the reviewed hash;
+  - the commit, root and run match;
+  - the object is encrypted with the state key itself. KMS resolves the state key's alias
+    (`aws kms describe-key`) to its key ARN, which must be a customer-managed, enabled key in
+    this account and region (`scripts/terraform/resolve-kms-key.sh`). It is then compared, by
+    account, region and key ID, with the key S3 reports for the object; an alias or another key
+    is refused;
+  - the plan is no older than four hours (`MAX_PLAN_AGE_SECONDS`) and not from the future.
+
+  It then re-reads the plan's actions, and stops if they differ from the reviewed counts.
+- **Recording.** The apply job's summary records:
+  - the commit and the plan's key and hash;
+  - the addresses applied;
+  - each approval, read from the run's approvals;
+  - the result.
+- **Clean-up.** The kept plan is deleted whatever the result. The bucket is versioned, so its
+  version remains, encrypted and private, for the bucket's 365-day noncurrent retention.
+- **Stale plans fail.** If the Terraform state changed after the plan was made (another apply of
+  the same root, or a state change by an administrator), Terraform refuses the saved plan as stale. The job then fails without
+  re-planning: run a new plan, review it and approve again. The same applies past the age limit.
+- **Not covered by Terraform's stale check:** a change made outside Terraform between plan and
+  apply. Keep the window short and re-check the live AWS state before planning.
+- **Plan log.** The `plan` step's log shows Terraform's normal plan output, with sensitive values
+  redacted as `(sensitive value)`. Anyone who can read the repository's Actions logs can see it.
+
+**Optional settings, for the owner to choose:**
+
+- **Prevent self-review on `production`.** It forces a second person to approve. With one owner,
+  this would block every run, so it is not required today.
+- **A narrower environment for approval 2.** The CI role's trust names the `production`
+  environment, so the `apply` job must run in it. A separate apply environment would need a
+  bootstrap trust change, which is not part of this change.
+
+**Tests.** `scripts/terraform/tests/run.sh` runs in CI as the "Production Terraform workflow"
+job, without AWS. It checks:
+- the workflow's safety properties (`scripts/terraform/check-workflow-policy.sh`):
+  - the plan job cannot apply;
+  - the apply job cannot plan, and needs the plan job, action `apply`, `main` and the `production`
+    environment;
+  - the plan is verified before the one `terraform apply`, and discarded afterwards;
+  - no artifact is uploaded;
+  - only `main` is accepted;
+- the saved-plan verification against missing, altered, expired, future and foreign plans;
+- that the plan summary never prints an attribute value.
 
 The role ARN is not a secret and is written in the workflow. No AWS secret is stored in GitHub.
 

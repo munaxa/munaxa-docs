@@ -5,7 +5,8 @@
 - **The release.** `R` = `f8a8bea62256abb80ad4e33e367ba03bd426d1d8` is tagged, and its three images
   are published to ECR and were scanned on push (§2, §3). This package selects them as the
   `eu-prod/service` inputs (`infra/terraform/eu-prod/service/release.auto.tfvars`).
-- **Not done.** Nothing has been planned, applied or deployed. Fargate behaviour is not proven (§5).
+- **Not done.** The `eu-prod/service` plan ran on 2026-10-25 (§7, step 8); nothing has been
+  applied or deployed. Fargate behaviour is not proven (§5).
 - **Risk acceptance: NOT ACCEPTED** (§6).
 
 It supersedes the `c6a6d8c` release package proposed in #153, which must not be merged. Its digests
@@ -242,21 +243,67 @@ that is a scan result, not an approval of what remains.
 | 3 | Tag (owner) | Done: `image/f8a8bea62256abb80ad4e33e367ba03bd426d1d8` |
 | 4 | Publish (owner approves `image-release`) | Done: run [40225272398](https://github.com/munaxa/munaxa-docs/actions/runs/40225272398), all six jobs green, release smoke 18/18 |
 | 5 | Read ECR (read-only) | Done: §2, §3 |
-| 6 | This release package: §1 to §5, `release.auto.tfvars`, runbook §1 and §3, prerequisites checklist, Option A plan | **In review** in the release package PR. Not authorised to merge |
+| 6 | This release package: §1 to §5, `release.auto.tfvars`, runbook §1 and §3, prerequisites checklist, Option A plan | Done: #156, merged as `3095f82`; CI run [40234249254](https://github.com/munaxa/munaxa-docs/actions/runs/40234249254) passed |
 | 7 | Residual-risk decision (§6) | **Open: the owner's** |
-| 8 | Terraform plan of `eu-prod/service` | **Open: needs the owner's separate authorisation**, after step 6 is merged |
-| 9 | Tier B on these digests, any `apply` and the deployment | **Open: each needs the owner's separate authorisation** |
+| 8 | Terraform plan of `eu-prod/service` | Done 2026-10-25: run [40236632802](https://github.com/munaxa/munaxa-docs/actions/runs/40236632802) on `3095f82`. 22 to add, 0 to change, 0 to replace, 0 to destroy (below). Nothing applied |
+| 9 | First-stage apply of `eu-prod/service`, through the reviewed-plan sequence | **Open: needs the owner's separate authorisation** |
+| 10 | Tier B on these digests, `enable_https`, `enable_services` and the deployment | **Open: each needs the owner's separate authorisation** |
 
-**The Terraform plan (step 8).**
-- **When:** after this package's PR is merged.
-- **How:** the owner starts "Terraform eu-prod" (`terraform-eu-prod.yml`) with `root=service` and
-  `action=plan`, then approves the `production` environment.
-- **What to expect:** nothing has been applied in the service root, so the plan **creates** its
-  resources rather than changing them.
-- **What to check:**
-  - the `web`, `api` and `scanner` task definitions and `ops-provision` reference exactly the three
-    digests in §2;
-  - #152's settings appear: web, api and ops-provision read-only; every service container and both
-    Redis sidecars `drop ["ALL"]`.
+**The plan (step 8): what the first stage creates.** `enable_https` and `enable_services` are off,
+so it creates 22 resources:
 
-Review the plan before any apply, which is separately authorised.
+- an ACM certificate request for `docs.munaxa.com`, with DNS validation;
+- 5 log groups with 30-day retention;
+- the ECS cluster and its capacity providers (FARGATE by default, and FARGATE_SPOT);
+- 6 task definitions: web, api, scanner, ops-provision, ops-dbadmin and ops-tunnel;
+- an internet-facing ALB with no listener, so it accepts no traffic, plus 2 target groups;
+- 2 secrets, created empty: no value is written;
+- the private namespace `prod.munaxa-docs.internal` and 2 discovery services.
+
+It creates no ECS service, listener or schedule, and starts no task. It changes no network,
+security group or IAM resource.
+
+**What the plan showed and what it couldn't:**
+
+- **Shown:** the web definition uses this release's web digest, a read-only root and
+  `drop ["ALL"]`. The scanner definition uses the antivirus digest and `drop ["ALL"]`.
+- **Not shown:** the api, ops-provision and ops-dbadmin definitions read "known after apply",
+  because they reference secrets created in the same apply. Check them read-only after the apply.
+
+**Estimated cost of the first stage,** assumed eu-central-1 list prices, to be checked against
+current AWS pricing: **about $28 a month.**
+
+- ALB hours: about $20, with almost no load-balancer usage since there is no listener.
+- 2 public IPv4 addresses: about $7.30.
+- 2 secrets: $0.80.
+- 1 private hosted zone: $0.50.
+- Nothing extra for the cluster, task definitions, empty log groups or the certificate.
+
+The plan itself created nothing billable.
+
+**The apply (step 9): only through the reviewed-plan sequence** in
+[infra/terraform/README.md](../../infra/terraform/README.md), "Production plan and apply":
+
+1. Re-check the live AWS state before planning. It was last read before the plan, and not since.
+2. Dispatch `root=service` and `action=apply`, and approve the `plan` job.
+3. Review the plan it publishes. It must again be 22 to add with the resources above, and nothing
+   to change, replace or destroy.
+4. Approve the `apply` job only then. It applies that exact saved plan, after checking its hash,
+   commit, root, run and age.
+5. Verify read-only:
+   - each task definition's digest and hardening;
+   - no listener, service or task;
+   - the certificate is `PENDING_VALIDATION`, with its validation CNAME recorded;
+   - the secrets have no value (metadata only);
+   - the cluster, target groups, discovery and log groups.
+
+Creating the resources does not prove Fargate behaviour.
+
+**Still open, whatever the apply shows:**
+
+- **ECR findings:** API and web each have 1 MEDIUM and 2 LOW (glibc).
+- **Local-scanner findings:** the ones ECR doesn't report stay documented (§4.3).
+- **Fargate behaviour is not proven**, including the scanner's signature writes.
+- **Not yet run:** `ops-dbadmin` and `ops-tunnel`, Tier B, the Tier A browser checks and the ECS
+  image-pull test.
+- **Residual risk is NOT ACCEPTED** (§6).

@@ -9,19 +9,36 @@ name: Terraform eu-prod
 #                                      identity github-actions and a gha-run-* session name)
 #
 # configure-aws-credentials has no source-identity input, so the second hop is Terraform's own
-# assume_role, which sets the source identity the deployer trust policy requires.
+# assume_role, which sets the source identity the deployer trust policy requires. The steps that
+# keep, fetch and discard a saved plan make the same hop themselves
+# (scripts/terraform/deployer-session.sh).
 #
 # Bootstrap is never run here: it is applied only by an administrator (see
 # infra/terraform/README.md). The root is chosen from a fixed list, never from a free path.
 #
 # Authorisation: every job that can obtain AWS credentials runs in the `production` environment,
-# whose required reviewers approve it before it starts, and whose deployment branch rule should
-# allow only `main`. The CI role's trust also requires ref refs/heads/main, so AWS itself refuses
-# any other branch, and the preflight job refuses a run that is not on `main` before approval is
-# requested. The apply step checks the branch once more. An apply
-# applies the saved plan produced in the same job, so it never needs -auto-approve: the
-# environment approval is the authorisation. Run `plan` first and review it before approving an
-# `apply` run.
+# whose required reviewers approve each job before it starts, and whose deployment branch rule
+# should allow only `main`. The CI role's trust also requires ref refs/heads/main, so AWS itself
+# refuses any other branch, and the preflight job refuses a run that is not on `main` before
+# approval is requested.
+#
+# An `apply` run has three steps, and the plan is reviewed between the second and the third:
+#
+#   1. plan   (approval 1: lets the run read Production and plan)
+#             Saves the plan, publishes its addresses and actions to the run summary, and keeps the
+#             saved plan in the Terraform state bucket (eu-prod/plans/, encrypted with the state
+#             key, readable only by the deployer and administrators). Its SHA-256, commit, root and
+#             creation time become job outputs. The binary plan never leaves AWS.
+#   2. review the plan in the run summary, then approve or reject the apply job.
+#   3. apply  (approval 2: applies that plan and nothing else)
+#             Fetches the kept plan, refuses it unless its hash, commit, root and run match the
+#             reviewed one, it is encrypted with the state key itself (its alias resolved by KMS to
+#             the key ARN S3 reports) and it is younger than MAX_PLAN_AGE_SECONDS, then runs
+#             `terraform apply` on that saved plan. It never plans. If the state changed since the
+#             plan, Terraform refuses the stale plan and the job fails; run a new plan and review
+#             it. The kept plan is deleted at the end, whatever the result.
+#
+# A `plan` run stops after step 1: it keeps nothing and has no apply job.
 
 on:
   workflow_dispatch:
@@ -35,7 +52,7 @@ on:
           - data
           - service
       action:
-        description: plan or apply (main only; both wait for environment approval)
+        description: plan, or plan + reviewed apply (main only; every AWS job waits for approval)
         type: choice
         required: true
         default: plan
@@ -43,7 +60,7 @@ on:
           - plan
           - apply
 
-# Nothing by default; the Terraform job asks for exactly what it needs.
+# Nothing by default; each job asks for exactly what it needs.
 permissions: {}
 
 # One run per root at a time; never cancel a run that may be holding the state lock.
@@ -55,7 +72,12 @@ env:
   AWS_REGION: eu-central-1
   AWS_ACCOUNT_ID: '229251310592'
   CI_ROLE_ARN: arn:aws:iam::229251310592:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-ci
+  DEPLOYER_ROLE_ARN: arn:aws:iam::229251310592:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-deployer
+  STATE_BUCKET: munaxa-docs-tfstate-eu-prod-229251310592
+  STATE_KEY_ALIAS_ARN: arn:aws:kms:eu-central-1:229251310592:alias/munaxa-docs-eu-prod-tfstate
   TERRAFORM_VERSION: 1.16.5
+  # The oldest reviewed plan the apply job accepts: 4 hours from the plan job storing it.
+  MAX_PLAN_AGE_SECONDS: '14400'
 
 jobs:
   # No permissions, no environment, no credentials: rejects bad input before anything can
@@ -92,14 +114,26 @@ jobs:
           fi
           echo "directory=$directory" >> "$GITHUB_OUTPUT"
 
-  terraform:
-    name: ${{ inputs.action }} eu-prod/${{ inputs.root }}
+  plan:
+    name: plan eu-prod/${{ inputs.root }}
     needs: preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: production
     permissions:
       id-token: write
       contents: read
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+      add: ${{ steps.summary.outputs.add }}
+      change: ${{ steps.summary.outputs.change }}
+      replace: ${{ steps.summary.outputs.replace }}
+      destroy: ${{ steps.summary.outputs.destroy }}
+      plan_key: ${{ steps.keep.outputs.plan_key }}
+      plan_sha256: ${{ steps.keep.outputs.plan_sha256 }}
+      plan_created_at: ${{ steps.keep.outputs.plan_created_at }}
+      commit: ${{ steps.keep.outputs.commit }}
+      root: ${{ steps.keep.outputs.root }}
     defaults:
       run:
         working-directory: ${{ needs.preflight.outputs.directory }}
@@ -146,34 +180,232 @@ jobs:
           if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then exit "$code"; fi
           echo "changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      # Addresses and actions only: no attribute values reach the summary.
+      # Addresses and actions only: no attribute value reaches the summary.
       - name: Plan summary
+        id: summary
         env:
           ROOT: ${{ inputs.root }}
           ACTION: ${{ inputs.action }}
         run: |
+          set -euo pipefail
           terraform show -json tfplan > plan.json
+          "$GITHUB_WORKSPACE/scripts/terraform/plan-summary.sh" --counts plan.json >> "$GITHUB_OUTPUT"
           {
             echo "## eu-prod/$ROOT: $ACTION"
             echo
             echo "Commit \`$GITHUB_SHA\` on \`$GITHUB_REF_NAME\`, deployer session \`$TF_VAR_deployer_session_name\` (source identity \`$TF_VAR_deployer_source_identity\`)."
             echo
-            jq -r '
-              [.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] as $c
-              | "**Plan:** \([$c[] | select(.change.actions | index("create"))] | length) to add, \([$c[] | select(.change.actions == ["update"])] | length) to change, \([$c[] | select(.change.actions | index("delete"))] | length) to destroy.",
-                "",
-                (if ($c | length) == 0 then "No changes." else
-                  "| Action | Address |", "| --- | --- |",
-                  ($c[] | "| \(.change.actions | join(", ")) | `\(.address)` |")
-                end)
-            ' plan.json
+            "$GITHUB_WORKSPACE/scripts/terraform/plan-summary.sh" plan.json
           } >> "$GITHUB_STEP_SUMMARY"
           rm -f plan.json
 
-      - name: terraform apply (saved plan)
-        if: inputs.action == 'apply' && github.ref == 'refs/heads/main' && steps.plan.outputs.changes == 'true'
-        run: terraform apply -lock-timeout=5m tfplan
+      # Apply runs only. The saved plan can contain sensitive values, so it stays in AWS: the state
+      # bucket, under a key unique to this run, encrypted with the state key. Only its hash and
+      # identity leave the job, as job outputs that the apply job checks it against.
+      - name: Keep the saved plan for review
+        id: keep
+        if: inputs.action == 'apply' && steps.plan.outputs.changes == 'true'
+        env:
+          ROOT: ${{ inputs.root }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "$GITHUB_WORKSPACE/scripts/terraform/deployer-session.sh" "gha-run-${GITHUB_RUN_ID}-keep-plan"
+          plan_sha256="$(sha256sum tfplan | cut -d' ' -f1)"
+          plan_created_at="$(date -u +%s)"
+          plan_key="eu-prod/plans/${ROOT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/tfplan"
+          # --if-none-match: never overwrite an object that already exists under this key.
+          aws s3api put-object \
+            --bucket "$STATE_BUCKET" \
+            --key "$plan_key" \
+            --body tfplan \
+            --server-side-encryption aws:kms \
+            --ssekms-key-id "$STATE_KEY_ALIAS_ARN" \
+            --if-none-match '*' \
+            --metadata "commit=${GITHUB_SHA},root=${ROOT},run-id=${GITHUB_RUN_ID},sha256=${plan_sha256},created-at=${plan_created_at}" \
+            > /dev/null
+          {
+            echo "plan_key=$plan_key"
+            echo "plan_sha256=$plan_sha256"
+            echo "plan_created_at=$plan_created_at"
+            echo "commit=$GITHUB_SHA"
+            echo "root=$ROOT"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo "### Plan kept for review"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Commit | \`$GITHUB_SHA\` |"
+            echo "| Root | \`eu-prod/$ROOT\` |"
+            echo "| State | \`s3://$STATE_BUCKET/eu-prod/$ROOT/terraform.tfstate\` |"
+            echo "| Saved plan | \`s3://$STATE_BUCKET/$plan_key\` (encrypted with the state key) |"
+            echo "| SHA-256 | \`$plan_sha256\` |"
+            echo "| Created | $(date -u -d "@$plan_created_at" +%Y-%m-%dT%H:%M:%SZ); expires after $((MAX_PLAN_AGE_SECONDS / 3600)) h |"
+            echo
+            echo "**Review the plan above. Approve the apply job only if it is the change you intend.** Rejecting it applies nothing."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove the plan file
+      - name: Remove the local plan files
         if: always()
         run: rm -f tfplan plan.json
+
+  # Applies the plan the previous job kept, after a second approval of the `production`
+  # environment that is given after that plan is published. It never runs `terraform plan`.
+  apply:
+    name: apply the reviewed plan, eu-prod/${{ inputs.root }}
+    needs: [preflight, plan]
+    if: inputs.action == 'apply' && github.ref == 'refs/heads/main' && needs.plan.outputs.changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+      actions: read # to record who approved this run
+    defaults:
+      run:
+        working-directory: ${{ needs.preflight.outputs.directory }}
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      TF_VAR_deployer_source_identity: github-actions
+      TF_VAR_deployer_session_name: gha-run-${{ github.run_id }}
+      ROOT: ${{ inputs.root }}
+      PLAN_KEY: ${{ needs.plan.outputs.plan_key }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Assume the CI role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.CI_ROLE_ARN }}
+          role-session-name: gha-run-${{ github.run_id }}
+          role-duration-seconds: 3600
+          role-skip-session-tagging: true
+          audience: sts.amazonaws.com
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+
+      - name: terraform init
+        run: terraform init -lockfile=readonly -backend-config=../ci.s3.tfbackend
+
+      - name: Fetch the reviewed plan
+        id: fetch
+        run: |
+          set -euo pipefail
+          case "$PLAN_KEY" in
+            "eu-prod/plans/${ROOT}/${GITHUB_RUN_ID}-"*/tfplan) ;;
+            *) echo "::error::No reviewed plan from this run for root $ROOT (key: '$PLAN_KEY')."; exit 1 ;;
+          esac
+          # shellcheck source=/dev/null
+          source "$GITHUB_WORKSPACE/scripts/terraform/deployer-session.sh" "gha-run-${GITHUB_RUN_ID}-fetch-plan"
+          aws s3api get-object --bucket "$STATE_BUCKET" --key "$PLAN_KEY" tfplan > object.json
+          {
+            echo "meta_sha256=$(jq -r '.Metadata.sha256 // ""' object.json)"
+            echo "meta_commit=$(jq -r '.Metadata.commit // ""' object.json)"
+            echo "meta_root=$(jq -r '.Metadata.root // ""' object.json)"
+            echo "meta_run_id=$(jq -r '.Metadata["run-id"] // ""' object.json)"
+            echo "encryption=$(jq -r '.ServerSideEncryption // ""' object.json)"
+            echo "kms_key_id=$(jq -r '.SSEKMSKeyId // ""' object.json)"
+          } >> "$GITHUB_OUTPUT"
+          rm -f object.json
+          # The key the plan must be encrypted with: the state key, resolved from its alias by KMS
+          # to its canonical key ARN (S3 reports key ARNs, never aliases).
+          expected_kms_key_arn="$(aws kms describe-key --key-id "$STATE_KEY_ALIAS_ARN" --output json |
+            EXPECTED_ACCOUNT="$AWS_ACCOUNT_ID" EXPECTED_REGION="$AWS_REGION" \
+              "$GITHUB_WORKSPACE/scripts/terraform/resolve-kms-key.sh")"
+          echo "expected_kms_key_arn=$expected_kms_key_arn" >> "$GITHUB_OUTPUT"
+
+      - name: Verify it is the reviewed plan
+        env:
+          PLAN_FILE: tfplan
+          EXPECTED_SHA256: ${{ needs.plan.outputs.plan_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.plan.outputs.commit }}
+          EXPECTED_ROOT: ${{ needs.plan.outputs.root }}
+          PLAN_CREATED_AT: ${{ needs.plan.outputs.plan_created_at }}
+          CURRENT_COMMIT: ${{ github.sha }}
+          CURRENT_ROOT: ${{ inputs.root }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          META_SHA256: ${{ steps.fetch.outputs.meta_sha256 }}
+          META_COMMIT: ${{ steps.fetch.outputs.meta_commit }}
+          META_ROOT: ${{ steps.fetch.outputs.meta_root }}
+          META_RUN_ID: ${{ steps.fetch.outputs.meta_run_id }}
+          ENCRYPTION: ${{ steps.fetch.outputs.encryption }}
+          ACTUAL_KMS_KEY_ID: ${{ steps.fetch.outputs.kms_key_id }}
+          EXPECTED_KMS_KEY_ARN: ${{ steps.fetch.outputs.expected_kms_key_arn }}
+        run: '"$GITHUB_WORKSPACE/scripts/terraform/verify-saved-plan.sh"'
+
+      # The same addresses and actions as the reviewed summary, read from the verified file.
+      - name: Record the plan being applied and its approvals
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_SHA256: ${{ needs.plan.outputs.plan_sha256 }}
+          REVIEWED_ADD: ${{ needs.plan.outputs.add }}
+          REVIEWED_CHANGE: ${{ needs.plan.outputs.change }}
+          REVIEWED_REPLACE: ${{ needs.plan.outputs.replace }}
+          REVIEWED_DESTROY: ${{ needs.plan.outputs.destroy }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan > plan.json
+          counts="$("$GITHUB_WORKSPACE/scripts/terraform/plan-summary.sh" --counts plan.json)"
+          reviewed="$(printf 'add=%s\nchange=%s\nreplace=%s\ndestroy=%s' \
+            "$REVIEWED_ADD" "$REVIEWED_CHANGE" "$REVIEWED_REPLACE" "$REVIEWED_DESTROY")"
+          if [ "$(grep -v '^other=' <<<"$counts")" != "$reviewed" ]; then
+            echo "::error::The fetched plan's changes differ from the reviewed summary."
+            exit 1
+          fi
+          {
+            echo "## eu-prod/$ROOT: apply the reviewed plan"
+            echo
+            echo "Commit \`$GITHUB_SHA\`, saved plan \`s3://$STATE_BUCKET/$PLAN_KEY\`, SHA-256 \`$PLAN_SHA256\`."
+            echo
+            "$GITHUB_WORKSPACE/scripts/terraform/plan-summary.sh" plan.json
+            echo
+            echo "### Approvals of this run"
+            echo
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" \
+              --jq '.[] | "- \(.user.login): \(.state) for \([.environments[].name] | join(", ")) (\(.comment // "no comment"))"' \
+              || echo "- The approvals could not be read; see the run's deployment history."
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f plan.json
+
+      # The saved plan, as reviewed. Terraform refuses it if the state changed since it was made.
+      - name: terraform apply (the reviewed saved plan)
+        run: terraform apply -lock-timeout=5m -input=false tfplan
+
+      - name: Record the result
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo
+            echo "### Result"
+            echo
+            echo "Apply of \`$PLAN_KEY\` on commit \`$GITHUB_SHA\`: **$OUTCOME**. A failed apply is never retried with a new plan here: run a new plan and review it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A kept plan is used once. Deleting it leaves its version in the versioned state bucket.
+      - name: Discard the saved plan
+        if: always()
+        run: |
+          rm -f tfplan plan.json object.json
+          case "$PLAN_KEY" in
+            eu-prod/plans/*/tfplan) ;;
+            *) exit 0 ;;
+          esac
+          # shellcheck source=/dev/null
+          source "$GITHUB_WORKSPACE/scripts/terraform/deployer-session.sh" "gha-run-${GITHUB_RUN_ID}-discard-plan" &&
+            aws s3api delete-object --bucket "$STATE_BUCKET" --key "$PLAN_KEY" > /dev/null ||
+            echo "::warning::Could not delete s3://$STATE_BUCKET/$PLAN_KEY; it expires by age and is never reused by another run."
