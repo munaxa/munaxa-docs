@@ -52,6 +52,13 @@ export interface FileObjectRepository {
   /** Dedupe: an identical checksum within the tenant is the same blob. */
   findByChecksum(checksum: string): Promise<FileObjectRecord | null>;
   /**
+   * Bytes counted against the tenant's storage limit — ADR-0026: every live blob once (after
+   * deduplication), plus what open upload sessions have declared and may still deliver. Derived
+   * renditions are excluded, as `11-storage-architecture.md` §7 has always said they would be.
+   * Counting open sessions is what stops ten concurrent presigns each fitting under the limit.
+   */
+  quotaBytesInUse(): Promise<number>;
+  /**
    * Inserts the blob, and answers whether it was the one to insert it.
    *
    * `false` means another transaction stored this digest first — `uq_file_object_checksum` is one

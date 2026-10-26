@@ -16,6 +16,7 @@ export * from './bulk';
 export * from './deletion';
 export * from './signature';
 export * from './integration';
+export * from './licensing';
 export * from './delegation';
 export * from './errors';
 export * from './file-formats';

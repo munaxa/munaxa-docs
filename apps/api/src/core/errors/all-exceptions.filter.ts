@@ -53,6 +53,8 @@ export const STATUS_BY_CODE: Readonly<Record<ErrorCodeKey, number>> = {
   [ErrorCode.UNSUPPORTED_CONTENT]: HttpStatus.UNSUPPORTED_MEDIA_TYPE,
   [ErrorCode.CONTENT_NOT_SCANNED]: HttpStatus.CONFLICT,
   [ErrorCode.TENANT_READ_ONLY]: HttpStatus.FORBIDDEN,
+  // `402`, ADR-0012: what the organisation bought, not what this person may do.
+  [ErrorCode.SUBSCRIPTION_REQUIRED]: HttpStatus.PAYMENT_REQUIRED,
   // `401`, like every other authentication outcome: the caller is not authenticated yet, and the
   // code in the body is what tells the client it is halfway rather than back at the start.
   [ErrorCode.MFA_REQUIRED]: HttpStatus.UNAUTHORIZED,

@@ -27,6 +27,8 @@ import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { BulkDocumentService } from '../application/bulk-document.service';
 import { BulkExportService } from '../application/bulk-export.service';
+import { OperationKind } from '@munaxa/licensing';
+import { LicensedAs } from '../../../core/licensing/licensed.decorator';
 
 /**
  * Bulk document operations.
@@ -108,6 +110,10 @@ export class BulkDocumentsController {
    */
   @Post('exports')
   @RequirePermission(Permission.DOCUMENT_DOWNLOAD)
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async export(
     @Body(new ZodValidationPipe(bulkExportSchema)) body: BulkExportBody,
   ): Promise<BulkOperationResult> {
@@ -124,6 +130,10 @@ export class BulkDocumentsController {
    */
   @Get(':id/links')
   @RequirePermission(Permission.DOCUMENT_DOWNLOAD)
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async links(@Param('id') id: string): Promise<BulkExportLinks> {
     await this.requireOwnOperation(id);
     const links = await this.exports.links(id);

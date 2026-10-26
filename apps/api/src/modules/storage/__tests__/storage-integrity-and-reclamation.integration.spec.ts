@@ -22,6 +22,7 @@ import type { BlobMetadata, StorageKey, StoragePort } from '../../../ports/stora
 
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
+import { unmeteredEntitlements } from '../../../testing/licensing';
 import { realS3TenantStorage, realWriteStack } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { DefaultStorageService } from '../application/storage.service';
@@ -172,6 +173,7 @@ const storage = new DefaultStorageService(
   outbox,
   config,
   writer,
+  unmeteredEntitlements(),
 );
 const reaper = new StorageBlobReaper(parking, unitOfWork, logger, storage, stamps);
 

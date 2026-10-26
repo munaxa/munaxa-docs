@@ -35,6 +35,8 @@ import {
   type ReportExportRecord,
   type ReportingService,
 } from '../application/ports';
+import { OperationKind } from '@munaxa/licensing';
+import { LicensedAs } from '../../../core/licensing/licensed.decorator';
 
 /**
  * The reporting surface — 15 §1's `GET /api/v1/reports/{key}`, and what it needs around it.
@@ -133,6 +135,10 @@ export class ReportingController {
    * being visible in this list never implies its contents are reachable.
    */
   @Get('exports')
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async listExports(
     @Query(new ZodValidationPipe(runReportQuerySchema)) query: Record<string, string>,
   ): Promise<{ data: readonly WireExport[] }> {
@@ -141,6 +147,10 @@ export class ReportingController {
   }
 
   @Get('exports/:id')
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async export(@Param('id') id: string): Promise<WireExport> {
     const record = await this.reports.export(asId<AnyId>(id));
     if (record === null) {
@@ -157,6 +167,10 @@ export class ReportingController {
    * no second action for it: 13 §2 gives Reporting exactly one row, and it is spent on the export.
    */
   @Get('exports/:id/download')
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async download(@Param('id') id: string): Promise<ReportExportLink> {
     const link = await this.reports.downloadExport(asId<AnyId>(id));
     return {
@@ -198,6 +212,10 @@ export class ReportingController {
    * lie the client then polls to discover.
    */
   @Post(':key/exports')
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   @HttpCode(202)
   async requestExport(
     @Param('key') key: string,

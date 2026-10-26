@@ -24,6 +24,8 @@ import {
   respondWith,
   signInSchema,
 } from './auth.dto';
+import { OperationKind } from '@munaxa/licensing';
+import { LicensedAs } from '../../../core/licensing/licensed.decorator';
 
 /**
  * Authentication endpoints.
@@ -90,6 +92,7 @@ export class AuthController {
    * The client uses it to render affordances; the API never trusts what the client concludes.
    */
   @Get('me')
+  @LicensedAs(OperationKind.EXPORT, 'A client must know who is signed in to reach an export.')
   async me(): Promise<{
     userId: string | null;
     displayName: string | null;

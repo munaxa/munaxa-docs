@@ -1,6 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { type AnyId, AuditSubjectType, UserStatus, type UserStatusKey, asId } from '@edms/domain';
+import {
+  type AnyId,
+  AuditSubjectType,
+  DocsLimit,
+  UserStatus,
+  type UserStatusKey,
+  asId,
+} from '@edms/domain';
 import { type Page, squish } from '@edms/utils';
 
 import {
@@ -16,6 +23,7 @@ import {
   ValidationError,
 } from '../../../core/errors/application-errors';
 import { ACL_RESOLVER, type AclResolver } from '../../../core/authorization/acl-resolver.port';
+import { EntitlementService } from '../../../core/licensing/entitlement.service';
 import { requireContext } from '../../../core/tenancy/tenant-context';
 import { IdentityAdminAudit, SecurityAudit } from '../domain/audit-actions';
 import { checkPassword } from '../domain/password-policy';
@@ -64,6 +72,7 @@ export class UserAdminService {
     @Inject(PASSWORD_HASHER) private readonly passwords: PasswordHasher,
     private readonly writer: AdministeredWriter,
     @Inject(ACL_RESOLVER) private readonly acl: AclResolver,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   list(request: UserListRequest): Promise<Page<UserAdminRow>> {
@@ -96,6 +105,7 @@ export class UserAdminService {
       }
       await this.requireLiveRoles(input.roleIds);
       await this.requireLiveDepartments(input.departments);
+      await this.requireSeat();
 
       const id = this.writer.clock.nextId();
       await this.people.insertUser({ id, email, emailNormalized, displayName });
@@ -298,6 +308,11 @@ export class UserAdminService {
         ]);
       }
 
+      // Re-enabling a disabled account takes a seat back; enabling an invited one does not, because
+      // an invitation already holds its seat.
+      if (status === UserStatus.ACTIVE && current.status === UserStatus.DISABLED) {
+        await this.requireSeat();
+      }
       await this.people.updateUser(id, current.version, { status });
       if (status === UserStatus.DISABLED) {
         await this.people.revokeSessions(id, 'ACCOUNT_DISABLED');
@@ -375,6 +390,8 @@ export class UserAdminService {
         throw new DuplicateError('user', 'email');
       }
 
+      // A restored account is live again, and a live account that is not disabled holds a seat.
+      if (current.status !== UserStatus.DISABLED) await this.requireSeat();
       await this.people.setUserDeleted(id, current.version, false);
 
       return {
@@ -391,6 +408,13 @@ export class UserAdminService {
   }
 
   // --- Internals -------------------------------------------------------------------------
+
+  /** ADR-0026: one more account against the plan's user limit, enforced atomically. */
+  private requireSeat(): Promise<void> {
+    return this.entitlements.enforceLimit(DocsLimit.USERS, 1, () =>
+      this.people.licensedUserCount(),
+    );
+  }
 
   private async require(id: string, includeDeleted: boolean): Promise<UserAdminRow> {
     const row = await this.people.findUser(id, includeDeleted);

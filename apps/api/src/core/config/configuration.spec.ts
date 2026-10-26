@@ -565,3 +565,66 @@ describe('describing which tenants this deployment serves', () => {
     expect(config.audit.checkpointSecret).toBeNull();
   });
 });
+
+describe('licensing configuration — ADR-0026', () => {
+  const publicKey = '-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----';
+  const licenseFileEnv = {
+    ...baseEnv,
+    LICENSING_MODE: 'LICENSE_FILE',
+    LICENSE_FILE_PATH: '/etc/munaxa/docs.license',
+    LICENSE_PUBLIC_KEYS: JSON.stringify([{ kid: 'lic-1', publicKey }]),
+    LICENSE_INSTALLATION_ID: 'inst-1',
+  };
+
+  it('defaults to the unmetered plan, which is the behaviour before licensing existed', () => {
+    const config = loadConfig({ ...baseEnv });
+    expect(config.licensing).toMatchObject({ mode: 'NONE', licenseFile: null, controlPlane: null });
+  });
+
+  it('reads a licence-file deployment', () => {
+    expect(loadConfig(licenseFileEnv).licensing.licenseFile).toEqual({
+      path: '/etc/munaxa/docs.license',
+      algorithm: 'ES256',
+      publicKeys: [{ kid: 'lic-1', publicKey }],
+      installationId: 'inst-1',
+    });
+  });
+
+  it.each(['LICENSE_FILE_PATH', 'LICENSE_PUBLIC_KEYS', 'LICENSE_INSTALLATION_ID'])(
+    'refuses LICENSE_FILE without %s',
+    (key) => {
+      const env: Record<string, string> = { ...licenseFileEnv };
+      delete env[key];
+      expect(() => loadConfig(env)).toThrow(ConfigurationError);
+    },
+  );
+
+  it('refuses a private key where public keys belong', () => {
+    const privateKey = '-----BEGIN PRIVATE KEY-----\nMIG\n-----END PRIVATE KEY-----';
+    expect(() =>
+      loadConfig({
+        ...licenseFileEnv,
+        LICENSE_PUBLIC_KEYS: JSON.stringify([{ kid: 'lic-1', publicKey: privateKey }]),
+      }),
+    ).toThrow(/private key/);
+    expect(() => loadConfig({ ...licenseFileEnv, LICENSE_PUBLIC_KEYS: 'not json' })).toThrow(
+      ConfigurationError,
+    );
+  });
+
+  it('refuses CONTROL_PLANE without its URL and credential', () => {
+    expect(() => loadConfig({ ...baseEnv, LICENSING_MODE: 'CONTROL_PLANE' })).toThrow(
+      ConfigurationError,
+    );
+    const config = loadConfig({
+      ...baseEnv,
+      LICENSING_MODE: 'CONTROL_PLANE',
+      CONTROL_PLANE_URL: 'https://control.munaxa.example/',
+      CONTROL_PLANE_TOKEN: 'k'.repeat(40),
+    });
+    expect(config.licensing.controlPlane).toEqual({
+      url: 'https://control.munaxa.example',
+      token: 'k'.repeat(40),
+    });
+  });
+});

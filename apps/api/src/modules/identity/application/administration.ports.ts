@@ -112,6 +112,11 @@ export interface IdentityAdminRepository {
   findUser(id: string, includeDeleted: boolean): Promise<UserAdminRow | null>;
   /** Case-insensitive, live rows only: a deleted user frees their address for re-invitation. */
   emailTaken(emailNormalized: string, exceptId: string | null): Promise<boolean>;
+  /**
+   * Accounts counted against the plan's user limit — ADR-0026: live, and not disabled. An invited
+   * account counts, because it is a seat somebody has been promised.
+   */
+  licensedUserCount(): Promise<number>;
   insertUser(input: {
     readonly id: string;
     readonly email: string;

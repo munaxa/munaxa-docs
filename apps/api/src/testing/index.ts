@@ -8,3 +8,4 @@ export * from './fake-ports';
 export * from './factories';
 export * from './real-collaborators';
 export * from './transfer-token';
+export * from './licensing';

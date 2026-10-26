@@ -22,6 +22,8 @@ import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import { AuditExportService } from '../application/audit-export.service';
 import { AuditReadService } from '../application/audit-read.service';
 import type { AuditEventRecord, AuditExportRecord } from '../application/ports';
+import { OperationKind } from '@munaxa/licensing';
+import { LicensedAs } from '../../../core/licensing/licensed.decorator';
 
 /**
  * The audit surface (`13-audit-architecture.md` §6).
@@ -100,6 +102,10 @@ export class AuditController {
 
   @Get('exports')
   @RequirePermission(Permission.AUDIT_EXPORT)
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async listExports(
     @Query(new ZodValidationPipe(auditTimelineQuerySchema)) query: AuditTimelineQuery,
   ): Promise<{ data: WireAuditExport[]; meta: AuditPage['meta'] }> {
@@ -110,6 +116,10 @@ export class AuditController {
   /** 202: the bundle is produced on the lane, not in this request. */
   @Post('exports')
   @RequirePermission(Permission.AUDIT_EXPORT)
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   @HttpCode(202)
   async requestExport(
     @Body(new ZodValidationPipe(auditExportRequestSchema)) body: AuditExportRequestBody,
@@ -126,6 +136,10 @@ export class AuditController {
 
   @Get('exports/:id')
   @RequirePermission(Permission.AUDIT_EXPORT)
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async getExport(@Param('id') id: string): Promise<WireAuditExport> {
     const record = await this.exports.get(asId<AnyId>(id));
     if (record === null) {
@@ -144,6 +158,10 @@ export class AuditController {
    */
   @Post('exports/:id/download')
   @RequirePermission(Permission.AUDIT_EXPORT)
+  @LicensedAs(
+    OperationKind.EXPORT,
+    'Export is what a customer keeps when nothing else is permitted (ADR-0026).',
+  )
   async download(@Param('id') id: string): Promise<AuditExportDownload> {
     const links = await this.exports.download(asId<AnyId>(id));
     return {

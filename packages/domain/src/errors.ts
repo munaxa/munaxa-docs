@@ -21,6 +21,13 @@ export const ErrorCode = {
   CONTENT_NOT_SCANNED: 'CONTENT_NOT_SCANNED',
   TENANT_READ_ONLY: 'TENANT_READ_ONLY',
   /**
+   * The tenant's subscription does not include this, or does not permit it right now — an
+   * expired term, a suspension, a spent quota (ADR-0012). `402`, never `403`: the question is what
+   * the organisation bought, not what this person may do, and the answer is an upgrade path rather
+   * than an access request.
+   */
+  SUBSCRIPTION_REQUIRED: 'SUBSCRIPTION_REQUIRED',
+  /**
    * The password was right and a second factor is owed — Phase 14.
    *
    * Its own code rather than `UNAUTHENTICATED`, because it is the one authentication outcome a

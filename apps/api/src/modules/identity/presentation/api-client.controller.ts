@@ -19,7 +19,7 @@ import {
   apiClientListQuerySchema,
   createApiClientSchema,
 } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { Permission, DocsFeature } from '@edms/domain';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
 import { IfMatch } from '../../../core/http/admin-request';
@@ -29,6 +29,7 @@ import {
   type ApiClientRecord,
   type ApiClientService,
 } from '../application/api-client.ports';
+import { RequireFeature } from '../../../core/licensing/licensed.decorator';
 
 /**
  * Machine credentials, behind `integration:manage`.
@@ -44,6 +45,7 @@ import {
  * review reads, and a row that vanished would take the answer with it.
  */
 @Controller({ path: 'admin/api-clients', version: '1' })
+@RequireFeature(DocsFeature.API_ACCESS)
 @RequirePermission(Permission.INTEGRATION_MANAGE)
 export class ApiClientController {
   constructor(@Inject(API_CLIENT_SERVICE) private readonly clients: ApiClientService) {}

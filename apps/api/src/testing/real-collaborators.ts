@@ -132,6 +132,7 @@ import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/work
 import type { QueuePort } from '../ports/queue.port';
 import { BullMqQueueAdapter } from '../infrastructure/queue/bullmq.adapter';
 import { RecordingMetrics, RecordingQueue } from './fake-ports';
+import { unmeteredEntitlements } from './licensing';
 import { DefaultReportingService } from '../modules/reporting/application/reporting.service';
 import { ReportDefinitionService } from '../modules/reporting/application/report-definition.service';
 import { ReportExportService } from '../modules/reporting/application/report-export.service';
@@ -426,6 +427,7 @@ export function realUserAdmin(options: {
     new ScryptPasswordHasher(),
     writer,
     realAclResolver({ ...options, cache }),
+    unmeteredEntitlements(options.clock),
   );
 }
 
@@ -618,6 +620,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     outbox,
     options.config,
     writer,
+    unmeteredEntitlements(options.clock),
   );
 
   const configurationRepository = new PrismaConfigurationRepository(stamps);

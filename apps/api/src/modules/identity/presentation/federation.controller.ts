@@ -10,7 +10,7 @@ import {
   federationDiscoverySchema,
   upsertIdentityProviderSchema,
 } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { Permission, DocsFeature } from '@edms/domain';
 import { negotiateLocale } from '@edms/i18n';
 
 import { Public } from '../../../core/auth/public.decorator';
@@ -25,6 +25,7 @@ import {
 import type { IdentityProviderRecord } from '../application/federation.ports';
 import type { AuthenticationResponse } from './auth.dto';
 import { respondWith } from './auth.dto';
+import { RequireFeature } from '../../../core/licensing/licensed.decorator';
 
 /**
  * Federated sign-in — the public half.
@@ -85,6 +86,7 @@ export class FederationController {
  * what a `PUT` means.
  */
 @Controller({ path: 'admin/identity-provider', version: '1' })
+@RequireFeature(DocsFeature.SSO_FEDERATION)
 @RequirePermission(Permission.INTEGRATION_MANAGE)
 export class IdentityProviderController {
   constructor(

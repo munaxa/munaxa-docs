@@ -602,6 +602,34 @@ export const configSchema = z
      */
     METRICS_DRIVER: z.enum(['NONE', 'PROMETHEUS']).default('NONE'),
     /**
+     * Where this deployment's entitlements come from — ADR-0026.
+     *
+     * `NONE` (the default, and the behaviour before licensing existed) puts every tenant on an
+     * unlimited plan: nothing is gated and nothing is counted against a ceiling. It is explicit
+     * configuration, not a fallback, and no failure ever selects it. `LICENSE_FILE` reads a signed
+     * licence from disk and verifies it offline with the public keys below — the on-premises mode.
+     * `CONTROL_PLANE` asks the central subscription service, keeps the last answer, and degrades by
+     * the shared outage policy when it cannot be reached — the hosted mode.
+     */
+    LICENSING_MODE: z.enum(['NONE', 'LICENSE_FILE', 'CONTROL_PLANE']).default('NONE'),
+    /** `LICENSE_FILE`: the licence on disk. Re-read on every refresh, so a renewal is a file copy. */
+    LICENSE_FILE_PATH: z.string().min(1).optional(),
+    /**
+     * `LICENSE_FILE`: the verification keys, as JSON `[{"kid": "…", "publicKey": "-----BEGIN PUBLIC KEY-----…"}]`.
+     * Public keys only — a private key here is refused, because an installation holding one could
+     * sign its own licence.
+     */
+    LICENSE_PUBLIC_KEYS: z.string().min(1).optional(),
+    LICENSE_ALGORITHM: z.enum(['ES256', 'RS256']).default('ES256'),
+    /** `LICENSE_FILE`: this installation's identifier, the value its licence is bound to. */
+    LICENSE_INSTALLATION_ID: z.string().min(1).max(128).optional(),
+    /** `CONTROL_PLANE`: the service's base URL. Its host must also be on `OUTBOUND_HTTP_ALLOWLIST`. */
+    CONTROL_PLANE_URL: z.string().url().optional(),
+    /** `CONTROL_PLANE`: this deployment's service credential. A secret. */
+    CONTROL_PLANE_TOKEN: z.string().min(32).optional(),
+    /** How long an entitlement answer is reused before it is asked for again. */
+    LICENSING_REFRESH_SECONDS: z.coerce.number().int().min(10).max(3_600).default(60),
+    /**
      * The bearer token `/api/metrics` requires.
      *
      * A metrics body is queue depths, error rates, refusal counts by permission and the route
@@ -844,6 +872,47 @@ export const configSchema = z
       }
     }
 
+    // --- Licensing, in every environment — ADR-0026 ----------------------------------------
+    //
+    // A mode with its inputs missing would boot and then refuse every request, which reads as an
+    // outage rather than as the configuration error it is.
+    if (config.LICENSING_MODE === 'LICENSE_FILE') {
+      for (const key of [
+        'LICENSE_FILE_PATH',
+        'LICENSE_PUBLIC_KEYS',
+        'LICENSE_INSTALLATION_ID',
+      ] as const) {
+        if (config[key] === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `LICENSING_MODE=LICENSE_FILE needs ${key}.`,
+          });
+        }
+      }
+      if (config.LICENSE_PUBLIC_KEYS !== undefined) {
+        const problem = publicKeysProblem(config.LICENSE_PUBLIC_KEYS);
+        if (problem !== null) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['LICENSE_PUBLIC_KEYS'],
+            message: problem,
+          });
+        }
+      }
+    }
+    if (config.LICENSING_MODE === 'CONTROL_PLANE') {
+      for (const key of ['CONTROL_PLANE_URL', 'CONTROL_PLANE_TOKEN'] as const) {
+        if (config[key] === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `LICENSING_MODE=CONTROL_PLANE needs ${key}.`,
+          });
+        }
+      }
+    }
+
     // --- Antivirus, in every environment — RC D-3 ------------------------------------------
     //
     // A driver name with nothing behind it is refused wherever it appears. Production used to
@@ -986,6 +1055,35 @@ export const configSchema = z
   });
 
 export type RawConfig = z.infer<typeof configSchema>;
+
+export interface LicensePublicKey {
+  readonly kid: string;
+  readonly publicKey: string;
+}
+
+function parsePublicKeys(raw: string): readonly LicensePublicKey[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed) || parsed.length === 0) throw new TypeError('not a non-empty array');
+  return parsed.map((entry: unknown) => {
+    const e = entry as Record<string, unknown>;
+    if (typeof e['kid'] !== 'string' || typeof e['publicKey'] !== 'string') {
+      throw new TypeError('each key needs a kid and a publicKey');
+    }
+    return { kid: e['kid'], publicKey: e['publicKey'] };
+  });
+}
+
+function publicKeysProblem(raw: string): string | null {
+  try {
+    const keys = parsePublicKeys(raw);
+    if (keys.some((key) => /PRIVATE KEY/.test(key.publicKey))) {
+      return 'LICENSE_PUBLIC_KEYS holds a private key. An installation holds public keys only.';
+    }
+    return null;
+  } catch (error) {
+    return `LICENSE_PUBLIC_KEYS is not valid: ${(error as Error).message}.`;
+  }
+}
 
 /** The shape the application reads. Grouped, so a module injects what it needs and no more. */
 export interface AppConfig {
@@ -1178,6 +1276,18 @@ export interface AppConfig {
     readonly allowList: readonly string[];
     readonly allowInsecure: boolean;
     readonly maxResponseBytes: number;
+  };
+  /** ADR-0026. Null members are the ones the mode does not use; boot validation requires the rest. */
+  readonly licensing: {
+    readonly mode: RawConfig['LICENSING_MODE'];
+    readonly refreshSeconds: number;
+    readonly licenseFile: {
+      readonly path: string;
+      readonly algorithm: RawConfig['LICENSE_ALGORITHM'];
+      readonly publicKeys: readonly LicensePublicKey[];
+      readonly installationId: string;
+    } | null;
+    readonly controlPlane: { readonly url: string; readonly token: string } | null;
   };
   /** Phase 18, and Phase 0.5's debt row 9: the port finally has an adapter behind a driver. */
   readonly observability: {
@@ -1387,6 +1497,28 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     rateLimit: {
       windowSeconds: raw.RATE_LIMIT_WINDOW_SECONDS,
       maxRequests: raw.RATE_LIMIT_MAX_REQUESTS,
+    },
+    licensing: {
+      mode: raw.LICENSING_MODE,
+      refreshSeconds: raw.LICENSING_REFRESH_SECONDS,
+      licenseFile:
+        raw.LICENSING_MODE === 'LICENSE_FILE' &&
+        raw.LICENSE_FILE_PATH !== undefined &&
+        raw.LICENSE_PUBLIC_KEYS !== undefined &&
+        raw.LICENSE_INSTALLATION_ID !== undefined
+          ? {
+              path: raw.LICENSE_FILE_PATH,
+              algorithm: raw.LICENSE_ALGORITHM,
+              publicKeys: parsePublicKeys(raw.LICENSE_PUBLIC_KEYS),
+              installationId: raw.LICENSE_INSTALLATION_ID,
+            }
+          : null,
+      controlPlane:
+        raw.LICENSING_MODE === 'CONTROL_PLANE' &&
+        raw.CONTROL_PLANE_URL !== undefined &&
+        raw.CONTROL_PLANE_TOKEN !== undefined
+          ? { url: raw.CONTROL_PLANE_URL.replace(/\/+$/, ''), token: raw.CONTROL_PLANE_TOKEN }
+          : null,
     },
     observability: {
       metricsDriver: raw.METRICS_DRIVER,
