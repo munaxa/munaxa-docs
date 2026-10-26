@@ -24,7 +24,7 @@ applies in that original account and are kept as history. In `229251310592`:
 | `bootstrap/` | State bucket and key, deployer role, boundaries and policies, GitHub OIDC provider and CI role, CloudTrail, Production and whole-account budgets | **Applied 2026-10-21** by root in AWS CloudShell (46 + 1 resources); post-apply plan: no changes. Verified read-only: state bucket versioned, public access blocked, SSE-KMS with rotating key; trail multi-region, logging, file validation; deployer trusts only the CI role; CI role trusts only `munaxa/munaxa-docs`, environment `production`, `refs/heads/main`; both $10 budgets present. Cost allocation tags not yet activated (`activate_cost_allocation_tags`, once the keys appear in Billing) |
 | `eu-prod/core/` | Production workload IAM roles and the network (VPC `10.121.0.0/16`, public and isolated DB subnets, IGW, S3 gateway endpoint, security groups) | **Applied 2026-10-21** by GitHub Actions ([run 39668262903](https://github.com/munaxa/munaxa-docs/actions/runs/39668262903), `main` at `0181d4e`): 59 added, 0 changed, 0 destroyed. Verified read-only: VPC `vpc-06ed50fc514fb4f21`, five subnets with no automatic public IPs, the only internet route on the public route table, S3 gateway endpoint, six tier security groups (8 ingress, 11 egress; only the ALB open to the internet, on 80 and 443), no NAT gateway or Elastic IP, nine roles under `/munaxa-docs/eu-prod/` each with the workload boundary |
 | `eu-prod/data/` | Data KMS key, RDS PostgreSQL 16, document bucket, AWS Backup | **Applied 2026-10-22** by GitHub Actions ([run 39738966834](https://github.com/munaxa/munaxa-docs/actions/runs/39738966834), `main` at `472fd8a`): 19 added, 0 changed, 0 destroyed. Verified read-only: `munaxa-docs-eu-prod-pg` available, PostgreSQL 16.12 `db.t4g.micro` Single-AZ (eu-central-1a), 20 GB gp3, encrypted with the data key, not publicly accessible, in the three DB subnets behind the rds security group only, `rds.force_ssl=1`, master password managed by RDS in Secrets Manager, 35-day backups, deletion protection; data KMS key enabled with rotation; backup vault on the data key with the monthly 365-day rule and the database selected; `munaxa-docs-eu-prod-docs-229251310592` with all public access blocked, not public, versioned, SSE-S3. Extended support is AWS's default (`open-source-rds-extended-support`); it costs nothing until PostgreSQL 16 leaves standard support |
-| `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | **Default stage applied 2026-10-26** by GitHub Actions through the reviewed saved plan ([run 40289111146](https://github.com/munaxa/munaxa-docs/actions/runs/40289111146), `main` at `de4ce3f`): 22 added, 0 changed, 0 destroyed. Verified read-only: certificate for `docs.munaxa.com` requested (since ISSUED), ALB and two target groups with no listener, cluster and six task definitions on the release digests, two empty secrets, five log groups, Cloud Map; no service, task or schedule. **`enable_https = true` is set in `launch.auto.tfvars`, pending deployment** (expected plan: 4 to add, 0 to change, 0 to destroy). `enable_services` is false |
+| `eu-prod/service/` | ALB/ACM, ECS task definitions and services, schedules, alarms | **Default stage applied 2026-10-26** by GitHub Actions through the reviewed saved plan ([run 40289111146](https://github.com/munaxa/munaxa-docs/actions/runs/40289111146), `main` at `de4ce3f`): 22 added, 0 changed, 0 destroyed. Verified read-only: certificate for `docs.munaxa.com` requested (since ISSUED), ALB and two target groups with no listener, cluster and six task definitions on the release digests, two empty secrets, five log groups, Cloud Map; no service, task or schedule. **HTTPS stage applied 2026-10-26** ([run 40305141933](https://github.com/munaxa/munaxa-docs/actions/runs/40305141933), `main` at `d19d04c`): the four intended creates (certificate validation, HTTPS listener, preview rule, HTTP redirect) plus four undeclared task-definition replacements (api, ops_provision, scanner, web: ECS-stored defaults the code did not state; revision 2 has the same configuration as revision 1). The task definitions now state those defaults and every apply is checked against `expected-changes.json`; a plan-only run on `main` should show no change. `enable_services` is false |
 | `modules/ecs-service/` | Input contract for the three ECS services | Variables only |
 
 **Images moved to ECR on 2026-10-22** (§5, ADR-0024 amendment), on top of the applies above:
@@ -238,6 +238,42 @@ GitHub settings the workflow relies on (not stored in this repository):
 
 **The sequence for every Production change:**
 
+0. **Declare the change in the PR.** Every root has an `expected-changes.json` next to its code.
+   The PR that makes a change also sets that file to exactly the resource actions the change
+   should plan, and both are reviewed together:
+
+   ```json
+   {
+     "root": "service",
+     "intent": "HTTPS stage: listener, preview rule and redirect (PR #158)",
+     "changes": [
+       { "address": "aws_acm_certificate_validation.web[0]", "actions": ["create"] },
+       { "address": "aws_lb_listener.https[0]", "actions": ["create"] },
+       { "address": "aws_lb_listener_rule.preview_stream[0]", "actions": ["create"] },
+       { "address": "aws_lb_listener.http_redirect[0]", "actions": ["create"] }
+     ]
+   }
+   ```
+
+   - **The rules.** Each entry is a Terraform resource address and its action list as Terraform
+     plans it: `["create"]`, `["update"]`, `["delete"]`, or a replacement as `["delete", "create"]`
+     (or `["create", "delete"]` for create-before-destroy). Reads and no-ops are not listed.
+   - **How the workflow uses it.** `scripts/terraform/check-plan-intent.sh` compares the plan's
+     changes with it, address by address and action by action. Counts are never compared.
+     - In an `apply` run, any extra, missing or different action fails the `plan` job, so the plan
+       is never kept and approval 2 is never asked for. The `apply` job runs the same check on the
+       fetched plan before `terraform apply`.
+     - A missing, malformed or empty declaration fails an apply. An empty `changes` list means
+       "nothing may be applied".
+     - A `plan` run only reports how the plan compares.
+   - **Why it is safe to reuse.** The file is part of the commit the plan is bound to, so a
+     declaration cannot outlive its review. After an apply, the next PR either declares its own
+     changes or resets the list to `[]`.
+   - **When the addresses are uncertain.** The workflow runs only on `main`, so merge the change
+     with your best declaration and run `action=plan`: its summary reports the difference without
+     applying anything. Correct the code or the declaration in a follow-up PR, then plan again.
+     Never widen a declaration just to make a plan pass.
+
 1. **Run the plan.** Dispatch "Terraform eu-prod" on `main` with the root and `action=plan`, and
    approve the `plan` job's `production` environment. A `plan` run keeps nothing and has no apply
    job.
@@ -283,7 +319,11 @@ GitHub settings the workflow relies on (not stored in this repository):
     is refused;
   - the plan is no older than four hours (`MAX_PLAN_AGE_SECONDS`) and not from the future.
 
-  It then re-reads the plan's actions, and stops if they differ from the reviewed counts.
+  It then checks the fetched plan against `expected-changes.json` from the same commit, and stops
+  unless its addresses and actions are exactly the declared ones. It also re-reads the counts
+  and stops if they differ from the plan job's; that is only an integrity check between the two
+  jobs, never proof that the plan is the intended change (run 40305141933 passed it while
+  replacing four undeclared task definitions).
 - **Recording.** The apply job's summary records:
   - the commit and the plan's key and hash;
   - the addresses applied;
@@ -314,9 +354,17 @@ job, without AWS. It checks:
   - the apply job cannot plan, and needs the plan job, action `apply`, `main` and the `production`
     environment;
   - the plan is verified before the one `terraform apply`, and discarded afterwards;
+  - the plan is checked against the declared intent in the plan job, before it is kept, and
+    again in the apply job, before the apply;
   - no artifact is uploaded;
   - only `main` is accepted;
 - the saved-plan verification against missing, altered, expired, future and foreign plans;
+- the intent check (`check-plan-intent.sh`):
+  - the HTTPS stage's four creates pass;
+  - the same four plus run 40305141933's four task-definition replacements fail;
+  - an undeclared addition, update, delete or replacement fails, and so does a missing change;
+  - a missing, malformed, empty or other-root declaration fails;
+  - every committed declaration is valid;
 - that the plan summary never prints an attribute value.
 
 The role ARN is not a secret and is written in the workflow. No AWS secret is stored in GitHub.

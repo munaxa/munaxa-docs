@@ -25,20 +25,25 @@ name: Terraform eu-prod
 # An `apply` run has three steps, and the plan is reviewed between the second and the third:
 #
 #   1. plan   (approval 1: lets the run read Production and plan)
-#             Saves the plan, publishes its addresses and actions to the run summary, and keeps the
-#             saved plan in the Terraform state bucket (eu-prod/plans/, encrypted with the state
-#             key, readable only by the deployer and administrators). Its SHA-256, commit, root and
-#             creation time become job outputs. The binary plan never leaves AWS.
+#             Saves the plan, publishes its addresses and actions to the run summary, and checks
+#             them against the root's expected-changes.json: the exact resource addresses and
+#             actions the PR declared (scripts/terraform/check-plan-intent.sh). A plan that does
+#             anything else fails the job here and is never kept. A matching plan is kept in the
+#             Terraform state bucket (eu-prod/plans/, encrypted with the state key, readable only by
+#             the deployer and administrators). Its SHA-256, commit, root and creation time become
+#             job outputs. The binary plan never leaves AWS.
 #   2. review the plan in the run summary, then approve or reject the apply job.
 #   3. apply  (approval 2: applies that plan and nothing else)
 #             Fetches the kept plan, refuses it unless its hash, commit, root and run match the
 #             reviewed one, it is encrypted with the state key itself (its alias resolved by KMS to
-#             the key ARN S3 reports) and it is younger than MAX_PLAN_AGE_SECONDS, then runs
-#             `terraform apply` on that saved plan. It never plans. If the state changed since the
-#             plan, Terraform refuses the stale plan and the job fails; run a new plan and review
-#             it. The kept plan is deleted at the end, whatever the result.
+#             the key ARN S3 reports) and it is younger than MAX_PLAN_AGE_SECONDS, checks it again
+#             against expected-changes.json, then runs `terraform apply` on that saved plan. It
+#             never plans. If the state changed since the plan, Terraform refuses the stale plan
+#             and the job fails; run a new plan and review it. The kept plan is deleted at the end,
+#             whatever the result.
 #
-# A `plan` run stops after step 1: it keeps nothing and has no apply job.
+# A `plan` run stops after step 1: it keeps nothing, has no apply job, and only reports how the
+# plan compares with the declared intent.
 
 on:
   workflow_dispatch:
@@ -199,6 +204,35 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           rm -f plan.json
 
+      # The plan must be exactly the change the PR declared in expected-changes.json: the same
+      # addresses with the same actions. For an apply run this fails the job, so a plan that does
+      # anything else is never kept and never reaches the apply approval. A plan run only reports.
+      - name: Check the plan against the declared intent
+        id: intent
+        env:
+          ROOT: ${{ inputs.root }}
+          EXPECTED_ROOT: ${{ inputs.root }}
+          MODE: ${{ inputs.action == 'apply' && steps.plan.outputs.changes == 'true' && '--enforce' || '--report' }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan > plan.json
+          set +e
+          "$GITHUB_WORKSPACE/scripts/terraform/check-plan-intent.sh" "$MODE" plan.json expected-changes.json > intent.txt
+          code=$?
+          set -e
+          rm -f plan.json
+          cat intent.txt
+          {
+            echo
+            echo "### Declared intent: \`eu-prod/$ROOT/expected-changes.json\` ($MODE)"
+            echo
+            echo '```'
+            cat intent.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f intent.txt
+          exit "$code"
+
       # Apply runs only. The saved plan can contain sensitive values, so it stays in AWS: the state
       # bucket, under a key unique to this run, encrypted with the state key. Only its hash and
       # identity leave the job, as job outputs that the apply job checks it against.
@@ -346,7 +380,20 @@ jobs:
           EXPECTED_KMS_KEY_ARN: ${{ steps.fetch.outputs.expected_kms_key_arn }}
         run: '"$GITHUB_WORKSPACE/scripts/terraform/verify-saved-plan.sh"'
 
-      # The same addresses and actions as the reviewed summary, read from the verified file.
+      # The fetched plan, checked again against the same declaration (this run's commit, which the
+      # verification above bound the plan to). Any other change fails here, before the apply.
+      - name: Check the fetched plan against the declared intent
+        env:
+          EXPECTED_ROOT: ${{ inputs.root }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan > plan.json
+          "$GITHUB_WORKSPACE/scripts/terraform/check-plan-intent.sh" --enforce plan.json expected-changes.json
+          rm -f plan.json
+
+      # The same addresses and actions as the reviewed summary, read from the verified file. Counts
+      # are an integrity check between the two jobs only; the intent check above is what binds the
+      # plan to the declared change.
       - name: Record the plan being applied and its approvals
         env:
           GH_TOKEN: ${{ github.token }}
