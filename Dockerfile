@@ -92,26 +92,96 @@ RUN pnpm prisma:generate && ./node_modules/.bin/turbo run build
 # a location the prod tree can carry, and it is named in the Phase 18 report rather than half-done
 # here.
 
-# --- The shared runtime base --------------------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
-WORKDIR /app
-
+# --- The runtime filesystem ---------------------------------------------------------------------
+#
+# The API and web images run Node and nothing else, so they carry a Debian 12 userland of exactly
+# what Node and its native modules load: glibc, libgcc and libstdc++, OpenSSL 3 (Prisma's
+# `debian-openssl-3.0.x` engine links libssl.so.3 and libcrypto.so.3), the CA bundle, `dumb-init`,
+# and `base-files` and `netbase` for /etc/os-release and /etc/services. No shell, no package
+# manager, no util-linux, no zlib and no setuid program. `node:22-bookworm-slim` carried all of
+# those, and with them every finding in docs/reports/image-vulnerability-remediation-2026-10-25.md:
+# util-linux and zlib are absent here, not patched or hidden.
+#
+# The packages are the current Debian 12 ones: `upgrade` first, then `apt-get download`, which
+# checks each file against the signed archive indices. Each package's control record goes into
+# /var/lib/dpkg/status, so scanners see every package and version that is present. `node` is the
+# official binary from the same `node:22-bookworm-slim` the build stage uses, so the image runs the
+# Node release the build was tested with.
+#
 # `dumb-init` because Node is a poor PID 1: it does not reap zombies and it does not forward
 # signals to children, and 20 §4 requires workers to drain in-flight jobs before exiting — which
 # they can only do if SIGTERM reaches them.
+FROM node:22-bookworm-slim AS runtime-fs
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends dumb-init ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
+ && apt-get install --yes --no-install-recommends ca-certificates \
+ && mkdir -p /tmp/debs /rootfs/var/lib/dpkg /rootfs/etc/ssl/certs /rootfs/tmp /rootfs/home/node /rootfs/usr/local/bin \
+ && cd /tmp/debs \
+ && apt-get download base-files netbase libc6 libgcc-s1 gcc-12-base libstdc++6 libssl3 dumb-init \
+ && for deb in ./*.deb; do \
+      dpkg-deb --extract "$deb" /rootfs \
+      && dpkg-deb --field "$deb" | sed '/^Package:/a Status: install ok installed' >> /rootfs/var/lib/dpkg/status \
+      && echo >> /rootfs/var/lib/dpkg/status \
+      || exit 1; \
+    done \
+ && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ \
+ && { dpkg-query --status ca-certificates \
+        | grep -E '^(Package|Status|Priority|Section|Installed-Size|Maintainer|Architecture|Multi-Arch|Version|Depends|Description):'; \
+      echo; } >> /rootfs/var/lib/dpkg/status \
+ && printf 'root:x:0:0:root:/root:/usr/sbin/nologin\nnode:x:1000:1000::/home/node:/usr/sbin/nologin\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n' > /rootfs/etc/passwd \
+ && printf 'root:x:0:\nnode:x:1000:\nnogroup:x:65534:\n' > /rootfs/etc/group \
+ && printf 'passwd: files\ngroup: files\nshadow: files\nhosts: files dns\nnetworks: files\nprotocols: files\nservices: files\n' > /rootfs/etc/nsswitch.conf \
+ && cp /usr/local/bin/node /rootfs/usr/local/bin/node \
+ && ldconfig -r /rootfs \
+ && chmod 1777 /rootfs/tmp \
+ && chown 1000:1000 /rootfs/home/node \
+ && rm -rf /rootfs/usr/share/doc /rootfs/usr/share/man /rootfs/usr/share/info /rootfs/usr/share/lintian \
+ && test -z "$(find /rootfs -xdev -type f -perm /6000)" \
+ && test ! -e /rootfs/bin/sh && test ! -e /rootfs/usr/bin/sh
 
+# --- The shared runtime base --------------------------------------------------------------------
+FROM scratch AS runtime
+COPY --from=runtime-fs /rootfs/ /
+WORKDIR /app
+
+ENV PATH=/usr/local/bin:/usr/bin:/bin
 ENV NODE_ENV=production
 # Node's own default heap is a fraction of the container's memory limit and it does not read the
 # cgroup, so a container with a 1 GB limit runs a garbage collector sized for the host. Stated here
 # and overridable, because the right value is the deployment's memory limit minus its headroom.
 ENV NODE_OPTIONS=--max-old-space-size=768
 
-# `node` is the image's own unprivileged user. Nothing in this product writes to its own filesystem
-# except `STORAGE_DRIVER=LOCAL`, whose root is a mounted volume — so the image needs no writable
-# layer and a read-only root filesystem is a supported way to run it.
+# `node` (uid 1000) is the image's own unprivileged user. Nothing in this product writes to its own
+# filesystem except `STORAGE_DRIVER=LOCAL`, whose root is a mounted volume — so the image needs no
+# writable layer and a read-only root filesystem is a supported way to run it.
+USER node
+ENTRYPOINT ["dumb-init", "--"]
+
+# --- The worker's runtime base ------------------------------------------------------------------
+#
+# The worker can install LibreOffice and Tesseract (below), which needs a package manager, so it
+# keeps the full `node:22-bookworm-slim` userland. It is not one of the published release images.
+#
+# `upgrade` first, as the antivirus image does: the base image carries only the Debian updates
+# published before it was built, so the runtime takes bookworm's later security fixes for packages
+# already in it. It moves Debian 12 packages within Debian 12 only; it pins nothing and adds no
+# repository.
+FROM node:22-bookworm-slim AS runtime-debian
+WORKDIR /app
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
+ && apt-get install --yes --no-install-recommends dumb-init ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Nothing in these images changes user: they run as `node` from the first process and carry no
+# sudo. The base image's setuid and setgid programs (mount, umount, su, passwd, chsh, chfn,
+# gpasswd, newgrp, chage, expiry, unix_chkpwd) are therefore only a way for code running as
+# `node` to reach root. Clear the bits, and fail the build if any remain.
+RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} + \
+ && test -z "$(find / -xdev -type f -perm /6000)"
+
+ENV NODE_ENV=production
+ENV NODE_OPTIONS=--max-old-space-size=768
 USER node
 ENTRYPOINT ["dumb-init", "--"]
 
@@ -160,7 +230,7 @@ CMD ["node", "server.mjs"]
 # use and most deployments do not want. `OFFICE_DRIVER` and `OCR_DRIVER` still decide whether the
 # binaries are *called*; these decide whether they are *present*, which is a property of the image
 # rather than of the environment — an image without LibreOffice cannot be configured into having it.
-FROM runtime AS worker
+FROM runtime-debian AS worker
 ARG WITH_LIBREOFFICE=false
 ARG WITH_TESSERACT=false
 

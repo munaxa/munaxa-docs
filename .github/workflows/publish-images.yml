@@ -200,16 +200,22 @@ jobs:
           echo "revision label: $revision"
           [ "$revision" = "$SHA" ] || { echo "::error::revision label $revision != $SHA"; exit 1; }
 
-          user=$(docker run --rm --entrypoint sh "$REF" -c 'id -un')
-          [ "$user" != "root" ] || { echo "::error::image runs as root"; exit 1; }
-          echo "runs as: $user"
+          # The runtime has no shell, so the user is asked of the image's own `node`, and the
+          # filesystem is read from outside the image.
+          uid=$(docker run --rm --entrypoint node "$REF" -e 'process.stdout.write(String(process.getuid()))')
+          [ -n "$uid" ] && [ "$uid" != "0" ] || { echo "::error::image runs as root (uid '${uid}')"; exit 1; }
+          echo "runs as: $(docker inspect --format '{{.Config.User}}' "$REF") (uid $uid)"
 
           if docker history --no-trunc --format '{{.CreatedBy}}' "$REF" \
-               | grep -qE 'ghp_|ghs_|github_pat_|_authToken=[A-Za-z0-9]'; then
+               | grep -E 'ghp_|ghs_|github_pat_|_authToken=[A-Za-z0-9]' >/dev/null; then
             echo "::error::a credential appears in image history"; exit 1
           fi
-          if docker run --rm --entrypoint sh "$REF" -c \
-               'find / -name ".npmrc" 2>/dev/null | xargs -r grep -l "_authToken=[A-Za-z0-9]" 2>/dev/null' | grep -q .; then
+          cid=$(docker create "$REF")
+          docker export "$cid" > "$RUNNER_TEMP/image-fs.tar"
+          docker container rm "$cid" >/dev/null
+          mapfile -t npmrcs < <(tar -tf "$RUNNER_TEMP/image-fs.tar" | grep -E '(^|/)\.npmrc$' || true)
+          if [ "${#npmrcs[@]}" -gt 0 ] \
+               && tar -xOf "$RUNNER_TEMP/image-fs.tar" "${npmrcs[@]}" | grep '_authToken=[A-Za-z0-9]' >/dev/null; then
             echo "::error::an npmrc carrying a token is present in the image"; exit 1
           fi
           echo "no credentials in history or filesystem"
@@ -220,17 +226,19 @@ jobs:
         env:
           REF: ${{ env.REPOSITORY }}@${{ steps.build.outputs.digest }}
         run: |
-          docker run --rm --entrypoint sh "$REF" -eu -c '
-            ssl=$(ls /usr/lib/x86_64-linux-gnu/libssl.so.* 2>/dev/null | sed -n "s/.*libssl\.so\.\([0-9]\).*/\1/p" | head -1)
-            case "${ssl:-}" in
-              3) want=debian-openssl-3.0.x ;;
-              1) want=debian-openssl-1.1.x ;;
-              *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
-            esac
-            find /app/node_modules -name "libquery_engine-$want.so.node" | grep -q . \
-              || { echo "FAIL - no libquery_engine-$want.so.node"; exit 1; }
-            echo "OK - query engine $want present"
-          '
+          set -euo pipefail
+          cid=$(docker create "$REF")
+          files=$(docker export "$cid" | tar -tf -)
+          docker container rm "$cid" >/dev/null
+          ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          case "${ssl:-}" in
+            3) want=debian-openssl-3.0.x ;;
+            1) want=debian-openssl-1.1.x ;;
+            *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
+          esac
+          grep -q "^app/node_modules/.*/libquery_engine-$want\.so\.node$" <<<"$files" \
+            || { echo "FAIL - no libquery_engine-$want.so.node"; exit 1; }
+          echo "OK - query engine $want present"
 
       # STG-12: the pulled web image serves every branding URL its login page references, plus the
       # one favicon the release package names explicitly.
@@ -481,3 +489,157 @@ jobs:
               --query 'imageDetails[0].imageDigest' --output text | grep -qx "$digest"
             echo "| $repo | \`$digest\` present in ECR |" >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # The release smoke runs in a job with no OIDC permission and no environment (below), so it
+      # cannot mint an AWS session at all. This job, which already holds the publisher session, pulls
+      # the three digests for it and hands them over as an artifact, with each image's local id: the
+      # smoke loads them and refuses to run unless every id matches what was pulled here.
+      - name: Pull the three digests for the release smoke
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
+          mkdir -p smoke-images
+          for name in api web antivirus; do
+            ref=$(head -1 "digests/$name")
+            printf '%s' "$ref" | grep -Eq "^$REGISTRY/munaxa-docs/$name@sha256:[0-9a-f]{64}$" \
+              || { echo "::error::digests/$name is not an ECR digest reference: $ref"; exit 1; }
+            docker pull --quiet "$ref" >/dev/null
+            docker tag "$ref" "release-smoke/$name:$GITHUB_RUN_ID"
+            printf '%s %s %s\n' "$name" "$ref" \
+              "$(docker image inspect --format '{{.Id}}' "release-smoke/$name:$GITHUB_RUN_ID")" \
+              >> smoke-images/identity
+          done
+          docker logout "$REGISTRY" >/dev/null
+          docker save "release-smoke/api:$GITHUB_RUN_ID" "release-smoke/web:$GITHUB_RUN_ID" \
+            "release-smoke/antivirus:$GITHUB_RUN_ID" | gzip -1 > smoke-images/images.tar.gz
+          cat smoke-images/identity
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-images
+          path: smoke-images/
+          retention-days: 1
+          compression-level: 0 # already gzipped
+
+  # The release smoke on the digests this run pushed (scripts/release-smoke/): a staging-shaped stack
+  # from the three images, as pulled from ECR, and the blocking checks of runbook §16 and the release
+  # package. A failure fails the run, and digests whose run failed are never deployed.
+  #
+  # Credentials: none. This job has no `id-token` permission and no environment, so it cannot
+  # request a GitHub OIDC token or assume any AWS role, and nothing it runs (the dependency install,
+  # the migrations, the stack) can either. The images come from `pull-identity`, which pulled them
+  # from ECR by digest; they are loaded here and checked against the ids recorded at the pull. The
+  # stack runs on the runner with its own generated secrets, a local object store and a local mail
+  # capture.
+  release-smoke:
+    name: Release smoke on the published digests
+    needs: [source, pull-identity]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read # pnpm install, for the repository's migration runner
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-smoke-images
+          path: smoke-images
+
+      - name: Confirm this job holds no AWS or OIDC credential
+        run: |
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::this job can request an OIDC token; refusing to run the smoke"; exit 1
+          fi
+          if env | grep -q '^AWS_\(ACCESS_KEY_ID\|SECRET_ACCESS_KEY\|SESSION_TOKEN\|ROLE_ARN\|WEB_IDENTITY_TOKEN_FILE\)=.'; then
+            echo "::error::an AWS credential variable is set; refusing to run the smoke"; exit 1
+          fi
+          if aws sts get-caller-identity >/dev/null 2>&1; then
+            echo "::error::an AWS credential is usable; refusing to run the smoke"; exit 1
+          fi
+          echo "no OIDC token request and no usable AWS credential"
+
+      - name: Load the published images and confirm they are the digests this run pushed
+        id: images
+        run: |
+          set -euo pipefail
+          gunzip -c smoke-images/images.tar.gz | docker load
+          for name in api web antivirus; do
+            read -r _ ref id < <(grep "^$name " smoke-images/identity)
+            [ "$ref" = "$(head -1 "digests/$name")" ] \
+              || { echo "::error::$name: pulled $ref, but this run published $(head -1 "digests/$name")"; exit 1; }
+            local_ref="release-smoke/$name:$GITHUB_RUN_ID"
+            loaded=$(docker image inspect --format '{{.Id}}' "$local_ref")
+            [ "$loaded" = "$id" ] \
+              || { echo "::error::$name: loaded image $loaded is not the image pulled from $ref ($id)"; exit 1; }
+            echo "$name=$local_ref" >> "$GITHUB_OUTPUT"
+            echo "$name-ref=$ref" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: '10.33.0'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@munaxa'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore the object store binaries
+        id: object-store-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/object-store/bin
+          key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
+
+      - uses: actions/setup-go@v6
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Build the object store from its pinned source
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        run: bash scripts/release-smoke/build-object-store.sh "$RUNNER_TEMP/object-store"
+
+      - name: Release smoke
+        run: |
+          set -euo pipefail
+          {
+            echo "### Release smoke inputs"
+            echo ""
+            echo "| image | digest pulled from ECR |"
+            echo "| --- | --- |"
+            echo "| api | \`$API_REF\` |"
+            echo "| web | \`$WEB_REF\` |"
+            echo "| antivirus | \`$AV_REF\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/release-smoke/run.sh
+        env:
+          API_IMAGE: ${{ steps.images.outputs.api }}
+          WEB_IMAGE: ${{ steps.images.outputs.web }}
+          AV_IMAGE: ${{ steps.images.outputs.antivirus }}
+          API_REF: ${{ steps.images.outputs.api-ref }}
+          WEB_REF: ${{ steps.images.outputs.web-ref }}
+          AV_REF: ${{ steps.images.outputs.antivirus-ref }}
+          EXPECTED_REVISION: ${{ needs.source.outputs.sha }}
+          OBJECT_STORE_BIN: ${{ runner.temp }}/object-store/bin

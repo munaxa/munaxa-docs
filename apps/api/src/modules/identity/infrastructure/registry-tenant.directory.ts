@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { type TenantId, TenantStatus, asId } from '@edms/domain';
 
+import { requireTransaction } from '../../../core/prisma/unit-of-work';
 import { TENANT_REGISTRY, type TenantRegistry } from '../../../core/tenancy/tenant-registry.port';
 import type { TenantDirectory } from '../application/authentication.ports';
 
@@ -37,5 +38,18 @@ export class RegistryTenantDirectory implements TenantDirectory {
       return null;
     }
     return asId<TenantId>(placement.id);
+  }
+
+  /**
+   * The registry resolves a tenant from the catalogue, before provisioning has written its row. The
+   * row is read here, inside the tenant's transaction, so a migrated but unprovisioned tenant is not
+   * mistaken for one that can hold sessions and audit records (SMK-1).
+   */
+  async isProvisioned(tenantId: TenantId): Promise<boolean> {
+    const row = await requireTransaction().tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true },
+    });
+    return row !== null;
   }
 }
