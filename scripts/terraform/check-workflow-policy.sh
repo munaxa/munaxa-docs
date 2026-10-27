@@ -10,10 +10,13 @@
 #   - an exact Terraform version and the committed provider lock file;
 #   - the preflight job holds nothing and refuses any branch but main;
 #   - the plan job saves its plan and never applies; nothing uploads a workflow artifact;
+#   - the plan job checks the plan against the root's declared intent (expected-changes.json)
+#     before keeping it, and for an apply run a mismatch stops the plan from being kept;
 #   - the apply job runs only for action apply on main, after the plan job, in the protected
 #     environment; it never plans; it verifies the kept plan, including the KMS key it is
-#     encrypted with, before the one `terraform apply`,
-#     which applies that saved file; and it discards the plan whatever the result.
+#     encrypted with, and checks it again against the declared intent, before the one
+#     `terraform apply`, which applies that saved file; and it discards the plan whatever the
+#     result.
 # shellcheck disable=SC2016 # the single-quoted strings are jq programs, not shell
 set -euo pipefail
 
@@ -100,6 +103,25 @@ check "the expected key is resolved by KMS, not taken from the alias string" \
    and (.[0] | test("aws kms describe-key[^\n]*STATE_KEY_ALIAS_ARN"))
    and (.[0] | contains("resolve-kms-key.sh"))
    and (.[0] | contains("SSEKMSKeyId"))'
+check "the plan job checks the plan against the declared intent before keeping it, enforced for apply" \
+  '[.jobs.plan.steps[] | (.run // "")] as $s
+   | ([$s | to_entries[] | select(.value | contains("check-plan-intent.sh")) | .key] | min) as $intent
+   | ([.jobs.plan.steps | to_entries[] | select(.value.id == "keep") | .key] | min) as $keep
+   | [.jobs.plan.steps[] | select((.run // "") | contains("check-plan-intent.sh"))] as $steps
+   | ($intent != null) and ($keep != null) and ($intent < $keep) and ($steps | length == 1)
+     and ($steps[0].env.MODE | tostring | test("inputs\\.action == '"'"'apply'"'"'[^|]*--enforce"))
+     and ($steps[0].env.EXPECTED_ROOT | tostring | contains("inputs.root"))
+     and ($steps[0].run | contains("expected-changes.json"))
+     and ($steps[0].run | test("exit \"\\$code\"\\s*$"))'
+check "a failed intent check stops the plan from being kept" \
+  '[.jobs.plan.steps[] | select(.id == "keep") | .if] | (length == 1) and (.[0] | test("always\\(|failure\\(|cancelled\\(") | not)'
+check "apply checks the fetched plan against the declared intent, after verifying it and before applying" \
+  '[.jobs.apply.steps[] | (.run // "")] as $s
+   | ([$s | to_entries[] | select(.value | contains("verify-saved-plan.sh")) | .key] | min) as $verify
+   | ([$s | to_entries[] | select(.value | test("check-plan-intent\\.sh\"? --enforce [^\\n]*expected-changes\\.json")) | .key] | min) as $intent
+   | ([$s | to_entries[] | select(.value | test("terraform\\s+apply")) | .key] | min) as $apply
+   | ($verify != null) and ($intent != null) and ($apply != null) and ($verify < $intent) and ($intent < $apply)
+     and ([.jobs.apply.steps[] | select((.run // "") | contains("check-plan-intent.sh")) | .env.EXPECTED_ROOT | tostring | contains("inputs.root")] | all)'
 check "apply discards the plan whatever the result" \
   '[.jobs.apply.steps[] | select((.if // "") == "always()" and ((.run // "") | contains("delete-object")))] | length == 1'
 check "terraform apply appears nowhere but the apply job" \

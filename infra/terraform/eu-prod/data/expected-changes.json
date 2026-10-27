@@ -1,0 +1,5 @@
+{
+  "root": "data",
+  "intent": "No infrastructure change declared. An apply of this root first needs a reviewed PR that declares its changes here.",
+  "changes": []
+}

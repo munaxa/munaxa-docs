@@ -65,7 +65,12 @@ locals {
   # Fargate volume there would be root-owned unless the image declared it (a VOLUME), which is an
   # image change; Redis writes its password file to /tmp. The release smoke runs the stack the same
   # way (scripts/release-smoke/run.sh).
-  no_capabilities = { capabilities = { drop = ["ALL"] } }
+  #
+  # Container definitions are written the way ECS stores them, so a plan compares like with like:
+  # ECS records an empty `add` beside `drop`, and in awsvpc mode a hostPort equal to the
+  # containerPort. Written any other way, every plan after the first replaces the task definition
+  # (run 40305141933 replaced api, ops_provision, scanner and web for exactly these two fields).
+  no_capabilities = { capabilities = { add = [], drop = ["ALL"] } }
 
   # Redis reads its password from the environment and writes it to a config file with a shell
   # built-in, so it never appears in a process argument list.
@@ -151,7 +156,7 @@ resource "aws_ecs_task_definition" "web" {
     essential              = true
     readonlyRootFilesystem = true
     linuxParameters        = local.no_capabilities
-    portMappings           = [{ containerPort = 3000, protocol = "tcp" }]
+    portMappings           = [{ containerPort = 3000, hostPort = 3000, protocol = "tcp" }]
     environment = [for k, v in {
       NODE_ENV            = "production"
       PORT                = "3000"
@@ -185,7 +190,7 @@ resource "aws_ecs_task_definition" "api" {
       memory                 = 1792
       readonlyRootFilesystem = true
       linuxParameters        = local.no_capabilities
-      portMappings           = [{ containerPort = 3001, protocol = "tcp" }]
+      portMappings           = [{ containerPort = 3001, hostPort = 3001, protocol = "tcp" }]
       environment            = [for k, v in local.api_environment : { name = k, value = v }]
       secrets = [
         for key in local.app_secret_keys : { name = key, valueFrom = local.app_secret_ref[key] }
@@ -244,7 +249,7 @@ resource "aws_ecs_task_definition" "scanner" {
     image           = var.antivirus_image
     essential       = true
     linuxParameters = local.no_capabilities
-    portMappings    = [{ containerPort = 1344, protocol = "tcp" }]
+    portMappings    = [{ containerPort = 1344, hostPort = 1344, protocol = "tcp" }]
     # A real scan through c-icap and clamd, not an ICAP OPTIONS ping (§2.7). The start period covers
     # the first signature download into the task's own storage (no EFS).
     healthCheck = {

@@ -6,6 +6,10 @@
 #     state key itself;
 #   - resolve-kms-key.sh: the state key's alias resolves to its key ARN; an AWS-managed,
 #     disabled, foreign or unparsable answer is refused;
+#   - check-plan-intent.sh: a plan passes only if its addresses and actions are exactly the
+#     declared ones; the HTTPS stage plus four task-definition replacements (run 40305141933), an
+#     extra, missing, updated, deleted or replaced resource, and a missing or malformed declaration
+#     are refused;
 #   - check-workflow-policy.sh: the committed workflow passes; workflows that apply from the plan
 #     job, plan in the apply job, skip verification, run off main, upload an artifact or lose the
 #     approval are refused.
@@ -143,6 +147,107 @@ expect_failure "an empty describe-key answer is refused" resolve < /dev/null
 expect_failure "an unparsable describe-key answer is refused" resolve < <(echo 'AccessDenied')
 
 # ---------------------------------------------------------------------------------------------
+echo "== check-plan-intent.sh"
+
+# The HTTPS stage as PR #158 intended it, and as run 40305141933 actually planned it.
+https_changes='[
+  {"address": "aws_acm_certificate_validation.web[0]", "actions": ["create"]},
+  {"address": "aws_lb_listener.https[0]", "actions": ["create"]},
+  {"address": "aws_lb_listener_rule.preview_stream[0]", "actions": ["create"]},
+  {"address": "aws_lb_listener.http_redirect[0]", "actions": ["create"]}
+]'
+jq -n --argjson c "$https_changes" '{root: "service", intent: "HTTPS stage (PR #158)", changes: $c}' > "$work/intent.json"
+plan_of() { # a JSON array of {address, actions} → a Terraform JSON plan, with a read and a no-op
+  jq -n --argjson c "$1" '{resource_changes: ([$c[] | {address, change: {actions}}]
+    + [{address: "data.aws_vpc.production", change: {actions: ["read"]}},
+       {address: "aws_ecs_cluster.main", change: {actions: ["no-op"]}}])}'
+}
+with() { jq -c --argjson extra "$1" '. + $extra' <<<"$https_changes"; }
+replacements='[
+  {"address": "aws_ecs_task_definition.api", "actions": ["delete", "create"]},
+  {"address": "aws_ecs_task_definition.ops_provision", "actions": ["delete", "create"]},
+  {"address": "aws_ecs_task_definition.scanner", "actions": ["delete", "create"]},
+  {"address": "aws_ecs_task_definition.web", "actions": ["delete", "create"]}
+]'
+intent() { EXPECTED_ROOT=service "$scripts/check-plan-intent.sh" "$@"; }
+enforce_plan() { plan_of "$1" > "$work/intent-plan.json" && intent --enforce "$work/intent-plan.json" "${2:-$work/intent.json}"; }
+
+expect_success "the exact declared change set passes" enforce_plan "$https_changes"
+expect_success "the declared changes pass in any order" enforce_plan "$(jq -c 'reverse' <<<"$https_changes")"
+expect_failure "refuses: the four additions plus four task-definition replacements (run 40305141933)" \
+  enforce_plan "$(with "$replacements")"
+enforce_plan "$(with "$replacements")" > "$work/refusal" 2>&1 || true
+for td in api ops_provision scanner web; do
+  expect_success "the refusal names the undeclared replacement of aws_ecs_task_definition.$td" \
+    grep -qx "  aws_ecs_task_definition.$td delete,create" "$work/refusal"
+done
+expect_failure "refuses: an undeclared resource addition" \
+  enforce_plan "$(with '[{"address": "aws_ecs_service.web[0]", "actions": ["create"]}]')"
+expect_failure "refuses: an undeclared in-place update" \
+  enforce_plan "$(with '[{"address": "aws_lb.main", "actions": ["update"]}]')"
+expect_failure "refuses: an undeclared delete" \
+  enforce_plan "$(with '[{"address": "aws_lb_target_group.api", "actions": ["delete"]}]')"
+expect_failure "refuses: an undeclared create-before-destroy replacement" \
+  enforce_plan "$(with '[{"address": "aws_acm_certificate.web", "actions": ["create", "delete"]}]')"
+expect_failure "refuses: a declared create planned as a replacement" \
+  enforce_plan "$(jq -c '.[0].actions = ["delete", "create"]' <<<"$https_changes")"
+expect_failure "refuses: an unknown action" \
+  enforce_plan "$(with '[{"address": "aws_lb.main", "actions": ["forget"]}]')"
+expect_failure "refuses: a declared change missing from the plan" enforce_plan "$(jq -c '.[1:]' <<<"$https_changes")"
+expect_failure "refuses: an empty plan when changes are declared" enforce_plan '[]'
+expect_failure "refuses: matching counts with different addresses" \
+  enforce_plan "$(jq -c '.[0].address = "aws_lb_listener.other[0]"' <<<"$https_changes")"
+
+declare_bad() { echo "$1" > "$work/bad-intent.json"; enforce_plan "$https_changes" "$work/bad-intent.json"; }
+expect_failure "refuses: a missing declaration" enforce_plan "$https_changes" "$work/no-such-intent.json"
+expect_failure "refuses: an empty declaration file" declare_bad ''
+expect_failure "refuses: a declaration that is not JSON" declare_bad 'changes: create everything'
+expect_failure "refuses: a declaration that is not an object" declare_bad "$https_changes"
+expect_failure "refuses: a declaration with no change for an apply" \
+  declare_bad '{"root": "service", "intent": "nothing", "changes": []}'
+expect_failure "refuses: a declaration without changes" declare_bad '{"root": "service", "intent": "x"}'
+expect_failure "refuses: a declaration without intent" \
+  declare_bad "$(jq -n --argjson c "$https_changes" '{root: "service", changes: $c}')"
+expect_failure "refuses: a declaration for another root" \
+  declare_bad "$(jq -n --argjson c "$https_changes" '{root: "data", intent: "x", changes: $c}')"
+expect_failure "refuses: a wildcard or unknown action in a declaration" \
+  declare_bad "$(jq -n '{root: "service", intent: "x", changes: [{address: "aws_lb.main", actions: ["*"]}]}')"
+expect_failure "refuses: a no-op declared as a change" \
+  declare_bad "$(jq -n '{root: "service", intent: "x", changes: [{address: "aws_lb.main", actions: ["no-op"]}]}')"
+expect_failure "refuses: a change without actions" \
+  declare_bad "$(jq -n '{root: "service", intent: "x", changes: [{address: "aws_lb.main", actions: []}]}')"
+expect_failure "refuses: an address declared twice" \
+  declare_bad "$(jq -n --argjson c "$https_changes" '{root: "service", intent: "x", changes: ($c + [$c[0]])}')"
+expect_failure "refuses: an unknown key in a declaration" \
+  declare_bad "$(jq -n --argjson c "$https_changes" '{root: "service", intent: "x", changes: $c, allow_all: true}')"
+echo '"not a plan"' > "$work/not-a-plan.json"
+expect_failure "refuses: a plan that is not a Terraform JSON plan" \
+  intent --enforce "$work/not-a-plan.json" "$work/intent.json"
+expect_failure "refuses: a missing plan" intent --enforce "$work/no-such-plan.json" "$work/intent.json"
+
+echo '{"root": "service", "intent": "No infrastructure change", "changes": []}' > "$work/no-change.json"
+plan_of '[]' > "$work/no-change-plan.json"
+plan_of "$replacements" > "$work/replacement-plan.json"
+echo '{"root": "service"}' > "$work/malformed.json"
+expect_success "report mode: a plan with no changes matches an empty declaration" \
+  intent --report "$work/no-change-plan.json" "$work/no-change.json"
+expect_success "report mode reports a mismatch without failing" \
+  intent --report "$work/replacement-plan.json" "$work/no-change.json"
+expect_success "report mode names the mismatch" \
+  grep -qx '  aws_ecs_task_definition.api delete,create' <(intent --report "$work/replacement-plan.json" "$work/no-change.json")
+expect_failure "report mode still refuses a malformed declaration" \
+  intent --report "$work/no-change-plan.json" "$work/malformed.json"
+expect_failure "enforce mode refuses the no-change plan against an empty declaration" \
+  intent --enforce "$work/no-change-plan.json" "$work/no-change.json"
+expect_failure "the summary never prints an attribute value" \
+  grep -q "$secret_value" <(intent --report "$work/plan.json" "$work/intent.json" 2>&1)
+
+for root in core data service; do
+  expect_success "the committed $root declaration is valid" \
+    env EXPECTED_ROOT="$root" "$scripts/check-plan-intent.sh" --validate "$repo/infra/terraform/eu-prod/$root/expected-changes.json"
+done
+
+# ---------------------------------------------------------------------------------------------
 echo "== check-workflow-policy.sh"
 
 workflow="$repo/.github/workflows/terraform-eu-prod.yml"
@@ -194,6 +299,24 @@ expect_failure "refuses: the expected key taken from the alias string" \
   mutated '(.jobs.apply.steps[] | select((.run // "") | contains("verify-saved-plan.sh")) | .env.EXPECTED_KMS_KEY_ARN) = "${{ env.STATE_KEY_ALIAS_ARN }}"'
 expect_failure "refuses: the key not resolved by KMS" \
   mutated '(.jobs.apply.steps[] | select(.id == "fetch") | .run) |= gsub("aws kms describe-key"; "echo")'
+expect_failure "refuses: the plan job without the intent check" \
+  mutated '.jobs.plan.steps |= map(select((.run // "") | contains("check-plan-intent.sh") | not))'
+expect_failure "refuses: the intent check after the plan is kept" \
+  mutated '.jobs.plan.steps |= ([.[] | select((.run // "") | contains("check-plan-intent.sh") | not)] + [.[] | select((.run // "") | contains("check-plan-intent.sh"))])'
+expect_failure "refuses: an apply run whose plan job only reports" \
+  mutated '(.jobs.plan.steps[] | select((.run // "") | contains("check-plan-intent.sh")) | .env.MODE) = "--report"'
+expect_failure "refuses: a plan-job intent check whose failure is ignored" \
+  mutated '(.jobs.plan.steps[] | select((.run // "") | contains("check-plan-intent.sh")) | .run) |= gsub("exit \"\\$code\""; "exit 0")'
+expect_failure "refuses: keeping the plan after a failed intent check" \
+  mutated '(.jobs.plan.steps[] | select(.id == "keep") | .if) = "always() && inputs.action == '"'"'apply'"'"'"'
+expect_failure "refuses: the apply job without the intent check" \
+  mutated '.jobs.apply.steps |= map(select((.run // "") | contains("check-plan-intent.sh") | not))'
+expect_failure "refuses: the apply-job intent check after the apply" \
+  mutated '.jobs.apply.steps |= ([.[] | select((.run // "") | contains("check-plan-intent.sh") | not)] + [.[] | select((.run // "") | contains("check-plan-intent.sh"))])'
+expect_failure "refuses: the apply-job intent check in report mode" \
+  mutated '(.jobs.apply.steps[] | select((.run // "") | contains("check-plan-intent.sh")) | .run) |= gsub("--enforce"; "--report")'
+expect_failure "refuses: the apply-job intent check without the root" \
+  mutated '(.jobs.apply.steps[] | select((.run // "") | contains("check-plan-intent.sh")) | .env) |= del(.EXPECTED_ROOT)'
 
 # ---------------------------------------------------------------------------------------------
 echo
