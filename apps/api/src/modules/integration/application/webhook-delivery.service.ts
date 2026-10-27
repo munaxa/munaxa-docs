@@ -5,6 +5,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   type AnyId,
   type TenantId,
+  DocsFeature,
   Settings,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -19,7 +20,11 @@ import {
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
+import { OperationKind } from '@munaxa/licensing';
+
+import { EntitlementService } from '../../../core/licensing/entitlement.service';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
+import { requireContext } from '../../../core/tenancy/tenant-context';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { SETTINGS_READER, type SettingsReader } from '../../../core/settings';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
@@ -73,7 +78,20 @@ export class DefaultWebhookDeliveryService implements WebhookDeliveryService {
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(UNIT_OF_WORK) private readonly unitOfWork: UnitOfWork,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(EntitlementService) private readonly entitlements: EntitlementService,
   ) {}
+
+  /**
+   * Whether the tenant's plan includes webhooks right now — ADR-0026, asked here, where a request
+   * leaves for somebody else's server, so no caller can send one the plan does not include. A
+   * delivery is a read: a suspended tenant that includes the feature still receives its events.
+   */
+  private async included(tenantId: TenantId): Promise<boolean> {
+    const decision = await this.entitlements.decide(tenantId, OperationKind.READ, [
+      DocsFeature.WEBHOOKS,
+    ]);
+    return decision.allowed;
+  }
 
   async fanOut(event: {
     readonly eventId: AnyId;
@@ -85,6 +103,7 @@ export class DefaultWebhookDeliveryService implements WebhookDeliveryService {
     readonly payload: unknown;
     readonly correlationId: string;
   }): Promise<number> {
+    if (!(await this.included(event.tenantId))) return 0;
     const now = this.clock.now();
 
     const queued = await this.unitOfWork.run(async () => {
@@ -140,6 +159,8 @@ export class DefaultWebhookDeliveryService implements WebhookDeliveryService {
   }
 
   async retryDue(now: Date): Promise<number> {
+    // Not included: recorded deliveries wait, spending no attempts, and resume if it returns.
+    if (!(await this.included(requireContext().tenantId))) return 0;
     const due = await this.unitOfWork.run(() => this.repository.claimDue(now, RETRY_BATCH));
     for (const delivery of due) {
       await this.attempt(delivery.id, now);

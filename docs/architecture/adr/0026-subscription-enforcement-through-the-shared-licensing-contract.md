@@ -89,13 +89,16 @@ Health checks, readiness, metrics and sign-in are not licensed at all.
 - **The control plane is `munaxa-control`.** `CONTROL_PLANE` mode calls its product API; the reading
   of its answers (`404` is no subscription, every other failure an outage) is the shared
   `readEntitlementResponse`, so Docs, School and Work draw that line in one place.
-- **Delivery and sign-in are licensed too.** The webhook and audit-stream lanes ask
-  `integration.webhooks` and `audit.stream` before each send (an event while the feature is not
+- **Delivery and sign-in are licensed too, where they happen.** The webhook delivery service
+  (`fanOut`, `retryDue`) and the audit-sink service (`push`, `page`) ask `integration.webhooks` and
+  `audit.stream` themselves, so no caller can send what the plan does not include; the lanes ask too.
+  They ask before each send (an event while the feature is not
   included is not delivered later; a retry waits; the audit cursor holds, so the stream resumes
   gap-free). Federated sign-in asks `sso.federation` when it is offered — the password box when it
   is not included — and again at the callback, before the provider is asked for the code, so a flow
   started before the plan changed does not finish after it. Each is a read: a suspended tenant that
-  includes the feature keeps it.
+  includes the feature keeps it. A session already established through the provider is an ordinary
+  session and lasts its normal lifetime; removing the feature stops new federated sign-ins.
 - **Usage is reported** hourly on the `licensing.usage` lane under `CONTROL_PLANE` only: `users` and
   `storage.bytes`, measured by the modules that own them with the same counts `enforceLimit` uses,
   at the hour the firing belongs to so a redelivery reports the same point.

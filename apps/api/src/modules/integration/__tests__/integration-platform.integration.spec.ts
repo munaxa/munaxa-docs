@@ -47,6 +47,9 @@ import {
 } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { verifyWebhookSignature } from '../application/webhook-delivery.service';
+import { SubscriptionRequiredError } from '../../../core/errors/application-errors';
+import type { EntitlementLookup } from '../../../core/licensing/licensing.ports';
+import { entitlementsWith } from '../../../testing/licensing';
 
 /**
  * Phase 17 against a real PostgreSQL — the five assertions the brief names, and each is a
@@ -1658,4 +1661,107 @@ describe('a webhook endpoint that recovered while a failing delivery was in flig
     expect(after.disabledAt).toBeNull();
     expect(after.disabledReason).toBeNull();
   }, 120_000);
+});
+
+/**
+ * ADR-0026 at the service boundary, not only at the lane and the route: whatever calls these
+ * services, nothing leaves for a webhook receiver or a collector unless the plan includes it.
+ */
+describe('webhook delivery and the audit stream follow the plan where they send', () => {
+  const planWith = (features: readonly string[]): EntitlementLookup => ({
+    source: 'CONTROL_PLANE',
+    cachesSnapshots: false,
+    lookup: (tenantId: string) =>
+      Promise.resolve({
+        kind: 'SNAPSHOT',
+        snapshot: {
+          schemaVersion: 1,
+          customerId: 'cus_1',
+          tenantId,
+          product: 'docs',
+          deployment: 'SAAS',
+          subscriptionId: 'sub_1',
+          plan: { code: 'business', version: 1 },
+          status: 'ACTIVE',
+          trialEndsAt: null,
+          expiresAt: null,
+          graceUntil: null,
+          features: [...features],
+          limits: { users: null, 'storage.bytes': null },
+          resolvedAt: FIXED_NOW.toISOString(),
+        },
+      }),
+  });
+
+  it('fans out and retries nothing for a plan without webhooks, and sends nothing', async () => {
+    // An endpoint that subscribes to everything, and a delivery already pending for it — so the
+    // only thing standing between them and a request is the plan.
+    const included = realWebhooks({ clock, unitOfWork, http: new RecordingHttp() });
+    await asAdmin(() =>
+      included.admin.create({
+        name: 'Plan boundary',
+        url: 'https://hooks.example.com/plan-boundary',
+        eventTypes: [],
+        enabled: true,
+      }),
+    );
+    included.http.status = 500;
+    const event = (correlationId: string) => ({
+      eventId: asId<AnyId>(uuidv7()),
+      tenantId: TENANT,
+      eventType: 'document.published',
+      aggregateType: 'document',
+      aggregateId: uuidv7(),
+      occurredAt: FIXED_NOW,
+      payload: {},
+      correlationId,
+    });
+    const pending = await runWithContext(contextFor(null, []), () =>
+      included.delivery.fanOut(event('plan-boundary-pending')),
+    );
+    expect(pending).toBeGreaterThan(0);
+
+    const http = new RecordingHttp();
+    const excluded = realWebhooks({
+      clock,
+      unitOfWork,
+      http,
+      entitlements: entitlementsWith({ lookup: planWith([]), clock }),
+    });
+    const queued = await runWithContext(contextFor(null, []), () =>
+      excluded.delivery.fanOut(event('plan-boundary')),
+    );
+    const retried = await runWithContext(contextFor(null, []), () =>
+      excluded.delivery.retryDue(new Date(FIXED_NOW.getTime() + 7 * 86_400_000)),
+    );
+    expect(queued).toBe(0);
+    expect(retried).toBe(0);
+    expect(http.sent).toHaveLength(0);
+  });
+
+  it('pushes nothing and serves no page for a plan without the audit stream', async () => {
+    const http = new RecordingHttp();
+    const excluded = realAuditSink({
+      clock,
+      unitOfWork,
+      http,
+      settings: { [Settings.FEATURE_AUDIT_STREAMING.key]: true },
+      entitlements: entitlementsWith({ lookup: planWith(['integration.webhooks']), clock }),
+    });
+    // A push sink with events to send, so only the plan stands between them and a request.
+    await asAdmin(() =>
+      excluded.service.upsert({
+        kind: 'PUSH',
+        name: 'Plan boundary SIEM',
+        endpointUrl: 'https://siem.collectors.example.net/plan-boundary',
+        actions: [],
+        enabled: true,
+      }),
+    );
+    expect((await asAdmin(() => excluded.service.push())).sent).toBe(0);
+    expect(http.sent).toHaveLength(0);
+    await expect(asAdmin(() => excluded.service.page(0n, 5))).rejects.toBeInstanceOf(
+      SubscriptionRequiredError,
+    );
+  });
 });

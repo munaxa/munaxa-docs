@@ -5,6 +5,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   type AnyId,
   AuditSubjectType,
+  DocsFeature,
   Settings,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
@@ -20,7 +21,11 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../../core/errors/application-errors';
+import { OperationKind } from '@munaxa/licensing';
+
+import { EntitlementService } from '../../../core/licensing/entitlement.service';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
+import { requireContext } from '../../../core/tenancy/tenant-context';
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
 import { SETTINGS_READER, type SettingsReader } from '../../../core/settings';
 import { CLOCK_PORT, type ClockPort } from '../../../ports/clock.port';
@@ -115,6 +120,7 @@ export class AuditSinkService {
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     private readonly writer: AdministeredWriter,
     @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(EntitlementService) private readonly entitlements: EntitlementService,
   ) {}
 
   get(): Promise<AuditSinkRecord | null> {
@@ -209,6 +215,8 @@ export class AuditSinkService {
    * which is exactly what 15 §4's table distinguishes the two by.
    */
   async page(afterSequence: bigint, limit: number | undefined): Promise<StreamPage> {
+    // ADR-0026, at the boundary as well as on the route: a page is the trail leaving this tenant.
+    await this.entitlements.require(OperationKind.READ, [DocsFeature.AUDIT_STREAM]);
     const enabled = await this.settings.get(Settings.FEATURE_AUDIT_STREAMING);
     if (!enabled) {
       throw new ForbiddenError('stream this tenant’s audit trail', {
@@ -239,6 +247,13 @@ export class AuditSinkService {
    * again stores them idempotently on that key.
    */
   async push(): Promise<{ readonly sent: number }> {
+    // ADR-0026: not included, nothing leaves and the cursor holds, so the stream resumes gap-free.
+    const included = await this.entitlements.decide(requireContext().tenantId, OperationKind.READ, [
+      DocsFeature.AUDIT_STREAM,
+    ]);
+    if (!included.allowed) {
+      return { sent: 0 };
+    }
     const enabled = await this.settings.get(Settings.FEATURE_AUDIT_STREAMING);
     if (!enabled) {
       return { sent: 0 };
