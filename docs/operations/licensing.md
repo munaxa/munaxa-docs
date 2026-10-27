@@ -54,7 +54,26 @@ keeps a wound-back clock from extending a licence.
 | Control plane unreachable (hosted) | Unchanged for 1 hour, no growth for 1 day, read-only for 7 days, then export-only |
 
 Every case is logged as `Entitlements could not be confirmed` with a `reason`. Health checks and
-sign-in are never affected.
+password sign-in are never affected.
+
+A `401` or `403` from the central service (a revoked or mistyped credential) is treated as the
+service being unreachable, not as a cancellation: tenants degrade over hours as above rather than
+losing access at once. Fix the credential; it is logged on every refresh.
+
+## 5a. What the plan's features switch, beyond the API routes
+
+| Feature | When the plan does not include it |
+| --- | --- |
+| `sso.federation` | Sign-in offers the password box; a federated callback already in flight is refused and recorded as `LOGIN_FAILED` with reason `FEDERATION_NOT_INCLUDED` |
+| `integration.webhooks` | New events are not delivered (and not delivered later); recorded deliveries wait without spending attempts |
+| `audit.stream` | Pushes stop; the cursor holds, so the stream resumes gap-free if the feature returns |
+
+## 5b. Usage reporting (hosted)
+
+Under `CONTROL_PLANE`, each tenant's `users` and `storage.bytes` are reported to the central service
+every hour (17 minutes past) on the `licensing.usage` lane, by the process with
+`QUEUE_CONSUMERS_ENABLED`. Reporting is informational: Docs enforces its own limits, and a failed
+report is retried three times and then dead-lettered without changing anyone's access.
 
 ## 6. Limits of offline licensing
 

@@ -15,6 +15,8 @@ import {
 import { PrismaEntitlementStateStore } from './prisma-entitlement-state.store';
 import { SubscriptionController } from './subscription.controller';
 import { UnmeteredLookup } from './unmetered.lookup';
+import { UsageLaneConsumer } from './usage-lane.consumer';
+import { UsageMeters } from './usage-meters';
 
 /**
  * Chooses the lookup `LICENSING_MODE` names. Boot validation has already refused a mode whose
@@ -57,7 +59,9 @@ export function entitlementLookupFor(config: AppConfig, http: OutboundHttpPort):
     EntitlementService,
     { provide: POLICY_EVALUATOR, useExisting: EntitlementService },
     EntitlementGuard,
+    UsageMeters,
+    UsageLaneConsumer,
   ],
-  exports: [EntitlementService, POLICY_EVALUATOR, EntitlementGuard],
+  exports: [EntitlementService, POLICY_EVALUATOR, EntitlementGuard, UsageMeters],
 })
 export class LicensingModule {}

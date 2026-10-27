@@ -30,6 +30,7 @@ export const QueueName = {
   WEBHOOKS_DELIVER: 'webhooks.deliver',
   AUDIT_STREAM: 'audit.stream',
   OUTBOX_DISPATCH: 'outbox.dispatch',
+  LICENSING_USAGE: 'licensing.usage',
 } as const;
 
 export type QueueNameKey = (typeof QueueName)[keyof typeof QueueName];
@@ -247,6 +248,22 @@ export const QUEUES: readonly QueueDefinition[] = Object.freeze([
     description:
       'Pushes a contiguous range of the audit chain to a tenant’s collector, strictly serial per tenant.',
   },
+  {
+    /**
+     * Reports each tenant's metered levels to the central subscription service — ADR-0026.
+     *
+     * Its own lane because one consumer owns one lane, and because it is cheap and must never wait
+     * behind anything that is not: two counts and one HTTP request per tenant. Informational at the
+     * other end — Docs enforces its own limits against its own rows — so a lost report changes no
+     * access, and three attempts are plenty.
+     */
+    name: QueueName.LICENSING_USAGE,
+    concurrency: 4,
+    retry: { attempts: 3, backoffMs: 30_000, backoff: 'exponential' },
+    timeoutMs: 60_000,
+    description:
+      'Reports each tenant’s users and stored bytes to the central subscription service.',
+  },
 ]);
 
 export function queueDefinition(name: QueueNameKey): QueueDefinition {
@@ -462,5 +479,17 @@ export const SCHEDULE: readonly ScheduledJob[] = Object.freeze([
     cron: '* * * * *',
     lockKey: 'schedule:audit.stream-sinks',
     description: 'Pushes each tenant’s new audit events to its collector, from the stored cursor.',
+  },
+  {
+    /**
+     * Hourly, off the hour, and only consumed under `LICENSING_MODE=CONTROL_PLANE`. A report is a
+     * level at an instant, idempotent on (tenant, metric, instant) at the other end, and the
+     * instant is the hour this firing belongs to — so a redelivered job reports the same point.
+     */
+    name: 'licensing.report-usage',
+    queue: QueueName.LICENSING_USAGE,
+    cron: '17 * * * *',
+    lockKey: 'schedule:licensing.report-usage',
+    description: 'Reports each tenant’s metered levels to the central subscription service.',
   },
 ]);

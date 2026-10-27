@@ -1050,7 +1050,8 @@ in the staging gate**. The test passes only if the audit chain verifies (backup-
 5. **Redis rebuild:** start the API against the restored databases with an **empty** Redis. It logs
    "Queue state rebuilt from durable state after the broker lost it".
 6. **Cron schedules:** present afterwards on all six lanes: `audit.export`, `audit.stream`,
-   `identity.delegation`, `notifications.deliver`, `retention.run`, `webhooks.deliver`.
+   `identity.delegation`, `notifications.deliver`, `retention.run`, `webhooks.deliver` — and a
+   seventh, `licensing.usage`, on a deployment with `LICENSING_MODE=CONTROL_PLANE`.
 7. **Pending timers:** re-armed at boot = armable `SCHEDULED` timers on running instances in the
    restored data.
 8. **Numbering continuity:** a new document on the restored deployment is numbered after every

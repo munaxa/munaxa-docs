@@ -1,5 +1,5 @@
 import { DOCS_PRODUCT_KEY } from '@edms/domain';
-import { parseEntitlementSnapshot } from '@munaxa/licensing';
+import { entitlementsPath, readEntitlementResponse, unreachable } from '@munaxa/licensing';
 
 import type { OutboundHttpPort } from '../../ports/outbound-http.port';
 import type { EntitlementLookup, EntitlementLookupResult } from './licensing.ports';
@@ -27,26 +27,17 @@ export class ControlPlaneLookup implements EntitlementLookup {
 
   async lookup(tenantId: string): Promise<EntitlementLookupResult> {
     const result = await this.http.send({
-      url: `${this.settings.url}/api/v1/products/${DOCS_PRODUCT_KEY}/tenants/${encodeURIComponent(tenantId)}/entitlements`,
+      url: `${this.settings.url}${entitlementsPath(DOCS_PRODUCT_KEY, tenantId)}`,
       method: 'GET',
       headers: { authorization: `Bearer ${this.settings.token}`, accept: 'application/json' },
       timeoutMs: TIMEOUT_MS,
     });
-    if (!result.ok) return { kind: 'UNAVAILABLE', reason: `CONTROL_PLANE_${result.failure.kind}` };
-    const { status, body } = result.response;
-    if (status === 404) return { kind: 'NONE', reason: 'CONTROL_PLANE_NO_SUBSCRIPTION' };
-    if (status !== 200) return { kind: 'UNAVAILABLE', reason: `CONTROL_PLANE_HTTP_${status}` };
-    let json: unknown;
-    try {
-      json = JSON.parse(body);
-    } catch {
-      return { kind: 'UNAVAILABLE', reason: 'CONTROL_PLANE_UNPARSEABLE' };
-    }
-    const parsed = parseEntitlementSnapshot(json);
-    if (!parsed.ok) return { kind: 'UNAVAILABLE', reason: 'CONTROL_PLANE_INVALID_SNAPSHOT' };
-    if (parsed.snapshot.tenantId !== tenantId || parsed.snapshot.product !== DOCS_PRODUCT_KEY) {
-      return { kind: 'UNAVAILABLE', reason: 'CONTROL_PLANE_SUBJECT_MISMATCH' };
-    }
-    return { kind: 'SNAPSHOT', snapshot: parsed.snapshot };
+    if (!result.ok) return unreachable(result.failure.kind);
+    // The shared reading (`@munaxa/licensing`), so this product draws the outage/cancellation line
+    // exactly where School and Work do.
+    return readEntitlementResponse(result.response, {
+      product: DOCS_PRODUCT_KEY,
+      tenantId,
+    });
   }
 }

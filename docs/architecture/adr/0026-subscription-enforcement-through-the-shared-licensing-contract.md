@@ -86,11 +86,19 @@ Health checks, readiness, metrics and sign-in are not licensed at all.
 
 - **Blocked dependency.** `@munaxa/licensing@0.1.0` is on the platform branch and not published.
   Until it is, `pnpm install --frozen-lockfile` fails on this branch.
-- **The control plane does not exist yet.** `CONTROL_PLANE` mode is built against the endpoint above
-  and tested against a scripted transport; the service itself is to live in its own repository.
-- **Not yet licensed:** webhook *delivery* and federated *sign-in* continue for a tenant whose plan
-  stops including them — the configuration routes are gated, the background lane and the public
-  callback are not. Usage is not reported to the central service yet.
+- **The control plane is `munaxa-control`.** `CONTROL_PLANE` mode calls its product API; the reading
+  of its answers (`404` is no subscription, every other failure an outage) is the shared
+  `readEntitlementResponse`, so Docs, School and Work draw that line in one place.
+- **Delivery and sign-in are licensed too.** The webhook and audit-stream lanes ask
+  `integration.webhooks` and `audit.stream` before each send (an event while the feature is not
+  included is not delivered later; a retry waits; the audit cursor holds, so the stream resumes
+  gap-free). Federated sign-in asks `sso.federation` when it is offered — the password box when it
+  is not included — and again at the callback, before the provider is asked for the code, so a flow
+  started before the plan changed does not finish after it. Each is a read: a suspended tenant that
+  includes the feature keeps it.
+- **Usage is reported** hourly on the `licensing.usage` lane under `CONTROL_PLANE` only: `users` and
+  `storage.bytes`, measured by the modules that own them with the same counts `enforceLimit` uses,
+  at the hour the firing belongs to so a redelivery reports the same point.
 - **Offline revocation does not exist**, and a clock that was wrong from first boot and never moved
   back is indistinguishable from a correct one (platform ADR-0022).
 - Every existing deployment keeps its behaviour: `LICENSING_MODE` defaults to `NONE`.

@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { DocsLimit } from '@edms/domain';
+
 import {
   ACCESS_TOKEN_ISSUER,
   AUTHENTICATION_SERVICE,
@@ -54,7 +56,9 @@ import {
   IDENTITY_ADMIN_REPOSITORY,
   ROLE_ADMIN_SERVICE,
   USER_ADMIN_SERVICE,
+  type IdentityAdminRepository,
 } from './application/administration.ports';
+import { UsageMeters } from '../../core/licensing/usage-meters';
 import { RoleAdminService } from './application/role-admin.service';
 import { UserAdminService } from './application/user-admin.service';
 import { JwtTokenService } from './infrastructure/jwt.token-service';
@@ -90,6 +94,8 @@ import {
   IdentityReportSource,
   IdentityReportSubjectReader,
 } from './infrastructure/report-source.adapter';
+const IDENTITY_USAGE_METER = Symbol('IdentityUsageMeter');
+
 /**
  * Identity — Who is this person, and what may they do anywhere?
  *
@@ -158,6 +164,14 @@ import {
     { provide: PROVISIONING_REPOSITORY, useClass: PrismaProvisioningRepository },
     ProvisioningService,
     { provide: IDENTITY_ADMIN_REPOSITORY, useClass: PrismaIdentityAdminRepository },
+    // ADR-0026: the licensed-user level reported to the central subscription service — the same
+    // count a new account is checked against, so the two can never disagree.
+    {
+      provide: IDENTITY_USAGE_METER,
+      inject: [UsageMeters, IDENTITY_ADMIN_REPOSITORY],
+      useFactory: (meters: UsageMeters, people: IdentityAdminRepository) =>
+        meters.register({ metric: DocsLimit.USERS, measure: () => people.licensedUserCount() }),
+    },
     { provide: USER_ADMIN_SERVICE, useClass: UserAdminService },
     { provide: ROLE_ADMIN_SERVICE, useClass: RoleAdminService },
     { provide: DELEGATION_REPOSITORY, useClass: PrismaDelegationRepository },

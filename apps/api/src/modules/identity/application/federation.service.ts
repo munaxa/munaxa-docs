@@ -8,12 +8,14 @@ import {
   type UserId,
   AuditOutcome,
   AuditSubjectType,
+  DocsFeature,
   Settings,
   asId,
   domainMatches,
   rolesForClaims,
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
+import { OperationKind } from '@munaxa/licensing';
 
 import {
   AUDIT_WRITER,
@@ -22,6 +24,7 @@ import {
 } from '../../../core/audit/audit-writer.port';
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
 import { UnauthenticatedError } from '../../../core/errors/application-errors';
+import { EntitlementService } from '../../../core/licensing/entitlement.service';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { SETTINGS_READER, type SettingsReader } from '../../../core/settings';
@@ -124,8 +127,24 @@ export class DefaultFederationService implements FederationService {
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(LOGGER) private readonly logger: Logger,
     @Inject(APP_CONFIG) config: AppConfig,
+    @Inject(EntitlementService) private readonly entitlements: EntitlementService,
   ) {
     this.redirectUri = config.auth.federationRedirectUri;
+  }
+
+  /**
+   * Whether the tenant's plan includes federated sign-in right now — ADR-0026.
+   *
+   * Configuring a provider was already gated on `sso.federation`; signing in through one was not,
+   * so a tenant whose plan lost the feature kept using it. A sign-in is a read: a suspended tenant
+   * that includes the feature still signs in (and is then read-only), a cancelled one does not.
+   * Must run inside the tenant's unit of work, where the entitlement state is read.
+   */
+  private async federationIncluded(tenantId: TenantId): Promise<boolean> {
+    const decision = await this.entitlements.decide(tenantId, OperationKind.READ, [
+      DocsFeature.SSO_FEDERATION,
+    ]);
+    return decision.allowed;
   }
 
   /**
@@ -156,6 +175,10 @@ export class DefaultFederationService implements FederationService {
     const resolved = await this.within(tenantId, () =>
       this.unitOfWork.run(async () => {
         if (!(await this.settings.get(Settings.FEATURE_FEDERATION))) {
+          return null;
+        }
+        // Not included: the password box, exactly as for a tenant that never configured one.
+        if (!(await this.federationIncluded(tenantId))) {
           return null;
         }
         const provider = await this.providers.find();
@@ -238,10 +261,19 @@ export class DefaultFederationService implements FederationService {
     // token exchange between them is the provider's HTTP endpoint, and holding a database
     // transaction across somebody else's network call is how a slow provider becomes a database
     // outage. This read needs a transaction because `findCredential` reads through one.
-    const provider = await this.within(tenantId, () =>
-      this.unitOfWork.run(() => this.providers.findCredential()),
+    const { provider, included } = await this.within(tenantId, () =>
+      this.unitOfWork.run(async () => ({
+        provider: await this.providers.findCredential(),
+        included: await this.federationIncluded(tenantId),
+      })),
     );
     if (!provider || !provider.enabled) {
+      throw new UnauthenticatedError(REJECTED);
+    }
+    // Checked again here, not only when the flow was offered: a flow started before the plan
+    // changed must not finish after it. Before the code is exchanged, so the provider is not asked.
+    if (!included) {
+      await this.recordFailure(tenantId, input, 'FEDERATION_NOT_INCLUDED');
       throw new UnauthenticatedError(REJECTED);
     }
 
