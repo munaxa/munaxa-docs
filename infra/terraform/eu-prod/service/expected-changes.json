@@ -1,0 +1,5 @@
+{
+  "root": "service",
+  "intent": "No infrastructure change. The task definitions are written as ECS stores them (empty capabilities add, hostPort equal to containerPort), so a plan on this commit must show nothing to change. An apply of this root first needs a reviewed PR that declares its changes here.",
+  "changes": []
+}

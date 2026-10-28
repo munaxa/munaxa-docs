@@ -9,15 +9,18 @@ or write secret values, by design).
 Write secret values from a file you then delete (`--secret-string file://…`), never inline, so they
 do not land in shell history. Run `umask 077` before creating such a file.
 
-## Current state (2026-10-23, read-only checks)
+## Current state (2026-10-26, read-only checks)
 
 | Item | State |
 | --- | --- |
-| ACM `docs.munaxa.com` | **Not requested** in this account. The default-stage apply requests it; its validation record is then read from `aws acm describe-certificate` |
-| `munaxa-docs-eu-prod/app`, `munaxa-docs-eu-prod/operator` | Not created. The default-stage apply creates both, empty |
-| Registry | Amazon ECR `munaxa-docs/{api,web,antivirus}`, pulled by the execution roles with IAM. **No registry secret** |
+| Default stage | **Applied 2026-10-26** ([run 40289111146](https://github.com/munaxa/munaxa-docs/actions/runs/40289111146), `main` at `de4ce3f`): 22 added, 0 changed, 0 destroyed |
+| ACM `docs.munaxa.com` | `arn:aws:acm:eu-central-1:229251310592:certificate/4f56303c-b416-4c30-83a7-0b8cf9ab4de7`, **ISSUED** (validation CNAME in Cloudflare, §1). Not yet attached to a listener |
+| `enable_https` | **Applied 2026-10-26** ([run 40305141933](https://github.com/munaxa/munaxa-docs/actions/runs/40305141933), `main` at `d19d04c`): HTTPS listener on 443 with the certificate, the preview rule and the HTTP→HTTPS redirect. The same apply also replaced four task definitions that were not part of the intended change (see the Terraform README, reviewed-plan gate) |
+| `munaxa-docs-eu-prod/app`, `munaxa-docs-eu-prod/operator` | Created, **empty** (no version) |
+| Registry | Amazon ECR `munaxa-docs/{api,web,antivirus}`, pulled by the execution roles with IAM. **No registry secret**. No ECS pull tested yet (go-live runbook §10.1) |
 | Email | Resend (owner decision). Nothing is configured yet, and no API key exists |
-| Everything else in the service root | Not applied. No cluster, listener, task definition, task or service exists |
+| ECS | Cluster and the six task-definition families exist (api, ops-provision, scanner and web at revision 2, the same configuration as revision 1); **no service, task or schedule** (`enable_services = false`) |
+| `docs.munaxa.com` | **No record** in Cloudflare (a leftover CNAME to a load balancer outside this account was deleted 2026-10-26). Created at cutover only (§1) |
 
 All secrets are encrypted with the Production data key `alias/munaxa-docs-eu-prod`.
 
