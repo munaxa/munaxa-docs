@@ -79,10 +79,13 @@ jobs:
           scope: '@munaxa'
 
       # The shared design system is published from munaxa-platform to GitHub Packages.
+      # GITHUB_TOKEN is scoped to this repository and reads @munaxa/* only if each package has been
+      # granted to it, so a fresh install (no pnpm store cache) is refused with ERR_PNPM_FETCH_403.
+      # PLATFORM_PACKAGES_TOKEN (read:packages) is used when present, as in munaxa-work.
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Format check
         run: pnpm format:check
@@ -233,7 +236,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       # `CREATE DATABASE` cannot run inside a transaction, and the cluster's roles are
       # cluster-scoped, so both are psql rather than the migration runner. Everything after this
@@ -582,7 +585,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       # The same two steps the integration job uses, against the databases the end-to-end
       # environment names. `CREATE DATABASE` cannot run inside a transaction and roles are
@@ -677,7 +680,7 @@ jobs:
           umask 077
           printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       # The build stage is shared by all three targets and is the expensive one, so the cache is
       # what keeps this job from doubling the pipeline's wall-clock.
@@ -803,7 +806,7 @@ jobs:
           umask 077
           printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build the API image
         uses: docker/build-push-action@v6
@@ -858,7 +861,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       # The same pinned object store as the integration job, from the same cache.
       - name: Restore the object store binaries
