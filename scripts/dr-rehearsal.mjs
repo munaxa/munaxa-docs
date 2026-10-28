@@ -296,6 +296,51 @@ function postureOf(url) {
   };
 }
 
+// --- 0. The client tools match the servers -------------------------------------------------------
+//
+// `pg_dump` refuses a server newer than itself, and a newer `pg_restore` writes settings an older
+// server rejects: a PostgreSQL 18 client restoring into the 16 destination stops at
+// `SET transaction_timeout`, which 16 does not have. That is what happened when the CI runner image
+// moved to one shipping PostgreSQL 18 tools. So the rehearsal refuses a toolchain whose major
+// version differs from the destination's, or is older than a source's, before it touches anything.
+
+function clientMajor(tool) {
+  const banner = execFileSync(tool, ['--version'], { encoding: 'utf8' });
+  const match = /\(PostgreSQL\)\s+(\d+)/.exec(banner);
+  if (!match) {
+    throw new Error(`could not read the version of ${tool}: ${banner.trim()}`);
+  }
+  return Number(match[1]);
+}
+
+function serverMajor(url) {
+  return Math.floor(Number(one(url, 'SHOW server_version_num')[0]) / 10000);
+}
+
+const toolchain = {
+  pgDump: clientMajor('pg_dump'),
+  pgRestore: clientMajor('pg_restore'),
+  destination: serverMajor(DEST_ADMIN),
+  sources: TENANTS.map((t) => serverMajor(t.sourceUrl)),
+};
+const toolchainProblems = [
+  ...toolchain.sources
+    .filter((major) => toolchain.pgDump < major)
+    .map((major) => `pg_dump ${toolchain.pgDump} cannot dump a PostgreSQL ${major} source`),
+  ...(toolchain.pgRestore === toolchain.destination
+    ? []
+    : [
+        `pg_restore ${toolchain.pgRestore} does not match the PostgreSQL ${toolchain.destination} destination`,
+      ]),
+];
+if (toolchainProblems.length > 0) {
+  console.error(
+    `The PostgreSQL client tools do not match the servers: ${toolchainProblems.join('; ')}. ` +
+      `Put the client tools of the destination's major version first on PATH.`,
+  );
+  process.exit(1);
+}
+
 // --- 1. The source checkpoint --------------------------------------------------------------------
 
 // Read as **`edms_app`**, on both sides, and the reason is the one `askAsTenant` records: the role
@@ -499,6 +544,7 @@ const evidence = {
       restoredOwnerUrl,
       restoredAppUrl,
     })),
+    toolchain,
     artefacts: verifiedArtefacts,
     source,
     restored,
