@@ -44,6 +44,9 @@ importers:
       '@edms/utils':
         specifier: workspace:*
         version: link:../../packages/utils
+      '@munaxa/licensing':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@nestjs/common':
         specifier: ^11.0.6
         version: 11.1.28(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -1023,6 +1026,10 @@ packages:
         optional: true
       react-dom:
         optional: true
+
+  '@munaxa/licensing@0.1.0':
+    resolution: {integrity: sha512-hO6bpa/zC4oKUtvhvA9ohWqK9LrxQ/7BG70w51OalLks2sdSWN2tKV1xP/kfwM6dRA9927OCRI4v514EN7/fRw==, tarball: https://npm.pkg.github.com/download/@munaxa/licensing/0.1.0/682b2146be9b9105f15c734f7467f32397edc715}
+    engines: {node: '>=22.12.0'}
 
   '@munaxa/platform@1.7.0':
     resolution: {integrity: sha512-qfZTUaBSCM4lLzMVkUea0PLWDB4JeKuG97J2FGr0JT6UPQrGPTP8qBWTSiNf3Y1AURlArBdXyykXSwa5FrzuFg==, tarball: https://npm.pkg.github.com/download/@munaxa/platform/1.7.0/e90bee2b34419265d0b656025b92f016cb7d7bb2}
@@ -4453,6 +4460,10 @@ snapshots:
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
+
+  '@munaxa/licensing@0.1.0':
+    dependencies:
+      '@munaxa/crypto': 2.4.1
 
   '@munaxa/platform@1.7.0(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
