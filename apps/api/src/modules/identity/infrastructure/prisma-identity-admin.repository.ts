@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-import { type PermissionKey, isPermissionKey } from '@edms/domain';
+import { type PermissionKey, UserStatus, isPermissionKey } from '@edms/domain';
 import { type Page, toPage } from '@edms/utils';
 
 import { DuplicateError, VersionConflictError } from '../../../core/errors/application-errors';
@@ -84,6 +84,12 @@ export class PrismaIdentityAdminRepository implements IdentityAdminRepository {
       select: USER_SELECTION,
     });
     return row ? toUserRow(row) : null;
+  }
+
+  licensedUserCount(): Promise<number> {
+    return requireTransaction().user.count({
+      where: { tenantId: this.tenantId(), deletedAt: null, status: { not: UserStatus.DISABLED } },
+    });
   }
 
   async emailTaken(emailNormalized: string, exceptId: string | null): Promise<boolean> {

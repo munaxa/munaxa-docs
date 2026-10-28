@@ -20,6 +20,7 @@ import {
   PrismaIdempotencyStore,
   SerializationInterceptor,
 } from './core/http';
+import { EntitlementGuard, LicensingModule } from './core/licensing';
 import { MessagingModule } from './core/messaging';
 import {
   LoggerModule,
@@ -94,6 +95,8 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     MessagingModule,
     InfrastructureModule,
     ObservabilityModule,
+    // ADR-0026. After Infrastructure, whose outbound port the control-plane lookup uses.
+    LicensingModule,
 
     // Domain modules, in dependency order (02-backend-architecture.md §3).
     IdentityModule,
@@ -142,6 +145,10 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
     { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: AuthenticationGuard },
     { provide: APP_GUARD, useClass: TenantIsolationGuard },
+    // After isolation, so the tenant it asks about is the token's; before the permission, so "your
+    // plan does not include this" is the answer rather than "forbidden" (ADR-0012 §4). A ceiling
+    // only: every request it passes still faces RBAC and the ACL.
+    { provide: APP_GUARD, useExisting: EntitlementGuard },
     { provide: APP_GUARD, useClass: RbacGuard },
     { provide: APP_GUARD, useClass: AclGuard },
     // First of the interceptors, so the duration it measures covers everything the others do —

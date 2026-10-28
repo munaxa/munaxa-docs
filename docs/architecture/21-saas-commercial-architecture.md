@@ -205,6 +205,14 @@ plan tables, and the entitlement and feature-flag ports are not yet bound
 tenants are provisioned by an operator, users name their organisation at sign-in, and there is no
 billing ([ADR-0021](./adr/0021-multi-tenant-hosted-launch.md) §10).
 
+**Where this stands now ([ADR-0026](./adr/0026-subscription-enforcement-through-the-shared-licensing-contract.md)):**
+the guards and the limit checks exist and are bound — one global entitlement guard, `402` refusals,
+seat and storage limits enforced atomically, `POLICY_EVALUATOR` bound — evaluated through the shared
+`@munaxa/licensing` contract against a snapshot from the central subscription service or a signed
+licence file. Plans and subscriptions are held by that central service, not by tables in this
+product; `entitlement_state` keeps only the last verified snapshot. Billing, signup and custom domains
+are still "Later".
+
 The point is **not** to build billing early. It is that the entitlement guard and the usage
 projection exist before there are twenty modules to retrofit — the same argument as audit and the
 outbox. A permissive guard costs almost nothing; adding one later costs a sweep of every endpoint.

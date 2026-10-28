@@ -213,6 +213,7 @@ model Tenant {
   auditEvents              AuditEvent[]
   outbox                   OutboxMessage[]
   idempotency              IdempotencyKey[]
+  entitlementState         EntitlementState?
   users                    User[]
   roles                    Role[]
   sessions                 SessionFamily[]
@@ -442,6 +443,24 @@ model OutboxMessage {
 /// The row is written *before* the request runs, `IN_PROGRESS`, by whichever request inserts it
 /// first; the unique index decides that, across every API process. It becomes `COMPLETED` with the
 /// response, or is deleted if the request failed, so a failure never poisons the key.
+/// What this deployment last verified about a tenant's subscription — ADR-0026.
+///
+/// The snapshot is the shared contract's `EntitlementSnapshot`, kept so an outage of the central
+/// service degrades access by age rather than ending it. `last_observed_at` only ever moves forward:
+/// a clock earlier than it, by more than the tolerance, is a clock that was wound back.
+model EntitlementState {
+  tenantId       String   @id @map("tenant_id") @db.Uuid
+  snapshot       Json?
+  /// `UNMETERED`, `LICENSE_FILE` or `CONTROL_PLANE` — which source wrote the snapshot.
+  source         String
+  lastObservedAt DateTime @map("last_observed_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("entitlement_state")
+}
+
 model IdempotencyKey {
   id             String    @id @db.Uuid
   tenantId       String    @map("tenant_id") @db.Uuid

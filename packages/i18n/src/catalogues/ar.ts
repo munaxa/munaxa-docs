@@ -1842,6 +1842,12 @@ export const ar: Catalogue = {
     UNSUPPORTED_CONTENT: 'نوع الملف غير مقبول.',
     CONTENT_NOT_SCANNED: 'ما زال يجري فحص هذا الملف للتأكد من خلوه من البرمجيات الخبيثة.',
     TENANT_READ_ONLY: 'مؤسستك في وضع القراءة فقط حاليًا.',
+    /**
+     * ADR-0026. NOT YET REVIEWED BY A NATIVE SPEAKER: written to match `TENANT_READ_ONLY` above in
+     * register and wording ("your organisation's subscription does not allow this action right
+     * now"), but the sentence is new here. Review before the hosted licensing mode goes live.
+     */
+    SUBSCRIPTION_REQUIRED: 'اشتراك مؤسستك لا يتيح هذا الإجراء حاليًا.',
     MFA_REQUIRED: 'أدخل الرمز من تطبيق المصادقة الخاص بك.',
     REQUEST_IN_PROGRESS: 'يجري تنفيذ هذا الطلب بالفعل. حاول مرة أخرى بعد قليل لتحصل على نتيجته.',
     DEPENDENCY_UNAVAILABLE: 'إحدى الخدمات اللازمة لهذا الإجراء غير متاحة.',

@@ -11,12 +11,13 @@ import {
   signRevisionSchema,
   withdrawSignatureSchema,
 } from '@edms/contracts';
-import { Permission, ScopeType } from '@edms/domain';
+import { Permission, ScopeType, DocsFeature } from '@edms/domain';
 
 import { RequirePermission, ScopedTo } from '../../../core/authorization/permission.decorator';
 import { ZodValidationPipe } from '../../../core/http/zod-validation.pipe';
 import type { SignatureRecord } from '../application/signature.ports';
 import { DocumentSignatureService } from '../application/signature.service';
+import { RequireFeature } from '../../../core/licensing/licensed.decorator';
 
 /**
  * Electronic signatures on a document's revisions.
@@ -40,6 +41,7 @@ import { DocumentSignatureService } from '../application/signature.service';
  * reading. Its own comment argues the case.
  */
 @Controller({ path: 'documents/:id/signatures', version: '1' })
+@RequireFeature(DocsFeature.ESIGNATURE)
 export class DocumentSignaturesController {
   constructor(private readonly signatures: DocumentSignatureService) {}
 

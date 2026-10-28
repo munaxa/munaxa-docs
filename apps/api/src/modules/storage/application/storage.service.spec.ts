@@ -29,6 +29,7 @@ import type {
   UploadSessionRecord,
   UploadSessionRepository,
 } from './ports';
+import { unmeteredEntitlements } from '../../../testing/licensing';
 import { DefaultStorageService } from './storage.service';
 
 /**
@@ -180,6 +181,7 @@ function harness(options: {
     outbox,
     config,
     writer,
+    unmeteredEntitlements(),
   );
   return { service, files, sessions, scans, events, transactions, targets };
 }

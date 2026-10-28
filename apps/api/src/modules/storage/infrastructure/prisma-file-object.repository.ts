@@ -46,6 +46,18 @@ export class PrismaFileObjectRepository implements FileObjectRepository {
     return row === null ? null : toRecord(row);
   }
 
+  async quotaBytesInUse(): Promise<number> {
+    const tenantId = this.tenantId();
+    const [row] = await requireTransaction().$queryRaw<{ bytes: bigint }[]>`
+      SELECT
+        COALESCE((SELECT SUM(size_bytes) FROM file_object
+                  WHERE tenant_id = ${tenantId}::uuid AND deleted_at IS NULL AND derived = false), 0)
+      + COALESCE((SELECT SUM(declared_size_bytes) FROM upload_session
+                  WHERE tenant_id = ${tenantId}::uuid AND state = 'OPEN' AND expires_at > now()), 0)
+        AS bytes`;
+    return Number(row?.bytes ?? 0);
+  }
+
   /**
    * Inserts the blob, and answers whether it was the one to insert it — Slice 46.
    *

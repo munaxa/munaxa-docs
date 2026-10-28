@@ -120,7 +120,7 @@ otherwise mean "the whole bucket".
 | Scanning is synchronous | The outbox dispatcher does not exist yet, so there is nothing to feed a worker. A blob left `PENDING` forever would be one nothing can ever attach | R5 |
 | No Azure Blob or GCS adapter | Neither has a customer. Adding one is a class and a `case` in the composition root, which is the claim the port makes | The phase that needs one |
 | Multipart completion trusts the client's entity tags | The API never sees the bytes, so it cannot compute them. The store checks them itself and a wrong one fails the completion | Nothing — this is correct |
-| No quota accounting | Entitlements are Phase 21's, and a quota with nothing to read is a constant | `POLICY_EVALUATOR` |
+| Quota accounting is ADR-0026's | `storage.bytes` is enforced when an upload session opens (`core/licensing`) | Nothing — enforced |
 | `put` is not resumable | A server-produced artefact has one producer and one attempt; a failed stream aborts the multipart and the job retries from the beginning | The first artefact large enough for a restart to cost real time |
 | `read` has no size bound | No object store enforces one on a `GET`, and its only caller reads a few hundred bytes of signed checkpoint | A second caller, which would be the moment to add one |
 

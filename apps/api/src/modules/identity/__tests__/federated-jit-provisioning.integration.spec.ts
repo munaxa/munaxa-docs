@@ -16,6 +16,9 @@ import { realWriteStack } from '../../../testing/real-collaborators';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 import { CachedSettingsReader } from '../../../modules/administration/infrastructure/cached-settings.reader';
 import { PrismaTenantSettingsRepository } from '../../../modules/administration/infrastructure/prisma-tenant-settings.repository';
+import type { EntitlementService } from '../../../core/licensing/entitlement.service';
+import type { EntitlementLookup } from '../../../core/licensing/licensing.ports';
+import { entitlementsWith, unmeteredEntitlements } from '../../../testing/licensing';
 import { DefaultFederationService } from '../application/federation.service';
 import type { OidcDiscovery, PendingAuthorization } from '../application/federation.ports';
 import { ProvisioningService } from '../application/provisioning.service';
@@ -186,7 +189,10 @@ const settings = new CachedSettingsReader(
   logger,
 );
 
-function buildService(users: PrismaFederatedUserRepository): DefaultFederationService {
+function buildService(
+  users: PrismaFederatedUserRepository,
+  entitlements: EntitlementService = unmeteredEntitlements(clock),
+): DefaultFederationService {
   return new DefaultFederationService(
     new PrismaIdentityProviderRepository(),
     discovery,
@@ -203,6 +209,7 @@ function buildService(users: PrismaFederatedUserRepository): DefaultFederationSe
     audit,
     logger,
     config,
+    entitlements,
   );
 }
 
@@ -774,5 +781,76 @@ describe('a refused federated sign-in leaves evidence', () => {
         data: { jitProvisioning: true },
       });
     }
+  });
+});
+
+describe('federated sign-in follows the plan, not only its configuration', () => {
+  /** The central service's answer for this tenant: an active plan with the given features. */
+  const planWith = (features: readonly string[]): EntitlementService => {
+    const lookup: EntitlementLookup = {
+      source: 'CONTROL_PLANE',
+      cachesSnapshots: false,
+      lookup: (forTenant: string) =>
+        Promise.resolve({
+          kind: 'SNAPSHOT',
+          snapshot: {
+            schemaVersion: 1,
+            customerId: 'cus_1',
+            tenantId: forTenant,
+            product: 'docs',
+            deployment: 'SAAS',
+            subscriptionId: 'sub_1',
+            plan: { code: 'business', version: 1 },
+            status: 'ACTIVE',
+            trialEndsAt: null,
+            expiresAt: null,
+            graceUntil: null,
+            features: [...features],
+            limits: { users: null, 'storage.bytes': null },
+            resolvedAt: FIXED_NOW.toISOString(),
+          },
+        }),
+    };
+    return entitlementsWith({ lookup, clock });
+  };
+
+  it('offers federation only to a plan that includes it', async () => {
+    const included = buildService(
+      new PrismaFederatedUserRepository(),
+      planWith(['sso.federation']),
+    );
+    const excluded = buildService(new PrismaFederatedUserRepository(), planWith([]));
+
+    expect((await included.offerFor('ada@jit-race.test', SLUG)).federated).toBe(true);
+    // The password box, exactly as for a tenant that never configured a provider.
+    expect(await excluded.offerFor('ada@jit-race.test', SLUG)).toEqual({
+      federated: false,
+      authorizationUrl: null,
+    });
+  });
+
+  it('refuses a flow started before the plan changed, records why, and never asks the provider', async () => {
+    const excluded = buildService(new PrismaFederatedUserRepository(), planWith([]));
+    const flow = await startFlow('subject-plan-lapsed', 'plan-lapsed@jit-race.test');
+    const before = await owner.auditEvent.count({
+      where: {
+        tenantId,
+        action: 'LOGIN_FAILED',
+        payload: { path: ['reason'], equals: 'FEDERATION_NOT_INCLUDED' },
+      },
+    });
+
+    await expect(callback(excluded, flow)).rejects.toThrow();
+
+    expect(
+      await owner.auditEvent.count({
+        where: {
+          tenantId,
+          action: 'LOGIN_FAILED',
+          payload: { path: ['reason'], equals: 'FEDERATION_NOT_INCLUDED' },
+        },
+      }),
+    ).toBe(before + 1);
+    expect(await usersWith('plan-lapsed@jit-race.test')).toBe(0);
   });
 });

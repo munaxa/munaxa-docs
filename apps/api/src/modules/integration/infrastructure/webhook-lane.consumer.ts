@@ -1,8 +1,18 @@
 import { Inject, Injectable, type OnApplicationBootstrap } from '@nestjs/common';
 
-import { type TenantId, ActorChannel, QueueName, SCHEDULE, asId } from '@edms/domain';
+import {
+  type DocsFeatureKey,
+  type TenantId,
+  ActorChannel,
+  DocsFeature,
+  QueueName,
+  SCHEDULE,
+  asId,
+} from '@edms/domain';
+import { OperationKind } from '@munaxa/licensing';
 
 import { APP_CONFIG, type AppConfig } from '../../../core/config';
+import { EntitlementService } from '../../../core/licensing/entitlement.service';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { TENANT_REGISTRY, type TenantRegistry } from '../../../core/tenancy/tenant-registry.port';
@@ -51,6 +61,21 @@ const STREAM_SCHEDULE = 'audit.stream-sinks';
  * sequence that makes the stream worth trusting would stop being a guarantee this end can make.
  * `audit.stream` therefore declares `perTenantConcurrency: 1`, which is a property `webhooks.deliver`
  * must not have and which a shared lane could not express.
+ *
+ * ## What the plan includes is asked here, at delivery
+ *
+ * Configuring an endpoint or a sink was already gated on `integration.webhooks` and `audit.stream`;
+ * delivering to one was not, so a tenant whose plan lost the feature kept receiving. Each lane now
+ * asks before it sends (ADR-0026). Delivery is a read — the tenant's own events leaving to its own
+ * systems — so a suspended tenant that includes the feature still receives. What happens when the
+ * plan does not include it differs by lane, on purpose:
+ *
+ * - an **event** is not fanned out: no delivery row is created, and the event is not delivered
+ *   later if the feature returns — webhooks describe what happens while they are bought;
+ * - a **retry sweep** is skipped: deliveries already recorded wait, without spending attempts, and
+ *   resume if the feature returns;
+ * - an **audit-stream push** is skipped: the cursor does not move, so if the feature returns the
+ *   stream resumes from where it stopped and stays gap-free.
  */
 @Injectable()
 export class WebhookLaneConsumer implements OnApplicationBootstrap {
@@ -62,8 +87,24 @@ export class WebhookLaneConsumer implements OnApplicationBootstrap {
     @Inject(CLOCK_PORT) private readonly clock: ClockPort,
     @Inject(LOGGER) private readonly logger: Logger,
     @Inject(WEBHOOK_DELIVERY_SERVICE) private readonly deliveries: WebhookDeliveryService,
-    private readonly sinks: AuditSinkService,
+    @Inject(AuditSinkService) private readonly sinks: AuditSinkService,
+    @Inject(EntitlementService) private readonly entitlements: EntitlementService,
   ) {}
+
+  /** Whether the tenant's plan includes this lane's feature right now. Logged when it does not. */
+  private async included(tenantId: string, feature: DocsFeatureKey): Promise<boolean> {
+    const decision = await this.entitlements.decide(asId<TenantId>(tenantId), OperationKind.READ, [
+      feature,
+    ]);
+    if (!decision.allowed) {
+      this.logger.info('Not delivered: the tenant’s plan does not include it now', {
+        tenantId,
+        feature,
+        reason: decision.reason,
+      });
+    }
+    return decision.allowed;
+  }
 
   async onApplicationBootstrap(): Promise<void> {
     if (!this.config.queue.consumersEnabled) {
@@ -165,6 +206,7 @@ export class WebhookLaneConsumer implements OnApplicationBootstrap {
     const correlationId = asString(payload['correlationId']) ?? job.jobId;
 
     await runWithContext(workerContext(tenantId, correlationId), async () => {
+      if (!(await this.included(tenantId, DocsFeature.WEBHOOKS))) return;
       const queued = await this.deliveries.fanOut({
         eventId: asId(eventId),
         tenantId: asId<TenantId>(tenantId),
@@ -191,6 +233,7 @@ export class WebhookLaneConsumer implements OnApplicationBootstrap {
       return;
     }
     await runWithContext(workerContext(tenantId, job.jobId), async () => {
+      if (!(await this.included(tenantId, DocsFeature.WEBHOOKS))) return;
       const settled = await this.deliveries.retryDue(this.clock.now());
       if (settled > 0) {
         this.logger.info('A webhook retry sweep ran', { tenantId, settled });
@@ -205,6 +248,7 @@ export class WebhookLaneConsumer implements OnApplicationBootstrap {
       return;
     }
     await runWithContext(workerContext(tenantId, job.jobId), async () => {
+      if (!(await this.included(tenantId, DocsFeature.AUDIT_STREAM))) return;
       const outcome = await this.sinks.push();
       if (outcome.sent > 0) {
         this.logger.info('An audit sink push ran', { tenantId, sent: outcome.sent });

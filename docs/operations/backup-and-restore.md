@@ -69,6 +69,12 @@ far back it can go depends on which backup it starts from (§1):
 
 ### 2.1 Restoring one tenant from a logical dump
 
+Use client tools of the **same major version as the destination server** (PostgreSQL 16:
+`/usr/lib/postgresql/16/bin`, or the `postgres:16` image). A newer `pg_restore` writes settings an
+older server rejects: an 18 client restoring into 16 stops at `SET transaction_timeout`.
+`scripts/dr-rehearsal.mjs` refuses a mismatched toolchain before it starts, and CI pins the 16
+client (`.github/actions/postgres-client`).
+
 ```bash
 # 1. The cluster's roles FIRST, on the destination — before anything is restored into it.
 #    Corrected in Phase 6.10, which found this out by doing it the other way round. `pg_restore`

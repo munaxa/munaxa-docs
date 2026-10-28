@@ -132,6 +132,8 @@ import { WorkflowCalendarAdapter } from '../modules/workflow/infrastructure/work
 import type { QueuePort } from '../ports/queue.port';
 import { BullMqQueueAdapter } from '../infrastructure/queue/bullmq.adapter';
 import { RecordingMetrics, RecordingQueue } from './fake-ports';
+import type { EntitlementService } from '../core/licensing/entitlement.service';
+import { unmeteredEntitlements } from './licensing';
 import { DefaultReportingService } from '../modules/reporting/application/reporting.service';
 import { ReportDefinitionService } from '../modules/reporting/application/report-definition.service';
 import { ReportExportService } from '../modules/reporting/application/report-export.service';
@@ -426,6 +428,7 @@ export function realUserAdmin(options: {
     new ScryptPasswordHasher(),
     writer,
     realAclResolver({ ...options, cache }),
+    unmeteredEntitlements(options.clock),
   );
 }
 
@@ -618,6 +621,7 @@ export function realDocumentLibrary(options: DocumentLibraryOptions): DocumentLi
     outbox,
     options.config,
     writer,
+    unmeteredEntitlements(options.clock),
   );
 
   const configurationRepository = new PrismaConfigurationRepository(stamps);
@@ -2455,6 +2459,7 @@ export function realWebhooks(options: {
   readonly unitOfWork: UnitOfWork;
   readonly settings?: Readonly<Record<string, unknown>>;
   readonly http?: RecordingHttp;
+  readonly entitlements?: EntitlementService;
 }): WebhookStack {
   const http = options.http ?? new RecordingHttp();
   const repository = new PrismaWebhookRepository();
@@ -2470,6 +2475,7 @@ export function realWebhooks(options: {
       options.clock,
       options.unitOfWork,
       silentLogger(),
+      options.entitlements ?? unmeteredEntitlements(options.clock),
     ),
   };
 }
@@ -2540,6 +2546,7 @@ export function realAuditSink(options: {
   readonly unitOfWork: UnitOfWork;
   readonly settings?: Readonly<Record<string, unknown>>;
   readonly http?: RecordingHttp;
+  readonly entitlements?: EntitlementService;
 }): AuditSinkStack {
   const http = options.http ?? new RecordingHttp();
   const repository = new PrismaAuditSinkRepository();
@@ -2555,6 +2562,7 @@ export function realAuditSink(options: {
       options.clock,
       writer,
       silentLogger(),
+      options.entitlements ?? unmeteredEntitlements(options.clock),
     ),
   };
 }

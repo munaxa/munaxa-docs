@@ -118,3 +118,4 @@ export * from './notifications/notification';
 export * from './dashboard/dashboard';
 export * from './reporting/reporting';
 export * from './integration/integration';
+export * from './subscription/subscription';

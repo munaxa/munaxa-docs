@@ -45,9 +45,11 @@ import {
  * module's internals. Global, for the same reason audit is: configuration is a cross-cutting
  * read, not a dependency each module should have to remember to import.
  *
- * `POLICY_EVALUATOR` and `FEATURE_FLAGS` — entitlements, also this module's, still unbound.
- * They are a different question from settings: a flag hides unfinished work, an entitlement
- * expresses what a customer bought, and a setting is what the customer chose.
+ * `FEATURE_FLAGS` is still unbound. `POLICY_EVALUATOR` is bound by `core/licensing`
+ * (ADR-0026): what a customer bought is decided by the shared licensing contract against a
+ * snapshot from the central service or a signed licence, not by a row this module owns. A flag
+ * hides unfinished work, an entitlement expresses what a customer bought, and a setting is what
+ * the customer chose.
  *
  * Phase 1 implemented the settings read path. Phase 2 adds everything else this module owns: document
  * types, categories, metadata fields, confidentiality levels, retention policies and numbering rules,

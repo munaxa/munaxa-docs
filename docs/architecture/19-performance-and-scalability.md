@@ -76,6 +76,7 @@ correctness bug wearing a performance costume.
 | `documents.bulk` | Medium, **capped per tenant** | Phase 16. N transactions per operation; the contended resource is one tenant's own audit chain |
 | `webhooks.deliver` | High, **capped per tenant** | Phase 17. The slots are spent *waiting* on somebody else's server, not computing |
 | `audit.stream` | Low, **serialised per tenant** | Phase 17. A push is a contiguous range of one chain; two at once would break the cursor |
+| `licensing.usage` | Low, hourly | ADR-0026. Two counts and one request per tenant to the central subscription service; consumed only under `LICENSING_MODE=CONTROL_PLANE` |
 
 Fairness: jobs carry their tenant id, and per-tenant concurrency caps stop one large tenant's bulk
 import from monopolising a pool.

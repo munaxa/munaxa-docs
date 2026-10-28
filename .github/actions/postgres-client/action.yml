@@ -1,0 +1,51 @@
+# PostgreSQL client tools of one pinned major version, first on PATH.
+#
+# The runner image's own client follows the image: ubuntu-24.04 shipped PostgreSQL 16 tools and
+# ubuntu-26.04 ships 18. A newer `pg_restore` writes settings an older server rejects — 18 restoring
+# into the 16 test cluster stops at `SET transaction_timeout` — so the disaster-recovery rehearsal
+# broke the day `ubuntu-latest` moved, with no change to this repository. The servers here are
+# `postgres:16-alpine` and production is RDS 16, so the client is pinned to the same major version
+# rather than inherited from whichever image the runner happens to be.
+#
+# The packages come from the PostgreSQL project's own apt repository (apt.postgresql.org), which
+# publishes every supported major version for every supported Ubuntu release. Its signing key is
+# checked against the project's published fingerprint before apt is allowed to trust it.
+name: PostgreSQL client tools
+description: Install the PostgreSQL client tools of one major version and put them first on PATH.
+inputs:
+  major:
+    description: The PostgreSQL major version, matching the servers the job talks to
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install postgresql-client-${{ inputs.major }} from apt.postgresql.org
+      shell: bash
+      env:
+        MAJOR: ${{ inputs.major }}
+        # https://www.postgresql.org/download/linux/ubuntu/ — the repository signing key.
+        PGDG_FINGERPRINT: B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+      run: |
+        set -euo pipefail
+        key="$RUNNER_TEMP/pgdg.asc"
+        curl -fsSL --retry 3 https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "$key"
+        actual=$(gpg --show-keys --with-colons "$key" | awk -F: '/^fpr/ { print $10; exit }')
+        if [ "$actual" != "$PGDG_FINGERPRINT" ]; then
+          echo "::error::the apt.postgresql.org signing key has fingerprint '$actual', expected $PGDG_FINGERPRINT"
+          exit 1
+        fi
+        sudo install -m 0644 "$key" /usr/share/keyrings/pgdg.asc
+        . /etc/os-release
+        echo "deb [signed-by=/usr/share/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+          | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends "postgresql-client-${MAJOR}"
+        bin="/usr/lib/postgresql/${MAJOR}/bin"
+        for tool in pg_dump pg_restore psql; do
+          "$bin/$tool" --version | grep -Eq "\(PostgreSQL\) ${MAJOR}\." || {
+            echo "::error::$bin/$tool is not PostgreSQL ${MAJOR}"
+            exit 1
+          }
+        done
+        echo "$bin" >> "$GITHUB_PATH"
+        "$bin/pg_dump" --version

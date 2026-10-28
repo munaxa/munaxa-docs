@@ -1907,6 +1907,7 @@ export const en = {
     UNSUPPORTED_CONTENT: 'That file type is not accepted.',
     CONTENT_NOT_SCANNED: 'This file is still being checked for malware.',
     TENANT_READ_ONLY: 'Your organisation is currently read-only.',
+    SUBSCRIPTION_REQUIRED: "Your organisation's subscription does not allow this right now.",
     MFA_REQUIRED: 'Enter the code from your authenticator app.',
     REQUEST_IN_PROGRESS:
       'This request is already being processed. Try again in a moment to receive its result.',

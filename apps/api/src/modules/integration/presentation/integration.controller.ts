@@ -28,7 +28,7 @@ import {
   upsertAuditSinkSchema,
   webhookDeliveryListQuerySchema,
 } from '@edms/contracts';
-import { Permission } from '@edms/domain';
+import { Permission, DocsFeature } from '@edms/domain';
 
 import { RequirePermission } from '../../../core/authorization/permission.decorator';
 import { IfMatch } from '../../../core/http/admin-request';
@@ -40,6 +40,7 @@ import type {
   WebhookDeliveryRecord,
   WebhookEndpointRecord,
 } from '../application/ports';
+import { RequireFeature } from '../../../core/licensing/licensed.decorator';
 
 /**
  * Outbound webhooks, behind `integration:manage`.
@@ -50,6 +51,7 @@ import type {
  * the row that is failing.
  */
 @Controller({ path: 'admin/webhooks', version: '1' })
+@RequireFeature(DocsFeature.WEBHOOKS)
 @RequirePermission(Permission.INTEGRATION_MANAGE)
 export class WebhookController {
   constructor(private readonly webhooks: WebhookAdminService) {}
@@ -132,6 +134,7 @@ export class WebhookController {
  * `audit:view` and `audit:export`.
  */
 @Controller({ path: 'admin/audit-sink', version: '1' })
+@RequireFeature(DocsFeature.AUDIT_STREAM)
 export class AuditSinkController {
   constructor(private readonly sinks: AuditSinkService) {}
 
@@ -167,6 +170,7 @@ export class AuditSinkController {
  * where the cursor and the action filter live.
  */
 @Controller({ path: 'audit/stream', version: '1' })
+@RequireFeature(DocsFeature.AUDIT_STREAM)
 @RequirePermission(Permission.AUDIT_EXPORT)
 export class AuditStreamController {
   constructor(private readonly sinks: AuditSinkService) {}

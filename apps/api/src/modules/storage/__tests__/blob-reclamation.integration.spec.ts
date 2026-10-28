@@ -13,6 +13,7 @@ import type { AntivirusPort } from '../../../ports/antivirus.port';
 
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
+import { unmeteredEntitlements } from '../../../testing/licensing';
 import { realWriteStack } from '../../../testing/real-collaborators';
 import { sharedDatabase } from '../../../testing/tenant-database';
 import { DefaultStorageService } from '../application/storage.service';
@@ -88,6 +89,7 @@ const storage = new DefaultStorageService(
   outbox,
   config,
   writer,
+  unmeteredEntitlements(),
 );
 
 const reaper = new StorageBlobReaper(

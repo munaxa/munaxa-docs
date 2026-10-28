@@ -9,9 +9,11 @@ import { RoutePermissionRegistry } from './route-permission.registry';
 /**
  * The authorization chain.
  *
- * `ACL_RESOLVER` belongs to the Library module, which owns the ACL entries; `POLICY_EVALUATOR`
- * and `FEATURE_FLAGS` belong to Administration, which owns the settings behind them. Core
- * declares the questions and the modules supply the answers.
+ * `ACL_RESOLVER` belongs to the Library module, which owns the ACL entries; `FEATURE_FLAGS`
+ * belongs to Administration, which owns the settings behind it. `POLICY_EVALUATOR` is bound by
+ * `core/licensing` (ADR-0026), because what a tenant bought is decided by the shared licensing
+ * contract rather than by rows any one module owns. Core declares the questions and the bindings
+ * supply the answers.
  *
  * Phase 8 replaced the deny-all placeholder with Library's real resolver, bound in
  * `LibraryModule` (`@Global`, the `AuditModule` pattern) because this module may not import a

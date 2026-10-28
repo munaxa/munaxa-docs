@@ -26,6 +26,7 @@ import type { ExecutionContext } from '@nestjs/common';
 
 import { AuthenticationGuard } from '../../../core/auth/authentication.guard';
 import { FakeCache } from '../../../testing/fake-ports';
+import { unmeteredEntitlements } from '../../../testing/licensing';
 import { CachedPermissionVersionReader } from '../infrastructure/cached-permission-version.reader';
 import { everyTenantRegistry, sharedDatabase } from '../../../testing/tenant-database';
 
@@ -76,6 +77,7 @@ const users = new UserAdminService(
   passwords,
   writer,
   realAclResolver({ clock, unitOfWork, config, cache }),
+  unmeteredEntitlements(clock),
 );
 const roles = new RoleAdminService(
   repository,
@@ -1107,6 +1109,7 @@ describe('one address, one account, however many administrators invite it at onc
       passwords,
       writer,
       realAclResolver({ clock, unitOfWork, config, cache }),
+      unmeteredEntitlements(clock),
     );
   });
 
@@ -1261,6 +1264,7 @@ describe('one address, one live account, however the second claim arrives', () =
       passwords,
       writer,
       realAclResolver({ clock, unitOfWork, config, cache }),
+      unmeteredEntitlements(clock),
     );
   });
 

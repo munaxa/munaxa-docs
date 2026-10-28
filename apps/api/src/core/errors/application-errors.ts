@@ -172,6 +172,16 @@ export class TenantReadOnlyError extends DomainError {
   }
 }
 
+/**
+ * The subscription refuses this — ADR-0012. `reason` is the shared contract's `DenialReason`, so a
+ * client can tell "not in your plan" from "your plan has lapsed" from "the quota is spent".
+ */
+export class SubscriptionRequiredError extends DomainError {
+  constructor(message: string, details: ErrorDetails = {}) {
+    super(ErrorCode.SUBSCRIPTION_REQUIRED, message, details);
+  }
+}
+
 export class DependencyUnavailableError extends DomainError {
   constructor(dependency: string, details: ErrorDetails = {}) {
     super(ErrorCode.DEPENDENCY_UNAVAILABLE, `${dependency} is unavailable.`, details);

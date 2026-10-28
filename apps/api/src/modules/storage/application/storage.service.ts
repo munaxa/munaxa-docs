@@ -5,6 +5,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   type AnyId,
   AuditSubjectType,
+  DocsLimit,
   type DomainEventDraft,
   type FileObjectId,
   AuditOutcome,
@@ -28,6 +29,7 @@ import {
   UnsupportedContentError,
   ValidationError,
 } from '../../../core/errors/application-errors';
+import { EntitlementService } from '../../../core/licensing/entitlement.service';
 import { AdministeredWriter, AdministrativeOperation } from '../../../core/persistence';
 import { currentTransaction } from '../../../core/prisma/unit-of-work';
 import { requireContext } from '../../../core/tenancy/tenant-context';
@@ -107,6 +109,7 @@ export class DefaultStorageService implements StorageService {
     @Inject(OUTBOX_WRITER) private readonly outbox: OutboxWriter,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly writer: AdministeredWriter,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   /**
@@ -174,6 +177,13 @@ export class DefaultStorageService implements StorageService {
           };
         }
       }
+
+      // ADR-0026: new bytes are growth. Refused here, in the transaction that opens the session and
+      // before a target exists — an upload presign is refused, not the completed upload (21 §3).
+      // The deduplicated path above stores nothing new and is not counted.
+      await this.entitlements.enforceLimit(DocsLimit.STORAGE_BYTES, input.sizeBytes, () =>
+        this.files.quotaBytesInUse(),
+      );
 
       const sessionId = this.writer.clock.nextId();
       const targetKey = stagingKeyFor(sessionId);
