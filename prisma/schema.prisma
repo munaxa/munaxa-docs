@@ -449,12 +449,16 @@ model OutboxMessage {
 /// service degrades access by age rather than ending it. `last_observed_at` only ever moves forward:
 /// a clock earlier than it, by more than the tolerance, is a clock that was wound back.
 model EntitlementState {
-  tenantId       String   @id @map("tenant_id") @db.Uuid
-  snapshot       Json?
+  tenantId           String   @id @map("tenant_id") @db.Uuid
+  snapshot           Json?
   /// `UNMETERED`, `LICENSE_FILE` or `CONTROL_PLANE` — which source wrote the snapshot.
-  source         String
-  lastObservedAt DateTime @map("last_observed_at") @db.Timestamptz(6)
-  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  source             String
+  lastObservedAt     DateTime @map("last_observed_at") @db.Timestamptz(6)
+  /// The newest signed revocation list verified for the tenant (platform ADR-0022), and its
+  /// sequence. Set together; only a higher sequence replaces them.
+  revocationList     String?  @map("revocation_list")
+  revocationSequence Int?     @map("revocation_sequence")
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -519,42 +523,42 @@ enum PasswordAlgorithm {
 /// user typed. The unique index is partial on `deleted_at IS NULL`, so deleting a user frees
 /// their address for re-invitation — the general rule for soft-deletable data.
 model User {
-  id                String             @id @db.Uuid
-  tenantId          String             @map("tenant_id") @db.Uuid
-  email             String
+  id                 String             @id @db.Uuid
+  tenantId           String             @map("tenant_id") @db.Uuid
+  email              String
   /// Lower-cased and trimmed. Never shown; only matched against.
-  emailNormalized   String             @map("email_normalized")
-  displayName       String             @map("display_name")
-  status            UserStatus         @default(INVITED)
+  emailNormalized    String             @map("email_normalized")
+  displayName        String             @map("display_name")
+  status             UserStatus         @default(INVITED)
   /// Null for an invited user who has not yet set one, and for a user who authenticates
   /// through a federated issuer. Absence is never a reason to allow a sign-in.
-  passwordHash      String?            @map("password_hash")
-  passwordAlgorithm PasswordAlgorithm? @map("password_algorithm")
-  passwordUpdatedAt DateTime?          @map("password_updated_at") @db.Timestamptz(6)
-  mfaEnrolled       Boolean            @default(false) @map("mfa_enrolled")
+  passwordHash       String?            @map("password_hash")
+  passwordAlgorithm  PasswordAlgorithm? @map("password_algorithm")
+  passwordUpdatedAt  DateTime?          @map("password_updated_at") @db.Timestamptz(6)
+  mfaEnrolled        Boolean            @default(false) @map("mfa_enrolled")
   /// Where this identity came from — Phase 17, and the column whose absence was the phase's first
   /// finding: `password_hash` has been nullable since Phase 1 and **nothing anywhere recorded
   /// where an identity originated**. A user with no password could equally be an invitation not
   /// yet accepted or somebody who signs in through Entra ID, and the product could not tell.
-  identitySource    IdentitySource     @default(LOCAL) @map("identity_source")
+  identitySource     IdentitySource     @default(LOCAL) @map("identity_source")
   /// The provider's own subject claim. The join key for a returning federated signer, and the
   /// reason a person who changes their email address at the provider is still the same person.
-  externalId        String?            @map("external_id")
-  identityProviderId String?           @map("identity_provider_id") @db.Uuid
-  federatedAt       DateTime?          @map("federated_at") @db.Timestamptz(6)
+  externalId         String?            @map("external_id")
+  identityProviderId String?            @map("identity_provider_id") @db.Uuid
+  federatedAt        DateTime?          @map("federated_at") @db.Timestamptz(6)
   /// Bumped whenever this user's roles or permissions change. An access token carrying an
   /// older value is refused, so a revoked role takes effect within one request rather than
   /// at the end of the token's lifetime.
-  permissionVersion Int                @default(1) @map("permission_version")
-  lastLoginAt       DateTime?          @map("last_login_at") @db.Timestamptz(6)
-  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy         String?            @map("created_by") @db.Uuid
-  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy         String?            @map("updated_by") @db.Uuid
-  deletedAt         DateTime?          @map("deleted_at") @db.Timestamptz(6)
-  deletedBy         String?            @map("deleted_by") @db.Uuid
+  permissionVersion  Int                @default(1) @map("permission_version")
+  lastLoginAt        DateTime?          @map("last_login_at") @db.Timestamptz(6)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy          String?            @map("created_by") @db.Uuid
+  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy          String?            @map("updated_by") @db.Uuid
+  deletedAt          DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  deletedBy          String?            @map("deleted_by") @db.Uuid
   /// Optimistic locking. Two administrators editing the same user do not silently overwrite.
-  version           Int                @default(1)
+  version            Int                @default(1)
 
   tenant                  Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   roles                   UserRole[]
@@ -581,8 +585,6 @@ model User {
   apiClientSubjects       ApiClient[]              @relation("ApiClientSubject")
   identityProvider        IdentityProvider?        @relation(fields: [identityProviderId], references: [id], onDelete: SetNull)
 
-  @@index([tenantId, emailNormalized], map: "ix_user_email")
-  @@index([tenantId, status], map: "ix_user_status")
   /// The federated lookup, and unique so one provider subject can never be two accounts.
   ///
   /// It needs no `WHERE deleted_at IS NULL` and that is a property of the columns rather than an
@@ -590,6 +592,8 @@ model User {
   /// NULL `identity_provider_id` and a NULL `external_id`. So the constraint binds exactly the
   /// federated rows and ignores every password account, which is what it is for.
   @@unique([tenantId, identityProviderId, externalId], map: "uq_user_external_identity")
+  @@index([tenantId, emailNormalized], map: "ix_user_email")
+  @@index([tenantId, status], map: "ix_user_status")
   @@map("user")
 }
 
@@ -1844,40 +1848,40 @@ enum PreviewRenderState {
 /// `derived` marks a preview, thumbnail or OCR output. They are disposable — regenerable from the
 /// original — so they are excluded from quota accounting and purged with their source.
 model FileObject {
-  id             String     @id @db.Uuid
-  tenantId       String     @map("tenant_id") @db.Uuid
+  id                 String          @id @db.Uuid
+  tenantId           String          @map("tenant_id") @db.Uuid
   /// Lower-case hex. The key is derived from it, so the two can never disagree.
-  checksumSha256 String     @map("checksum_sha256") @db.Char(64)
-  sizeBytes      BigInt     @map("size_bytes")
+  checksumSha256     String          @map("checksum_sha256") @db.Char(64)
+  sizeBytes          BigInt          @map("size_bytes")
   /// The *sniffed* type, never the declared one. A declaration that disagreed with the bytes
   /// was refused before this row existed (`17-security-architecture.md` §5).
-  mimeType       String     @map("mime_type")
+  mimeType           String          @map("mime_type")
   /// What a use case names. Without the tenant prefix: the prefix says where the bytes live, not
   /// what the blob is, so a tenant moving container does not rewrite every row here.
-  storageKey     String     @map("storage_key")
+  storageKey         String          @map("storage_key")
   /// Which driver wrote it. Recorded per blob so a copy-through provider migration keeps both
   /// readable throughout (`11-storage-architecture.md` §8).
-  storageDriver  String     @map("storage_driver")
-  scanStatus     ScanStatus @default(PENDING) @map("scan_status")
+  storageDriver      String          @map("storage_driver")
+  scanStatus         ScanStatus      @default(PENDING) @map("scan_status")
   /// The signature name when infected; null otherwise.
-  scanThreat     String?    @map("scan_threat")
-  scanner        String?
-  scannedAt      DateTime?  @map("scanned_at") @db.Timestamptz(6)
+  scanThreat         String?         @map("scan_threat")
+  scanner            String?
+  scannedAt          DateTime?       @map("scanned_at") @db.Timestamptz(6)
   /// The rolling verifier's last finding — Phase 18, `17-security-architecture.md` §8.
-  integrityStatus   IntegrityStatus @default(UNVERIFIED) @map("integrity_status")
+  integrityStatus    IntegrityStatus @default(UNVERIFIED) @map("integrity_status")
   /// When it last ran for this blob. Null until it has, which is also the sweep's cursor.
-  integrityCheckedAt DateTime?      @map("integrity_checked_at") @db.Timestamptz(6)
+  integrityCheckedAt DateTime?       @map("integrity_checked_at") @db.Timestamptz(6)
   /// References from revisions and preview artefacts. Maintained transactionally with the write
   /// that creates or removes a reference, and reconciled by a sweeper that reports drift rather
   /// than silently fixing it.
-  refCount       Int        @default(0) @map("ref_count")
-  derived        Boolean    @default(false)
-  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy      String?    @map("created_by") @db.Uuid
-  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy      String?    @map("updated_by") @db.Uuid
-  deletedAt      DateTime?  @map("deleted_at") @db.Timestamptz(6)
-  deletedBy      String?    @map("deleted_by") @db.Uuid
+  refCount           Int             @default(0) @map("ref_count")
+  derived            Boolean         @default(false)
+  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy          String?         @map("created_by") @db.Uuid
+  updatedAt          DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy          String?         @map("updated_by") @db.Uuid
+  deletedAt          DateTime?       @map("deleted_at") @db.Timestamptz(6)
+  deletedBy          String?         @map("deleted_by") @db.Uuid
 
   tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   revisions   DocumentRevision[]
@@ -3888,31 +3892,31 @@ model ApiClient {
 /// read path after creation, and 17 §7's rule about secrets is about the ones that grant access
 /// here. Rotating it is a new value, not a re-derivation.
 model WebhookEndpoint {
-  id               String    @id @db.Uuid
-  tenantId         String    @map("tenant_id") @db.Uuid
-  name             String
-  url              String
+  id             String    @id @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  name           String
+  url            String
   /// The HMAC key a receiver verifies with. Write-only from the API's point of view.
-  secret           String
+  secret         String
   /// Which event families this endpoint wants. **Empty means every event** — see
   /// `webhookSubscribes` for why that is the right default rather than the lazy one.
-  eventTypes       String[]  @map("event_types")
-  enabled          Boolean   @default(true)
+  eventTypes     String[]  @map("event_types")
+  enabled        Boolean   @default(true)
   /// Consecutive failures. Reset by any success, so it measures "is this endpoint dead now"
   /// rather than "has it ever failed".
-  failureCount     Int       @default(0) @map("failure_count")
+  failureCount   Int       @default(0) @map("failure_count")
   /// Set when the failure threshold disables it. Reversible, and recorded rather than silent.
-  disabledAt       DateTime? @map("disabled_at") @db.Timestamptz(6)
-  disabledReason   String?   @map("disabled_reason")
-  lastSuccessAt    DateTime? @map("last_success_at") @db.Timestamptz(6)
-  lastFailureAt    DateTime? @map("last_failure_at") @db.Timestamptz(6)
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy        String?   @map("created_by") @db.Uuid
-  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy        String?   @map("updated_by") @db.Uuid
-  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(6)
-  deletedBy        String?   @map("deleted_by") @db.Uuid
-  version          Int       @default(1)
+  disabledAt     DateTime? @map("disabled_at") @db.Timestamptz(6)
+  disabledReason String?   @map("disabled_reason")
+  lastSuccessAt  DateTime? @map("last_success_at") @db.Timestamptz(6)
+  lastFailureAt  DateTime? @map("last_failure_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy      String?   @map("created_by") @db.Uuid
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy      String?   @map("updated_by") @db.Uuid
+  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedBy      String?   @map("deleted_by") @db.Uuid
+  version        Int       @default(1)
 
   tenant     Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   deliveries WebhookDelivery[]
@@ -3969,39 +3973,39 @@ model WebhookDelivery {
 /// is a sentence about one provider, and a tenant with two would need a rule for which wins that
 /// §2 does not give. A tenant migrating between providers replaces the row.
 model IdentityProvider {
-  id             String               @id @db.Uuid
-  tenantId       String               @map("tenant_id") @db.Uuid
-  kind           IdentityProviderKind @default(OIDC)
-  name           String
+  id              String               @id @db.Uuid
+  tenantId        String               @map("tenant_id") @db.Uuid
+  kind            IdentityProviderKind @default(OIDC)
+  name            String
   /// The issuer as it appears in the ID token's `iss`. Compared exactly, never normalised.
-  issuer         String
+  issuer          String
   /// Where the discovery document lives. Fetched through the allow-listed outbound port and
   /// nowhere else — this is the URL 17 §6's SSRF row has always been about.
-  discoveryUrl   String               @map("discovery_url")
-  clientId       String               @map("client_id")
+  discoveryUrl    String               @map("discovery_url")
+  clientId        String               @map("client_id")
   /// Stored in clear for the reason a webhook secret is: the token exchange presents it.
-  clientSecret   String               @map("client_secret")
+  clientSecret    String               @map("client_secret")
   /// The email domains this provider answers for. Matched on a label boundary.
-  domains        String[]
+  domains         String[]
   /// Claim names, because Entra ID and Google Workspace use different ones. See `ClaimMapping`.
-  claimMapping   Json                 @default("{}") @map("claim_mapping")
+  claimMapping    Json                 @default("{}") @map("claim_mapping")
   /// `RoleMapping[]` — the pre-mapped roles 17 §2 requires. A provider asserts groups; the
   /// tenant decides in advance what each group means here.
-  roleMappings   Json                 @default("[]") @map("role_mappings")
+  roleMappings    Json                 @default("[]") @map("role_mappings")
   /// The roles everybody who signs in through this provider gets, before mappings add to them.
-  defaultRoleKeys String[]            @map("default_role_keys")
+  defaultRoleKeys String[]             @map("default_role_keys")
   /// Whether a first-time signer is created at all. Off means federation authenticates people who
   /// already have an account and refuses everybody else, which is what a tenant that provisions
   /// through its own onboarding wants.
-  jitProvisioning Boolean             @default(true) @map("jit_provisioning")
-  enabled        Boolean              @default(false)
-  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
-  createdBy      String?              @map("created_by") @db.Uuid
-  updatedAt      DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
-  updatedBy      String?              @map("updated_by") @db.Uuid
-  deletedAt      DateTime?            @map("deleted_at") @db.Timestamptz(6)
-  deletedBy      String?              @map("deleted_by") @db.Uuid
-  version        Int                  @default(1)
+  jitProvisioning Boolean              @default(true) @map("jit_provisioning")
+  enabled         Boolean              @default(false)
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy       String?              @map("created_by") @db.Uuid
+  updatedAt       DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy       String?              @map("updated_by") @db.Uuid
+  deletedAt       DateTime?            @map("deleted_at") @db.Timestamptz(6)
+  deletedBy       String?              @map("deleted_by") @db.Uuid
+  version         Int                  @default(1)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   users  User[]

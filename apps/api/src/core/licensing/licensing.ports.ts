@@ -11,7 +11,12 @@ export const ENTITLEMENT_LOOKUP = Symbol('EntitlementLookup');
 
 export type EntitlementLookupResult =
   /** The source of truth answered with a snapshot. */
-  | { readonly kind: 'SNAPSHOT'; readonly snapshot: EntitlementSnapshot }
+  | {
+      readonly kind: 'SNAPSHOT';
+      readonly snapshot: EntitlementSnapshot;
+      /** A newly verified revocation list for the store to keep (platform ADR-0022). */
+      readonly revocationList?: { readonly text: string; readonly sequence: number };
+    }
   /**
    * The source of truth answered, and the answer is that there is nothing: no subscription, or a
    * licence that cannot be trusted. Not an outage — a cached snapshot must not outlive it.
@@ -33,6 +38,8 @@ export interface EntitlementLookup {
     tenantId: string,
     lastObservedAt: Date | null,
     now: Date,
+    /** The revocation list this deployment kept for the tenant, if any. */
+    keptRevocationList?: string | null,
   ): Promise<EntitlementLookupResult>;
 }
 
@@ -43,6 +50,8 @@ export const ENTITLEMENT_STATE_STORE = Symbol('EntitlementStateStore');
 export interface StoredEntitlementState {
   readonly snapshot: EntitlementSnapshot | null;
   readonly lastObservedAt: Date;
+  /** The newest revocation list verified for the tenant, as delivered; `null` when none. */
+  readonly revocationList: string | null;
 }
 
 /** The `entitlement_state` row, read and written inside the request's own tenant transaction. */
@@ -60,4 +69,10 @@ export interface EntitlementStateStore {
       readonly observedAt: Date;
     },
   ): Promise<void>;
+  /**
+   * Keeps a newly verified revocation list. Only a higher `sequence` replaces the stored one, so two
+   * replicas racing can never put an older list back. A tenant with no state row yet keeps nothing;
+   * the next refresh, after its state is written, keeps it.
+   */
+  writeRevocationList(tenantId: string, list: string, sequence: number): Promise<void>;
 }

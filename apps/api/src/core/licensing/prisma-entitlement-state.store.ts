@@ -27,6 +27,7 @@ export class PrismaEntitlementStateStore implements EntitlementStateStore {
       return {
         snapshot: parsed !== null && parsed.ok ? parsed.snapshot : null,
         lastObservedAt: row.lastObservedAt,
+        revocationList: row.revocationList,
       };
     });
   }
@@ -53,6 +54,17 @@ export class PrismaEntitlementStateStore implements EntitlementStateStore {
           source = EXCLUDED.source,
           last_observed_at = GREATEST(entitlement_state.last_observed_at, EXCLUDED.last_observed_at),
           updated_at = now()`;
+    });
+  }
+
+  writeRevocationList(tenantId: string, list: string, sequence: number): Promise<void> {
+    return this.uow.run(async () => {
+      // The comparison is in the statement, so the higher sequence wins whatever the order.
+      await requireTransaction().$executeRaw`
+        UPDATE entitlement_state
+           SET revocation_list = ${list}, revocation_sequence = ${sequence}, updated_at = now()
+         WHERE tenant_id = ${tenantId}::uuid
+           AND (revocation_sequence IS NULL OR revocation_sequence < ${sequence})`;
     });
   }
 }

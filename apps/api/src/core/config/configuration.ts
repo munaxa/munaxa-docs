@@ -623,6 +623,11 @@ export const configSchema = z
     LICENSE_ALGORITHM: z.enum(['ES256', 'RS256']).default('ES256'),
     /** `LICENSE_FILE`: this installation's identifier, the value its licence is bound to. */
     LICENSE_INSTALLATION_ID: z.string().min(1).max(128).optional(),
+    /**
+     * `LICENSE_FILE`, optional: where the signed revocation list Munaxa delivers is copied. A list can
+     * only suspend a licence, never grant one (platform ADR-0022).
+     */
+    LICENSE_REVOCATION_PATH: z.string().min(1).optional(),
     /** `CONTROL_PLANE`: the service's base URL. Its host must also be on `OUTBOUND_HTTP_ALLOWLIST`. */
     CONTROL_PLANE_URL: z.string().url().optional(),
     /** `CONTROL_PLANE`: this deployment's service credential. A secret. */
@@ -1286,6 +1291,8 @@ export interface AppConfig {
       readonly algorithm: RawConfig['LICENSE_ALGORITHM'];
       readonly publicKeys: readonly LicensePublicKey[];
       readonly installationId: string;
+      /** Null when no revocation list is delivered to this installation. */
+      readonly revocationPath: string | null;
     } | null;
     readonly controlPlane: { readonly url: string; readonly token: string } | null;
   };
@@ -1511,6 +1518,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
               algorithm: raw.LICENSE_ALGORITHM,
               publicKeys: parsePublicKeys(raw.LICENSE_PUBLIC_KEYS),
               installationId: raw.LICENSE_INSTALLATION_ID,
+              revocationPath: raw.LICENSE_REVOCATION_PATH ?? null,
             }
           : null,
       controlPlane:
