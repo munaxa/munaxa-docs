@@ -8,7 +8,7 @@ import type { EntitlementSnapshot } from '@munaxa/licensing';
 
 import type { AppConfig } from '../../../core/config/configuration';
 import type { Logger } from '../../../core/observability/logger';
-import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
+import { PrismaUnitOfWork, requireTransaction } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
 import { entitlementsWith } from '../../../testing/licensing';
 import { realAclResolver, realWriteStack } from '../../../testing/real-collaborators';
@@ -221,5 +221,35 @@ describe('entitlement_state', () => {
       const state = await store.read(tenantId);
       expect(state?.lastObservedAt.toISOString()).toBe('2026-07-01T00:00:00.000Z');
     });
+  });
+
+  it('keeps the revocation list with the higher sequence only, through later snapshot writes', async () => {
+    await asAdmin(async () => {
+      await store.writeRevocationList(tenantId, 'list-5', 5);
+      await store.writeRevocationList(tenantId, 'list-3', 3);
+      expect((await store.read(tenantId))?.revocationList).toBe('list-5');
+      await store.writeRevocationList(tenantId, 'list-6', 6);
+      await store.write(tenantId, {
+        snapshot: null,
+        source: 'LICENSE_FILE',
+        observedAt: new Date('2026-08-01T00:00:00Z'),
+      });
+      expect((await store.read(tenantId))?.revocationList).toBe('list-6');
+    });
+  });
+
+  it('refuses a list without its sequence, and a sequence below one', async () => {
+    const update = (sql: 'pair' | 'zero') =>
+      asAdmin(() =>
+        unitOfWork.run(() =>
+          sql === 'pair'
+            ? requireTransaction()
+                .$executeRaw`UPDATE entitlement_state SET revocation_list = 'x', revocation_sequence = NULL WHERE tenant_id = ${tenantId}::uuid`
+            : requireTransaction()
+                .$executeRaw`UPDATE entitlement_state SET revocation_list = 'x', revocation_sequence = 0 WHERE tenant_id = ${tenantId}::uuid`,
+        ),
+      );
+    await expect(update('pair')).rejects.toThrow(/ck_entitlement_state_revocation_pair/);
+    await expect(update('zero')).rejects.toThrow(/ck_entitlement_state_revocation_sequence/);
   });
 });

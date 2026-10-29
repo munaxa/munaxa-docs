@@ -587,7 +587,12 @@ describe('licensing configuration — ADR-0026', () => {
       algorithm: 'ES256',
       publicKeys: [{ kid: 'lic-1', publicKey }],
       installationId: 'inst-1',
+      revocationPath: null,
     });
+    expect(
+      loadConfig({ ...licenseFileEnv, LICENSE_REVOCATION_PATH: '/etc/munaxa/docs.revocations' })
+        .licensing.licenseFile?.revocationPath,
+    ).toBe('/etc/munaxa/docs.revocations');
   });
 
   it.each(['LICENSE_FILE_PATH', 'LICENSE_PUBLIC_KEYS', 'LICENSE_INSTALLATION_ID'])(

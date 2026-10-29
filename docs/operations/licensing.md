@@ -43,7 +43,25 @@ verifying the old licence — on purpose. To move:
 Keep the database when you move: `entitlement_state.last_observed_at` travels with it and is what
 keeps a wound-back clock from extending a licence.
 
-## 5. What happens when something is wrong
+## 5. Revoke a licence an installation already holds
+
+Munaxa can withdraw a licence before its term ends with a signed revocation list (platform
+ADR-0022), downloaded from the Super Admin portal for the `docs` product.
+
+1. Set `LICENSE_REVOCATION_PATH`, for example `/etc/munaxa/docs.revocations`.
+2. Copy the list Munaxa sends you to that path. It is read on the next refresh; no restart.
+
+A list can only narrow access: a licence it names becomes `SUSPENDED` (read-only), and a licence it
+does not name is untouched. The newest verified list is kept in `entitlement_state`, and only a list
+with a higher sequence replaces it, so deleting the file or copying an older list back does not lift
+a revocation, across restarts too. A delivered list that fails verification is ignored. If the kept
+list itself no longer verifies (a hand edit, a bad restore), every licence is suspended until a valid
+list is installed: an unverifiable list never widens access.
+
+A fully offline installation learns of a revocation only when the new list is copied to it. Until
+then the licence it holds keeps working until its term ends.
+
+## 6. What happens when something is wrong
 
 | Situation | Effect |
 | --- | --- |
@@ -51,6 +69,7 @@ keeps a wound-back clock from extending a licence.
 | Licence fails verification (forged, other installation, other tenant) | Refused; nothing is granted until a valid licence is installed |
 | Server clock moved back past what the installation has seen | Refused as `CLOCK_ROLLBACK`; correct the clock |
 | Licence term ended | Grace (no growth) until `graceUntil`, then read-only |
+| Licence named by the revocation list in force, or the kept list no longer verifies | Read-only (`SUSPENDED`) |
 | Control plane unreachable (hosted) | Unchanged for 1 hour, no growth for 1 day, read-only for 7 days, then export-only |
 
 Every case is logged as `Entitlements could not be confirmed` with a `reason`. Health checks and
@@ -60,7 +79,7 @@ A `401` or `403` from the central service (a revoked or mistyped credential) is 
 service being unreachable, not as a cancellation: tenants degrade over hours as above rather than
 losing access at once. Fix the credential; it is logged on every refresh.
 
-## 5a. What the plan's features switch, beyond the API routes
+## 6a. What the plan's features switch, beyond the API routes
 
 | Feature | When the plan does not include it |
 | --- | --- |
@@ -68,14 +87,15 @@ losing access at once. Fix the credential; it is logged on every refresh.
 | `integration.webhooks` | New events are not delivered (and not delivered later); recorded deliveries wait without spending attempts |
 | `audit.stream` | Pushes stop; the cursor holds, so the stream resumes gap-free if the feature returns |
 
-## 5b. Usage reporting (hosted)
+## 6b. Usage reporting (hosted)
 
 Under `CONTROL_PLANE`, each tenant's `users` and `storage.bytes` are reported to the central service
 every hour (17 minutes past) on the `licensing.usage` lane, by the process with
 `QUEUE_CONSUMERS_ENABLED`. Reporting is informational: Docs enforces its own limits, and a failed
 report is retried three times and then dead-lettered without changing anyone's access.
 
-## 6. Limits of offline licensing
+## 7. Limits of offline licensing
 
-- A licence cannot be revoked offline. It remains valid until it ends; keep terms short.
+- A revocation reaches a fully offline installation only when its list is copied there (section 5).
+  Until then the licence remains valid until it ends; keep terms short.
 - A clock that was wrong from the first boot and never moved backwards cannot be detected.

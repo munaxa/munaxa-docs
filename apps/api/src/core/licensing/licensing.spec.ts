@@ -6,8 +6,15 @@ import { join } from 'node:path';
 import type { ExecutionContext } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
 import { AsymmetricSigner } from '@munaxa/crypto';
-import { armorLicense, issueLicense, type EntitlementSnapshot } from '@munaxa/licensing';
-import { afterAll, describe, expect, it } from 'vitest';
+import {
+  OperationKind,
+  REVOCATION_LIST_FORMAT,
+  armorLicense,
+  issueLicense,
+  issueRevocationList,
+  type EntitlementSnapshot,
+} from '@munaxa/licensing';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 import { DocsFeature } from '@edms/domain';
 
@@ -286,6 +293,7 @@ describe('LicenseFileLookup', () => {
     algorithm: 'ES256',
     publicKeys: [{ kid: pair.kid, publicKey: pair.publicKey }],
     installationId: 'inst-1',
+    revocationPath: null,
   });
   const licence = (overrides: Record<string, unknown> = {}) =>
     armorLicense(
@@ -319,6 +327,7 @@ describe('LicenseFileLookup', () => {
       algorithm: 'ES256',
       publicKeys: [{ kid: pair.kid, publicKey: pair.publicKey }],
       installationId: 'inst-1',
+      revocationPath: null,
     });
     expect(await missing.lookup(TENANT, null, now)).toMatchObject({ kind: 'UNAVAILABLE' });
     writeFileSync(path, licence({ installationId: 'inst-2' }));
@@ -334,6 +343,99 @@ describe('LicenseFileLookup', () => {
     expect(await lookup.lookup(TENANT, new Date('2026-05-01T00:00:00Z'), now)).toEqual({
       kind: 'NONE',
       reason: 'LICENSE_CLOCK_ROLLBACK',
+    });
+  });
+
+  describe('offline revocation (platform ADR-0022)', () => {
+    const revocations = join(directory, 'docs.revocations');
+    const revocable = new LicenseFileLookup({
+      path,
+      algorithm: 'ES256',
+      publicKeys: [{ kid: pair.kid, publicKey: pair.publicKey }],
+      installationId: 'inst-1',
+      revocationPath: revocations,
+    });
+    const list = (sequence: number, licenseIds: readonly string[], signer = issuer) =>
+      issueRevocationList(
+        {
+          format: REVOCATION_LIST_FORMAT,
+          product: 'docs',
+          sequence,
+          issuedAt: '2026-01-15T00:00:00.000Z',
+          revoked: licenseIds.map((licenseId) => ({
+            licenseId,
+            revokedAt: '2026-01-15T00:00:00.000Z',
+            reason: 'CONTRACT_ENDED' as const,
+          })),
+        },
+        signer,
+      );
+    // A new service per call is a restart: nothing is memoised, only the store survives.
+    const writes = (store: MemoryEntitlementStateStore) =>
+      entitlementsWith({ lookup: revocable, store, clock: new FakeClock(now) })
+        .decide(TENANT, OperationKind.WRITE)
+        .then((decision) => decision.allowed);
+    afterEach(() => rmSync(revocations, { force: true }));
+
+    it('a licence the delivered list names is suspended; one it does not name is untouched', async () => {
+      writeFileSync(path, licence());
+      writeFileSync(revocations, list(2, ['lic_1']));
+      const named = await revocable.lookup(TENANT, null, now);
+      expect(named.kind === 'SNAPSHOT' && named.snapshot.status).toBe('SUSPENDED');
+      expect(await writes(new MemoryEntitlementStateStore())).toBe(false);
+
+      writeFileSync(revocations, list(2, ['lic_someone_else']));
+      expect(await writes(new MemoryEntitlementStateStore())).toBe(true);
+    });
+
+    it('a revocation sticks: deleting the file or offering an older list does not undo it', async () => {
+      writeFileSync(path, licence());
+      writeFileSync(revocations, list(3, ['lic_1']));
+      const store = new MemoryEntitlementStateStore();
+      expect(await writes(store)).toBe(false);
+      expect(store.sequences.get(TENANT)).toBe(3);
+
+      rmSync(revocations);
+      expect(await writes(store)).toBe(false);
+
+      writeFileSync(revocations, list(2, []));
+      expect(await writes(store)).toBe(false);
+      expect(store.sequences.get(TENANT)).toBe(3);
+    });
+
+    it('a list signed by another key is not taken and grants nothing', async () => {
+      const other = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+      const forger = new AsymmetricSigner('ES256', [
+        {
+          kid: pair.kid,
+          privateKey: other.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+          publicKey: other.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+        },
+      ]);
+      writeFileSync(path, licence({ expiresAt: '2026-01-20T00:00:00.000Z', graceUntil: null }));
+      writeFileSync(revocations, list(9, [], forger));
+      const store = new MemoryEntitlementStateStore();
+      expect(await writes(store)).toBe(false);
+      expect(store.sequences.get(TENANT)).toBeUndefined();
+    });
+
+    it('a kept list that no longer verifies fails closed', async () => {
+      writeFileSync(path, licence());
+      writeFileSync(revocations, list(4, []));
+      const store = new MemoryEntitlementStateStore();
+      expect(await writes(store)).toBe(true);
+      const row = store.rows.get(TENANT);
+      if (row === undefined) throw new Error('no state row');
+      store.rows.set(TENANT, { ...row, revocationList: `${row.revocationList ?? ''}x` });
+      rmSync(revocations);
+      expect(await writes(store)).toBe(false);
+    });
+
+    it('without LICENSE_REVOCATION_PATH a delivered list is not read', async () => {
+      writeFileSync(path, licence());
+      writeFileSync(revocations, list(2, ['lic_1']));
+      const result = await lookup.lookup(TENANT, null, now);
+      expect(result.kind === 'SNAPSHOT' && result.snapshot.status).toBe('ACTIVE');
     });
   });
 });

@@ -22,7 +22,20 @@ export class MemoryEntitlementStateStore implements EntitlementStateStore {
     const previous = this.rows.get(tenantId)?.lastObservedAt;
     const lastObservedAt =
       previous !== undefined && previous > state.observedAt ? previous : state.observedAt;
-    this.rows.set(tenantId, { snapshot: state.snapshot, lastObservedAt });
+    const revocationList = this.rows.get(tenantId)?.revocationList ?? null;
+    this.rows.set(tenantId, { snapshot: state.snapshot, lastObservedAt, revocationList });
+    return Promise.resolve();
+  }
+
+  readonly sequences = new Map<string, number>();
+
+  writeRevocationList(tenantId: string, list: string, sequence: number): Promise<void> {
+    const row = this.rows.get(tenantId);
+    const previous = this.sequences.get(tenantId);
+    if (row !== undefined && (previous === undefined || previous < sequence)) {
+      this.rows.set(tenantId, { ...row, revocationList: list });
+      this.sequences.set(tenantId, sequence);
+    }
     return Promise.resolve();
   }
 }

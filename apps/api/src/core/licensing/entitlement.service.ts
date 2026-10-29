@@ -116,7 +116,12 @@ export class EntitlementService implements PolicyEvaluator {
     const stored = this.lookup.cachesSnapshots ? await this.store.read(tenantId) : null;
     const observed = stored?.lastObservedAt ?? null;
     const evaluatedAt = observed !== null && observed > now ? observed : now;
-    const answer = await this.lookup.lookup(tenantId, observed, now);
+    const answer = await this.lookup.lookup(
+      tenantId,
+      observed,
+      now,
+      stored?.revocationList ?? null,
+    );
 
     if (answer.kind === 'SNAPSHOT') {
       if (this.lookup.cachesSnapshots) {
@@ -125,6 +130,13 @@ export class EntitlementService implements PolicyEvaluator {
           source: origin,
           observedAt: now,
         });
+        if (answer.revocationList !== undefined) {
+          await this.store.writeRevocationList(
+            tenantId,
+            answer.revocationList.text,
+            answer.revocationList.sequence,
+          );
+        }
       }
       const resolved = resolveSnapshot(answer.snapshot, null, evaluatedAt);
       return { ...resolved, origin, evaluatedAt, reason: null };
