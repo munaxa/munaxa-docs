@@ -40,7 +40,7 @@ export const metadataValueSchema = z.union([
   z.null(),
 ]);
 
-export const metadataInputSchema = z.record(metadataValueSchema);
+export const metadataInputSchema = z.record(z.string(), metadataValueSchema);
 
 /**
  * Creating a document from content that has already been uploaded.

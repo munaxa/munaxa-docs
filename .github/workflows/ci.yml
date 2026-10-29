@@ -87,6 +87,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
+      # A new high or critical advisory in any dependency fails the build. Fix it by upgrading;
+      # an override is acceptable only where a parent pins the vulnerable version exactly, and
+      # each one is listed in docs/operations/dependency-advisories.md.
+      - name: Dependency audit
+        run: pnpm audit --audit-level high
+
       - name: Format check
         run: pnpm format:check
 

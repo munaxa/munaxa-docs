@@ -9,7 +9,8 @@ import { ALL_PERMISSIONS, type PermissionKey } from '@edms/domain';
  * together — and the UI renders from it. The client never decides a permission and never
  * infers one from a status (`docs/architecture/08-permission-model.md` §7).
  */
-export const capabilitiesSchema = z.record(
+// Partial, as the type says: Zod 4's `record` over an enum would demand every permission.
+export const capabilitiesSchema = z.partialRecord(
   z.enum(ALL_PERMISSIONS as [PermissionKey, ...PermissionKey[]]),
   z.boolean(),
 );

@@ -79,7 +79,7 @@ function claimed(claim: IdempotencyClaim): void {
 
 beforeEach(() => {
   store = {
-    claim: vi.fn(),
+    claim: vi.fn<IdempotencyStore['claim']>(),
     complete: vi.fn().mockResolvedValue(undefined),
     release: vi.fn().mockResolvedValue(undefined),
   };
