@@ -22,7 +22,7 @@ export class ZodValidationPipe<TSchema extends ZodType> implements PipeTransform
         throw new ValidationError(
           `The ${metadata.type} is not valid.`,
           error.issues.map((issue) => ({
-            field: issue.path.join('.') || metadata.data || metadata.type,
+            field: issue.path.map(String).join('.') || metadata.data || metadata.type,
             message: issue.message,
           })),
         );

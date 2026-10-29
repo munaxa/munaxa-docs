@@ -22,7 +22,10 @@ const PDF = leading(0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37);
 const ZIP = leading(0x50, 0x4b, 0x03, 0x04);
 const PNG = leading(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
 const DWG = leading(0x41, 0x43, 0x31, 0x30, 0x33, 0x32);
-const TEXT = new TextEncoder().encode('Procedure QA-014, revision 3.\nSigned off 2026-05-02.\n');
+// ASCII, so one byte per character; the domain package compiles without Node or DOM types.
+const TEXT = Uint8Array.from('Procedure QA-014, revision 3.\nSigned off 2026-05-02.\n', (c) =>
+  c.charCodeAt(0),
+);
 const OOXML = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 describe('the format table', () => {

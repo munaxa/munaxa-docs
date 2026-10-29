@@ -101,7 +101,7 @@ export const searchHitSchema = z.object({
   updatedAt: z.string(),
   publishedAt: z.string().nullable(),
   effectiveFrom: z.string().nullable(),
-  highlights: z.record(z.array(z.array(highlightSpanSchema))),
+  highlights: z.record(z.string(), z.array(z.array(highlightSpanSchema))),
 });
 
 export type SearchHit = z.infer<typeof searchHitSchema>;
@@ -138,14 +138,19 @@ export const searchResultsSchema = z.object({
     /** True when `search:all` widened this query past the caller's own reach (audited). */
     unrestricted: z.boolean(),
   }),
-  facets: z.record(z.array(facetBucketSchema)),
+  facets: z.record(z.string(), z.array(facetBucketSchema)),
   nextCursor: z.string().nullable(),
 });
 
 export type SearchResults = z.infer<typeof searchResultsSchema>;
 
 /** Saved-search filters travel exactly as the query string sends them: one value per key. */
-export const savedSearchFiltersSchema = z.record(z.enum(SEARCH_FILTER_KEYS), filterValueSchema);
+// Partial: a saved search names only the filters it uses (Zod 4's `record` over an enum demands
+// every key).
+export const savedSearchFiltersSchema = z.partialRecord(
+  z.enum(SEARCH_FILTER_KEYS),
+  filterValueSchema,
+);
 
 export const savedSearchSchema = z.object({
   id: z.string().uuid(),

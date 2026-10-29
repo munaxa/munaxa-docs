@@ -44,7 +44,7 @@ export class ValidationBehavior implements PipelineBehavior {
           throw new ValidationError(
             `${envelope.name} is not valid.`,
             error.issues.map((issue) => ({
-              field: issue.path.join('.'),
+              field: issue.path.map(String).join('.'),
               message: issue.message,
             })),
           );

@@ -30,11 +30,11 @@
     "@munaxa/tokens": "^1.1.1",
     "@munaxa/ui": "^1.1.1",
     "@tanstack/react-query": "^5.64.1",
-    "next": "^15.1.6",
+    "next": "^15.5.28",
     "pdfjs-dist": "^4.10.38",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "zod": "^3.24.1"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@munaxa/config-eslint": "^1.0.0",
@@ -50,12 +50,12 @@
     "@vitejs/plugin-react": "^5.2.0",
     "axe-core": "^4.13.0",
     "eslint": "^9.18.0",
-    "jsdom": "^30.0.1",
+    "jsdom": "^30.1.3",
     "pixelmatch": "^7.2.0",
     "playwright": "^1.62.1",
     "pngjs": "^7.0.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.12"
   }
 }

@@ -78,7 +78,7 @@ export const uploadTargetSchema = z.object({
   url: z.string(),
   method: z.enum(['PUT', 'POST']),
   /** Send these verbatim. They are inside the signature, so changing one invalidates the URL. */
-  headers: z.record(z.string()),
+  headers: z.record(z.string(), z.string()),
   expiresAt: isoDateTimeSchema,
   parts: z
     .array(z.object({ partNumber: z.number().int().min(1), url: z.string().url() }))

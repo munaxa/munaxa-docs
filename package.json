@@ -46,7 +46,14 @@
       "@nestjs/core",
       "sharp",
       "unrs-resolver"
-    ]
+    ],
+    "overrides": {
+      "multer": "^2.5.0",
+      "deepmerge-ts": "^8.0.2",
+      "postcss": "^8.5.25",
+      "js-yaml@5.3.0": "^5.4.1",
+      "vite": "^7.3.7"
+    }
   },
   "prisma": {
     "schema": "prisma/schema.prisma"
