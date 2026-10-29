@@ -70,11 +70,12 @@ Not secret, already in the task definition: `MAIL_DRIVER=RESEND`,
 `api` group's HTTPS egress).
 
 **Licensing (ADR-0026).** The API refuses to start in production without a licence source: an unset
-`LICENSING_MODE` defaults to `NONE`, which production rejects. The hosted service needs, in the
-`api` (and `ops-provision`) task environment, `LICENSING_MODE=CONTROL_PLANE`,
-`CONTROL_PLANE_URL=https://<control host>` and `OUTBOUND_HTTP_ALLOWLIST` including that host, plus
-`CONTROL_PLANE_TOKEN` above. **Not yet in `service/ecs.tf`**, and Control is not deployed, so
-`enable_services` cannot succeed until both are in place.
+`LICENSING_MODE` defaults to `NONE`, which production rejects. The `api` and `ops-provision` tasks
+both need it, before `enable_services`. The two options, their exact variables and their
+prerequisites are in [licensing.md §8](./licensing.md#8-production-launch-configuration-eu-prod):
+`CONTROL_PLANE` (the token above, Control deployed, and the outbound TLS fix validated) or
+`LICENSE_FILE` (a licence for the one tenant, and a way to place the file in a read-only task).
+**Neither is in `service/ecs.tf` yet**, so `enable_services` cannot succeed until one is.
 
 Write the whole object once every value exists (after §6 step 1). Then set `app_secret_version_id` in
 `launch.auto.tfvars` to the returned version id, so every API task is pinned to it (ADR-0022

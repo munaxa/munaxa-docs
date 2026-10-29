@@ -101,3 +101,54 @@ report is retried three times and then dead-lettered without changing anyone's a
 - A revocation reaches a fully offline installation only when its list is copied there (section 5).
   Until then the licence remains valid until it ends; keep terms short.
 - A clock that was wrong from the first boot and never moved backwards cannot be detected.
+
+## 8. Production launch configuration (eu-prod)
+
+Production refuses to start without a licence source (`NONE`, set or defaulted, is refused when
+`NODE_ENV=production`). The `api` task **and** the `ops-provision` task load the same configuration
+(`provision.js` boots the API's module), so both need the same licensing variables, and they must
+be in place **before `enable_services`**. Two options exist; this section does not choose one.
+
+### Option A: Control plane (`CONTROL_PLANE`)
+
+| Variable | Value |
+| --- | --- |
+| `LICENSING_MODE` | `CONTROL_PLANE` |
+| `CONTROL_PLANE_URL` | the Control service's `https://` origin (a URL; a trailing `/` is removed) |
+| `CONTROL_PLANE_TOKEN` | this deployment's service credential, at least 32 characters, from the app secret bundle (production-service-inputs.md §3), never the task environment |
+| `OUTBOUND_HTTP_ALLOWLIST` | must include the `CONTROL_PLANE_URL` host: every Control request goes through the outbound port, which refuses any host not on the list, any `http` URL in production, and any host resolving to a private, loopback or link-local address |
+| `LICENSING_REFRESH_SECONDS` | optional, 10 to 3600, default 60 |
+
+Prerequisites:
+- Control deployed and reachable from the `api` task at a public address, with a certificate for
+  its hostname, and a service credential issued for the `docs` product.
+- The outbound TLS fix (the adapter verifying certificates by hostname while connecting to the
+  checked address) merged and validated against the real Control host. Before it, every https
+  request through the outbound port fails certificate verification, and every tenant degrades as an
+  unreachable control plane (section 6).
+- Usage reports go to the same service under this mode (section 6b).
+
+### Option B: Signed licence file (`LICENSE_FILE`)
+
+| Variable | Value |
+| --- | --- |
+| `LICENSING_MODE` | `LICENSE_FILE` |
+| `LICENSE_FILE_PATH` | path of the `mxl1` licence inside the container; re-read on every refresh |
+| `LICENSE_PUBLIC_KEYS` | JSON `[{"kid":"…","publicKey":"-----BEGIN PUBLIC KEY-----…"}]`, a non-empty array; a private key is refused at boot |
+| `LICENSE_ALGORITHM` | `ES256` (default) or `RS256` |
+| `LICENSE_INSTALLATION_ID` | 1 to 128 characters; the value the licence is bound to |
+| `LICENSE_REVOCATION_PATH` | optional; the signed revocation list (section 5) |
+
+What the API verifies on every refresh: the `mxl1` format, a signature by a listed `kid`, product
+`docs`, the installation identifier (when the licence names one), that the clock has not moved back
+before the licence's issue time or the last time observed, `notBefore`, and that the licence's
+`tenantId` is the tenant being served. A licence names **one tenant**, so one deployment in this
+mode serves one tenant.
+
+Prerequisites:
+- A licence for the tenant, issued by Munaxa. Creating or signing one is outside this guide; the
+  installation holds public keys only.
+- A way to put the file at `LICENSE_FILE_PATH` in the task. The `api` and `ops-provision` containers
+  run on a read-only root filesystem with no volume (`service/ecs.tf`), and ECS cannot mount a
+  Secrets Manager value as a file, so this option needs a task-definition change (for example a
+  volume populated before the API starts) that does not exist yet.
