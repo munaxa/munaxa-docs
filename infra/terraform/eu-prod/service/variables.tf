@@ -115,6 +115,34 @@ variable "app_secret_version_id" {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Licensing (ADR-0026, docs/operations/licensing.md §8 option A). Hosted Docs asks Munaxa Control
+# for each tenant's entitlements. The service credential is CONTROL_PLANE_TOKEN in the application
+# bundle (secrets.tf), never a variable.
+# ---------------------------------------------------------------------------------------------
+
+variable "control_plane_url" {
+  description = "Munaxa Control's product-facing base URL, https only, no port and no credentials. Its host is always put on OUTBOUND_HTTP_ALLOWLIST."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.control_plane_url == "" || can(regex("^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}(/[^@\\s]*)?$", var.control_plane_url))
+    error_message = "control_plane_url is an https:// URL with a lowercase hostname, no port, no user info."
+  }
+}
+
+variable "outbound_http_allowlist_extra" {
+  description = "Other outbound HTTPS destinations (webhook receivers, OIDC issuers): exact hosts, or a leading dot for a domain's subdomains. Control's host is added automatically."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for h in var.outbound_http_allowlist_extra : can(regex("^\\.?([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}$", h))])
+    error_message = "Each outbound_http_allowlist_extra entry is a lowercase hostname, optionally with a leading dot."
+  }
+}
+
+# ---------------------------------------------------------------------------------------------
 # Stages (main.tf). Both off by default: nothing is listening and no task runs.
 # ---------------------------------------------------------------------------------------------
 

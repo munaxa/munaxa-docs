@@ -26,6 +26,9 @@ locals {
     "MFA_TOTP_SEALING_KEY",
     "METRICS_SCRAPE_TOKEN",
     "MAIL_RESEND_API_KEY",
+    # The Docs deployment's service credential from Munaxa Control (mxc_…, at least 32 characters;
+    # LICENSING_MODE=CONTROL_PLANE in ecs.tf). Written to the bundle by an operator, like every key.
+    "CONTROL_PLANE_TOKEN",
   ]
 }
 

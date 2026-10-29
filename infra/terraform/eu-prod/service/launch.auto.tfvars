@@ -26,3 +26,8 @@ enable_https = true
 # consequence 8). Set it once the bundle has a value in account 229251310592; the id from the
 # previous account does not exist here. Empty means the current version.
 app_secret_version_id = ""
+
+# Licensing (ADR-0026, option A): Munaxa Control's product-facing host (shared AWS hosting ADR
+# draft, Control docs/operations/deployment.md). Its host is put on OUTBOUND_HTTP_ALLOWLIST by
+# ecs.tf. The credential is CONTROL_PLANE_TOKEN in the application bundle, never here.
+control_plane_url = "https://control-api.munaxa.com"

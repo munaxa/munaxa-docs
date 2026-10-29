@@ -148,6 +148,13 @@ resource "aws_ecs_task_definition" "ops_provision" {
   execution_role_arn       = data.aws_iam_role.ops["ops-provision-execution"].arn
   task_role_arn            = data.aws_iam_role.core["api-task"].arn
 
+  lifecycle {
+    precondition {
+      condition     = local.control_plane_host == "" || contains(split(",", local.outbound_http_allowlist), local.control_plane_host)
+      error_message = "OUTBOUND_HTTP_ALLOWLIST must contain the Control host, or every entitlement lookup is refused."
+    }
+  }
+
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"

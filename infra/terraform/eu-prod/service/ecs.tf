@@ -54,7 +54,21 @@ locals {
     AV_ICAP_URL                = "icap://${local.scanner_dns}:1344/avscan"
     OPENAPI_ENABLED            = "false"
     METRICS_DRIVER             = "PROMETHEUS"
+    # Licensing (ADR-0026): entitlements come from Munaxa Control. Production refuses NONE, and a
+    # missing URL or token stops the task at boot rather than running unlicensed.
+    LICENSING_MODE          = "CONTROL_PLANE"
+    CONTROL_PLANE_URL       = var.control_plane_url
+    OUTBOUND_HTTP_ALLOWLIST = local.outbound_http_allowlist
   }
+
+  # The API does not check at boot that CONTROL_PLANE_URL's host is allow-listed: a missing entry
+  # boots cleanly and then refuses every lookup, which degrades every tenant. So the host is always
+  # derived from the URL and put first, and the task definitions' preconditions check it again.
+  control_plane_host = var.control_plane_url == "" ? "" : regex("^https://([^/]+)", var.control_plane_url)[0]
+  outbound_http_allowlist = join(",", distinct(compact(concat(
+    [local.control_plane_host],
+    var.outbound_http_allowlist_extra,
+  ))))
 
   # Runtime hardening. Every service container drops all Linux capabilities: each runs as a non-root
   # user (web and api as `node`, the scanner as clamav 101:102, Redis as 999:999), none switches user
@@ -176,6 +190,18 @@ resource "aws_ecs_task_definition" "api" {
   memory                   = 2048
   execution_role_arn       = data.aws_iam_role.core["api-execution"].arn
   task_role_arn            = data.aws_iam_role.core["api-task"].arn
+
+  # Licensing inputs (ADR-0026). Planned, not applied, when one is missing.
+  lifecycle {
+    precondition {
+      condition     = !var.enable_services || var.control_plane_url != ""
+      error_message = "enable_services needs control_plane_url: production Docs refuses to boot without a licence source."
+    }
+    precondition {
+      condition     = local.control_plane_host == "" || contains(split(",", local.outbound_http_allowlist), local.control_plane_host)
+      error_message = "OUTBOUND_HTTP_ALLOWLIST must contain the Control host, or every entitlement lookup is refused."
+    }
+  }
 
   runtime_platform {
     operating_system_family = "LINUX"
