@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import { ConfigurationError, loadConfig } from './configuration';
@@ -15,10 +17,18 @@ const baseEnv = {
   TENANT_SLUG: 'acme',
 } satisfies NodeJS.ProcessEnv;
 
+/** A hosted licence source, which production requires in place of the `NONE` default — ADR-0026. */
+const controlPlane = {
+  LICENSING_MODE: 'CONTROL_PLANE',
+  CONTROL_PLANE_URL: 'https://control.munaxa.example',
+  CONTROL_PLANE_TOKEN: 'k'.repeat(40),
+} satisfies NodeJS.ProcessEnv;
+
 /** The smallest environment that boots in production, so each refusal below varies one thing. */
 const productionEnv = {
   ...baseEnv,
   NODE_ENV: 'production',
+  ...controlPlane,
   OPENAPI_ENABLED: 'false',
   STORAGE_DRIVER: 'S3',
   STORAGE_BUCKET: 'edms-prod',
@@ -65,6 +75,7 @@ describe('loadConfig', () => {
     const config = loadConfig({
       ...baseEnv,
       NODE_ENV: 'production',
+      ...controlPlane,
       OPENAPI_ENABLED: 'false',
       STORAGE_DRIVER: 'S3',
       STORAGE_BUCKET: 'edms-prod',
@@ -201,6 +212,7 @@ describe('loadConfig', () => {
       loadConfig({
         ...baseEnv,
         NODE_ENV: 'production',
+        ...controlPlane,
         OPENAPI_ENABLED: 'false',
         STORAGE_DRIVER: 'S3',
         STORAGE_BUCKET: 'edms-prod',
@@ -481,6 +493,7 @@ describe('describing which tenants this deployment serves', () => {
         TENANT_CATALOGUE: CATALOGUE,
         DEPLOYMENT_PROFILE: 'CLOUD',
         NODE_ENV: 'production',
+        ...controlPlane,
         OPENAPI_ENABLED: 'false',
         STORAGE_DRIVER: 'LOCAL',
         MAIL_DRIVER: 'RESEND',
@@ -503,6 +516,7 @@ describe('describing which tenants this deployment serves', () => {
       loadConfig({
         ...baseEnv,
         NODE_ENV: 'production',
+        ...controlPlane,
         OPENAPI_ENABLED: 'false',
         STORAGE_DRIVER: 'S3',
         STORAGE_BUCKET: 'edms-prod',
@@ -522,6 +536,7 @@ describe('describing which tenants this deployment serves', () => {
     const config = loadConfig({
       ...baseEnv,
       NODE_ENV: 'production',
+      ...controlPlane,
       OPENAPI_ENABLED: 'false',
       STORAGE_DRIVER: 'LOCAL',
       MAIL_DRIVER: 'RESEND',
@@ -544,6 +559,7 @@ describe('describing which tenants this deployment serves', () => {
       loadConfig({
         ...baseEnv,
         NODE_ENV: 'production',
+        ...controlPlane,
         OPENAPI_ENABLED: 'false',
         STORAGE_DRIVER: 'LOCAL',
         MAIL_DRIVER: 'RESEND',
@@ -631,5 +647,59 @@ describe('licensing configuration — ADR-0026', () => {
       url: 'https://control.munaxa.example',
       token: 'k'.repeat(40),
     });
+  });
+  describe('in production', () => {
+    const { LICENSING_MODE, CONTROL_PLANE_URL, CONTROL_PLANE_TOKEN, ...unlicensed } = productionEnv;
+    const realPublicKey = generateKeyPairSync('ec', { namedCurve: 'P-256' })
+      .publicKey.export({ type: 'spki', format: 'pem' })
+      .toString();
+
+    it('keeps its fixture honest: the licence source is the only thing removed', () => {
+      expect({ LICENSING_MODE, CONTROL_PLANE_URL, CONTROL_PLANE_TOKEN }).toEqual(controlPlane);
+    });
+
+    it('refuses NONE', () => {
+      expect(() => loadConfig({ ...unlicensed, LICENSING_MODE: 'NONE' })).toThrow(
+        /LICENSING_MODE must be LICENSE_FILE or CONTROL_PLANE in production/,
+      );
+    });
+
+    it('refuses an unset mode, which would default to NONE', () => {
+      expect(() => loadConfig(unlicensed)).toThrow(
+        /LICENSING_MODE must be LICENSE_FILE or CONTROL_PLANE in production/,
+      );
+    });
+
+    it('starts on a complete licence file', () => {
+      const config = loadConfig({
+        ...unlicensed,
+        LICENSING_MODE: 'LICENSE_FILE',
+        LICENSE_FILE_PATH: '/etc/munaxa/docs.license',
+        LICENSE_PUBLIC_KEYS: JSON.stringify([{ kid: 'lic-1', publicKey: realPublicKey }]),
+        LICENSE_INSTALLATION_ID: 'inst-1',
+      });
+      expect(config.licensing.mode).toBe('LICENSE_FILE');
+    });
+
+    it('still refuses an incomplete licence file', () => {
+      expect(() =>
+        loadConfig({
+          ...unlicensed,
+          LICENSING_MODE: 'LICENSE_FILE',
+          LICENSE_FILE_PATH: '/etc/munaxa/docs.license',
+          LICENSE_INSTALLATION_ID: 'inst-1',
+        }),
+      ).toThrow(/LICENSE_PUBLIC_KEYS/);
+    });
+
+    it('starts on an https control plane', () => {
+      const config = loadConfig({ ...unlicensed, ...controlPlane });
+      expect(config.licensing.mode).toBe('CONTROL_PLANE');
+      expect(config.licensing.controlPlane?.url).toBe('https://control.munaxa.example');
+    });
+  });
+
+  it.each(['development', 'test', 'staging'])('keeps the NONE default in %s', (NODE_ENV) => {
+    expect(loadConfig({ ...baseEnv, NODE_ENV }).licensing.mode).toBe('NONE');
   });
 });

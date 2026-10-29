@@ -7,10 +7,12 @@
 
 | Deployment | `LICENSING_MODE` | Needs |
 | --- | --- | --- |
-| Development, or an installation sold without limits | `NONE` (default) | Nothing |
+| Development, test or staging | `NONE` (default) | Nothing. Refused when `NODE_ENV=production`, set or defaulted |
 | On premises, no internet required | `LICENSE_FILE` | `LICENSE_FILE_PATH`, `LICENSE_PUBLIC_KEYS`, `LICENSE_INSTALLATION_ID` |
 | Hosted | `CONTROL_PLANE` | `CONTROL_PLANE_URL`, `CONTROL_PLANE_TOKEN`, and the URL's host on `OUTBOUND_HTTP_ALLOWLIST` |
 
+In production the API refuses to start in `NONE`, including when `LICENSING_MODE` is unset, so an
+installation sold without limits is given a licence with an unlimited plan instead.
 The API refuses to start when a mode's inputs are missing, and refuses a private key in
 `LICENSE_PUBLIC_KEYS`. An installation holds public keys only: it can check a licence and cannot
 make one.
