@@ -32,7 +32,10 @@ change it reports none.
   enum would require every key. Issue paths are stringified before joining (they may hold symbols).
 - **Vitest** `^3.0.5` → `^4.1.12` (every package): critical `tinypool` prototype pollution, the
   Vitest UI file-read advisory, and `vite`/`@vitest/mocker`. Two specs adjusted for Vitest 4's
-  types (a typed `vi.fn`, and a fixture built without `TextEncoder`).
+  types (a typed `vi.fn`, and a fixture built without `TextEncoder`). The web e2e project's
+  `poolOptions.forks.singleFork` — removed in Vitest 4, and ignored with only a deprecation line —
+  becomes `maxWorkers: 1` with `isolate: false`; without it each e2e file ran in a fresh process,
+  every suite shared one Redis database and sign-in budget, and the eleventh sign-in was refused.
 - **Express** `5.2.1` → `5.3.0` (`apps/api`): critical `proxy-addr` IP spoofing, `body-parser`
   and `qs` denial of service.
 - **jsdom** `^30.0.1` → `^30.1.3` (`apps/web`): its `undici` now resolves to 8.12.x (TLS

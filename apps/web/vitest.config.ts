@@ -98,11 +98,18 @@ export default defineConfig({
           // everything. The port collision on 3210 was the same race announcing itself more
           // politely.
           //
-          // `singleFork` is what actually serialises them: one fork, one file at a time, so a
-          // suite's teardown can never overlap another suite's run. Phase 6.9 solved the same race
-          // by merging two files into one; this is the version that survives a third file.
+          // One worker, reused, is what actually serialises them: one process, one file at a time,
+          // so a suite's teardown can never overlap another suite's run. Phase 6.9 solved the same
+          // race by merging two files into one; this is the version that survives a third file.
+          //
+          // Vitest 4 removed `poolOptions`, and with it the `forks.singleFork` this used to say —
+          // silently, apart from a deprecation line. `maxWorkers: 1` with `isolate: false` is its
+          // replacement. Without it each file got a fresh process, `servers.ts`'s per-suite Redis
+          // database sequence (kept in `process.env`) restarted at 1 in every file, and the whole
+          // shard shared one sign-in budget: the eleventh sign-in was refused.
           fileParallelism: false,
-          poolOptions: { forks: { singleFork: true } },
+          maxWorkers: 1,
+          isolate: false,
         },
       },
     ],

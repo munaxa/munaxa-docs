@@ -183,8 +183,8 @@ export type ExtraEnv = Readonly<Record<string, string>>;
  * module-scoped counter survives the file boundary and would work — that was measured, not assumed
  * — but `isolate` is a configuration knob, and a counter that silently restarts at the same number
  * would hand every suite the same database and put the collision straight back. `process.env` is
- * one worker process either way — `poolOptions.forks.singleFork` is set on this project, so there
- * is exactly one. Databases 1–15 are used and 0 is left alone, so anything else pointed at this
+ * one worker process either way — `maxWorkers: 1` with `isolate: false` is set on this project (the
+ * Vitest 4 form of `singleFork`), so there is exactly one. Databases 1–15 are used and 0 is left alone, so anything else pointed at this
  * Redis is undisturbed.
  */
 function redisUrlForThisSuite(): string {
