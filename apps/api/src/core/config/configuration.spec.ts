@@ -699,7 +699,7 @@ describe('licensing configuration — ADR-0026', () => {
     });
   });
 
-  it.each(['development', 'test', 'staging'])('keeps the NONE default in %s', (NODE_ENV) => {
-    expect(loadConfig({ ...baseEnv, NODE_ENV }).licensing.mode).toBe('NONE');
+  it.each(['development', 'test', 'staging'])('keeps the NONE default in %s', (nodeEnv) => {
+    expect(loadConfig({ ...baseEnv, NODE_ENV: nodeEnv }).licensing.mode).toBe('NONE');
   });
 });
