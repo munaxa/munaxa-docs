@@ -204,6 +204,13 @@ export type OutboundTransport = (
 ) => Promise<{ readonly status: number; readonly body: string }>;
 
 /**
+ * Sent when the caller names no User-Agent. `fetch` sent `node` on every request and `node:https`
+ * sends nothing, and a receiver behind a WAF or a CDN may refuse a request that carries none; this
+ * one also tells the receiver's operator which product is calling.
+ */
+export const DEFAULT_USER_AGENT = 'munaxa-docs';
+
+/**
  * The network half of the adapter: `node:https` (or `node:http` where a development deployment
  * permits it), with a `lookup` that answers only with the checked address.
  *
@@ -228,11 +235,7 @@ export function pinnedRequest(request: PinnedRequest): Promise<{ status: number;
       request.url,
       {
         method: request.method,
-        // A length rather than chunked encoding, as `fetch` sent a string body.
-        headers:
-          request.body === undefined
-            ? request.headers
-            : { ...request.headers, 'content-length': String(Buffer.byteLength(request.body)) },
+        headers: outgoingHeaders(request),
         lookup: pinned,
         signal: request.signal,
       },
@@ -257,6 +260,19 @@ export function pinnedRequest(request: PinnedRequest): Promise<{ status: number;
     outgoing.on('error', reject);
     outgoing.end(request.body);
   });
+}
+
+function outgoingHeaders(request: PinnedRequest): Record<string, string> {
+  const named = (name: string) =>
+    Object.keys(request.headers).some((header) => header.toLowerCase() === name);
+  return {
+    ...(!named('user-agent') && { 'user-agent': DEFAULT_USER_AGENT }),
+    ...request.headers,
+    // A length rather than chunked encoding, as `fetch` sent a string body.
+    ...(request.body !== undefined && {
+      'content-length': String(Buffer.byteLength(request.body)),
+    }),
+  };
 }
 
 async function defaultResolve(host: string): Promise<readonly string[]> {

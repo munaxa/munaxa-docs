@@ -12,6 +12,7 @@ import { ControlPlaneLookup } from '../../core/licensing/control-plane.lookup';
 import type { Logger } from '../../core/observability/logger';
 import {
   AllowListedHttpAdapter,
+  DEFAULT_USER_AGENT,
   pinnedRequest,
   type OutboundTransport,
   type PinnedRequest,
@@ -240,6 +241,19 @@ describe('pinnedRequest — the hostname is verified, the address is pinned', ()
     expect(received).toEqual({ length: '14', chunked: undefined, body: '{"event":"é"}' });
   });
 
+  it('names the product as User-Agent unless the caller set one', async () => {
+    const agents: (string | undefined)[] = [];
+    const port = await serve('hooks.example.test', (request, response) => {
+      agents.push(request.headers['user-agent']);
+      response.writeHead(204).end();
+    });
+    const url = new URL(`https://hooks.example.test:${String(port)}/edms`);
+    const base = { url, address: '127.0.0.1', method: 'GET', maxResponseBytes: 1_024 } as const;
+    await pinnedRequest({ ...base, headers: {}, signal: signal() });
+    await pinnedRequest({ ...base, headers: { 'User-Agent': 'tenant-hook/2' }, signal: signal() });
+    expect(agents).toEqual([DEFAULT_USER_AGENT, 'tenant-hook/2']);
+  });
+
   it('does not follow a redirect', async () => {
     const port = await serve('hooks.example.test', (_request, response) => {
       response.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' }).end();
@@ -317,6 +331,34 @@ describe('AllowListedHttpAdapter — the outbound checks still decide', () => {
       timeoutMs: 5_000,
     });
     expect(result).toMatchObject({ ok: false, failure: { kind: 'NETWORK' } });
+  });
+
+  it('gives up on a receiver that never answers, as a TIMEOUT, and closes the connection', async () => {
+    let closed: Promise<void> = Promise.resolve();
+    const port = await serve('hooks.example.test', (request) => {
+      // Accepts the request and never responds.
+      closed = new Promise((resolve) => request.socket.on('close', () => resolve()));
+    });
+    const outbound = adapter({
+      allowList: ['hooks.example.test'],
+      resolve,
+      transport: routedTo('127.0.0.1', []),
+    });
+
+    const startedAt = Date.now();
+    const result = await outbound.send({
+      url: `https://hooks.example.test:${String(port)}/edms`,
+      method: 'POST',
+      body: '{}',
+      timeoutMs: 300,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { kind: 'TIMEOUT', reason: 'No response within 300ms.' },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    await closed;
   });
 
   it('opens no connection for a host off the allow-list, a private resolution, or http', async () => {
