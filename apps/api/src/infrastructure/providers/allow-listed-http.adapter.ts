@@ -1,5 +1,7 @@
 import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { isIP, type LookupFunction } from 'node:net';
 
 import { Inject, Injectable } from '@nestjs/common';
 
@@ -21,9 +23,12 @@ import {
  * **The connection goes to the address that was checked.** `fetch` given a hostname resolves it
  * again inside the stack, so a name that answered `93.184.216.34` to our check may answer
  * `127.0.0.1` to the socket — a DNS rebind, and the reason "resolve, validate, then fetch by name"
- * is a control that does not control anything. So the request is made against the **literal
- * address**, with the original hostname restored in the `Host` header and in TLS's SNI. That is
- * what closes the window rather than narrowing it.
+ * is a control that does not control anything. So the request keeps the **hostname** and is given
+ * a lookup that can only answer with the **checked address** ({@link pinnedRequest}): the socket
+ * goes where the check looked, while the `Host` header, TLS's SNI and the certificate check all
+ * use the name. Requesting the literal address instead would make TLS verify the certificate
+ * against the address, which a certificate for the name does not cover. That is what closes the
+ * window rather than narrowing it.
  *
  * **A refusal names the rule, never the resolution.** An administrator whose endpoint is refused
  * is told "host not on this deployment's outbound allow-list"; they are not told which address it
@@ -36,7 +41,7 @@ export class AllowListedHttpAdapter implements OutboundHttpPort {
   constructor(
     @Inject(APP_CONFIG) config: AppConfig,
     @Inject(LOGGER) private readonly logger: Logger,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly transport: OutboundTransport = pinnedRequest,
     private readonly resolve: (host: string) => Promise<readonly string[]> = defaultResolve,
   ) {
     this.allowList = config.outbound.allowList;
@@ -72,34 +77,31 @@ export class AllowListedHttpAdapter implements OutboundHttpPort {
     }, request.timeoutMs);
 
     try {
-      const response = await this.fetchImpl(verdict.pinnedUrl, {
+      // A 3xx is not followed (the transport never follows one): a permitted host answering
+      // `302 http://169.254.169.254/` would otherwise carry the request past every check above. It
+      // reaches the caller as an ordinary unsuccessful status.
+      const response = await this.transport({
+        url: verdict.url,
+        address: verdict.address,
         method: request.method,
-        headers: {
-          ...request.headers,
-          // The name the certificate is for and the vhost the receiver expects. Restored because
-          // the URL above names an address rather than a host.
-          Host: verdict.hostHeader,
-        },
+        headers: request.headers ?? {},
         ...(request.body !== undefined && { body: request.body }),
         signal: abort.signal,
-        // Not followed, deliberately: a permitted host answering `302 http://169.254.169.254/`
-        // would otherwise carry the request past every check above. `manual` surfaces the 3xx to
-        // the caller as an ordinary unsuccessful status.
-        redirect: 'manual',
+        maxResponseBytes: this.maxResponseBytes,
       });
 
       return {
         ok: true,
         response: {
           status: response.status,
-          body: (await response.text()).slice(0, this.maxResponseBytes),
+          body: response.body.slice(0, this.maxResponseBytes),
           durationMs: Date.now() - startedAt,
         },
       };
     } catch (error) {
       const timedOut = abort.signal.aborted;
       this.logger.warn('An outbound request failed', {
-        host: verdict.hostHeader,
+        host: verdict.url.host,
         reason: timedOut ? 'timeout' : 'network',
       });
       return {
@@ -121,7 +123,7 @@ export class AllowListedHttpAdapter implements OutboundHttpPort {
   /** Scheme, then allow-list, then every resolved address. Each closes a bypass for the last. */
   private async check(
     raw: string,
-  ): Promise<{ ok: true; pinnedUrl: string; hostHeader: string } | { ok: false; reason: string }> {
+  ): Promise<{ ok: true; url: URL; address: string } | { ok: false; reason: string }> {
     let url: URL;
     try {
       url = new URL(raw);
@@ -158,10 +160,7 @@ export class AllowListedHttpAdapter implements OutboundHttpPort {
       return { ok: false, reason: 'That host resolves to an address that is not reachable.' };
     }
 
-    const first = addresses[0] ?? '';
-    const pinned = new URL(url.toString());
-    pinned.hostname = first.includes(':') ? `[${first}]` : first;
-    return { ok: true, pinnedUrl: pinned.toString(), hostHeader: url.host };
+    return { ok: true, url, address: addresses[0] ?? '' };
   }
 
   /**
@@ -184,6 +183,80 @@ export class AllowListedHttpAdapter implements OutboundHttpPort {
       return [];
     }
   }
+}
+
+/** One request to an already-checked URL, connected to the address the check approved. */
+export interface PinnedRequest {
+  /** The URL as checked: its hostname is what TLS verifies and what `Host` carries. */
+  readonly url: URL;
+  /** The checked address. The socket connects here and nowhere else. */
+  readonly address: string;
+  readonly method: 'GET' | 'POST';
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body?: string;
+  readonly signal: AbortSignal;
+  /** Bytes kept from the response body; the rest is read and discarded. */
+  readonly maxResponseBytes: number;
+}
+
+export type OutboundTransport = (
+  request: PinnedRequest,
+) => Promise<{ readonly status: number; readonly body: string }>;
+
+/**
+ * The network half of the adapter: `node:https` (or `node:http` where a development deployment
+ * permits it), with a `lookup` that answers only with the checked address.
+ *
+ * The hostname stays in the request, so Node sends it as SNI and verifies the certificate against
+ * it with its default checks; nothing here relaxes certificate verification. The lookup ignores
+ * the name it is asked about, so DNS is never consulted again between the check and the connect.
+ * Redirects are not followed: this makes exactly one request.
+ */
+export function pinnedRequest(request: PinnedRequest): Promise<{ status: number; body: string }> {
+  const family = isIP(request.address);
+  const pinned: LookupFunction = (_hostname, options, callback) => {
+    if (options.all) {
+      callback(null, [{ address: request.address, family }]);
+    } else {
+      callback(null, request.address, family);
+    }
+  };
+  const send = request.url.protocol === 'https:' ? httpsRequest : httpRequest;
+
+  return new Promise((resolve, reject) => {
+    const outgoing = send(
+      request.url,
+      {
+        method: request.method,
+        // A length rather than chunked encoding, as `fetch` sent a string body.
+        headers:
+          request.body === undefined
+            ? request.headers
+            : { ...request.headers, 'content-length': String(Buffer.byteLength(request.body)) },
+        lookup: pinned,
+        signal: request.signal,
+      },
+      (response) => {
+        const kept: Buffer[] = [];
+        let size = 0;
+        response.on('data', (chunk: Buffer) => {
+          if (size < request.maxResponseBytes) {
+            kept.push(chunk);
+            size += chunk.length;
+          }
+        });
+        response.on('end', () => {
+          resolve({
+            status: response.statusCode ?? 0,
+            body: Buffer.concat(kept).toString('utf8'),
+          });
+        });
+        response.on('error', reject);
+      },
+    );
+    outgoing.on('error', reject);
+    outgoing.end(request.body);
+  });
 }
 
 async function defaultResolve(host: string): Promise<readonly string[]> {
