@@ -606,7 +606,8 @@ export const configSchema = z
      *
      * `NONE` (the default, and the behaviour before licensing existed) puts every tenant on an
      * unlimited plan: nothing is gated and nothing is counted against a ceiling. It is explicit
-     * configuration, not a fallback, and no failure ever selects it. `LICENSE_FILE` reads a signed
+     * configuration, not a fallback, and no failure ever selects it. Production refuses it, set or
+     * defaulted; development, test and staging keep it. `LICENSE_FILE` reads a signed
      * licence from disk and verifies it offline with the public keys below — the on-premises mode.
      * `CONTROL_PLANE` asks the central subscription service, keeps the last answer, and degrades by
      * the shared outage policy when it cannot be reached — the hosted mode.
@@ -975,6 +976,17 @@ export const configSchema = z
           message: `${key} must name a real provider in production.`,
         });
       }
+    }
+    // `NONE` is also what an unset LICENSING_MODE means, so a production deployment that forgot to
+    // say how it is licensed would put every tenant on an unlimited plan. It must name a source
+    // that fails closed — ADR-0026.
+    if (config.LICENSING_MODE === 'NONE') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LICENSING_MODE'],
+        message:
+          'LICENSING_MODE must be LICENSE_FILE or CONTROL_PLANE in production; NONE, also the default when unset, licenses every tenant without limits.',
+      });
     }
     if (config.MAIL_DRIVER === 'RESEND' && config.MAIL_RESEND_API_KEY === undefined) {
       ctx.addIssue({
