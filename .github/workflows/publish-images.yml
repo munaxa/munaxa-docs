@@ -87,7 +87,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ steps.resolve.outputs.sha }}
           fetch-depth: 0 # the whole history, for the ancestry check against main
@@ -133,11 +133,11 @@ jobs:
       # Job-level env cannot read the env context; the registry host is written out.
       REPOSITORY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/${{ matrix.repository }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.source.outputs.sha }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
       # argument is recorded in the image's history. The same construction the CI images job uses.
@@ -147,7 +147,9 @@ jobs:
           umask 077
           printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN reads @munaxa/* only if each package is granted to this repository, so a
+          # build without PLATFORM_PACKAGES_TOKEN is refused with ERR_PNPM_FETCH_403 (as in ci.yml).
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Assume the image publisher role through GitHub OIDC
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -162,7 +164,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ${{ matrix.target }}
@@ -283,7 +285,7 @@ jobs:
             echo "| run | ${{ github.run_id }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digest-${{ matrix.target }}
           path: digests/${{ matrix.target }}
@@ -303,19 +305,19 @@ jobs:
       SHORT: ${{ needs.source.outputs.short }}
       REPOSITORY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.source.outputs.sha }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # Built and loaded first, and only pushed once it has proved it scans.
       - name: Build the scanner (not yet pushed)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: infra/antivirus
           push: false
@@ -438,7 +440,7 @@ jobs:
           printf 'clamd --version: %s\nc-icap -V: %s\n' "$CLAMAV" "$CICAP" > digests/antivirus-versions
           printf '%s\n' "$PACKAGES" >> digests/antivirus-versions
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digest-antivirus
           path: digests/
@@ -453,7 +455,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: digest-*
           merge-multiple: true
@@ -515,7 +517,7 @@ jobs:
             "release-smoke/antivirus:$GITHUB_RUN_ID" | gzip -1 > smoke-images/images.tar.gz
           cat smoke-images/identity
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-smoke-images
           path: smoke-images/
@@ -542,17 +544,17 @@ jobs:
     env:
       SHA: ${{ needs.source.outputs.sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.source.outputs.sha }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: digest-*
           merge-multiple: true
           path: digests
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-smoke-images
           path: smoke-images
@@ -587,11 +589,11 @@ jobs:
             echo "$name-ref=$ref" >> "$GITHUB_OUTPUT"
           done
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: '10.33.0'
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
           cache: pnpm
@@ -601,16 +603,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Restore the object store binaries
         id: object-store-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ runner.temp }}/object-store/bin
           key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: steps.object-store-cache.outputs.cache-hit != 'true'
         with:
           go-version: '1.24'

@@ -96,6 +96,12 @@ jobs:
       - name: Format check
         run: pnpm format:check
 
+      # munaxa-platform vendors 01-roles.sql for the shared AWS stack's docs-db-admin task
+      # (infra/aws/stack/scripts/docs-cluster-roles.sql). A change here must be copied there by PR,
+      # then the pinned hash below updated, so the two never drift (AWS migration finding F-3).
+      - name: The cluster roles match the copy in munaxa-platform
+        run: sha256sum --check --strict infra/sql/cluster/01-roles.sql.sha256
+
       - name: Lint
         run: pnpm lint
 
