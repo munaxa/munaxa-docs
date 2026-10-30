@@ -63,10 +63,19 @@ key stops the task**. Read only by the API and provisioning execution roles (nev
 | `MAIL_RESEND_API_KEY` | a Resend API key with **sending access only**, restricted to the verified domain | §4 |
 | `DATABASE_URL` | `munaxa-internal`'s `edms_app` URL (required even with a catalogue, STG-5) | §6 |
 | `TENANT_CATALOGUE` | the runtime catalogue (no owner credential) | §6 |
+| `CONTROL_PLANE_TOKEN` | this deployment's `mxc_` service credential, ≥ 32 characters | issued for the `docs` product in the Control Super Admin portal |
 
 Not secret, already in the task definition: `MAIL_DRIVER=RESEND`,
 `MAIL_FROM_ADDRESS=docs@notify.munaxa.com` (the API calls `https://api.resend.com/emails` over the
 `api` group's HTTPS egress).
+
+**Licensing (ADR-0026).** The API refuses to start in production without a licence source: an unset
+`LICENSING_MODE` defaults to `NONE`, which production rejects. The `api` and `ops-provision` tasks
+both need it, before `enable_services`. The two options, their exact variables and their
+prerequisites are in [licensing.md §8](./licensing.md#8-production-launch-configuration-eu-prod):
+`CONTROL_PLANE` (the token above, Control deployed, and the outbound TLS fix validated) or
+`LICENSE_FILE` (a licence for the one tenant, and a way to place the file in a read-only task).
+**Neither is in `service/ecs.tf` yet**, so `enable_services` cannot succeed until one is.
 
 Write the whole object once every value exists (after §6 step 1). Then set `app_secret_version_id` in
 `launch.auto.tfvars` to the returned version id, so every API task is pinned to it (ADR-0022
@@ -186,7 +195,7 @@ NET='awsvpcConfiguration={subnets=[subnet-0bbe4ecc835eaa146,subnet-0cb1769089ee5
 3. Resend domain verified and a send-only key (§4), once launch preparation is authorised.
 4. Image pull verified (go-live runbook §10.1).
 5. Tenant bootstrap §6 steps 1–3 (operator bundle, db-admin, migrations).
-6. App bundle complete and pinned (§3, §6 step 4).
+6. App bundle complete and pinned (§3, §6 step 4), including the licensing inputs (§3).
 7. `enable_https` apply.
 8. `enable_services` apply; scanner probe, health checks, smoke tests (runbook §14–§16).
 9. First administrator (§6 step 5).

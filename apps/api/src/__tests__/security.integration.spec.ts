@@ -246,6 +246,9 @@ describe('production boot refusals', () => {
     AUDIT_CHECKPOINT_SECRET: 'c'.repeat(32),
     SIGNATURE_WITNESS_SECRET: 's'.repeat(32),
     MFA_TOTP_SEALING_KEY: 'm'.repeat(32),
+    LICENSING_MODE: 'CONTROL_PLANE',
+    CONTROL_PLANE_URL: 'https://control.munaxa.example',
+    CONTROL_PLANE_TOKEN: 'k'.repeat(40),
   } satisfies NodeJS.ProcessEnv;
 
   it('boots on the configuration every refusal below varies', () => {
@@ -264,12 +267,15 @@ describe('production boot refusals', () => {
     ['the audit checkpoint key', { AUDIT_CHECKPOINT_SECRET: undefined }],
     ['the signature witness key', { SIGNATURE_WITNESS_SECRET: undefined }],
     ['the authenticator sealing key', { MFA_TOTP_SEALING_KEY: undefined }],
+    // ADR-0026: NONE, which is also the default, licenses every tenant without limits.
+    ['a licence source', { LICENSING_MODE: undefined }],
   ])('refuses to start production without %s', (_case, override) => {
     expect(() => loadConfig({ ...base, ...override })).toThrow();
   });
 
   it.each([
     ['plaintext outbound requests', { OUTBOUND_HTTP_ALLOW_INSECURE: 'true' }],
+    ['the unlimited licensing mode', { LICENSING_MODE: 'NONE' }],
     ['the interactive OpenAPI explorer', { OPENAPI_ENABLED: 'true' }],
     ['a signing secret below the minimum length', { JWT_ACCESS_SECRET: 'short' }],
     [

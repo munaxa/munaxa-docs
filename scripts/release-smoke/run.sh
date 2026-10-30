@@ -15,7 +15,8 @@
 # The stack is the production shape on one host: NODE_ENV=production, DEPLOYMENT_PROFILE=CLOUD, two
 # tenants in two databases (acme, and a decoy slugged `docs`), the S3 driver against an object
 # store, AV_DRIVER=ICAP on the release scanner, MAIL_DRIVER=RESEND against a local capture endpoint
-# (no real provider, no key). Every secret is generated for the run and never printed. Nothing here
+# (no real provider, no key), and LICENSING_MODE=CONTROL_PLANE against a local Control stand-in
+# (control-standin.mjs: https, allow-listed, every Docs feature, no limit). Every secret is generated for the run and never printed. Nothing here
 # reaches AWS: the images are already local when this starts.
 #
 # Exit 0 only if every image check and every blocking smoke check passed.
@@ -26,6 +27,13 @@ set -euo pipefail
 work="$(mktemp -d)"
 containers=(smoke-postgres smoke-redis smoke-scanner smoke-api smoke-web)
 pids=()
+# The Control stand-in's address. The API's outbound port refuses loopback and private addresses in
+# every environment (the SSRF boundary, allow-listed-http.adapter.ts), so the stand-in listens on an
+# address that boundary treats as public: 192.0.2.10, from TEST-NET-1 (RFC 5737, never routed),
+# added to this host's loopback interface for the run and removed on exit.
+control_ip=192.0.2.10
+control_port=8443
+standin_address_added=""
 
 cleanup() {
   local code=$?
@@ -40,6 +48,7 @@ cleanup() {
     echo "::endgroup::"
   fi
   docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
+  [ -z "$standin_address_added" ] || sudo ip addr del "$control_ip/32" dev lo 2>/dev/null || true
   docker volume rm smoke-av-signatures >/dev/null 2>&1 || true
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
   rm -rf "$work"
@@ -164,6 +173,32 @@ echo "== Mail capture (stands in for Resend; no key, nothing leaves the host)"
 node scripts/release-smoke/mail-capture.mjs 127.0.0.1 8025 "$work/mail.jsonl" &
 pids+=($!)
 
+echo "== Control stand-in (stands in for munaxa-control; https, every Docs feature, no limit)"
+# A throwaway CA for this run only: the API trusts it through NODE_EXTRA_CA_CERTS, so the connection
+# is verified TLS exactly as it is to the real service, and no certificate check is switched off.
+control_token="$(secret)"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+  -subj "/CN=release-smoke stand-in CA" -keyout "$work/standin-ca.key" -out "$work/standin-ca.pem" 2>/dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -subj "/CN=$control_ip" -keyout "$work/standin.key" -out "$work/standin.csr" 2>/dev/null
+printf 'subjectAltName=IP:%s\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' "$control_ip" >"$work/standin.ext"
+openssl x509 -req -in "$work/standin.csr" -CA "$work/standin-ca.pem" -CAkey "$work/standin-ca.key" \
+  -CAcreateserial -days 1 -extfile "$work/standin.ext" -out "$work/standin.pem" 2>/dev/null
+chmod 644 "$work/standin-ca.pem"
+if ! ip -4 addr show dev lo | grep -q "inet $control_ip/"; then
+  sudo ip addr add "$control_ip/32" dev lo
+  standin_address_added=1
+fi
+CONTROL_STANDIN_TOKEN="$control_token" node scripts/release-smoke/control-standin.mjs \
+  "$control_ip" "$control_port" "$work/standin.pem" "$work/standin.key" "$work/control.jsonl" &
+pids+=($!)
+for _ in $(seq 1 30); do
+  curl -s -o /dev/null --cacert "$work/standin-ca.pem" "https://$control_ip:$control_port/" && break
+  sleep 1
+done
+# The API and the provisioning task read the CA from a read-only bind mount, nothing else is added.
+standin_ca=(-v "$work/standin-ca.pem:/run/smoke/standin-ca.pem:ro" -e NODE_EXTRA_CA_CERTS=/run/smoke/standin-ca.pem)
+
 # --- The API, configured as Production is ------------------------------------------------------
 
 admin_email="smoke-admin@acme.test"
@@ -199,6 +234,10 @@ AV_ICAP_URL=icap://127.0.0.1:1344/avscan
 OPENAPI_ENABLED=false
 METRICS_DRIVER=PROMETHEUS
 METRICS_SCRAPE_TOKEN=$(secret)
+LICENSING_MODE=CONTROL_PLANE
+CONTROL_PLANE_URL=https://$control_ip:$control_port
+CONTROL_PLANE_TOKEN=$control_token
+OUTBOUND_HTTP_ALLOWLIST=$control_ip
 JWT_ACCESS_SECRET=$(secret)
 SIGNATURE_WITNESS_SECRET=$(secret)
 AUDIT_CHECKPOINT_SECRET=$(secret)
@@ -215,7 +254,7 @@ provision_env="$work/provision.env"
 grep -v -E '^(TENANT_CATALOGUE|DEPLOYMENT_PROFILE)=' "$api_env" >"$provision_env"
 provision() {
   local id="$1" slug="$2" name="$3" email="$4" password="$5"
-  docker run --rm --network host "${read_only[@]}" --env-file "$provision_env" \
+  docker run --rm --network host "${read_only[@]}" "${standin_ca[@]}" --env-file "$provision_env" \
     -e DEPLOYMENT_PROFILE=ON_PREMISE -e QUEUE_CONSUMERS_ENABLED=false \
     -e DATABASE_URL="postgresql://edms_app@127.0.0.1:5432/smoke_edms_$slug" \
     -e TENANT_ID="$id" -e TENANT_SLUG="$slug" -e TENANT_NAME="$name" \
@@ -226,7 +265,7 @@ provision "$acme_id" acme Acme "$admin_email" "$admin_password"
 provision "$docs_id" docs Decoy "decoy-admin@docs.test" "$(secret)"
 
 echo "== API and web (release images)"
-docker run -d --name smoke-api --network host "${read_only[@]}" --env-file "$api_env" "$API_IMAGE" >/dev/null
+docker run -d --name smoke-api --network host "${read_only[@]}" "${standin_ca[@]}" --env-file "$api_env" "$API_IMAGE" >/dev/null
 docker run -d --name smoke-web --network host "${read_only[@]}" \
   -e NODE_ENV=production -e PORT=3000 -e NEXT_PUBLIC_API_URL=http://127.0.0.1:3001 "$WEB_IMAGE" >/dev/null
 for _ in $(seq 1 120); do
@@ -240,6 +279,15 @@ SMOKE_API_URL=http://127.0.0.1:3001 SMOKE_WEB_URL=http://127.0.0.1:3000 \
   SMOKE_TENANT=acme SMOKE_DECOY_TENANT=docs SMOKE_UNPROVISIONED_TENANT=pending \
   SMOKE_ADMIN_EMAIL="$admin_email" SMOKE_ADMIN_PASSWORD="$admin_password" \
   node scripts/release-smoke/smoke.mjs
+
+echo "== Licensing went through the Control stand-in"
+# Proof the CONTROL_PLANE path ran rather than some other source: the API asked for the smoke
+# tenant's entitlements, with the service credential.
+if grep -q "\"method\":\"GET\",\"path\":\"/api/v1/products/docs/tenants/$acme_id/entitlements\",\"authorized\":true" "$work/control.jsonl"; then
+  echo "OK   the API read acme's entitlements from the stand-in with its service credential"
+else
+  echo "FAIL - the API never asked the Control stand-in for acme's entitlements"; exit 1
+fi
 
 echo "== Read-only root filesystem: no write was refused"
 # A refused write need not fail a request (a cache that cannot be written is skipped), so look for it.

@@ -26,7 +26,9 @@ one lifecycle, one evaluation, one signed licence format, one outage policy.
 2. **Three sources, chosen by `LICENSING_MODE`:**
    - `NONE` (default) — every tenant on an unlimited plan, every feature included. This is the
      behaviour before this ADR, expressed as a snapshot so there is still no "no subscription" code
-     path (ADR-0012 §2). It is explicit configuration; no failure selects it.
+     path (ADR-0012 §2). It is explicit configuration; no failure selects it. **Development, test
+     and staging only:** with `NODE_ENV=production` the API refuses to start in `NONE`, including
+     when `LICENSING_MODE` is unset and would default to it (L1, 2026-10-29).
    - `LICENSE_FILE` — a signed `mxl1` licence on disk, verified offline with public keys only and
      re-read on every refresh, so renewal is a file copy.
    - `CONTROL_PLANE` — `GET /api/v1/products/docs/tenants/{tenantId}/entitlements` on the central
@@ -104,4 +106,6 @@ Health checks, readiness, metrics and sign-in are not licensed at all.
   at the hour the firing belongs to so a redelivery reports the same point.
 - **Offline revocation does not exist**, and a clock that was wrong from first boot and never moved
   back is indistinguishable from a correct one (platform ADR-0022).
-- Every existing deployment keeps its behaviour: `LICENSING_MODE` defaults to `NONE`.
+- Every existing non-production deployment keeps its behaviour: `LICENSING_MODE` defaults to `NONE`.
+  A production deployment must name `LICENSE_FILE` or `CONTROL_PLANE`; an installation sold without
+  limits gets a licence that says so rather than running in `NONE`.
