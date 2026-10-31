@@ -47,19 +47,43 @@
     { "address": "aws_vpc_security_group_egress_rule.tier[\"api_https\"]", "actions": ["delete"] },
     { "address": "aws_vpc_security_group_egress_rule.tier[\"api_smtp\"]", "actions": ["delete"] },
     { "address": "aws_vpc_security_group_egress_rule.tier[\"api_to_rds\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_egress_rule.tier[\"api_to_scanner\"]", "actions": ["delete"] },
+    {
+      "address": "aws_vpc_security_group_egress_rule.tier[\"api_to_scanner\"]",
+      "actions": ["delete"]
+    },
     { "address": "aws_vpc_security_group_egress_rule.tier[\"ops_https\"]", "actions": ["delete"] },
     { "address": "aws_vpc_security_group_egress_rule.tier[\"ops_to_rds\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_egress_rule.tier[\"scanner_https\"]", "actions": ["delete"] },
+    {
+      "address": "aws_vpc_security_group_egress_rule.tier[\"scanner_https\"]",
+      "actions": ["delete"]
+    },
     { "address": "aws_vpc_security_group_egress_rule.tier[\"web_https\"]", "actions": ["delete"] },
     { "address": "aws_vpc_security_group_egress_rule.tier[\"web_to_api\"]", "actions": ["delete"] },
     { "address": "aws_vpc_security_group_ingress_rule.tier[\"alb_http\"]", "actions": ["delete"] },
     { "address": "aws_vpc_security_group_ingress_rule.tier[\"alb_https\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_ingress_rule.tier[\"api_from_alb\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_ingress_rule.tier[\"api_from_web\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_ingress_rule.tier[\"rds_from_api\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_ingress_rule.tier[\"rds_from_ops\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_ingress_rule.tier[\"scanner_from_api\"]", "actions": ["delete"] },
-    { "address": "aws_vpc_security_group_ingress_rule.tier[\"web_from_alb\"]", "actions": ["delete"] }
+    {
+      "address": "aws_vpc_security_group_ingress_rule.tier[\"api_from_alb\"]",
+      "actions": ["delete"]
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.tier[\"api_from_web\"]",
+      "actions": ["delete"]
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.tier[\"rds_from_api\"]",
+      "actions": ["delete"]
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.tier[\"rds_from_ops\"]",
+      "actions": ["delete"]
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.tier[\"scanner_from_api\"]",
+      "actions": ["delete"]
+    },
+    {
+      "address": "aws_vpc_security_group_ingress_rule.tier[\"web_from_alb\"]",
+      "actions": ["delete"]
+    }
   ]
 }
