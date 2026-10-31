@@ -28,6 +28,7 @@ resource "aws_acm_certificate_validation" "web" {
   }
 }
 
+# Retirement stage 1 (G9, approved 2026-10-31): unlocked so stage 2 can delete the ALB.
 resource "aws_lb" "main" {
   name                       = "${local.prefix}-alb"
   internal                   = false
@@ -35,7 +36,7 @@ resource "aws_lb" "main" {
   security_groups            = [data.aws_security_group.tier["alb"].id]
   subnets                    = sort(data.aws_subnets.public.ids)
   ip_address_type            = "ipv4"
-  enable_deletion_protection = true
+  enable_deletion_protection = false
   drop_invalid_header_fields = true
   idle_timeout               = 120
 
