@@ -1,9 +1,23 @@
 {
   "root": "data",
-  "intent": "Old Docs retirement stage 1 (G9, approved by the owner 2026-10-31): turn off RDS deletion protection and remove the monthly AWS Backup plan and selection, so stage 2 can delete the instance (final snapshot kept) and the empty vault. Nothing is deleted except the backup plan and selection.",
+  "intent": "Old Docs retirement stage 2b (G9, approved by the owner 2026-10-31): delete every resource in this root. RDS deletion takes the final snapshot munaxa-docs-eu-prod-pg-final; the data KMS key goes into its 30-day deletion window (the snapshot is restorable only while that deletion can be cancelled). The document bucket must be empty. Run after service, before core.",
   "changes": [
-    { "address": "aws_db_instance.main", "actions": ["update"] },
-    { "address": "aws_backup_plan.monthly", "actions": ["delete"] },
-    { "address": "aws_backup_selection.database", "actions": ["delete"] }
+    { "address": "aws_backup_vault.main", "actions": ["delete"] },
+    { "address": "aws_cloudwatch_log_group.postgresql", "actions": ["delete"] },
+    { "address": "aws_db_instance.main", "actions": ["delete"] },
+    { "address": "aws_db_parameter_group.main", "actions": ["delete"] },
+    { "address": "aws_db_subnet_group.main", "actions": ["delete"] },
+    { "address": "aws_iam_role.backup", "actions": ["delete"] },
+    { "address": "aws_iam_role_policy.backup", "actions": ["delete"] },
+    { "address": "aws_kms_alias.data", "actions": ["delete"] },
+    { "address": "aws_kms_key.data", "actions": ["delete"] },
+    { "address": "aws_s3_bucket.docs", "actions": ["delete"] },
+    { "address": "aws_s3_bucket_cors_configuration.docs", "actions": ["delete"] },
+    { "address": "aws_s3_bucket_lifecycle_configuration.docs", "actions": ["delete"] },
+    { "address": "aws_s3_bucket_ownership_controls.docs", "actions": ["delete"] },
+    { "address": "aws_s3_bucket_policy.docs", "actions": ["delete"] },
+    { "address": "aws_s3_bucket_public_access_block.docs", "actions": ["delete"] },
+    { "address": "aws_s3_bucket_server_side_encryption_configuration.docs", "actions": ["delete"] },
+    { "address": "aws_s3_bucket_versioning.docs", "actions": ["delete"] }
   ]
 }
