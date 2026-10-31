@@ -42,6 +42,8 @@ resource "aws_cloudwatch_log_group" "postgresql" {
   retention_in_days = 30
 }
 
+# Retirement stage 1 (G9, approved 2026-10-31): unlocked so stage 2 can delete the instance.
+# skip_final_snapshot = false keeps the final snapshot munaxa-docs-eu-prod-pg-final.
 resource "aws_db_instance" "main" {
   identifier     = local.db_identifier
   engine         = "postgres"
@@ -75,7 +77,7 @@ resource "aws_db_instance" "main" {
   maintenance_window        = "sun:02:00-sun:02:30"
   copy_tags_to_snapshot     = true
   delete_automated_backups  = false
-  deletion_protection       = true
+  deletion_protection       = false
   skip_final_snapshot       = false
   final_snapshot_identifier = "${local.db_identifier}-final"
 

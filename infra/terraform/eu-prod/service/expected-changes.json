@@ -1,7 +1,8 @@
 {
   "root": "service",
-  "intent": "Control Plane licensing (ADR-0026, licensing.md §8 option A): LICENSING_MODE=CONTROL_PLANE, CONTROL_PLANE_URL and OUTBOUND_HTTP_ALLOWLIST in the API environment, and CONTROL_PLANE_TOKEN from the application bundle. Only the api and ops-provision task definitions change; skip_destroy keeps the old revisions. enable_services stays false, so no service changes.",
+  "intent": "Old Docs retirement stage 1 (G9, approved by the owner 2026-10-31): turn off the ALB's deletion protection so stage 2 can delete it. The api and ops-provision task definitions are still replaced by the never-applied Control Plane licensing change (#165); enable_services stays false, so no service runs.",
   "changes": [
+    { "address": "aws_lb.main", "actions": ["update"] },
     { "address": "aws_ecs_task_definition.api", "actions": ["delete", "create"] },
     { "address": "aws_ecs_task_definition.ops_provision", "actions": ["delete", "create"] }
   ]

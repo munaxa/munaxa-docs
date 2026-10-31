@@ -1,5 +1,9 @@
 {
   "root": "data",
-  "intent": "No infrastructure change declared. An apply of this root first needs a reviewed PR that declares its changes here.",
-  "changes": []
+  "intent": "Old Docs retirement stage 1 (G9, approved by the owner 2026-10-31): turn off RDS deletion protection and remove the monthly AWS Backup plan and selection, so stage 2 can delete the instance (final snapshot kept) and the empty vault. Nothing is deleted except the backup plan and selection.",
+  "changes": [
+    { "address": "aws_db_instance.main", "actions": ["update"] },
+    { "address": "aws_backup_plan.monthly", "actions": ["delete"] },
+    { "address": "aws_backup_selection.database", "actions": ["delete"] }
+  ]
 }

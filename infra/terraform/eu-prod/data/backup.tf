@@ -22,25 +22,9 @@ resource "aws_backup_vault" "main" {
   }
 }
 
-resource "aws_backup_plan" "monthly" {
-  name = "${local.prefix}-monthly"
-
-  rule {
-    rule_name         = "monthly-12-months"
-    target_vault_name = aws_backup_vault.main.name
-
-    # 03:00 UTC on the 1st: clear of the RDS backup window (00:30-01:00) and the Sunday
-    # maintenance window (02:00-02:30).
-    schedule                     = "cron(0 3 1 * ? *)"
-    schedule_expression_timezone = "Etc/UTC"
-    start_window                 = 60
-    completion_window            = 720
-
-    lifecycle {
-      delete_after = 365
-    }
-  }
-}
+# Retirement stage 1 (G9, approved 2026-10-31): the monthly plan and its selection are removed so
+# no recovery point lands in the vault (1 Nov 03:00 UTC run) and blocks the vault's deletion in
+# stage 2. The deployer cannot delete recovery points.
 
 resource "aws_iam_role" "backup" {
   name                 = "${local.prefix}-backup"
@@ -132,11 +116,4 @@ resource "aws_iam_role_policy" "backup" {
   name   = "${local.prefix}-backup-rds-snapshots"
   role   = aws_iam_role.backup.id
   policy = data.aws_iam_policy_document.backup.json
-}
-
-resource "aws_backup_selection" "database" {
-  name         = "${local.prefix}-pg"
-  plan_id      = aws_backup_plan.monthly.id
-  iam_role_arn = aws_iam_role.backup.arn
-  resources    = [aws_db_instance.main.arn]
 }

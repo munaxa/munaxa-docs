@@ -5,7 +5,7 @@
 # | kms.tf    | The Production data key, alias/munaxa-docs-eu-prod                                  |
 # | rds.tf    | PostgreSQL 16 db.t4g.micro, its subnet group, parameter group and log group        |
 # | s3.tf     | The document bucket                                                                 |
-# | backup.tf | AWS Backup vault, monthly plan (12 months), selection and the backup service role |
+# | backup.tf | AWS Backup vault and the backup service role (plan removed for retirement)      |
 #
 # Not here: managed Redis (Redis runs beside the API, §2.6), application secrets, tenant
 # databases and roles (created later by short-lived operator tasks, §2.10).
