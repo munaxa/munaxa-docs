@@ -1,23 +1,8 @@
 {
   "root": "data",
-  "intent": "Old Docs retirement stage 2b (G9, approved by the owner 2026-10-31): delete every resource in this root. RDS deletion takes the final snapshot munaxa-docs-eu-prod-pg-final; the data KMS key goes into its 30-day deletion window (the snapshot is restorable only while that deletion can be cancelled). The document bucket must be empty. Run after service, before core.",
+  "intent": "Old Docs retirement stage 2b, second run (G9, approved by the owner 2026-10-31): run 41788878315 deleted 15 of this root's 17 resources, including RDS with its final snapshot, but AWS refused to delete the backup vault because the 1 Nov monthly backup left a recovery point in it. Root deleted that recovery point by hand. This run deletes the now-empty vault and the data KMS key (30-day deletion window).",
   "changes": [
     { "address": "aws_backup_vault.main", "actions": ["delete"] },
-    { "address": "aws_cloudwatch_log_group.postgresql", "actions": ["delete"] },
-    { "address": "aws_db_instance.main", "actions": ["delete"] },
-    { "address": "aws_db_parameter_group.main", "actions": ["delete"] },
-    { "address": "aws_db_subnet_group.main", "actions": ["delete"] },
-    { "address": "aws_iam_role.backup", "actions": ["delete"] },
-    { "address": "aws_iam_role_policy.backup", "actions": ["delete"] },
-    { "address": "aws_kms_alias.data", "actions": ["delete"] },
-    { "address": "aws_kms_key.data", "actions": ["delete"] },
-    { "address": "aws_s3_bucket.docs", "actions": ["delete"] },
-    { "address": "aws_s3_bucket_cors_configuration.docs", "actions": ["delete"] },
-    { "address": "aws_s3_bucket_lifecycle_configuration.docs", "actions": ["delete"] },
-    { "address": "aws_s3_bucket_ownership_controls.docs", "actions": ["delete"] },
-    { "address": "aws_s3_bucket_policy.docs", "actions": ["delete"] },
-    { "address": "aws_s3_bucket_public_access_block.docs", "actions": ["delete"] },
-    { "address": "aws_s3_bucket_server_side_encryption_configuration.docs", "actions": ["delete"] },
-    { "address": "aws_s3_bucket_versioning.docs", "actions": ["delete"] }
+    { "address": "aws_kms_key.data", "actions": ["delete"] }
   ]
 }
