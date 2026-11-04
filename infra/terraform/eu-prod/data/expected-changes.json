@@ -1,8 +1,5 @@
 {
   "root": "data",
-  "intent": "Old Docs retirement stage 2b, second run (G9, approved by the owner 2026-10-31): run 41788878315 deleted 15 of this root's 17 resources, including RDS with its final snapshot, but AWS refused to delete the backup vault because the 1 Nov monthly backup left a recovery point in it. Root deleted that recovery point by hand. This run deletes the now-empty vault and the data KMS key (30-day deletion window).",
-  "changes": [
-    { "address": "aws_backup_vault.main", "actions": ["delete"] },
-    { "address": "aws_kms_key.data", "actions": ["delete"] }
-  ]
+  "intent": "Old Docs retirement stage 2b, last run (G9, approved by the owner 2026-10-31): run 41788878315 deleted 15 of this root's 17 resources, including RDS with its final snapshot. The backup vault is already gone (plan run 41795931463 refreshed it out of state), so this run deletes only the data KMS key (30-day deletion window).",
+  "changes": [{ "address": "aws_kms_key.data", "actions": ["delete"] }]
 }
