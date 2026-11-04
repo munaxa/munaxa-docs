@@ -1,9 +1,32 @@
 {
   "root": "service",
-  "intent": "Old Docs retirement stage 1 (G9, approved by the owner 2026-10-31): turn off the ALB's deletion protection so stage 2 can delete it. The api and ops-provision task definitions are still replaced by the never-applied Control Plane licensing change (#165); enable_services stays false, so no service runs.",
+  "intent": "Old Docs retirement stage 2a (G9, approved by the owner 2026-10-31): delete every resource in this root. The ALB, listeners, target groups, certificate, ECS cluster, Cloud Map namespace, log groups and the two secret containers (30-day recovery window) go; task definitions are kept as inactive revisions (skip_destroy). Run before data and core.",
   "changes": [
-    { "address": "aws_lb.main", "actions": ["update"] },
-    { "address": "aws_ecs_task_definition.api", "actions": ["delete", "create"] },
-    { "address": "aws_ecs_task_definition.ops_provision", "actions": ["delete", "create"] }
+    { "address": "aws_acm_certificate.web", "actions": ["delete"] },
+    { "address": "aws_acm_certificate_validation.web[0]", "actions": ["delete"] },
+    { "address": "aws_cloudwatch_log_group.service[\"api\"]", "actions": ["delete"] },
+    { "address": "aws_cloudwatch_log_group.service[\"ops\"]", "actions": ["delete"] },
+    { "address": "aws_cloudwatch_log_group.service[\"redis\"]", "actions": ["delete"] },
+    { "address": "aws_cloudwatch_log_group.service[\"scanner\"]", "actions": ["delete"] },
+    { "address": "aws_cloudwatch_log_group.service[\"web\"]", "actions": ["delete"] },
+    { "address": "aws_ecs_cluster.main", "actions": ["delete"] },
+    { "address": "aws_ecs_cluster_capacity_providers.main", "actions": ["delete"] },
+    { "address": "aws_ecs_task_definition.api", "actions": ["delete"] },
+    { "address": "aws_ecs_task_definition.ops_dbadmin", "actions": ["delete"] },
+    { "address": "aws_ecs_task_definition.ops_provision", "actions": ["delete"] },
+    { "address": "aws_ecs_task_definition.ops_tunnel", "actions": ["delete"] },
+    { "address": "aws_ecs_task_definition.scanner", "actions": ["delete"] },
+    { "address": "aws_ecs_task_definition.web", "actions": ["delete"] },
+    { "address": "aws_lb.main", "actions": ["delete"] },
+    { "address": "aws_lb_listener.http_redirect[0]", "actions": ["delete"] },
+    { "address": "aws_lb_listener.https[0]", "actions": ["delete"] },
+    { "address": "aws_lb_listener_rule.preview_stream[0]", "actions": ["delete"] },
+    { "address": "aws_lb_target_group.api", "actions": ["delete"] },
+    { "address": "aws_lb_target_group.web", "actions": ["delete"] },
+    { "address": "aws_secretsmanager_secret.app", "actions": ["delete"] },
+    { "address": "aws_secretsmanager_secret.operator", "actions": ["delete"] },
+    { "address": "aws_service_discovery_private_dns_namespace.main", "actions": ["delete"] },
+    { "address": "aws_service_discovery_service.internal[\"api\"]", "actions": ["delete"] },
+    { "address": "aws_service_discovery_service.internal[\"scanner\"]", "actions": ["delete"] }
   ]
 }
