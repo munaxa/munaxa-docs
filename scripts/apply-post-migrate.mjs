@@ -8,12 +8,11 @@
 //
 // The directory is enumerated rather than listed, so adding a file is adding a file.
 
-import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+import { EXIT, repositoryRoot, runPrisma } from './migration-support.mjs';
+
 const directory = join(repositoryRoot, 'infra', 'sql', 'post-migrate');
 
 // The owner role, not the application role: these statements are DDL, and edms_app has no
@@ -24,7 +23,7 @@ if (!url) {
     'DATABASE_MIGRATION_URL is not set. Post-migration SQL runs as the schema owner ' +
       '(edms_owner), not as the application role — see .env.example.',
   );
-  process.exit(1);
+  process.exit(EXIT.CONFIGURATION);
 }
 
 const files = readdirSync(directory)
@@ -33,21 +32,19 @@ const files = readdirSync(directory)
 
 if (files.length === 0) {
   console.error(`No .sql files found in ${directory}.`);
-  process.exit(1);
+  process.exit(EXIT.CONFIGURATION);
 }
 
+// The Prisma CLI by its own path, the URL in its environment only, and its output redacted
+// (migration-support.mjs): this runs inside the migration image, which has no pnpm and no shell.
 for (const file of files) {
   process.stdout.write(`applying ${file} … `);
-  try {
-    execFileSync(
-      'pnpm',
-      ['exec', 'prisma', 'db', 'execute', '--url', url, '--file', join(directory, file)],
-      { cwd: repositoryRoot, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-  } catch (error) {
+  const status = runPrisma(['db', 'execute', '--file', join(directory, file)], url, {
+    quiet: true,
+  });
+  if (status !== 0) {
     process.stdout.write('failed\n');
-    console.error(error.stderr?.toString() ?? error.message);
-    process.exit(1);
+    process.exit(EXIT.MIGRATION_FAILED);
   }
   process.stdout.write('ok\n');
 }

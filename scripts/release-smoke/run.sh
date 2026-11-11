@@ -3,6 +3,9 @@
 #
 #   API_IMAGE  WEB_IMAGE  AV_IMAGE   image references (in the publishing workflow, local tags of
 #                                    the ECR digests, checked against them before this runs)
+#   MIGRATE_IMAGE                    optional; the `migrate` target from the same commit (DC-01).
+#                                    When set, the tenant migrations run in it, as the hosted
+#                                    docs-migrate task runs them; otherwise from this checkout
 #   EXPECTED_REVISION                the commit the images must be labelled with
 #   OBJECT_STORE_BIN                 a directory holding the `minio` and `mc` binaries
 #   POSTGRES_IMAGE  REDIS_IMAGE      optional; default postgres:16-alpine and redis:7-alpine, the
@@ -84,7 +87,7 @@ pull() {
 # --- Image properties, before anything runs -----------------------------------------------------
 
 echo "== Image checks"
-for ref in "$API_IMAGE" "$WEB_IMAGE" "$AV_IMAGE"; do
+for ref in "$API_IMAGE" "$WEB_IMAGE" "$AV_IMAGE" ${MIGRATE_IMAGE:+"$MIGRATE_IMAGE"}; do
   revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")
   [ "$revision" = "$EXPECTED_REVISION" ] || { echo "FAIL - $ref is labelled $revision"; exit 1; }
   user=$(docker inspect --format '{{.Config.User}}' "$ref")
@@ -160,9 +163,16 @@ catalogue=$(cat <<JSON
 JSON
 )
 
-echo "== Tenant migrations (scripts/migrate-tenants.mjs), run twice"
-TENANT_CATALOGUE="$catalogue" node scripts/migrate-tenants.mjs >"$work/migrate-1.log"
-TENANT_CATALOGUE="$catalogue" node scripts/migrate-tenants.mjs | tee "$work/migrate-2.log"
+if [ -n "${MIGRATE_IMAGE:-}" ]; then
+  # The migration image, read-only and capability-free, as the docs-migrate task runs it (DC-01).
+  echo "== Tenant migrations (the migration image $MIGRATE_IMAGE), run twice"
+  docker run --rm --network host "${read_only[@]}" -e TENANT_CATALOGUE="$catalogue" "$MIGRATE_IMAGE" >"$work/migrate-1.log"
+  docker run --rm --network host "${read_only[@]}" -e TENANT_CATALOGUE="$catalogue" "$MIGRATE_IMAGE" | tee "$work/migrate-2.log"
+else
+  echo "== Tenant migrations (scripts/migrate-tenants.mjs), run twice"
+  TENANT_CATALOGUE="$catalogue" node scripts/migrate-tenants.mjs >"$work/migrate-1.log"
+  TENANT_CATALOGUE="$catalogue" node scripts/migrate-tenants.mjs | tee "$work/migrate-2.log"
+fi
 
 echo "== Scanner (release image)"
 docker volume create smoke-av-signatures >/dev/null

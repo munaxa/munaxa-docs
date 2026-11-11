@@ -6,6 +6,7 @@ import { TenantStatus } from '@edms/domain';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { NotFoundError } from '../errors/application-errors';
 import { LOGGER, type Logger } from '../observability/logger';
+import { checkSchemaReadiness, expectedMigrations, type SchemaReadiness } from './schema-readiness';
 import { TENANT_REGISTRY, type TenantRegistry } from '../tenancy/tenant-registry.port';
 import type { TenantPlacement } from '../tenancy/tenant-placement';
 
@@ -114,6 +115,19 @@ export class TenantDatabase implements OnModuleDestroy {
   async ping(tenantId: string): Promise<void> {
     const client = await this.clientFor(tenantId);
     await client.$queryRawUnsafe('SELECT 1');
+  }
+
+  /**
+   * Whether the tenant's database is migrated for this build (DC-01, `schema-readiness.ts`).
+   *
+   * Read-only. Provisioning and process start-up call it before anything else touches the database,
+   * so neither runs against a schema the migration task has not finished.
+   */
+  async schemaReadiness(
+    tenantId: string,
+    expected: readonly string[] = expectedMigrations(),
+  ): Promise<SchemaReadiness> {
+    return checkSchemaReadiness(await this.clientFor(tenantId), expected);
   }
 
   /** Drops a tenant's pool — on shutdown, on eviction, and after its placement changes. */

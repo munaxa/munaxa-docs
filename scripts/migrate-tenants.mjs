@@ -14,13 +14,36 @@
 // cluster is a good way to find out which of them deadlock. Stopping at the first failure leaves a known
 // prefix migrated and names the tenant that stopped it, which is what makes the re-run safe: Prisma's
 // migration table makes each one idempotent.
+//
+// ## Where it runs (DC-01)
+//
+// From a checkout (`node scripts/migrate-tenants.mjs`), and as the entry point of the `migrate` target
+// of ./Dockerfile, which is what the hosted Docs runs as its one-off `docs-migrate` task. Both paths
+// run this file unchanged: it starts the Prisma CLI by its own path rather than through pnpm, so it
+// needs Node and the repository's `node_modules` and nothing else (migration-support.mjs).
+//
+// ## What it never does
+//
+// It runs `prisma migrate deploy` and nothing that can lose data: never `migrate reset`, `migrate
+// dev`, `db push` or `--accept-data-loss`. A failed migration stays recorded as failed in
+// `_prisma_migrations`, so `migrate deploy` refuses to continue past it on every later run until an
+// operator has resolved it (docs/operations/deployment.md §2); nothing here marks it rolled back or
+// rewrites the history. Two runners at once are serialised by Prisma's own advisory lock on the
+// migrations; the SQL around them is idempotent, so the loser of a race fails loudly or finds the
+// work done, and never reports a success that did not happen.
+//
+// ## How it ends
+//
+// After the post-migration SQL, `prisma migrate status` must agree that nothing is pending or failed
+// before a tenant counts as migrated. Exit 0 only when every tenant passed all four steps; exit 1 on a
+// migration failure (the database needs attention); exit 2 on a configuration error (nothing was
+// touched). No connection string is ever printed: output is redacted before it is written.
 
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+import { EXIT, repositoryRoot, runPrisma } from './migration-support.mjs';
 
 /**
  * The per-database SQL: grants, default privileges, and the tenant discriminator function the
@@ -75,7 +98,8 @@ function tenantsToMigrate() {
   const template = defaults.migrationUrlTemplate;
 
   return (catalogue.tenants ?? []).map((tenant) => {
-    const url = tenant.database?.migrationUrl ?? (template ? fill(template, tenant.slug) : undefined);
+    const url =
+      tenant.database?.migrationUrl ?? (template ? fill(template, tenant.slug) : undefined);
     if (!url) {
       // Named, and refused before any database is touched: a partial run is the thing this avoids.
       fail(
@@ -110,7 +134,7 @@ function fill(template, slug) {
 
 function fail(message) {
   console.error(message);
-  process.exit(1);
+  process.exit(EXIT.CONFIGURATION);
 }
 
 function sqlFilesIn(directory) {
@@ -121,15 +145,49 @@ function sqlFilesIn(directory) {
     .map((name) => join(directory, name));
 }
 
-function run(command, args, url) {
-  execFileSync(command, args, {
-    cwd: repositoryRoot,
-    stdio: ['ignore', 'inherit', 'inherit'],
-    // The URL is passed in the environment rather than on the command line: an argument is visible in
-    // `ps` output and in whatever collects it, and this one contains the owner role's password.
-    env: { ...process.env, DATABASE_URL: url, DATABASE_MIGRATION_URL: url },
+/**
+ * The steps for one tenant, in the only order that works: the per-database SQL (the schema is still
+ * empty), the migrations, the post-migration SQL (it references the tables the migrations made), and
+ * a status check that the migrations really are all applied.
+ */
+function migrate(tenant) {
+  for (const file of sqlFilesIn(DATABASE_SQL)) {
+    step(`database SQL ${file.slice(DATABASE_SQL.length + 1)}`, () =>
+      runPrisma(['db', 'execute', '--file', file], tenant.url, { quiet: true }),
+    );
+  }
+  step('prisma migrate deploy', () => runPrisma(['migrate', 'deploy'], tenant.url));
+  // The post-migration SQL is not optional and not separate: it is the row-level security policies and
+  // the audit append-only trigger, and `01-tenant-isolation.sql` raises if a tenant-scoped table is
+  // missing a policy. A tenant migrated without it is a tenant whose isolation backstop is absent.
+  step('post-migration SQL', () => {
+    const child = spawnSync(
+      process.execPath,
+      [join(repositoryRoot, 'scripts', 'apply-post-migrate.mjs')],
+      {
+        cwd: repositoryRoot,
+        stdio: ['ignore', 'inherit', 'inherit'],
+        // The URL in the environment only, never on the command line.
+        env: { ...process.env, DATABASE_URL: tenant.url, DATABASE_MIGRATION_URL: tenant.url },
+      },
+    );
+    return child.status ?? 1;
   });
+  // Exit 0 only when every migration in prisma/migrations is applied and none is failed.
+  step('prisma migrate status', () =>
+    runPrisma(['migrate', 'status'], tenant.url, { quiet: true }),
+  );
 }
+
+function step(name, work) {
+  process.stdout.write(`  ${name}\n`);
+  const status = work();
+  if (status !== 0) {
+    throw new StepFailed(name);
+  }
+}
+
+class StepFailed extends Error {}
 
 const tenants = tenantsToMigrate();
 if (tenants.length === 0) {
@@ -143,19 +201,15 @@ for (const [index, tenant] of tenants.entries()) {
   process.stdout.write(`${position} ${tenant.slug}\n`);
 
   try {
-    for (const file of sqlFilesIn(DATABASE_SQL)) {
-      run('pnpm', ['exec', 'prisma', 'db', 'execute', '--url', tenant.url, '--file', file], tenant.url);
-    }
-    run('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], tenant.url);
-    // The post-migration SQL is not optional and not separate: it is the row-level security policies and
-    // the audit append-only trigger, and `01-tenant-isolation.sql` raises if a tenant-scoped table is
-    // missing a policy. A tenant migrated without it is a tenant whose isolation backstop is absent.
-    run('node', ['scripts/apply-post-migrate.mjs'], tenant.url);
-  } catch {
-    // The child already wrote its own diagnostics to stderr; repeating them would bury the one line
-    // that matters, which is which tenant to look at.
-    console.error(`\n${position} ${tenant.slug} failed. Earlier tenants are migrated; re-run to continue.`);
-    process.exit(1);
+    migrate(tenant);
+  } catch (error) {
+    // The child already wrote its own (redacted) diagnostics; this names the tenant and the step.
+    const where = error instanceof StepFailed ? ` at '${error.message}'` : '';
+    console.error(
+      `\nMIGRATION FAILED: ${position} ${tenant.slug}${where}. Earlier tenants are migrated; ` +
+        'nothing was rolled back or reset. Fix the cause, then re-run.',
+    );
+    process.exit(EXIT.MIGRATION_FAILED);
   }
 
   process.stdout.write('\n');
