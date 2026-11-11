@@ -571,6 +571,23 @@ describe('describing which tenants this deployment serves', () => {
     ).toThrowError(ConfigurationError);
   });
 
+  it('refuses the .env.example secret placeholders in production, and only there', () => {
+    const placeholders = {
+      JWT_ACCESS_SECRET: 'replace-me-with-at-least-32-characters',
+      AUDIT_CHECKPOINT_SECRET: 'change-me-at-least-thirty-two-characters',
+      SIGNATURE_WITNESS_SECRET: 'change-me-at-least-thirty-two-characters',
+      MFA_TOTP_SEALING_KEY: 'change-me-at-least-thirty-two-characters',
+    } as const;
+    for (const [key, value] of Object.entries(placeholders)) {
+      expect(() => loadConfig({ ...productionEnv, [key]: value })).toThrowError(
+        new RegExp(`${key} is the placeholder from \\.env\\.example`),
+      );
+    }
+    // Development keeps working from a copied example.
+    expect(() => loadConfig({ ...baseEnv, ...placeholders })).not.toThrow();
+    expect(() => loadConfig({ ...productionEnv })).not.toThrow();
+  });
+
   it('buffers read auditing by default, and never past the hard bound', () => {
     const config = loadConfig({ ...baseEnv, AUDIT_READ_BUFFER_SIZE: '500' });
     // The hard bound is raised to meet a soft threshold above it rather than being silently
