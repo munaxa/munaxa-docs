@@ -146,9 +146,11 @@ Then the `docs-api` service, which refuses to start until step 2 has finished.
    finds the migration image for any API release by that revision
    (`aws ecr describe-images --repository-name munaxa-docs/migrate --image-ids imageTag=sha-<full>`).
    Never pair an API digest with a migration digest of another revision.
-3. Pin both in the platform's tfvars (`images.docs_migrate` and `images.docs_api`) in one reviewed
-   pull request, and apply it: this registers the new `docs-migrate` and `docs-api` task definitions.
-   It changes no running service until the API rollout.
+3. **First apply: the migration image only.** In one reviewed pull request, pin the new
+   `images.docs_migrate` and leave `images.docs_api` at the digest that is serving now, then apply.
+   This registers the new `docs-migrate` task definition and nothing else. Do **not** pin the new
+   API digest in the same apply: the `docs-api` service follows its task definition, so an apply
+   that changes `images.docs_api` starts the API rollout at once, before the migration has run.
 4. Back up the tenant database (§1 step 1).
 5. Run `docs-migrate` once (`aws ecs run-task`, the task's own security group, public subnet with a
    public IP as the other tasks), and wait for it to stop. Never start a second copy while one runs.
@@ -157,8 +159,15 @@ Then the `docs-api` service, which refuses to start until step 2 has finished.
    `/munaxa/<env>/docs-migrate`, names the tenant and step and never a credential.
 7. For a first deployment: run `docs-provision`; exit `0` provisioned, `4` already provisioned
    (nothing changed), `3` the database is not migrated (go back to step 5).
-8. Roll the API (and web) to the new digests. A task that started against an unmigrated database
-   exits before its first health check, and the circuit breaker keeps the previous revision serving.
+8. **Second apply: the API.** Only after step 6 returned `0`, pin the paired `images.docs_api` (and
+   `images.docs_web`) in a second pull request and apply it; this apply is the API rollout. A task
+   that starts against a database the migration has not finished (any Prisma migration or any
+   post-migration SQL file of its build not recorded) exits before its first health check, and the
+   deployment circuit breaker keeps the previous revision serving.
+
+   For the very first deployment there is no serving API, so both digests may go in one apply as
+   long as no `docs-api` task can start before step 7 has passed (`services_enabled = false`, or
+   `desired_counts["docs-api"] = 0`); turning the service on is then the rollout.
 
 **A failed migration.** Do not roll the API forward: the new code may need the schema that did not
 arrive, and its start-up check will refuse anyway. The previous API keeps serving against the

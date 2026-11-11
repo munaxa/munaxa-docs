@@ -5,16 +5,21 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  type BuildSchema,
   HISTORY_READABLE_SQL,
   MIGRATION_ROWS_SQL,
   type MigrationRow,
+  POST_MIGRATE_READABLE_SQL,
+  POST_MIGRATE_ROWS_SQL,
   type RawQuerier,
   SchemaNotReadyError,
   UNPROTECTED_TABLES_SQL,
   checkSchemaReadiness,
   evaluateSchema,
   expectedMigrations,
+  expectedPostMigrate,
   locateMigrations,
+  locatePostMigrate,
 } from './schema-readiness';
 
 /**
@@ -23,36 +28,41 @@ import {
  * the same questions.
  */
 
-const EXPECTED = ['20260101000000_a', '20260102000000_b', '20260103000000_c'];
 const done = (name: string): MigrationRow => ({
   migration_name: name,
   finished: true,
   rolled_back: false,
 });
+const EXPECTED = ['20260101000000_a', '20260102000000_b', '20260103000000_c'];
+const POST = [
+  { file: '01-tenant-isolation.sql', sha256: 'a'.repeat(64) },
+  { file: '02-audit-immutability.sql', sha256: 'b'.repeat(64) },
+];
+const BUILD: BuildSchema = { migrations: EXPECTED, postMigrate: POST };
+/** Facts of a fully migrated database, with overrides. */
+const facts = (over: Partial<Parameters<typeof evaluateSchema>[0]> = {}) => ({
+  historyReadable: true,
+  rows: EXPECTED.map(done),
+  postMigrateReadable: true,
+  postMigrate: POST,
+  unprotectedTables: [],
+  ...over,
+});
 
 describe('evaluateSchema', () => {
   it('is ready when every migration finished and every tenant table is protected', () => {
-    const result = evaluateSchema(
-      { historyReadable: true, rows: EXPECTED.map(done), unprotectedTables: [] },
-      EXPECTED,
-    );
+    const result = evaluateSchema(facts(), BUILD);
     expect(result).toEqual({ ready: true, problems: [], expected: 3, applied: 3, unknown: [] });
   });
 
   it('refuses a database with no migration history', () => {
-    const result = evaluateSchema(
-      { historyReadable: false, rows: [], unprotectedTables: [] },
-      EXPECTED,
-    );
+    const result = evaluateSchema(facts({ historyReadable: false, rows: [] }), BUILD);
     expect(result.ready).toBe(false);
     expect(result.problems.join()).toMatch(/no readable migration history/);
   });
 
   it('refuses pending migrations and names the first', () => {
-    const result = evaluateSchema(
-      { historyReadable: true, rows: [done(EXPECTED[0] ?? '')], unprotectedTables: [] },
-      EXPECTED,
-    );
+    const result = evaluateSchema(facts({ rows: [done(EXPECTED[0] ?? '')] }), BUILD);
     expect(result.ready).toBe(false);
     expect(result.problems).toEqual([
       '2 of 3 migration(s) not applied, the first being 20260102000000_b',
@@ -61,15 +71,13 @@ describe('evaluateSchema', () => {
 
   it('refuses a failed or still-running migration even if a later one is recorded', () => {
     const result = evaluateSchema(
-      {
-        historyReadable: true,
+      facts({
         rows: [
           done(EXPECTED[0] ?? ''),
           { migration_name: EXPECTED[1] ?? '', finished: false, rolled_back: false },
         ],
-        unprotectedTables: [],
-      },
-      EXPECTED,
+      }),
+      BUILD,
     );
     expect(result.ready).toBe(false);
     expect(result.problems[0]).toBe('migration(s) failed or still running: 20260102000000_b');
@@ -78,51 +86,65 @@ describe('evaluateSchema', () => {
   it('does not count a rolled-back attempt as applied, nor as failed once re-applied', () => {
     const rolledBack = { migration_name: EXPECTED[2] ?? '', finished: false, rolled_back: true };
     const pending = evaluateSchema(
-      {
-        historyReadable: true,
-        rows: [done(EXPECTED[0] ?? ''), done(EXPECTED[1] ?? ''), rolledBack],
-        unprotectedTables: [],
-      },
-      EXPECTED,
+      facts({ rows: [done(EXPECTED[0] ?? ''), done(EXPECTED[1] ?? ''), rolledBack] }),
+      BUILD,
     );
     expect(pending.ready).toBe(false);
     expect(pending.problems).toEqual([
       '1 of 3 migration(s) not applied, the first being 20260103000000_c',
     ]);
 
-    const reapplied = evaluateSchema(
-      { historyReadable: true, rows: [...EXPECTED.map(done), rolledBack], unprotectedTables: [] },
-      EXPECTED,
-    );
+    const reapplied = evaluateSchema(facts({ rows: [...EXPECTED.map(done), rolledBack] }), BUILD);
     expect(reapplied.ready).toBe(true);
   });
 
   it('refuses when the post-migration row-level security is missing', () => {
-    const result = evaluateSchema(
-      { historyReadable: true, rows: EXPECTED.map(done), unprotectedTables: ['document', 'user'] },
-      EXPECTED,
-    );
+    const result = evaluateSchema(facts({ unprotectedTables: ['document', 'user'] }), BUILD);
     expect(result.ready).toBe(false);
     expect(result.problems[0]).toMatch(/without forced row-level security.*document, user/);
   });
 
   it('allows a database ahead of this build (the expand-only rollback) and reports it', () => {
     const result = evaluateSchema(
-      {
-        historyReadable: true,
+      facts({
         rows: [...EXPECTED.map(done), done('20270101000000_newer')],
-        unprotectedTables: [],
-      },
-      EXPECTED,
+        postMigrate: [...POST, { file: '01-tenant-isolation.sql', sha256: 'c'.repeat(64) }],
+      }),
+      BUILD,
     );
     expect(result.ready).toBe(true);
     expect(result.unknown).toEqual(['20270101000000_newer']);
   });
 
   it('refuses when the build carries no migrations at all', () => {
-    const result = evaluateSchema({ historyReadable: true, rows: [], unprotectedTables: [] }, []);
+    const result = evaluateSchema(facts({ rows: [] }), { migrations: [], postMigrate: POST });
     expect(result.ready).toBe(false);
     expect(result.problems[0]).toMatch(/carries no migrations/);
+  });
+
+  it('refuses when the build carries no post-migration SQL', () => {
+    const result = evaluateSchema(facts(), { migrations: EXPECTED, postMigrate: [] });
+    expect(result.ready).toBe(false);
+    expect(result.problems[0]).toMatch(/carries no post-migration SQL/);
+  });
+
+  it('refuses when the post-migration SQL was never recorded, even with RLS in place', () => {
+    const result = evaluateSchema(facts({ postMigrateReadable: false, postMigrate: [] }), BUILD);
+    expect(result.ready).toBe(false);
+    expect(result.problems).toEqual([
+      'the post-migration SQL is not recorded as applied (munaxa_meta.post_migrate_applied is missing or ' +
+        'unreadable): the migration did not finish',
+    ]);
+  });
+
+  it('refuses a post-migration file that did not apply or has changed, naming it', () => {
+    const changed = { file: '02-audit-immutability.sql', sha256: 'd'.repeat(64) };
+    const result = evaluateSchema(facts({ postMigrate: [POST[0] ?? changed, changed] }), BUILD);
+    expect(result.ready).toBe(false);
+    expect(result.problems).toEqual([
+      'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
+        '02-audit-immutability.sql',
+    ]);
   });
 });
 
@@ -140,9 +162,13 @@ describe('checkSchemaReadiness', () => {
 
   it('does not read the history it cannot read, and only ever reads', async () => {
     const db = querier(new Map([[HISTORY_READABLE_SQL, [{ readable: false }]]]));
-    const result = await checkSchemaReadiness(db, EXPECTED);
+    const result = await checkSchemaReadiness(db, BUILD);
     expect(result.ready).toBe(false);
-    expect(db.asked).toEqual([HISTORY_READABLE_SQL, UNPROTECTED_TABLES_SQL]);
+    expect(db.asked).toEqual([
+      HISTORY_READABLE_SQL,
+      POST_MIGRATE_READABLE_SQL,
+      UNPROTECTED_TABLES_SQL,
+    ]);
     for (const query of db.asked) {
       expect(query).toMatch(/^\s*SELECT/);
     }
@@ -153,10 +179,12 @@ describe('checkSchemaReadiness', () => {
       new Map<string, unknown[]>([
         [HISTORY_READABLE_SQL, [{ readable: true }]],
         [MIGRATION_ROWS_SQL, EXPECTED.map(done)],
+        [POST_MIGRATE_READABLE_SQL, [{ readable: true }]],
+        [POST_MIGRATE_ROWS_SQL, POST],
         [UNPROTECTED_TABLES_SQL, []],
       ]),
     );
-    expect((await checkSchemaReadiness(db, EXPECTED)).ready).toBe(true);
+    expect((await checkSchemaReadiness(db, BUILD)).ready).toBe(true);
   });
 });
 
@@ -180,6 +208,25 @@ describe('expectedMigrations', () => {
 
   it('is empty for a directory that does not exist, which the gate then refuses', () => {
     expect(expectedMigrations('/nonexistent/prisma/migrations')).toEqual([]);
+  });
+});
+
+describe('expectedPostMigrate', () => {
+  it('hashes the repository post-migration files the way apply-post-migrate.mjs records them', () => {
+    const found = expectedPostMigrate(locatePostMigrate());
+    expect(found.map((row) => row.file)).toEqual([
+      '01-tenant-isolation.sql',
+      '02-audit-immutability.sql',
+      '03-content-gate.sql',
+      '04-workflow-integrity.sql',
+    ]);
+    for (const row of found) {
+      expect(row.sha256).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('is empty for a directory that does not exist, which the gate then refuses', () => {
+    expect(expectedPostMigrate('/nonexistent/infra/sql/post-migrate')).toEqual([]);
   });
 });
 

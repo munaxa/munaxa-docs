@@ -6,7 +6,12 @@ import { TenantStatus } from '@edms/domain';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { NotFoundError } from '../errors/application-errors';
 import { LOGGER, type Logger } from '../observability/logger';
-import { checkSchemaReadiness, expectedMigrations, type SchemaReadiness } from './schema-readiness';
+import {
+  type BuildSchema,
+  buildSchema,
+  checkSchemaReadiness,
+  type SchemaReadiness,
+} from './schema-readiness';
 import { TENANT_REGISTRY, type TenantRegistry } from '../tenancy/tenant-registry.port';
 import type { TenantPlacement } from '../tenancy/tenant-placement';
 
@@ -125,9 +130,9 @@ export class TenantDatabase implements OnModuleDestroy {
    */
   async schemaReadiness(
     tenantId: string,
-    expected: readonly string[] = expectedMigrations(),
+    build: BuildSchema = buildSchema(),
   ): Promise<SchemaReadiness> {
-    return checkSchemaReadiness(await this.clientFor(tenantId), expected);
+    return checkSchemaReadiness(await this.clientFor(tenantId), build);
   }
 
   /** Drops a tenant's pool — on shutdown, on eviction, and after its placement changes. */

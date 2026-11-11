@@ -22,7 +22,9 @@
 #   P-1..P-5  provisioning: refused (exit 3, nothing written) on an unmigrated database, on a failed
 #             migration, and on a database whose post-migration SQL did not run; succeeds after the
 #             migration (exit 0); a re-run changes nothing (exit 4)
-#   A-1..A-2  the API refuses to start on an unmigrated database and starts on a migrated one
+#   P-6..P-7  provisioning refused, for the post-migration reason, when only 01-tenant-isolation.sql applied
+#   A-1..A-3  the API refuses to start on an unmigrated or partly post-migrated database and starts on a
+#             migrated one
 #   C-1       no password and no connection string appears in any output
 #
 # Exit 0 only if every check passed.
@@ -142,7 +144,7 @@ sleep 2 # the image restarts its server once after initialisation
 pg() { docker exec -i -e PGPASSWORD="$superuser_password" dc01-postgres psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -q -t -A "$@"; }
 pg -d postgres <infra/sql/cluster/01-roles.sql
 pg -d postgres -c "ALTER ROLE edms_owner PASSWORD '${owner_password//\'/\'\'}'" -c "ALTER ROLE edms_app PASSWORD '$app_password'"
-for db in fresh failing partial nopost race; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
+for db in fresh failing partial nopost rlsonly race; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
 # `failing`: a type the second migration creates, so migration 1 applies and migration 2 fails.
 failing_type=$(grep -m1 -o 'CREATE TYPE "[a-z_]*"' prisma/migrations/20260803162912_identity/migration.sql | cut -d'"' -f2)
 pg -d dc01_failing -c "SET ROLE edms_owner; CREATE TYPE \"$failing_type\" AS ENUM ('X');"
@@ -217,6 +219,15 @@ grep -hE 'EROFS|read-only file system' "$work"/m*.log "$work"/r*.log && bad "M-9
 # `nopost`: the migrations without the post-migration SQL — the state a runner that skipped it leaves.
 docker run --rm "${hardened[@]}" -e DATABASE_URL="$(owner_url dc01_nopost)" --entrypoint node "$MIGRATE_IMAGE" \
   node_modules/prisma/build/index.js migrate deploy --schema prisma/schema.prisma >"$work/np.log" 2>&1
+# `rlsonly`: the migrations and 01-tenant-isolation.sql only — what a run that failed in 02, 03 or 04
+# leaves: row-level security in place, the audit and integrity triggers missing.
+for step in "db execute --file infra/sql/database/01-grants.sql" "migrate deploy" \
+  "db execute --file infra/sql/post-migrate/01-tenant-isolation.sql"; do
+  # shellcheck disable=SC2086
+  docker run --rm "${hardened[@]}" -e DATABASE_URL="$(owner_url dc01_rlsonly)" --entrypoint node "$MIGRATE_IMAGE" \
+    node_modules/prisma/build/index.js $step --schema prisma/schema.prisma >>"$work/rl.log" 2>&1 \
+    || { sed 's/^/    /' "$work/rl.log"; echo "setting up the rlsonly database failed at: $step"; exit 1; }
+done
 
 # --- Provisioning (the API image's provision.js, as the docs-provision task runs it) ------------
 
@@ -243,7 +254,7 @@ tenants() {
     echo 0
   fi
 }
-for case in "partial:P-1:an unmigrated database" "failing:P-2:a database with a failed migration" "nopost:P-3:a database whose post-migration SQL did not run"; do
+for case in "partial:P-1:an unmigrated database" "failing:P-2:a database with a failed migration" "nopost:P-3:a database whose post-migration SQL did not run" "rlsonly:P-6:a database where only the row-level security file applied"; do
   db="${case%%:*}"; rest="${case#*:}"; id="${rest%%:*}"; what="${rest#*:}"
   c=$(code_of provision "dc01_$db" "$work/p-$db.log")
   rows=$(tenants "dc01_$db")
@@ -251,6 +262,9 @@ for case in "partial:P-1:an unmigrated database" "failing:P-2:a database with a 
     && ok "$id provisioning refused on $what (exit 3, nothing written)" \
     || bad "$id provisioning on $what exited $c with $rows tenant row(s)"
 done
+grep -q 'post-migration SQL is not recorded as applied' "$work/p-rlsonly.log" \
+  && ok "P-7 the refusal says the post-migration SQL did not finish, though row-level security is in place" \
+  || bad "P-7 the refusal did not give the post-migration reason"
 c=$(code_of provision dc01_fresh "$work/p-ok.log")
 [ "$c" = 0 ] && grep -q "Provisioned 'acme'" "$work/p-ok.log" && [ "$(tenants dc01_fresh)" = 1 ] \
   && ok "P-4 provisioning succeeds after the migration (exit 0, one tenant)" || bad "P-4 provisioning exited $c"
@@ -271,6 +285,12 @@ c=$?
 set -e
 [ "$c" != 0 ] && [ "$c" != 124 ] && grep -q 'API start-up refused' "$work/a1.log" \
   && ok "A-1 the API refuses to start on an unmigrated database (exit $c, before listening)" || bad "A-1 API on an unmigrated database: exit $c"
+set +e
+timeout 60 docker run --rm "${hardened[@]}" "${api_env[@]}" -e DATABASE_URL="$(app_url dc01_rlsonly)" "$API_IMAGE" >"$work/a3.log" 2>&1
+c=$?
+set -e
+[ "$c" != 0 ] && [ "$c" != 124 ] && grep -q 'API start-up refused' "$work/a3.log" \
+  && ok "A-3 the API refuses to start when only the row-level security file applied (exit $c)" || bad "A-3 API on rlsonly: exit $c"
 docker run -d --name dc01-api "${hardened[@]}" "${api_env[@]}" -e DATABASE_URL="$(app_url dc01_fresh)" "$API_IMAGE" >/dev/null
 up=""
 for _ in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:39991/api/health/live && { up=1; break; }; sleep 1; done

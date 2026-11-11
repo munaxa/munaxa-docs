@@ -92,7 +92,7 @@ async function provision(): Promise<void> {
     );
   } catch (error) {
     // The service's own refusal to provision twice (`alreadyProvisioned`), not some other duplicate.
-    if (error instanceof DuplicateError && error.message.includes('organisation')) {
+    if (error instanceof DuplicateError && error.message === 'That organisation already exists.') {
       process.stderr.write(
         `'${process.env['TENANT_SLUG'] ?? ''}' is already provisioned; nothing was changed.\n`,
       );

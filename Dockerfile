@@ -228,8 +228,10 @@ CMD ["node", "apps/api/dist/main.js"]
 # `debian-openssl-1.1.x` ones (see `prisma/schema.prisma`), while this runtime carries OpenSSL 3 and
 # the CLI asks for `schema-engine-debian-openssl-3.0.x`. The query engine is pinned by `binaryTargets`;
 # the schema engine is not something a schema can pin, so this stage fetches the 3.0.x one for the
-# Prisma version the lockfile already resolved (`PRISMA_CLI_BINARY_TARGETS`, checksum-verified by the
-# CLI against the engine hash that version names). It happens here, on top of the shared build stage,
+# Prisma version the lockfile already resolved (`PRISMA_CLI_BINARY_TARGETS`). The binary is not in the
+# lockfile: the CLI downloads it from Prisma's engine CDN for the engine commit that version names and
+# checks it against a SHA-256 served from the same place, so a rebuild trusts that CDN; what runs is
+# fixed by the published image digest, not by a rebuild. It happens here, on top of the shared build stage,
 # so the API image does not gain a second schema engine. CI and the release smoke ask the image the
 # same question the deployment does: run it.
 #

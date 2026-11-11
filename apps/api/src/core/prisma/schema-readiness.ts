@@ -1,4 +1,5 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 /**
@@ -16,8 +17,12 @@ import { dirname, join, resolve } from 'node:path';
  * 2. every migration this build carries in `prisma/migrations` has finished and was not rolled back;
  * 3. no migration is failed or still running (finished_at and rolled_back_at both empty) — Prisma's
  *    own definition, the one `migrate deploy` refuses to continue past;
- * 4. every tenant-scoped table has row-level security enabled and forced, with its
- *    `tenant_isolation` policy — which is how the post-migration SQL is seen to have run.
+ * 4. every post-migration SQL file this build carries in `infra/sql/post-migrate` is recorded in
+ *    `munaxa_meta.post_migrate_applied` with the same SHA-256 (`scripts/apply-post-migrate.mjs` records them
+ *    only once all have applied), so a failed, skipped or changed file is seen, not only the
+ *    row-level security of 01-tenant-isolation.sql;
+ * 5. every tenant-scoped table has row-level security enabled and forced, with its
+ *    `tenant_isolation` policy (checked directly as well, because it is the isolation boundary).
  *
  * A database may be *ahead* of this build (it knows migrations this build does not). That is the
  * rollback shape in docs/operations/deployment.md §6 — the previous images against an expand-only
@@ -41,10 +46,19 @@ export interface MigrationRow {
   readonly rolled_back: boolean;
 }
 
+export interface PostMigrateFile {
+  readonly file: string;
+  readonly sha256: string;
+}
+
 export interface SchemaFacts {
   /** `_prisma_migrations` exists and is readable by the connecting role. */
   readonly historyReadable: boolean;
   readonly rows: readonly MigrationRow[];
+  /** `munaxa_meta.post_migrate_applied` exists and is readable by the connecting role. */
+  readonly postMigrateReadable: boolean;
+  /** Every post-migration file version recorded as applied. */
+  readonly postMigrate: readonly PostMigrateFile[];
   /** Tenant-scoped tables without forced row-level security and their isolation policy. */
   readonly unprotectedTables: readonly string[];
 }
@@ -63,6 +77,16 @@ export const MIGRATION_ROWS_SQL = `
          finished_at IS NOT NULL AS finished,
          rolled_back_at IS NOT NULL AS rolled_back
     FROM public._prisma_migrations`;
+
+export const POST_MIGRATE_READABLE_SQL = `
+  SELECT EXISTS (SELECT 1 FROM pg_class c
+                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = 'munaxa_meta' AND c.relname = 'post_migrate_applied'
+                    AND has_schema_privilege(n.oid, 'USAGE')
+                    AND has_table_privilege(c.oid, 'SELECT')) AS readable`;
+
+export const POST_MIGRATE_ROWS_SQL = `
+  SELECT file, sha256 FROM munaxa_meta.post_migrate_applied`;
 
 /**
  * The tables 01-tenant-isolation.sql protects, discovered the same way (every `public` table with a
@@ -89,17 +113,41 @@ export async function readSchemaFacts(db: RawQuerier): Promise<SchemaFacts> {
   const [readable] = await db.$queryRawUnsafe<{ readable: boolean | null }[]>(HISTORY_READABLE_SQL);
   const historyReadable = readable?.readable === true;
   const rows = historyReadable ? await db.$queryRawUnsafe<MigrationRow[]>(MIGRATION_ROWS_SQL) : [];
+  const [marker] =
+    await db.$queryRawUnsafe<{ readable: boolean | null }[]>(POST_MIGRATE_READABLE_SQL);
+  const postMigrateReadable = marker?.readable === true;
+  const postMigrate = postMigrateReadable
+    ? await db.$queryRawUnsafe<PostMigrateFile[]>(POST_MIGRATE_ROWS_SQL)
+    : [];
   const unprotected = await db.$queryRawUnsafe<{ name: string }[]>(UNPROTECTED_TABLES_SQL);
-  return { historyReadable, rows, unprotectedTables: unprotected.map((row) => row.name) };
+  return {
+    historyReadable,
+    rows,
+    postMigrateReadable,
+    postMigrate,
+    unprotectedTables: unprotected.map((row) => row.name),
+  };
 }
 
-/** The pure decision, from the facts and the migrations this build carries. */
-export function evaluateSchema(facts: SchemaFacts, expected: readonly string[]): SchemaReadiness {
+/** What this build carries: its Prisma migrations and its post-migration SQL files. */
+export interface BuildSchema {
+  readonly migrations: readonly string[];
+  readonly postMigrate: readonly PostMigrateFile[];
+}
+
+/** The pure decision, from the facts and what this build carries. */
+export function evaluateSchema(facts: SchemaFacts, build: BuildSchema): SchemaReadiness {
   const problems: string[] = [];
+  const expected = build.migrations;
 
   if (expected.length === 0) {
     // A build with no migrations is a broken build, not an empty schema: refuse rather than pass.
     problems.push('this build carries no migrations (prisma/migrations is missing or empty)');
+  }
+  if (build.postMigrate.length === 0) {
+    problems.push(
+      'this build carries no post-migration SQL (infra/sql/post-migrate is missing or empty)',
+    );
   }
 
   if (!facts.historyReadable) {
@@ -125,6 +173,24 @@ export function evaluateSchema(facts: SchemaFacts, expected: readonly string[]):
     problems.push(
       `${String(pending.length)} of ${String(expected.length)} migration(s) not applied, the first being ${pending[0] ?? ''}`,
     );
+  }
+
+  if (!facts.postMigrateReadable) {
+    problems.push(
+      'the post-migration SQL is not recorded as applied (munaxa_meta.post_migrate_applied is missing or ' +
+        'unreadable): the migration did not finish',
+    );
+  } else {
+    const recorded = new Set(facts.postMigrate.map((row) => `${row.file}:${row.sha256}`));
+    const missing = build.postMigrate
+      .filter((row) => !recorded.has(`${row.file}:${row.sha256}`))
+      .map((row) => row.file);
+    if (missing.length > 0) {
+      problems.push(
+        'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
+          missing.join(', '),
+      );
+    }
   }
 
   if (facts.unprotectedTables.length > 0) {
@@ -171,12 +237,44 @@ export function locateMigrations(): string | undefined {
   if (override) {
     return resolve(override);
   }
+  return locateUpwards(['prisma', 'migrations'], 'migration_lock.toml');
+}
+
+/**
+ * The post-migration SQL this build carries, with the SHA-256 of each file's bytes: exactly what
+ * `scripts/apply-post-migrate.mjs` applies and records.
+ */
+export function expectedPostMigrate(directory = locatePostMigrate()): PostMigrateFile[] {
+  if (directory === undefined || !existsSync(directory)) {
+    return [];
+  }
+  return readdirSync(directory)
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .map((file) => ({
+      file,
+      sha256: createHash('sha256')
+        .update(readFileSync(join(directory, file)))
+        .digest('hex'),
+    }));
+}
+
+export function locatePostMigrate(): string | undefined {
+  const override = process.env['POST_MIGRATE_SQL_DIR'];
+  if (override) {
+    return resolve(override);
+  }
+  return locateUpwards(['infra', 'sql', 'post-migrate'], '01-tenant-isolation.sql');
+}
+
+/** Walks up from the running script and from the working directory to `<segments>/<sentinel>`. */
+function locateUpwards(segments: readonly string[], sentinel: string): string | undefined {
   const starts = [process.argv[1] ? dirname(resolve(process.argv[1])) : undefined, process.cwd()];
   for (const start of starts) {
     let current = start;
     while (current !== undefined) {
-      const candidate = join(current, 'prisma', 'migrations');
-      if (existsSync(join(candidate, 'migration_lock.toml'))) {
+      const candidate = join(current, ...segments);
+      if (existsSync(join(candidate, sentinel))) {
         return candidate;
       }
       const parent = dirname(current);
@@ -186,12 +284,17 @@ export function locateMigrations(): string | undefined {
   return undefined;
 }
 
+/** What the running build carries. */
+export function buildSchema(): BuildSchema {
+  return { migrations: expectedMigrations(), postMigrate: expectedPostMigrate() };
+}
+
 /** Checks one database against this build. */
 export async function checkSchemaReadiness(
   db: RawQuerier,
-  expected: readonly string[] = expectedMigrations(),
+  build: BuildSchema = buildSchema(),
 ): Promise<SchemaReadiness> {
-  return evaluateSchema(await readSchemaFacts(db), expected);
+  return evaluateSchema(await readSchemaFacts(db), build);
 }
 
 /** Thrown when a database is reachable but not migrated for this build. */

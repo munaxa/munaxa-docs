@@ -92,12 +92,14 @@ export function prismaCli() {
  * Returns the exit status; never throws for a failed command, so the caller decides what a failure
  * means. `url` reaches the child only as `DATABASE_URL` and `DATABASE_MIGRATION_URL`.
  */
-export function runPrisma(args, url, { quiet = false } = {}) {
+export function runPrisma(args, url, { quiet = false, input } = {}) {
   const result = spawnSync(process.execPath, [prismaCli(), ...args, '--schema', schemaPath], {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // `input` feeds `db execute --stdin`; without it the child gets no stdin at all.
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    ...(input === undefined ? {} : { input }),
     env: {
       ...process.env,
       DATABASE_URL: url,

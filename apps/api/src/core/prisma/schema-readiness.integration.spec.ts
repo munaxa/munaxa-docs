@@ -3,7 +3,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { uuidv7 } from '@edms/utils';
 
-import { checkSchemaReadiness, expectedMigrations } from './schema-readiness';
+import {
+  buildSchema,
+  checkSchemaReadiness,
+  expectedMigrations,
+  expectedPostMigrate,
+} from './schema-readiness';
 
 /**
  * DC-01: the schema gate asked of real databases, as the roles that ask it in production.
@@ -43,11 +48,11 @@ afterAll(async () => {
 
 describe('schema readiness against PostgreSQL', () => {
   it('passes the migrated tenant database, read as the application role', async () => {
-    const expected = expectedMigrations();
-    const result = await checkSchemaReadiness(app, expected);
+    const build = buildSchema();
+    const result = await checkSchemaReadiness(app, build);
     expect(result.problems).toEqual([]);
     expect(result.ready).toBe(true);
-    expect(result.applied).toBeGreaterThanOrEqual(expected.length);
+    expect(result.applied).toBeGreaterThanOrEqual(build.migrations.length);
     expect(result.unknown).toEqual([]);
   });
 
@@ -57,6 +62,14 @@ describe('schema readiness against PostgreSQL', () => {
     expect(result.problems).toEqual([
       'the database has no readable migration history (_prisma_migrations): it is not migrated',
     ]);
+  });
+
+  it('cannot write the post-migration record as the application role', async () => {
+    await expect(
+      app.$executeRawUnsafe(
+        `INSERT INTO munaxa_meta.post_migrate_applied (file, sha256) VALUES ('99-forged.sql', 'x')`,
+      ),
+    ).rejects.toThrow(/permission denied/);
   });
 
   it('refuses a failed migration and a tenant table without row-level security', async () => {
@@ -88,6 +101,25 @@ describe('schema readiness against PostgreSQL', () => {
     await fresh.$executeRawUnsafe('CREATE POLICY tenant_isolation ON gate_probe USING (true)');
     const after = await checkSchemaReadiness(fresh);
     expect(after.problems.join()).not.toMatch(/row-level security/);
+    expect(after.problems.join()).toMatch(/post-migration SQL is not recorded as applied/);
     expect(after.ready).toBe(false);
+
+    // Row-level security alone is not the post-migration SQL: with only 01 recorded, the gate names
+    // the files that did not apply (a failure in 02-04 leaves exactly this behind).
+    const [isolation, ...rest] = expectedPostMigrate();
+    await fresh.$executeRawUnsafe('CREATE SCHEMA munaxa_meta');
+    await fresh.$executeRawUnsafe(
+      'CREATE TABLE munaxa_meta.post_migrate_applied (file text, sha256 text, PRIMARY KEY (file, sha256))',
+    );
+    await fresh.$executeRawUnsafe(
+      'INSERT INTO munaxa_meta.post_migrate_applied VALUES ($1, $2)',
+      isolation?.file,
+      isolation?.sha256,
+    );
+    const partial = await checkSchemaReadiness(fresh);
+    expect(partial.problems.at(-1)).toBe(
+      'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
+        rest.map((row) => row.file).join(', '),
+    );
   });
 });

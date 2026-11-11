@@ -1,7 +1,7 @@
 import type { INestApplicationContext } from '@nestjs/common';
 
 import { LOGGER, type Logger } from '../observability/logger';
-import { expectedMigrations, SchemaNotReadyError } from './schema-readiness';
+import { buildSchema, SchemaNotReadyError } from './schema-readiness';
 import { TenantDatabase } from './tenant-database';
 
 /**
@@ -25,7 +25,7 @@ import { TenantDatabase } from './tenant-database';
 export async function assertSchemasReady(app: INestApplicationContext): Promise<void> {
   const databases = app.get(TenantDatabase);
   const logger = app.get<Logger>(LOGGER);
-  const expected = expectedMigrations();
+  const build = buildSchema();
   const placements = await databases.placements();
   const refusals: SchemaNotReadyError[] = [];
   const unreachable: string[] = [];
@@ -33,7 +33,7 @@ export async function assertSchemasReady(app: INestApplicationContext): Promise<
   for (const placement of placements) {
     let readiness;
     try {
-      readiness = await databases.schemaReadiness(placement.id, expected);
+      readiness = await databases.schemaReadiness(placement.id, build);
     } catch (error) {
       unreachable.push(placement.slug);
       logger.warn('Tenant database schema could not be checked at start-up', {
