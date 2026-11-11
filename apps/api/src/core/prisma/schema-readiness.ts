@@ -17,10 +17,13 @@ import { dirname, join, resolve } from 'node:path';
  * 2. every migration this build carries in `prisma/migrations` has finished and was not rolled back;
  * 3. no migration is failed or still running (finished_at and rolled_back_at both empty) — Prisma's
  *    own definition, the one `migrate deploy` refuses to continue past;
- * 4. every post-migration SQL file this build carries in `infra/sql/post-migrate` is recorded in
- *    `munaxa_meta.post_migrate_applied` with the same SHA-256 (`scripts/apply-post-migrate.mjs` records them
- *    only once all have applied), so a failed, skipped or changed file is seen, not only the
- *    row-level security of 01-tenant-isolation.sql;
+ * 4. the post-migration SQL in `infra/sql/post-migrate` completed *after* the last migration: the
+ *    latest row of `munaxa_meta.post_migrate_run` (written by `scripts/apply-post-migrate.mjs` only
+ *    once every file applied) lists every migration now applied, and carries the SHA-256 of every
+ *    post-migration file this build carries. So a run that failed in any file, was skipped after a
+ *    new migration, or predates a changed (or reverted) file is seen, not only the row-level
+ *    security of 01-tenant-isolation.sql. On a database *ahead* of this build (a rollback) the file
+ *    versions may come from any completed run, since the newer build's run replaced them;
  * 5. every tenant-scoped table has row-level security enabled and forced, with its
  *    `tenant_isolation` policy (checked directly as well, because it is the isolation boundary).
  *
@@ -51,14 +54,23 @@ export interface PostMigrateFile {
   readonly sha256: string;
 }
 
+export interface PostMigrateRun {
+  /** `<file>:<sha256>` of each file the run applied. */
+  readonly files: readonly string[];
+  /** The Prisma migrations applied when the run completed. */
+  readonly migrations: readonly string[];
+}
+
 export interface SchemaFacts {
   /** `_prisma_migrations` exists and is readable by the connecting role. */
   readonly historyReadable: boolean;
   readonly rows: readonly MigrationRow[];
-  /** `munaxa_meta.post_migrate_applied` exists and is readable by the connecting role. */
+  /** `munaxa_meta.post_migrate_run` exists and is readable by the connecting role. */
   readonly postMigrateReadable: boolean;
-  /** Every post-migration file version recorded as applied. */
-  readonly postMigrate: readonly PostMigrateFile[];
+  /** The latest completed post-migration run, if any. */
+  readonly latestRun: PostMigrateRun | undefined;
+  /** `<file>:<sha256>` of every file version any completed run applied. */
+  readonly everApplied: readonly string[];
   /** Tenant-scoped tables without forced row-level security and their isolation policy. */
   readonly unprotectedTables: readonly string[];
 }
@@ -81,12 +93,15 @@ export const MIGRATION_ROWS_SQL = `
 export const POST_MIGRATE_READABLE_SQL = `
   SELECT EXISTS (SELECT 1 FROM pg_class c
                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE n.nspname = 'munaxa_meta' AND c.relname = 'post_migrate_applied'
+                  WHERE n.nspname = 'munaxa_meta' AND c.relname = 'post_migrate_run'
                     AND has_schema_privilege(n.oid, 'USAGE')
                     AND has_table_privilege(c.oid, 'SELECT')) AS readable`;
 
-export const POST_MIGRATE_ROWS_SQL = `
-  SELECT file, sha256 FROM munaxa_meta.post_migrate_applied`;
+export const LATEST_RUN_SQL = `
+  SELECT files, migrations FROM munaxa_meta.post_migrate_run ORDER BY id DESC LIMIT 1`;
+
+export const EVER_APPLIED_SQL = `
+  SELECT DISTINCT unnest(files) AS entry FROM munaxa_meta.post_migrate_run`;
 
 /**
  * The tables 01-tenant-isolation.sql protects, discovered the same way (every `public` table with a
@@ -116,15 +131,19 @@ export async function readSchemaFacts(db: RawQuerier): Promise<SchemaFacts> {
   const [marker] =
     await db.$queryRawUnsafe<{ readable: boolean | null }[]>(POST_MIGRATE_READABLE_SQL);
   const postMigrateReadable = marker?.readable === true;
-  const postMigrate = postMigrateReadable
-    ? await db.$queryRawUnsafe<PostMigrateFile[]>(POST_MIGRATE_ROWS_SQL)
+  const [latestRun] = postMigrateReadable
+    ? await db.$queryRawUnsafe<PostMigrateRun[]>(LATEST_RUN_SQL)
+    : [];
+  const everApplied = postMigrateReadable
+    ? (await db.$queryRawUnsafe<{ entry: string }[]>(EVER_APPLIED_SQL)).map((row) => row.entry)
     : [];
   const unprotected = await db.$queryRawUnsafe<{ name: string }[]>(UNPROTECTED_TABLES_SQL);
   return {
     historyReadable,
     rows,
     postMigrateReadable,
-    postMigrate,
+    latestRun,
+    everApplied,
     unprotectedTables: unprotected.map((row) => row.name),
   };
 }
@@ -175,15 +194,29 @@ export function evaluateSchema(facts: SchemaFacts, build: BuildSchema): SchemaRe
     );
   }
 
-  if (!facts.postMigrateReadable) {
+  const known = new Set(expected);
+  const unknown = [...applied].filter((name) => !known.has(name)).sort();
+
+  const run = facts.postMigrateReadable ? facts.latestRun : undefined;
+  if (run === undefined) {
     problems.push(
-      'the post-migration SQL is not recorded as applied (munaxa_meta.post_migrate_applied is missing or ' +
-        'unreadable): the migration did not finish',
+      'the post-migration SQL is not recorded as applied (munaxa_meta.post_migrate_run is missing, ' +
+        'empty or unreadable): the migration did not finish',
     );
   } else {
-    const recorded = new Set(facts.postMigrate.map((row) => `${row.file}:${row.sha256}`));
+    const covered = new Set(run.migrations);
+    const since = [...applied].filter((name) => !covered.has(name)).sort();
+    if (since.length > 0) {
+      problems.push(
+        `the post-migration SQL has not completed since ${String(since.length)} migration(s) were ` +
+          `applied, the first being ${since[0] ?? ''}: the last migration run did not finish`,
+      );
+    }
+    // Up to date: this build's file versions must be the latest run's. Ahead (a rollback): the
+    // newer build's run replaced them, so any completed run of them counts.
+    const reference = new Set(unknown.length > 0 ? facts.everApplied : run.files);
     const missing = build.postMigrate
-      .filter((row) => !recorded.has(`${row.file}:${row.sha256}`))
+      .filter((row) => !reference.has(`${row.file}:${row.sha256}`))
       .map((row) => row.file);
     if (missing.length > 0) {
       problems.push(
@@ -199,9 +232,6 @@ export function evaluateSchema(facts: SchemaFacts, build: BuildSchema): SchemaRe
         `run): ${facts.unprotectedTables.join(', ')}`,
     );
   }
-
-  const known = new Set(expected);
-  const unknown = [...applied].filter((name) => !known.has(name)).sort();
 
   return {
     ready: problems.length === 0,

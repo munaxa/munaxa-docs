@@ -23,6 +23,7 @@
 #             migration, and on a database whose post-migration SQL did not run; succeeds after the
 #             migration (exit 0); a re-run changes nothing (exit 4)
 #   P-6..P-7  provisioning refused, for the post-migration reason, when only 01-tenant-isolation.sql applied
+#   P-8       provisioning refused when a migration was applied after the last post-migration run
 #   A-1..A-3  the API refuses to start on an unmigrated or partly post-migrated database and starts on a
 #             migrated one
 #   C-1       no password and no connection string appears in any output
@@ -144,7 +145,7 @@ sleep 2 # the image restarts its server once after initialisation
 pg() { docker exec -i -e PGPASSWORD="$superuser_password" dc01-postgres psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -q -t -A "$@"; }
 pg -d postgres <infra/sql/cluster/01-roles.sql
 pg -d postgres -c "ALTER ROLE edms_owner PASSWORD '${owner_password//\'/\'\'}'" -c "ALTER ROLE edms_app PASSWORD '$app_password'"
-for db in fresh failing partial nopost rlsonly race; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
+for db in fresh failing partial nopost rlsonly upgrade race; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
 # `failing`: a type the second migration creates, so migration 1 applies and migration 2 fails.
 failing_type=$(grep -m1 -o 'CREATE TYPE "[a-z_]*"' prisma/migrations/20260803162912_identity/migration.sql | cut -d'"' -f2)
 pg -d dc01_failing -c "SET ROLE edms_owner; CREATE TYPE \"$failing_type\" AS ENUM ('X');"
@@ -228,6 +229,11 @@ for step in "db execute --file infra/sql/database/01-grants.sql" "migrate deploy
     node_modules/prisma/build/index.js $step --schema prisma/schema.prisma >>"$work/rl.log" 2>&1 \
     || { sed 's/^/    /' "$work/rl.log"; echo "setting up the rlsonly database failed at: $step"; exit 1; }
 done
+# `upgrade`: fully migrated by this build, then a later migration applied with no post-migration run
+# after it (release N+1 whose run failed in 02-04, or was skipped): every file version still matches.
+c=$(code_of run_migrate dc01_upgrade "$work/up.log")
+[ "$c" = 0 ] || bad "setting up the upgrade database: migration exited $c"
+pg -d dc01_upgrade -c "SET ROLE edms_owner; INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count) VALUES ('dc01-upgrade', 'x', '20990101000000_next_release', now(), 1)"
 
 # --- Provisioning (the API image's provision.js, as the docs-provision task runs it) ------------
 
@@ -265,6 +271,10 @@ done
 grep -q 'post-migration SQL is not recorded as applied' "$work/p-rlsonly.log" \
   && ok "P-7 the refusal says the post-migration SQL did not finish, though row-level security is in place" \
   || bad "P-7 the refusal did not give the post-migration reason"
+c=$(code_of provision dc01_upgrade "$work/p-upgrade.log")
+[ "$c" = 3 ] && grep -q 'post-migration SQL has not completed since 1 migration' "$work/p-upgrade.log" && [ "$(tenants dc01_upgrade)" = 0 ] \
+  && ok "P-8 provisioning refused when a migration was applied after the last post-migration run (exit 3)" \
+  || bad "P-8 provisioning after an unfinished upgrade exited $c"
 c=$(code_of provision dc01_fresh "$work/p-ok.log")
 [ "$c" = 0 ] && grep -q "Provisioned 'acme'" "$work/p-ok.log" && [ "$(tenants dc01_fresh)" = 1 ] \
   && ok "P-4 provisioning succeeds after the migration (exit 0, one tenant)" || bad "P-4 provisioning exited $c"

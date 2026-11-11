@@ -9,8 +9,9 @@ import {
   HISTORY_READABLE_SQL,
   MIGRATION_ROWS_SQL,
   type MigrationRow,
+  EVER_APPLIED_SQL,
+  LATEST_RUN_SQL,
   POST_MIGRATE_READABLE_SQL,
-  POST_MIGRATE_ROWS_SQL,
   type RawQuerier,
   SchemaNotReadyError,
   UNPROTECTED_TABLES_SQL,
@@ -39,12 +40,14 @@ const POST = [
   { file: '02-audit-immutability.sql', sha256: 'b'.repeat(64) },
 ];
 const BUILD: BuildSchema = { migrations: EXPECTED, postMigrate: POST };
-/** Facts of a fully migrated database, with overrides. */
+const entry = (row: { file: string; sha256: string }) => `${row.file}:${row.sha256}`;
+/** Facts of a fully migrated database whose last post-migration run followed every migration. */
 const facts = (over: Partial<Parameters<typeof evaluateSchema>[0]> = {}) => ({
   historyReadable: true,
   rows: EXPECTED.map(done),
   postMigrateReadable: true,
-  postMigrate: POST,
+  latestRun: { files: POST.map(entry), migrations: EXPECTED },
+  everApplied: POST.map(entry),
   unprotectedTables: [],
   ...over,
 });
@@ -105,15 +108,56 @@ describe('evaluateSchema', () => {
   });
 
   it('allows a database ahead of this build (the expand-only rollback) and reports it', () => {
+    // The newer build changed 01 and ran after its own migration: this older build's 01 is found in
+    // an earlier completed run.
+    const newer = { file: '01-tenant-isolation.sql', sha256: 'c'.repeat(64) };
     const result = evaluateSchema(
       facts({
         rows: [...EXPECTED.map(done), done('20270101000000_newer')],
-        postMigrate: [...POST, { file: '01-tenant-isolation.sql', sha256: 'c'.repeat(64) }],
+        latestRun: {
+          files: [entry(newer), entry(POST[1] ?? newer)],
+          migrations: [...EXPECTED, '20270101000000_newer'],
+        },
+        everApplied: [...POST.map(entry), entry(newer)],
       }),
       BUILD,
     );
     expect(result.ready).toBe(true);
     expect(result.unknown).toEqual(['20270101000000_newer']);
+  });
+
+  it('refuses a migration applied after the last completed post-migration run', () => {
+    // Release N+1 adds a migration with the post-migration files unchanged; its run of them failed
+    // (or was skipped). The record from release N still matches every file.
+    const result = evaluateSchema(
+      facts({
+        rows: [...EXPECTED.map(done), done('20260104000000_d')],
+        latestRun: { files: POST.map(entry), migrations: EXPECTED },
+      }),
+      { migrations: [...EXPECTED, '20260104000000_d'], postMigrate: POST },
+    );
+    expect(result.ready).toBe(false);
+    expect(result.problems).toEqual([
+      'the post-migration SQL has not completed since 1 migration(s) were applied, the first ' +
+        'being 20260104000000_d: the last migration run did not finish',
+    ]);
+  });
+
+  it('refuses a file reverted to a version an earlier run applied, when the last run did not', () => {
+    // v1 applied, then v2, then back to v1 whose run failed: v1 is in the history, not the last run.
+    const v2 = { file: '02-audit-immutability.sql', sha256: 'e'.repeat(64) };
+    const result = evaluateSchema(
+      facts({
+        latestRun: { files: [entry(POST[0] ?? v2), entry(v2)], migrations: EXPECTED },
+        everApplied: [...POST.map(entry), entry(v2)],
+      }),
+      BUILD,
+    );
+    expect(result.ready).toBe(false);
+    expect(result.problems).toEqual([
+      'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
+        '02-audit-immutability.sql',
+    ]);
   });
 
   it('refuses when the build carries no migrations at all', () => {
@@ -129,17 +173,30 @@ describe('evaluateSchema', () => {
   });
 
   it('refuses when the post-migration SQL was never recorded, even with RLS in place', () => {
-    const result = evaluateSchema(facts({ postMigrateReadable: false, postMigrate: [] }), BUILD);
-    expect(result.ready).toBe(false);
-    expect(result.problems).toEqual([
-      'the post-migration SQL is not recorded as applied (munaxa_meta.post_migrate_applied is missing or ' +
-        'unreadable): the migration did not finish',
-    ]);
+    for (const over of [
+      { postMigrateReadable: false, latestRun: undefined, everApplied: [] },
+      { latestRun: undefined, everApplied: [] },
+    ]) {
+      const result = evaluateSchema(facts(over), BUILD);
+      expect(result.ready).toBe(false);
+      expect(result.problems).toEqual([
+        'the post-migration SQL is not recorded as applied (munaxa_meta.post_migrate_run is ' +
+          'missing, empty or unreadable): the migration did not finish',
+      ]);
+    }
   });
 
   it('refuses a post-migration file that did not apply or has changed, naming it', () => {
     const changed = { file: '02-audit-immutability.sql', sha256: 'd'.repeat(64) };
-    const result = evaluateSchema(facts({ postMigrate: [POST[0] ?? changed, changed] }), BUILD);
+    const result = evaluateSchema(
+      facts({
+        latestRun: {
+          files: POST.slice(0, 1).map(entry).concat(entry(changed)),
+          migrations: EXPECTED,
+        },
+      }),
+      BUILD,
+    );
     expect(result.ready).toBe(false);
     expect(result.problems).toEqual([
       'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
@@ -180,7 +237,8 @@ describe('checkSchemaReadiness', () => {
         [HISTORY_READABLE_SQL, [{ readable: true }]],
         [MIGRATION_ROWS_SQL, EXPECTED.map(done)],
         [POST_MIGRATE_READABLE_SQL, [{ readable: true }]],
-        [POST_MIGRATE_ROWS_SQL, POST],
+        [LATEST_RUN_SQL, [{ files: POST.map(entry), migrations: EXPECTED }]],
+        [EVER_APPLIED_SQL, POST.map((row) => ({ entry: entry(row) }))],
         [UNPROTECTED_TABLES_SQL, []],
       ]),
     );

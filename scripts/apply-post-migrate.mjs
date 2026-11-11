@@ -8,13 +8,12 @@
 //
 // The directory is enumerated rather than listed, so adding a file is adding a file.
 //
-// When every file has applied, the last step records each file's name and SHA-256 in
-// `munaxa_meta.post_migrate_applied` (DC-01). The API's start-up gate and provisioning compare that
-// record with the files the running build carries, so a database on which any post-migration file
-// failed, was skipped or has since changed is refused, not only one missing row-level security.
-// The record is append-only from here (a row per file version, never deleted), so an older build
-// still finds its own versions after an expand-only rollback. The application role may read it and
-// nothing else.
+// When every file has applied, the last step adds a row to `munaxa_meta.post_migrate_run` (DC-01):
+// each file's name and SHA-256, and the Prisma migrations applied at that moment. The API's start-up
+// gate and provisioning refuse a database unless the latest run covers every applied migration and
+// carries this build's file versions, so a post-migration run that failed, was skipped after a new
+// migration, or predates a changed file is seen, not only missing row-level security. Rows are only
+// added. The application role may read them and nothing else.
 
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -44,6 +43,20 @@ if (files.length === 0) {
   process.exit(EXIT.CONFIGURATION);
 }
 
+// Each entry of the record is `<file>:<sha256>`. The names are checked before anything runs, so a
+// configuration error touches nothing.
+const NAME = /^[0-9A-Za-z._-]+$/;
+const entries = files.map((file) => {
+  if (!NAME.test(file)) {
+    console.error(`Unexpected post-migration file name ${JSON.stringify(file)}.`);
+    process.exit(EXIT.CONFIGURATION);
+  }
+  const sha256 = createHash('sha256')
+    .update(readFileSync(join(directory, file)))
+    .digest('hex');
+  return `${file}:${sha256}`;
+});
+
 // The Prisma CLI by its own path, the URL in its environment only, and its output redacted
 // (migration-support.mjs): this runs inside the migration image, which has no pnpm and no shell.
 for (const file of files) {
@@ -58,19 +71,7 @@ for (const file of files) {
   process.stdout.write('ok\n');
 }
 
-const MARKER = /^[0-9A-Za-z._-]+$/;
-const recorded = files.map((file) => {
-  const sha256 = createHash('sha256')
-    .update(readFileSync(join(directory, file)))
-    .digest('hex');
-  if (!MARKER.test(file)) {
-    console.error(`Unexpected post-migration file name ${JSON.stringify(file)}.`);
-    process.exit(EXIT.CONFIGURATION);
-  }
-  return `('${file}', '${sha256}')`;
-});
-
-process.stdout.write('recording the post-migration SQL as applied … ');
+process.stdout.write('recording the post-migration run … ');
 const status = runPrisma(['db', 'execute', '--stdin'], url, {
   quiet: true,
   input: `
@@ -79,18 +80,22 @@ const status = runPrisma(['db', 'execute', '--stdin'], url, {
 CREATE SCHEMA IF NOT EXISTS munaxa_meta;
 REVOKE ALL ON SCHEMA munaxa_meta FROM PUBLIC;
 GRANT USAGE ON SCHEMA munaxa_meta TO edms_app;
-CREATE TABLE IF NOT EXISTS munaxa_meta.post_migrate_applied (
-  file       text        NOT NULL,
-  sha256     text        NOT NULL,
-  applied_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (file, sha256)
+-- One row per completed run: the file versions it applied, and the Prisma migrations the database
+-- had when it finished, so a later migration without a later run is seen.
+CREATE TABLE IF NOT EXISTS munaxa_meta.post_migrate_run (
+  id           bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  completed_at timestamptz NOT NULL DEFAULT now(),
+  files        text[]      NOT NULL,
+  migrations   text[]      NOT NULL
 );
-REVOKE ALL ON munaxa_meta.post_migrate_applied FROM PUBLIC;
-REVOKE ALL ON munaxa_meta.post_migrate_applied FROM edms_app;
-GRANT SELECT ON munaxa_meta.post_migrate_applied TO edms_app;
-INSERT INTO munaxa_meta.post_migrate_applied (file, sha256) VALUES
-  ${recorded.join(',\n  ')}
-ON CONFLICT (file, sha256) DO NOTHING;
+REVOKE ALL ON munaxa_meta.post_migrate_run FROM PUBLIC;
+REVOKE ALL ON munaxa_meta.post_migrate_run FROM edms_app;
+GRANT SELECT ON munaxa_meta.post_migrate_run TO edms_app;
+INSERT INTO munaxa_meta.post_migrate_run (files, migrations)
+SELECT ARRAY[${entries.map((entry) => `'${entry}'`).join(', ')}]::text[],
+       COALESCE(array_agg(migration_name ORDER BY migration_name), '{}')
+  FROM public._prisma_migrations
+ WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;
 `,
 });
 if (status !== 0) {

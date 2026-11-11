@@ -67,7 +67,7 @@ describe('schema readiness against PostgreSQL', () => {
   it('cannot write the post-migration record as the application role', async () => {
     await expect(
       app.$executeRawUnsafe(
-        `INSERT INTO munaxa_meta.post_migrate_applied (file, sha256) VALUES ('99-forged.sql', 'x')`,
+        `INSERT INTO munaxa_meta.post_migrate_run (files, migrations) VALUES ('{}', '{}')`,
       ),
     ).rejects.toThrow(/permission denied/);
   });
@@ -104,22 +104,33 @@ describe('schema readiness against PostgreSQL', () => {
     expect(after.problems.join()).toMatch(/post-migration SQL is not recorded as applied/);
     expect(after.ready).toBe(false);
 
-    // Row-level security alone is not the post-migration SQL: with only 01 recorded, the gate names
-    // the files that did not apply (a failure in 02-04 leaves exactly this behind).
+    // Row-level security alone is not the post-migration SQL: a run recorded with only 01 (and only
+    // the first migration) names the files that did not apply.
     const [isolation, ...rest] = expectedPostMigrate();
     await fresh.$executeRawUnsafe('CREATE SCHEMA munaxa_meta');
+    await fresh.$executeRawUnsafe(`
+      CREATE TABLE munaxa_meta.post_migrate_run (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, completed_at timestamptz DEFAULT now(),
+        files text[] NOT NULL, migrations text[] NOT NULL)`);
     await fresh.$executeRawUnsafe(
-      'CREATE TABLE munaxa_meta.post_migrate_applied (file text, sha256 text, PRIMARY KEY (file, sha256))',
-    );
-    await fresh.$executeRawUnsafe(
-      'INSERT INTO munaxa_meta.post_migrate_applied VALUES ($1, $2)',
-      isolation?.file,
-      isolation?.sha256,
+      'INSERT INTO munaxa_meta.post_migrate_run (files, migrations) VALUES ($1, $2)',
+      [`${isolation?.file ?? ''}:${isolation?.sha256 ?? ''}`],
+      [first],
     );
     const partial = await checkSchemaReadiness(fresh);
     expect(partial.problems.at(-1)).toBe(
       'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
         rest.map((row) => row.file).join(', '),
+    );
+
+    // A migration finished after that run: the run no longer covers the schema.
+    await fresh.$executeRawUnsafe(
+      `UPDATE _prisma_migrations SET finished_at = now() WHERE migration_name = $1`,
+      second,
+    );
+    const later = await checkSchemaReadiness(fresh);
+    expect(later.problems).toContain(
+      `the post-migration SQL has not completed since 1 migration(s) were applied, the first being ${second ?? ''}: the last migration run did not finish`,
     );
   });
 });
