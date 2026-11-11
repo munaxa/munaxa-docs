@@ -19,6 +19,7 @@
 #             failing migration exits 1 and stays failed on every re-run (never skipped, never reset);
 #             wrong credentials exit 1; no URL exits 2; two runs at once never both "succeed" into a
 #             broken state; every run is read-only-root, capability-free
+#   M-10      the application role cannot write the Prisma migration history
 #   P-1..P-5  provisioning: refused (exit 3, nothing written) on an unmigrated database, on a failed
 #             migration, and on a database whose post-migration SQL did not run; succeeds after the
 #             migration (exit 0); a re-run changes nothing (exit 4)
@@ -215,6 +216,11 @@ if { [ "$r1" = 0 ] || [ "$r2" = 0 ]; } && [ "$c" = 0 ] && [ "$dupes" = 0 ] && gr
   done
 else
   bad "M-8 concurrent runs exited $r1/$r2, follow-up $c, duplicates $dupes"
+fi
+if pg -d dc01_fresh -c "SET ROLE edms_app; INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count) VALUES ('forged', 'x', '20990101000000_forged', now(), 1)" >/dev/null 2>&1; then
+  bad "M-10 the application role could write the Prisma migration history"
+else
+  ok "M-10 the application role cannot write the Prisma migration history the gate trusts"
 fi
 grep -hE 'EROFS|read-only file system' "$work"/m*.log "$work"/r*.log && bad "M-9 a migration wrote to its read-only root" \
   || ok "M-9 every migration ran on a read-only root filesystem with no capabilities"

@@ -73,6 +73,14 @@ describe('schema readiness against PostgreSQL', () => {
     ).rejects.toThrow(/permission denied/);
   });
 
+  it('cannot write the Prisma migration history as the application role', async () => {
+    await expect(
+      app.$executeRawUnsafe(
+        `UPDATE _prisma_migrations SET finished_at = now() WHERE finished_at IS NULL`,
+      ),
+    ).rejects.toThrow(/permission denied/);
+  });
+
   it('refuses a failed migration and a tenant table without row-level security', async () => {
     const [first, second] = expectedMigrations();
     // Prisma's own table, in Prisma's own shape, with the first migration finished and the second

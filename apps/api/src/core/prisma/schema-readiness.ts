@@ -111,7 +111,7 @@ export const OPEN_RUN_SQL = `
 
 export const CLOSED_RUNS_SQL = `
   SELECT files, migrations FROM munaxa_meta.post_migrate_run
-   WHERE completed_at IS NOT NULL ORDER BY id DESC`;
+   WHERE completed_at IS NOT NULL ORDER BY completed_at DESC, id DESC`;
 
 /**
  * The tables 01-tenant-isolation.sql protects, discovered the same way (every `public` table with a

@@ -202,6 +202,18 @@ every migration of that build. So:
   database matches the build that serves it.
 - A database first migrated by the newer release (a new tenant, a fresh or restored environment) has
   no run of the older files at all: run the older `docs-migrate` the same way, or roll forward.
+- Rolling back past a release that added a migration **and** changed a post-migration file is
+  accepted with the newer file in effect, as the expand-only rule (§6) requires of every release;
+  only a release with no migration leaves nothing to tell the two versions apart by, hence the
+  re-run above.
+
+**Between the two applies.** In a release that changes only post-migration files, the previous
+API's tasks keep serving after step 6, but a replaced task (a crash, a Fargate retirement, the
+nonprod nightly scale-to-zero) is refused until step 8 has rolled the new API, because the new
+files are then in effect. Keep steps 6 to 8 together. With several tenants, a tenant database that
+cannot be reached at start-up is logged and skipped (one customer's outage does not stop the others)
+and is not checked again until the next start; the hosted Docs serves one tenant, where an
+unreachable database refuses the start.
 
 ## 3. Configuration
 

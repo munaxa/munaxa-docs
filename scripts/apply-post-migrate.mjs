@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS munaxa_meta.post_migrate_run (
   files        text[]      NOT NULL,
   migrations   text[]      NOT NULL
 );
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._prisma_migrations FROM edms_app;
 REVOKE ALL ON munaxa_meta.post_migrate_run FROM PUBLIC;
 REVOKE ALL ON munaxa_meta.post_migrate_run FROM edms_app;
 GRANT SELECT ON munaxa_meta.post_migrate_run TO edms_app;
@@ -116,5 +117,10 @@ for (const file of files) {
 
 record(
   'closing the post-migration run record',
-  `UPDATE munaxa_meta.post_migrate_run SET completed_at = now() WHERE run = '${run}';`,
+  `
+-- 01-tenant-isolation.sql grants the application role write on every table in \`public\`, which
+-- includes Prisma's history: the gate trusts that history, so edms_app may only read it.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._prisma_migrations FROM edms_app;
+UPDATE munaxa_meta.post_migrate_run SET completed_at = now() WHERE run = '${run}';
+`,
 );
