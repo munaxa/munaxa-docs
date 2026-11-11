@@ -1077,9 +1077,10 @@ export const configSchema = z
       'AUDIT_CHECKPOINT_SECRET',
       'SIGNATURE_WITNESS_SECRET',
       'MFA_TOTP_SEALING_KEY',
+      'CONTROL_PLANE_TOKEN',
     ] as const) {
       const value = config[key];
-      if (value !== undefined && EXAMPLE_PLACEHOLDER_SECRETS.has(value)) {
+      if (value !== undefined && isExamplePlaceholder(value)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: [key],
@@ -1094,6 +1095,14 @@ const EXAMPLE_PLACEHOLDER_SECRETS: ReadonlySet<string> = new Set([
   'replace-me-with-at-least-32-characters',
   'change-me-at-least-thirty-two-characters',
 ]);
+
+/** A listed placeholder, or an angle-bracket description such as `<service credential, ...>`. */
+function isExamplePlaceholder(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    EXAMPLE_PLACEHOLDER_SECRETS.has(trimmed) || (trimmed.startsWith('<') && trimmed.endsWith('>'))
+  );
+}
 
 export type RawConfig = z.infer<typeof configSchema>;
 

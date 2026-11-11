@@ -577,6 +577,7 @@ describe('describing which tenants this deployment serves', () => {
       AUDIT_CHECKPOINT_SECRET: 'change-me-at-least-thirty-two-characters',
       SIGNATURE_WITNESS_SECRET: 'change-me-at-least-thirty-two-characters',
       MFA_TOTP_SEALING_KEY: 'change-me-at-least-thirty-two-characters',
+      CONTROL_PLANE_TOKEN: '<service credential, at least 32 characters — a secret>',
     } as const;
     for (const [key, value] of Object.entries(placeholders)) {
       expect(() => loadConfig({ ...productionEnv, [key]: value })).toThrowError(
