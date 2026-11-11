@@ -15,6 +15,16 @@ region `eu-central-1`, as decided in ADR-0022, ADR-0023, ADR-0024 and ADR-0025.
 
 ## Status
 
+> **Retired 2026-10-31 to 2026-11-04 (G9, approved by the owner).** Every resource of `eu-prod/core`,
+> `eu-prod/data` and `eu-prod/service` was deleted through the reviewed workflow (#169, #171 to #174, as recorded in each root's
+> `expected-changes.json`); those roots no longer declare any resource (they keep the backend, providers,
+> versions, variables, `expected-changes.json` and a `retired.tf` note, and `service/` its image tfvars),
+> and the configuration
+> as built is in Git history at `626173d`. `bootstrap/` (state bucket, GitHub OIDC provider and CI
+> role, deployer, ECR, CloudTrail, budgets) was not retired. Docs is to be recreated in the shared
+> AWS stack (`munaxa-platform` `infra/aws/stack/docs.tf`). The table below is the history of the
+> stack before retirement, not its current state.
+
 **Moved to account `229251310592` on 2026-10-21.** The original account `800728620253` became
 inaccessible; nothing was carried over from it. The evidence reports linked below describe the
 applies in that original account and are kept as history. In `229251310592`:

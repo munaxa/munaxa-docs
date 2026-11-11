@@ -1069,7 +1069,40 @@ export const configSchema = z
         message: 'Audit checkpoints must be signed in production.',
       });
     }
+    // The length rule alone admits the placeholders `.env.example` ships, which are longer than 32
+    // characters: a production copied from the example would sign every token with a published
+    // string. Refused by value, so the example stays a working development configuration.
+    for (const key of [
+      'JWT_ACCESS_SECRET',
+      'AUDIT_CHECKPOINT_SECRET',
+      'SIGNATURE_WITNESS_SECRET',
+      'MFA_TOTP_SEALING_KEY',
+      'CONTROL_PLANE_TOKEN',
+    ] as const) {
+      const value = config[key];
+      if (value !== undefined && isExamplePlaceholder(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} is the placeholder from .env.example; generate a real secret for production.`,
+        });
+      }
+    }
   });
+
+/** The secret placeholders `.env.example` ships, which production refuses by value. */
+const EXAMPLE_PLACEHOLDER_SECRETS: ReadonlySet<string> = new Set([
+  'replace-me-with-at-least-32-characters',
+  'change-me-at-least-thirty-two-characters',
+]);
+
+/** A listed placeholder, or an angle-bracket description such as `<service credential, ...>`. */
+function isExamplePlaceholder(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    EXAMPLE_PLACEHOLDER_SECRETS.has(trimmed) || (trimmed.startsWith('<') && trimmed.endsWith('>'))
+  );
+}
 
 export type RawConfig = z.infer<typeof configSchema>;
 
