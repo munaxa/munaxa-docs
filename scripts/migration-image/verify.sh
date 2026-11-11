@@ -25,6 +25,7 @@
 #   P-6..P-7  provisioning refused, for the post-migration reason, when only 01-tenant-isolation.sql applied
 #   P-8..P-9  provisioning refused when a migration was applied after the last post-migration run,
 #             and while a newer run is unfinished
+#   P-10      provisioning refused while another build's version of a post-migration file is in effect
 #   A-1..A-3  the API refuses to start on an unmigrated or partly post-migrated database and starts on a
 #             migrated one
 #   C-1       no password and no connection string appears in any output
@@ -146,7 +147,7 @@ sleep 2 # the image restarts its server once after initialisation
 pg() { docker exec -i -e PGPASSWORD="$superuser_password" dc01-postgres psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -q -t -A "$@"; }
 pg -d postgres <infra/sql/cluster/01-roles.sql
 pg -d postgres -c "ALTER ROLE edms_owner PASSWORD '${owner_password//\'/\'\'}'" -c "ALTER ROLE edms_app PASSWORD '$app_password'"
-for db in fresh failing partial nopost rlsonly upgrade race; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
+for db in fresh failing partial nopost rlsonly upgrade revert race; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
 # `failing`: a type the second migration creates, so migration 1 applies and migration 2 fails.
 failing_type=$(grep -m1 -o 'CREATE TYPE "[a-z_]*"' prisma/migrations/20260803162912_identity/migration.sql | cut -d'"' -f2)
 pg -d dc01_failing -c "SET ROLE edms_owner; CREATE TYPE \"$failing_type\" AS ENUM ('X');"
@@ -235,6 +236,11 @@ done
 c=$(code_of run_migrate dc01_upgrade "$work/up.log")
 [ "$c" = 0 ] || bad "setting up the upgrade database: migration exited $c"
 pg -d dc01_upgrade -c "SET ROLE edms_owner; INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count) VALUES ('dc01-upgrade', 'x', '20990101000000_next_release', now(), 1)"
+# `revert`: migrated by this build, then a later completed run of another build's 02 (same
+# migrations): that version is in effect, not this build's, though this build's ran once.
+c=$(code_of run_migrate dc01_revert "$work/rv.log")
+[ "$c" = 0 ] || bad "setting up the revert database: migration exited $c"
+pg -d dc01_revert -c "SET ROLE edms_owner; INSERT INTO munaxa_meta.post_migrate_run (run, completed_at, files, migrations) SELECT gen_random_uuid(), now(), ARRAY(SELECT CASE WHEN f LIKE '02-%' THEN split_part(f, ':', 1) || ':' || repeat('0', 64) ELSE f END FROM unnest(files) f), migrations FROM munaxa_meta.post_migrate_run ORDER BY id DESC LIMIT 1"
 
 # --- Provisioning (the API image's provision.js, as the docs-provision task runs it) ------------
 
@@ -283,6 +289,10 @@ c=$(code_of provision dc01_upgrade "$work/p-open.log")
 [ "$c" = 3 ] && grep -q 'newer than the last completed one did not complete' "$work/p-open.log" \
   && ok "P-9 provisioning refused while a newer post-migration run is unfinished (exit 3)" \
   || bad "P-9 provisioning with an unfinished run exited $c"
+c=$(code_of provision dc01_revert "$work/p-revert.log")
+[ "$c" = 3 ] && grep -q 'not applied (never run, failed, or changed since): 02-audit-immutability.sql' "$work/p-revert.log" \
+  && ok "P-10 provisioning refused while another build's version of a post-migration file is in effect (exit 3)" \
+  || bad "P-10 provisioning with another build's file version in effect exited $c"
 c=$(code_of provision dc01_fresh "$work/p-ok.log")
 [ "$c" = 0 ] && grep -q "Provisioned 'acme'" "$work/p-ok.log" && [ "$(tenants dc01_fresh)" = 1 ] \
   && ok "P-4 provisioning succeeds after the migration (exit 0, one tenant)" || bad "P-4 provisioning exited $c"

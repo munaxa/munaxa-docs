@@ -9,8 +9,7 @@ import {
   HISTORY_READABLE_SQL,
   MIGRATION_ROWS_SQL,
   type MigrationRow,
-  EVER_APPLIED_SQL,
-  LATEST_RUN_SQL,
+  CLOSED_RUNS_SQL,
   OPEN_RUN_SQL,
   POST_MIGRATE_READABLE_SQL,
   type RawQuerier,
@@ -42,14 +41,18 @@ const POST = [
 ];
 const BUILD: BuildSchema = { migrations: EXPECTED, postMigrate: POST };
 const entry = (row: { file: string; sha256: string }) => `${row.file}:${row.sha256}`;
+/** Completed runs, newest first. */
+const runs = (...closed: { files: string[]; migrations: string[] }[]) => ({
+  latestRun: closed[0],
+  closedRuns: closed,
+});
 /** Facts of a fully migrated database whose last post-migration run followed every migration. */
 const facts = (over: Partial<Parameters<typeof evaluateSchema>[0]> = {}) => ({
   historyReadable: true,
   rows: EXPECTED.map(done),
   postMigrateReadable: true,
-  latestRun: { files: POST.map(entry), migrations: EXPECTED },
+  ...runs({ files: POST.map(entry), migrations: EXPECTED }),
   openRun: false,
-  everApplied: POST.map(entry),
   unprotectedTables: [],
   ...over,
 });
@@ -116,11 +119,13 @@ describe('evaluateSchema', () => {
     const result = evaluateSchema(
       facts({
         rows: [...EXPECTED.map(done), done('20270101000000_newer')],
-        latestRun: {
-          files: [entry(newer), entry(POST[1] ?? newer)],
-          migrations: [...EXPECTED, '20270101000000_newer'],
-        },
-        everApplied: [...POST.map(entry), entry(newer)],
+        ...runs(
+          {
+            files: [entry(newer), entry(POST[1] ?? newer)],
+            migrations: [...EXPECTED, '20270101000000_newer'],
+          },
+          { files: POST.map(entry), migrations: EXPECTED },
+        ),
       }),
       BUILD,
     );
@@ -134,7 +139,7 @@ describe('evaluateSchema', () => {
     const result = evaluateSchema(
       facts({
         rows: [...EXPECTED.map(done), done('20260104000000_d')],
-        latestRun: { files: POST.map(entry), migrations: EXPECTED },
+        ...runs({ files: POST.map(entry), migrations: EXPECTED }),
       }),
       { migrations: [...EXPECTED, '20260104000000_d'], postMigrate: POST },
     );
@@ -151,30 +156,82 @@ describe('evaluateSchema', () => {
     const v2 = { file: '02-audit-immutability.sql', sha256: 'e'.repeat(64) };
     const result = evaluateSchema(
       facts({
-        latestRun: { files: [entry(POST[0] ?? v2), entry(v2)], migrations: EXPECTED },
-        everApplied: [...POST.map(entry), entry(v2)],
+        ...runs(
+          { files: [entry(POST[0] ?? v2), entry(v2)], migrations: EXPECTED },
+          { files: POST.map(entry), migrations: EXPECTED },
+        ),
         openRun: true,
       }),
       BUILD,
     );
     expect(result.ready).toBe(false);
-    expect(result.problems).toEqual([
+    expect(result.problems).toContain(
       'a post-migration run newer than the last completed one did not complete (it failed, was ' +
         'stopped, or is still running): run the migration again',
+    );
+  });
+
+  it('refuses the previous build after a release that changed only a post-migration file', () => {
+    // Release B changed 02 and ran; B's 02 is in effect. The previous API (A, same migrations) is
+    // refused until A's migration task has run again (deployment.md §2a, rollback limits).
+    const v2 = { file: '02-audit-immutability.sql', sha256: 'e'.repeat(64) };
+    const result = evaluateSchema(
+      facts(
+        runs(
+          { files: [entry(POST[0] ?? v2), entry(v2)], migrations: EXPECTED },
+          { files: POST.map(entry), migrations: EXPECTED },
+        ),
+      ),
+      BUILD,
+    );
+    expect(result.ready).toBe(false);
+    expect(result.problems).toEqual([
+      'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
+        '02-audit-immutability.sql',
     ]);
   });
 
-  it('lets the previous build start after a release that changed only a post-migration file', () => {
-    // Release B changed 02 and ran; the previous API (A, same migrations) is a rollback target.
+  it('refuses a revert release whose migration task was skipped', () => {
+    // N ran 03 v1; N+1 added a migration and 03 v2 and ran; N+2 keeps the migration and reverts 03
+    // to v1 but its migration task never ran: v1 never ran after the migration and is not in effect.
+    const later = [...EXPECTED, '20260104000000_d'];
     const v2 = { file: '02-audit-immutability.sql', sha256: 'e'.repeat(64) };
     const result = evaluateSchema(
       facts({
-        latestRun: { files: [entry(POST[0] ?? v2), entry(v2)], migrations: EXPECTED },
-        everApplied: [...POST.map(entry), entry(v2)],
+        rows: later.map(done),
+        ...runs(
+          { files: [entry(POST[0] ?? v2), entry(v2)], migrations: later },
+          { files: POST.map(entry), migrations: EXPECTED },
+        ),
+      }),
+      { migrations: later, postMigrate: POST },
+    );
+    expect(result.ready).toBe(false);
+    expect(result.problems).toEqual([
+      'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
+        '02-audit-immutability.sql',
+    ]);
+  });
+
+  it('refuses an older file version on a database ahead of the build unless its run covered the build', () => {
+    // Ahead of the build, but the only run with this build's 02 predates one of the build's own
+    // migrations: that version never ran after it.
+    const v2 = { file: '02-audit-immutability.sql', sha256: 'e'.repeat(64) };
+    const result = evaluateSchema(
+      facts({
+        rows: [...EXPECTED.map(done), done('20270101000000_newer')],
+        ...runs(
+          {
+            files: [entry(POST[0] ?? v2), entry(v2)],
+            migrations: [...EXPECTED, '20270101000000_newer'],
+          },
+          { files: POST.map(entry), migrations: EXPECTED.slice(0, 2) },
+        ),
       }),
       BUILD,
     );
-    expect(result.ready).toBe(true);
+    expect(result.ready).toBe(false);
+    expect(result.problems.at(-1)).toMatch(/not applied .*02-audit-immutability.sql/);
   });
 
   it('refuses when the build carries no migrations at all', () => {
@@ -191,8 +248,8 @@ describe('evaluateSchema', () => {
 
   it('refuses when the post-migration SQL was never recorded, even with RLS in place', () => {
     for (const over of [
-      { postMigrateReadable: false, latestRun: undefined, everApplied: [] },
-      { latestRun: undefined, everApplied: [] },
+      { postMigrateReadable: false, latestRun: undefined, closedRuns: [] },
+      { latestRun: undefined, closedRuns: [] },
     ]) {
       const result = evaluateSchema(facts(over), BUILD);
       expect(result.ready).toBe(false);
@@ -207,11 +264,10 @@ describe('evaluateSchema', () => {
     const changed = { file: '02-audit-immutability.sql', sha256: 'd'.repeat(64) };
     const result = evaluateSchema(
       facts({
-        latestRun: {
+        ...runs({
           files: POST.slice(0, 1).map(entry).concat(entry(changed)),
           migrations: EXPECTED,
-        },
-        everApplied: POST.slice(0, 1).map(entry).concat(entry(changed)),
+        }),
       }),
       BUILD,
     );
@@ -255,9 +311,8 @@ describe('checkSchemaReadiness', () => {
         [HISTORY_READABLE_SQL, [{ readable: true }]],
         [MIGRATION_ROWS_SQL, EXPECTED.map(done)],
         [POST_MIGRATE_READABLE_SQL, [{ readable: true }]],
-        [LATEST_RUN_SQL, [{ files: POST.map(entry), migrations: EXPECTED }]],
+        [CLOSED_RUNS_SQL, [{ files: POST.map(entry), migrations: EXPECTED }]],
         [OPEN_RUN_SQL, [{ open: false }]],
-        [EVER_APPLIED_SQL, POST.map((row) => ({ entry: entry(row) }))],
         [UNPROTECTED_TABLES_SQL, []],
       ]),
     );

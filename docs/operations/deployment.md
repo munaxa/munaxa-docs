@@ -111,8 +111,10 @@ Every tenant ends with `prisma migrate status`, which must agree that nothing is
 before the runner counts the tenant as migrated. A failed migration stays recorded as failed in
 `_prisma_migrations`, and every later run refuses with `P3009` until an operator resolves it — the
 runner never resets a database, never runs `db push`, `migrate dev` or `migrate resolve`, and never
-rewrites history. Two runs at once are serialised by Prisma's advisory lock; the loser either finds
-the work done or fails loudly, and a follow-up run settles it (scripts/migration-image/verify.sh M-8).
+rewrites history. Prisma's advisory lock serialises only `migrate deploy` between two runs at once;
+the post-migration SQL is not serialised, so a race can fail loudly (a deadlock, say) and leave the
+gate refusing until a single follow-up run completes (scripts/migration-image/verify.sh M-8). Never
+start a second copy.
 No connection string or password is ever printed: the CLI's output is redacted before it is written.
 
 **The API and provisioning refuse an unmigrated database.** `provision.js` checks the tenant's
@@ -172,8 +174,12 @@ Then the `docs-api` service, which refuses to start until step 2 has finished.
    `desired_counts["docs-api"] = 0`); turning the service on is then the rollout.
 
 **A failed migration.** Do not roll the API forward: the new code may need the schema that did not
-arrive, and its start-up check will refuse anyway. The previous API keeps serving against the
-partially migrated database only because migrations are expand-only (§6). Read the log, fix the
+arrive, and its start-up check will refuse anyway. The previous API's running tasks keep serving
+against the partially migrated database only because migrations are expand-only (§6). **No build
+starts a new task meanwhile**: a failed migration, or an unfinished post-migration run, makes every
+build's start-up check refuse, the previous one included, so a task that is replaced (a crash, a
+Fargate retirement, the nonprod nightly scale-to-zero) does not come back until `docs-migrate` has
+completed, and with several tenants one tenant's failure stops the whole API from starting. Read the log, fix the
 cause, and resolve the failed migration deliberately (`prisma migrate resolve`, run by an operator
 against a backup-verified database — never by the task), then run `docs-migrate` again.
 
@@ -183,12 +189,19 @@ release after the one that stopped needing the old shape. A release with a migra
 backward-compatible has no image rollback: its way back is restoring the pre-migration backup into a
 new database and repointing the catalogue (go-live runbook §20), with the data written since lost.
 
-A rollback also needs the previous build's post-migration files to have completed on that database
-once: the gate accepts an older build only if a completed run applied the older build's version of
-every post-migration file (the previous release's run counts). A database first migrated by the newer release
-(a new tenant, a fresh or restored environment) has no such run when that release changed a
-post-migration file, so the older API refuses it, and with several tenants refuses to start. Roll
-such a database forward, or restore it, instead.
+A rollback also needs the previous build's post-migration files to be the ones in effect. The gate
+accepts a build's version of a post-migration file only from the latest completed run when the
+database knows no migration the build lacks, and otherwise from a completed run that already covered
+every migration of that build. So:
+
+- Rolling back past a release that added a migration works as it did: the previous release's own run
+  covered its migrations.
+- Rolling back a release that changed **only** a post-migration file is refused until the previous
+  release's `docs-migrate` has run again (pin the previous `images.docs_migrate`, run it, require
+  exit `0`, then pin the previous `images.docs_api`). That re-applies the previous files, so the
+  database matches the build that serves it.
+- A database first migrated by the newer release (a new tenant, a fresh or restored environment) has
+  no run of the older files at all: run the older `docs-migrate` the same way, or roll forward.
 
 ## 3. Configuration
 

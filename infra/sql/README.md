@@ -37,10 +37,10 @@ Each run of step 4 is recorded in `munaxa_meta.post_migrate_run` by `scripts/app
 the first file, with each file's name and SHA-256 and the Prisma migrations applied at that moment,
 and closed after the last file. The API refuses to start, and provisioning refuses to run, while the
 newest run is still open (it failed, was stopped, or is running), when a migration was applied after
-the latest closed run began, or when no closed run applied the running build's version of every
-file. So a run that failed in any file, or was skipped after a new migration, is seen (DC-01). Rows
-are only added; any closed run of a build's file versions counts, so the previous build still starts
-after a release that changed only a post-migration file.
+the latest closed run began, or unless the running build's version of every file is in effect (the
+latest closed run's version, or, on a database ahead of the build, one from a closed run
+that covered every migration of the build). So a run that failed in any file, was skipped after a
+new migration, or left another build's version in effect is seen (DC-01). Rows are only added.
 
 ## Why `edms_app` has no password here
 

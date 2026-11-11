@@ -28,9 +28,10 @@
 // dev`, `db push` or `--accept-data-loss`. A failed migration stays recorded as failed in
 // `_prisma_migrations`, so `migrate deploy` refuses to continue past it on every later run until an
 // operator has resolved it (docs/operations/deployment.md §2); nothing here marks it rolled back or
-// rewrites the history. Two runners at once are serialised by Prisma's own advisory lock on the
-// migrations; the SQL around them is idempotent, so the loser of a race fails loudly or finds the
-// work done, and never reports a success that did not happen.
+// rewrites the history. Prisma's advisory lock serialises only `migrate deploy`; the SQL around it is
+// idempotent but not serialised, so two runners at once can fail (a deadlock in the post-migration
+// SQL, for one) or leave an unfinished post-migration run that keeps the API and provisioning
+// refusing until a single run completes. Run one copy at a time.
 //
 // ## How it ends
 //
