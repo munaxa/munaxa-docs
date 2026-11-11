@@ -1,17 +1,23 @@
 # Publishing the production images to Amazon ECR, so a deployment pulls an artifact that was built
 # and verified here rather than building one itself — and pins it by digest.
 #
-# Three images, each from one named commit, in 229251310592.dkr.ecr.eu-central-1.amazonaws.com:
+# Four images, each from one named commit, in 229251310592.dkr.ecr.eu-central-1.amazonaws.com:
 #
 #   munaxa-docs/api        the `api` target of ./Dockerfile
 #   munaxa-docs/web        the `web` target of ./Dockerfile
+#   munaxa-docs/migrate    the `migrate` target of ./Dockerfile — the one-off migration task (DC-01)
 #   munaxa-docs/antivirus  ./infra/antivirus — c-icap in front of ClamAV
+#
+# `api` and `migrate` are always published by the same run from the same commit, so a release is one
+# pair: both carry the same `org.opencontainers.image.revision` label and the same `<short>` and
+# `sha-<full>` tags, and the run summary lists both digests together. An operator finds the migration
+# image for an API release by that revision (docs/operations/deployment.md §1).
 #
 # **No registry credential exists.** Every job that touches ECR runs in the protected
 # `image-release` environment and assumes the image publisher role
 # (infra/terraform/bootstrap/ecr.tf) through GitHub OIDC. The role's trust requires that environment,
 # an image/* tag, this workflow file and this repository's IDs, and the role may only push to those
-# three repositories. Production pulls with the ECS execution roles' IAM permissions.
+# four repositories. Production pulls with the ECS execution roles' IAM permissions.
 #
 # **Tag-triggered, and the tag names the commit to build.** Publishing is a decision about one
 # validated commit, not something every push should do. The trigger is a tag of the form
@@ -127,6 +133,9 @@ jobs:
           - image: munaxa-docs-web
             repository: munaxa-docs/web
             target: web
+          - image: munaxa-docs-migrate
+            repository: munaxa-docs/migrate
+            target: migrate
     env:
       SHA: ${{ needs.source.outputs.sha }}
       SHORT: ${{ needs.source.outputs.short }}
@@ -461,15 +470,15 @@ jobs:
           merge-multiple: true
           path: digests
 
-      - name: The three references this run published
+      - name: The four references this run published
         run: |
           set -euo pipefail
-          cat digests/api digests/web digests/antivirus digests/antivirus-versions
+          cat digests/api digests/migrate digests/web digests/antivirus digests/antivirus-versions
           {
             echo "### Release images"
             echo ""
             echo '```'
-            cat digests/api digests/web digests/antivirus
+            cat digests/api digests/migrate digests/web digests/antivirus
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -485,7 +494,7 @@ jobs:
       - name: Every digest is in ECR
         run: |
           set -euo pipefail
-          for ref in $(cat digests/api digests/web digests/antivirus); do
+          for ref in $(cat digests/api digests/migrate digests/web digests/antivirus); do
             repo="${ref#"$REGISTRY"/}"; repo="${repo%@*}"; digest="${ref#*@}"
             aws ecr describe-images --repository-name "$repo" --image-ids imageDigest="$digest" \
               --query 'imageDetails[0].imageDigest' --output text | grep -qx "$digest"
@@ -494,15 +503,15 @@ jobs:
 
       # The release smoke runs in a job with no OIDC permission and no environment (below), so it
       # cannot mint an AWS session at all. This job, which already holds the publisher session, pulls
-      # the three digests for it and hands them over as an artifact, with each image's local id: the
+      # the four digests for it and hands them over as an artifact, with each image's local id: the
       # smoke loads them and refuses to run unless every id matches what was pulled here.
-      - name: Pull the three digests for the release smoke
+      - name: Pull the four digests for the release smoke
         run: |
           set -euo pipefail
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
           mkdir -p smoke-images
-          for name in api web antivirus; do
+          for name in api migrate web antivirus; do
             ref=$(head -1 "digests/$name")
             printf '%s' "$ref" | grep -Eq "^$REGISTRY/munaxa-docs/$name@sha256:[0-9a-f]{64}$" \
               || { echo "::error::digests/$name is not an ECR digest reference: $ref"; exit 1; }
@@ -513,7 +522,7 @@ jobs:
               >> smoke-images/identity
           done
           docker logout "$REGISTRY" >/dev/null
-          docker save "release-smoke/api:$GITHUB_RUN_ID" "release-smoke/web:$GITHUB_RUN_ID" \
+          docker save "release-smoke/api:$GITHUB_RUN_ID" "release-smoke/migrate:$GITHUB_RUN_ID" "release-smoke/web:$GITHUB_RUN_ID" \
             "release-smoke/antivirus:$GITHUB_RUN_ID" | gzip -1 > smoke-images/images.tar.gz
           cat smoke-images/identity
 
@@ -577,7 +586,7 @@ jobs:
         run: |
           set -euo pipefail
           gunzip -c smoke-images/images.tar.gz | docker load
-          for name in api web antivirus; do
+          for name in api migrate web antivirus; do
             read -r _ ref id < <(grep "^$name " smoke-images/identity)
             [ "$ref" = "$(head -1 "digests/$name")" ] \
               || { echo "::error::$name: pulled $ref, but this run published $(head -1 "digests/$name")"; exit 1; }
@@ -631,6 +640,7 @@ jobs:
             echo "| image | digest pulled from ECR |"
             echo "| --- | --- |"
             echo "| api | \`$API_REF\` |"
+            echo "| migrate | \`$MIGRATE_REF\` |"
             echo "| web | \`$WEB_REF\` |"
             echo "| antivirus | \`$AV_REF\` |"
             echo ""
@@ -638,9 +648,11 @@ jobs:
           bash scripts/release-smoke/run.sh
         env:
           API_IMAGE: ${{ steps.images.outputs.api }}
+          MIGRATE_IMAGE: ${{ steps.images.outputs.migrate }}
           WEB_IMAGE: ${{ steps.images.outputs.web }}
           AV_IMAGE: ${{ steps.images.outputs.antivirus }}
           API_REF: ${{ steps.images.outputs.api-ref }}
+          MIGRATE_REF: ${{ steps.images.outputs.migrate-ref }}
           WEB_REF: ${{ steps.images.outputs.web-ref }}
           AV_REF: ${{ steps.images.outputs.antivirus-ref }}
           EXPECTED_REVISION: ${{ needs.source.outputs.sha }}

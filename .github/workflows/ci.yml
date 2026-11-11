@@ -111,6 +111,10 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # DC-01: the migration runner's own tests (redaction, exit codes, no destructive command).
+      - name: Migration runner tests
+        run: node --test scripts/__tests__/*.test.mjs
+
       - name: Build
         run: pnpm build
 
@@ -797,6 +801,81 @@ jobs:
           [ "$failed" = 0 ] || { echo "FAIL - the web image does not serve its brand artwork."; docker logs web-ci | tail -20; exit 1; }
           echo "OK - every branding asset the login page references is served."
 
+  migration-image:
+    name: Migration image · disposable databases
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    # DC-01. The hosted Docs migrates with the `migrate` image as a one-off task (munaxa-platform
+    # `docs-migrate`), then provisions, then starts the API. This job builds that image and the API
+    # image from this commit and runs scripts/migration-image/verify.sh against a disposable
+    # PostgreSQL it starts itself: fresh migration, a no-op re-run, a failing migration that stays
+    # failed, concurrent runs, the provisioning and API start-up gates, and no credential in any log.
+    # It builds and does not push; nothing here reaches a registry, AWS or any real database.
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Docker Hub authentication
+        uses: ./.github/actions/docker-hub-auth
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          login: 'true'
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Write the registry credential for the build secret
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build the migration image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: migrate
+          push: false
+          load: true
+          tags: munaxa-docs-migrate:ci
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          push: false
+          load: true
+          tags: munaxa-docs-api:ci
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      # Pulled while the optional Docker Hub login is active; nothing after this pulls.
+      - name: Pull the disposable database and cache images
+        run: |
+          set -euo pipefail
+          docker pull -q postgres:16-alpine
+          docker pull -q redis:7-alpine
+          docker logout >/dev/null
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Migration path on disposable databases
+        run: bash scripts/migration-image/verify.sh
+        env:
+          MIGRATE_IMAGE: munaxa-docs-migrate:ci
+          API_IMAGE: munaxa-docs-api:ci
+
   release-smoke:
     name: Release smoke · images from this commit
     runs-on: ubuntu-latest
@@ -835,6 +914,17 @@ jobs:
           target: api
           load: true
           tags: munaxa-docs-api:smoke
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          cache-from: type=gha
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build the migration image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: migrate
+          load: true
+          tags: munaxa-docs-migrate:smoke
           secret-files: npmrc=${{ runner.temp }}/npmrc
           cache-from: type=gha
           labels: org.opencontainers.image.revision=${{ github.sha }}
@@ -905,6 +995,7 @@ jobs:
         run: bash scripts/release-smoke/run.sh
         env:
           API_IMAGE: munaxa-docs-api:smoke
+          MIGRATE_IMAGE: munaxa-docs-migrate:smoke
           WEB_IMAGE: munaxa-docs-web:smoke
           AV_IMAGE: munaxa-docs-antivirus:smoke
           EXPECTED_REVISION: ${{ github.sha }}

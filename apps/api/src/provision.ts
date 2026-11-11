@@ -3,7 +3,24 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from './app.module';
+import { DuplicateError } from './core/errors/application-errors';
+import { TenantDatabase } from './core/prisma/tenant-database';
+import { TENANT_REGISTRY, type TenantRegistry } from './core/tenancy/tenant-registry.port';
 import { ProvisioningService } from './modules/identity/application/provisioning.service';
+
+/**
+ * Exit codes, so the task that runs this (the platform's `docs-provision`) can tell the cases apart.
+ *
+ * `SCHEMA_NOT_READY` is the DC-01 gate: the tenant's database is reachable but not migrated for this
+ * build, so nothing was written. `ALREADY_PROVISIONED` means a re-run found the tenant already
+ * provisioned and changed nothing — the safe outcome of retrying a run whose result was lost.
+ */
+const EXIT = { OK: 0, FAILED: 1, SCHEMA_NOT_READY: 3, ALREADY_PROVISIONED: 4 } as const;
+
+/** A connection string never reaches the task's log, even inside a driver's error message. */
+function redact(message: string): string {
+  return message.replace(/postgres(?:ql)?:\/\/[^\s'"`<>]+/gi, 'postgresql://***');
+}
 
 /**
  * `pnpm --filter @edms/api provision` — creates a tenant and its first administrator.
@@ -31,12 +48,31 @@ async function provision(): Promise<void> {
         '  ADMIN_EMAIL=ada@acme.test ADMIN_NAME="Ada Lovelace" \\\n' +
         '  ADMIN_PASSWORD=… pnpm --filter @edms/api provision\n',
     );
-    process.exitCode = 1;
+    process.exitCode = EXIT.FAILED;
     return;
   }
 
   const app = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
   try {
+    // DC-01: migrate, then provision. The tenant's database must hold every migration this build
+    // carries, none failed, and the post-migration row-level security, before anything is written.
+    // A tenant missing from the catalogue falls through to the service, which names that problem.
+    const slug = (process.env['TENANT_SLUG'] ?? '').trim().toLowerCase();
+    const placement = await app.get<TenantRegistry>(TENANT_REGISTRY).bySlug(slug);
+    if (placement) {
+      const readiness = await app.get(TenantDatabase).schemaReadiness(placement.id);
+      if (!readiness.ready) {
+        process.stderr.write(
+          `PROVISIONING REFUSED: the database of '${slug}' is not migrated for this build ` +
+            `(${String(readiness.applied)} of ${String(readiness.expected)} migrations applied).\n` +
+            readiness.problems.map((problem) => `  - ${problem}\n`).join('') +
+            'Nothing was written. Run the migration task (docs-migrate) to completion, then re-run.\n',
+        );
+        process.exitCode = EXIT.SCHEMA_NOT_READY;
+        return;
+      }
+    }
+
     const result = await app.get(ProvisioningService).provision({
       slug: process.env['TENANT_SLUG'] ?? '',
       name: process.env['TENANT_NAME'] ?? '',
@@ -55,8 +91,18 @@ async function provision(): Promise<void> {
         `  admin   ${result.adminUserId}\n`,
     );
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : 'Provisioning failed.'}\n`);
-    process.exitCode = 1;
+    // The service's own refusal to provision twice (`alreadyProvisioned`), not some other duplicate.
+    if (error instanceof DuplicateError && error.message === 'That organisation already exists.') {
+      process.stderr.write(
+        `'${process.env['TENANT_SLUG'] ?? ''}' is already provisioned; nothing was changed.\n`,
+      );
+      process.exitCode = EXIT.ALREADY_PROVISIONED;
+      return;
+    }
+    process.stderr.write(
+      `${redact(error instanceof Error ? error.message : 'Provisioning failed.')}\n`,
+    );
+    process.exitCode = EXIT.FAILED;
   } finally {
     await app.close();
   }

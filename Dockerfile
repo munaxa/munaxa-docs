@@ -1,6 +1,6 @@
 # Munaxa Docs — the production images. Phase 18.
 #
-# One file, three targets: `api`, `web` and `worker`. 20 §2 says "the same images run on Render, a
+# One file, four targets: `api`, `web`, `worker` and `migrate`. 20 §2 says "the same images run on Render, a
 # Kubernetes cluster or a customer's on-premise host; the differences are configuration" — so there
 # is no build variant per environment and no `NODE_ENV` baked in beyond the one Next.js needs at
 # compile time.
@@ -8,6 +8,7 @@
 #   docker build --target api    --secret id=npmrc,src=$HOME/.npmrc -t munaxa-docs-api .
 #   docker build --target web    --secret id=npmrc,src=$HOME/.npmrc -t munaxa-docs-web .
 #   docker build --target worker --secret id=npmrc,src=$HOME/.npmrc -t munaxa-docs-worker .
+#   docker build --target migrate --secret id=npmrc,src=$HOME/.npmrc -t munaxa-docs-migrate .
 #
 # ## The credential, and why it is a build secret
 #
@@ -203,6 +204,64 @@ EXPOSE 3001
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/api/health/live').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 CMD ["node", "apps/api/dist/main.js"]
+
+# --- Migrate (DC-01) ----------------------------------------------------------------------------
+#
+# The one-off migration image: `scripts/migrate-tenants.mjs` — the per-database SQL, `prisma migrate
+# deploy`, the post-migration SQL and a final `prisma migrate status` — for the database (or the
+# catalogue of databases) its environment names. The hosted Docs runs it as the `docs-migrate` task
+# before `docs-provision` and before any API rollout; it is never a service.
+#
+# ## Why a separate image, not the API image
+#
+# The API image runs `node` and nothing else, and its migration runner used to need pnpm — so a
+# release had to migrate "from a checkout" and the hosted Docs had no way to migrate at all. This
+# target is the same `runtime` base (no shell, no package manager, uid 1000) with the same
+# `node_modules` the API was built with, so the Prisma CLI, its engines and the generated client are
+# the lockfile's, byte for byte; plus only what migrating reads: `prisma/` (schema and migration
+# history), `infra/sql/` (the per-database and post-migration SQL) and the three migration scripts.
+# The API image is unchanged by its existence.
+#
+# ## The schema engine its runtime asks for
+#
+# The build stage has no libssl, so the engines downloaded at install time are the
+# `debian-openssl-1.1.x` ones (see `prisma/schema.prisma`), while this runtime carries OpenSSL 3 and
+# the CLI asks for `schema-engine-debian-openssl-3.0.x`. The query engine is pinned by `binaryTargets`;
+# the schema engine is not something a schema can pin, so this stage fetches the 3.0.x one for the
+# Prisma version the lockfile already resolved (`PRISMA_CLI_BINARY_TARGETS`). The binary is not in the
+# lockfile: the CLI downloads it from Prisma's engine CDN for the engine commit that version names and
+# checks it against a SHA-256 served from the same place, so a rebuild trusts that CDN; what runs is
+# fixed by the published image digest, not by a rebuild. It happens here, on top of the shared build stage,
+# so the API image does not gain a second schema engine. CI and the release smoke ask the image the
+# same question the deployment does: run it.
+#
+# ## What it needs at run time
+#
+# `DATABASE_MIGRATION_URL` (the owner role; the ECS task injects it from the `docs-migrate` secret
+# bundle) — or `TENANT_CATALOGUE`/`TENANT_CATALOGUE_PATH` with migration URLs for several tenants.
+# Nothing is baked in: no URL, no credential, no catalogue. It writes nothing to its own filesystem,
+# so it runs with a read-only root filesystem and no capabilities.
+FROM build AS migrate-engines
+ENV PRISMA_CLI_BINARY_TARGETS=debian-openssl-3.0.x
+RUN node node_modules/prisma/build/index.js version >/dev/null \
+ && find node_modules/.pnpm -name 'schema-engine-debian-openssl-3.0.x' -type f | grep -q .
+
+FROM runtime AS migrate
+
+COPY --from=migrate-engines --chown=node:node /app/node_modules              ./node_modules
+COPY --from=build           --chown=node:node /app/package.json              ./package.json
+COPY --from=build           --chown=node:node /app/prisma                    ./prisma
+COPY --from=build           --chown=node:node /app/infra/sql                 ./infra/sql
+COPY --from=build           --chown=node:node /app/scripts/migrate-tenants.mjs    ./scripts/
+COPY --from=build           --chown=node:node /app/scripts/apply-post-migrate.mjs ./scripts/
+COPY --from=build           --chown=node:node /app/scripts/migration-support.mjs  ./scripts/
+
+# No update check, no telemetry, nothing cached: the task has no business calling out.
+ENV CHECKPOINT_DISABLE=1 \
+    PRISMA_HIDE_UPDATE_MESSAGE=1
+
+# The migration task is not a server: no port, no health check. Its exit status is the result.
+CMD ["node", "scripts/migrate-tenants.mjs"]
 
 # --- Web ---------------------------------------------------------------------------------------
 FROM runtime AS web

@@ -5,16 +5,16 @@
 
 ## 1. What a release is
 
-A release is **three images built from one commit, every tenant database migrated, then a rolling
+A release is **the images built from one commit, every tenant database migrated, then a rolling
 replacement**. The order is not negotiable and the reason is 20 §4's expand → migrate → contract
 rule: old and new code coexist during a rolling deploy, so the schema has to be compatible with
 both, which means the migration goes first and every migration is additive until the release after
 the one that stopped using the old shape.
 
 ```bash
-# 1. The images. One commit, three targets, one tag.
+# 1. The images. One commit, four targets, one tag. `migrate` is the one-off migration image (DC-01).
 export TAG="$(git rev-parse --short HEAD)"
-for target in api web worker; do
+for target in api web worker migrate; do
   docker build --target "$target" \
     --secret id=npmrc,src="$HOME/.npmrc" \
     -t "munaxa-docs-$target:$TAG" .
@@ -22,7 +22,12 @@ done
 
 # 2. Every tenant database, using the same runner and the same tenant list the API reads — from the
 #    operator catalogue, which adds the owner (migration) URLs the running API never holds (ADR-0021 §3).
-TENANT_CATALOGUE_PATH=/etc/munaxa/operator-catalogue.json node scripts/migrate-tenants.mjs
+#    In the migration image of the same commit (read-only, no capabilities, uid 1000):
+docker run --rm --read-only --cap-drop ALL \
+  -v /etc/munaxa/operator-catalogue.json:/run/catalogue.json:ro -e TENANT_CATALOGUE_PATH=/run/catalogue.json \
+  "munaxa-docs-migrate:$TAG"
+#    or, equivalently, from a checkout at the release commit after `pnpm install --frozen-lockfile`:
+#    TENANT_CATALOGUE_PATH=/etc/munaxa/operator-catalogue.json node scripts/migrate-tenants.mjs
 
 # 3. The rolling replacement, in this order.
 #    Workers first: they drain, and a worker running old code against a migrated schema is the
@@ -33,12 +38,15 @@ TENANT_CATALOGUE_PATH=/etc/munaxa/operator-catalogue.json node scripts/migrate-t
 image's history and readable by anybody who can run `docker history`, which is the ordinary way a
 token leaks.
 
-**Step 2 runs from a checkout, not from an image.** `scripts/migrate-tenants.mjs` shells out to
-`pnpm exec prisma`, and the runtime images carry neither pnpm nor the Prisma CLI — running it inside
-one fails with `spawnSync pnpm ENOENT`. It is written for a release engineer's working copy at the
-release commit, or a CI job on the same commit, with `DATABASE_MIGRATION_URL` and the tenant
-catalogue in its environment. Phase 9.2 discovered this by trying the obvious thing first; the
-alternative — a migration image that carries the CLI — is a real option and is not what ships today.
+**Step 2 runs in the migration image (DC-01).** Until November 2026 it could only run from a checkout:
+the runner shelled out to `pnpm exec prisma`, and the runtime images carry neither pnpm nor a shell,
+so the hosted Docs had no way to migrate at all. The runner now starts the Prisma CLI by its own path
+(`scripts/migration-support.mjs`), and the `migrate` target of ./Dockerfile carries exactly what
+migrating needs: the same `node_modules` the API was built with (Prisma CLI, the generated client, and
+the `debian-openssl-3.0.x` schema engine its runtime asks for), `prisma/`, `infra/sql/` and the three
+migration scripts, on the same no-shell runtime base as the API. A checkout at the release commit
+still works and runs the same file. [§2a](#2a-the-migration-image-and-the-hosted-docs-migrate-task)
+is the procedure for the shared AWS hosting.
 
 **The worker image starts, prints one line and exits 0.** Every consumer this product has runs in
 the API process, gated on `QUEUE_CONSUMERS_ENABLED`, and `apps/worker/src/main.ts` exists as the
@@ -61,7 +69,8 @@ added (`docs/reports/release-candidate-final-validation.md`):
    is **performed again**. Stop new client writes and let in-flight retries settle before the
    migration. Exposure ends 24 hours after the last pre-upgrade request, the old replay window.
    Releases after that one need no drain for this reason.
-3. **Migrate** every tenant database (step 2 above).
+3. **Migrate** every tenant database (step 2 above), and read its exit status: `0` migrated and
+   verified, `1` a migration failed (stop the release), `2` a configuration error (nothing touched).
 4. **Deploy the malware scanner first, then probe it.** `node infra/antivirus/probe.mjs <AV_ICAP_URL>`
    must exit 0 before an API instance that uses it takes traffic (§3.2).
 5. **Deploy the API**, then the web (step 3 above). The worker image only as described below.
@@ -97,6 +106,114 @@ protects rather than listing them: every table in `public` with a `tenant_id` co
 LEVEL SECURITY` and the `tenant_isolation` policy, and the script raises rather than finishing if it
 finds one without. A phase that adds a tenant-scoped table therefore gets isolation without
 remembering to ask for it.
+
+Every tenant ends with `prisma migrate status`, which must agree that nothing is pending or failed
+before the runner counts the tenant as migrated. A failed migration stays recorded as failed in
+`_prisma_migrations`, and every later run refuses with `P3009` until an operator resolves it — the
+runner never resets a database, never runs `db push`, `migrate dev` or `migrate resolve`, and never
+rewrites history. Prisma's advisory lock serialises only `migrate deploy` between two runs at once;
+the post-migration SQL is not serialised, so a race can fail loudly (a deadlock, say) and leave the
+gate refusing until a single follow-up run completes (scripts/migration-image/verify.sh M-8). Never
+start a second copy.
+No connection string or password is ever printed: the CLI's output is redacted before it is written.
+
+**The API and provisioning refuse an unmigrated database.** `provision.js` checks the tenant's
+database first and exits `3` (nothing written) unless every migration this build carries is applied,
+none is failed, the post-migration SQL completed after the last migration with no newer run left
+unfinished, some completed run applied this build's version of every file (the run record in
+`munaxa_meta.post_migrate_run`, infra/sql/README.md), and every
+tenant-scoped table has forced row-level security; it exits `4` when the tenant is already provisioned. The API runs the same check before it listens
+and exits non-zero on a reachable database that fails it, so it never becomes healthy against an
+unmigrated schema. A database *ahead* of the build (the rollback in §6) passes.
+
+## 2a. The migration image and the hosted `docs-migrate` task
+
+The shared AWS hosting (munaxa-platform `infra/aws/stack/docs.tf`) registers three one-off Docs
+tasks, run in this order and never as services:
+
+| Order | Task | Image | Database role | Reads |
+| --- | --- | --- | --- | --- |
+| 1 | `docs-db-admin` | PostgreSQL | RDS master | cluster roles, the tenant database |
+| 2 | `docs-migrate` | `munaxa-docs/migrate` | `edms_owner` | `<env>/docs-migrate` → `DATABASE_MIGRATION_URL` |
+| 3 | `docs-provision` | `munaxa-docs/api` | `edms_app` | `<env>/docs-api`, `<env>/docs-provision/<slug>` |
+
+Then the `docs-api` service, which refuses to start until step 2 has finished.
+
+**A release, step by step.**
+
+1. Tag `image/<full sha>` on a reviewed `main` commit. `publish-images.yml` builds `api`, `web`,
+   `migrate` and the scanner from that one commit, pushes them to ECR by digest, and runs the release
+   smoke — which migrates with the published `migrate` digest — on the pulled digests.
+2. Record the pair from the run summary: `munaxa-docs/api@sha256:…` and
+   `munaxa-docs/migrate@sha256:…`. **They are a pair.** Both carry the same
+   `org.opencontainers.image.revision` label and the same `<short>` and `sha-<full>` tags; an operator
+   finds the migration image for any API release by that revision
+   (`aws ecr describe-images --repository-name munaxa-docs/migrate --image-ids imageTag=sha-<full>`).
+   Never pair an API digest with a migration digest of another revision.
+3. **First apply: the migration image only.** In one reviewed pull request, pin the new
+   `images.docs_migrate` and leave `images.docs_api` at the digest that is serving now, then apply.
+   This registers the new `docs-migrate` task definition and nothing else. Do **not** pin the new
+   API digest in the same apply: the `docs-api` service follows its task definition, so an apply
+   that changes `images.docs_api` starts the API rollout at once, before the migration has run.
+4. Back up the tenant database (§1 step 1).
+5. Run `docs-migrate` once (`aws ecs run-task`, the task's own security group, public subnet with a
+   public IP as the other tasks), and wait for it to stop. Never start a second copy while one runs.
+6. Read the container's **exit code** (`aws ecs describe-tasks … containers[0].exitCode`), not only
+   its log: `0` migrated and verified; anything else stops the release here. The log, in
+   `/munaxa/<env>/docs-migrate`, names the tenant and step and never a credential.
+7. For a first deployment: run `docs-provision`; exit `0` provisioned, `4` already provisioned
+   (nothing changed), `3` the database is not migrated (go back to step 5).
+8. **Second apply: the API.** Only after step 6 returned `0`, pin the paired `images.docs_api` (and
+   `images.docs_web`) in a second pull request and apply it; this apply is the API rollout. A task
+   that starts against a database the migration has not finished (any Prisma migration or any
+   post-migration SQL file of its build not recorded) exits before its first health check, and the
+   deployment circuit breaker keeps the previous revision serving.
+
+   For the very first deployment there is no serving API, so both digests may go in one apply as
+   long as no `docs-api` task can start before step 7 has passed (`services_enabled = false`, or
+   `desired_counts["docs-api"] = 0`); turning the service on is then the rollout.
+
+**A failed migration.** Do not roll the API forward: the new code may need the schema that did not
+arrive, and its start-up check will refuse anyway. The previous API's running tasks keep serving
+against the partially migrated database only because migrations are expand-only (§6). **No build
+starts a new task meanwhile**: a failed migration, or an unfinished post-migration run, makes every
+build's start-up check refuse, the previous one included, so a task that is replaced (a crash, a
+Fargate retirement, the nonprod nightly scale-to-zero) does not come back until `docs-migrate` has
+completed, and with several tenants one tenant's failure stops the whole API from starting. Read the log, fix the
+cause, and resolve the failed migration deliberately (`prisma migrate resolve`, run by an operator
+against a backup-verified database — never by the task), then run `docs-migrate` again.
+
+**Rollback limits.** Rolling back is deploying the previous API digest; the migration is not undone.
+That is safe only for expand-only migrations, which every migration in this product is until the
+release after the one that stopped needing the old shape. A release with a migration that is not
+backward-compatible has no image rollback: its way back is restoring the pre-migration backup into a
+new database and repointing the catalogue (go-live runbook §20), with the data written since lost.
+
+A rollback also needs the previous build's post-migration files to be the ones in effect. The gate
+accepts a build's version of a post-migration file only from the latest completed run when the
+database knows no migration the build lacks, and otherwise from a completed run that already covered
+every migration of that build. So:
+
+- Rolling back past a release that added a migration works as it did: the previous release's own run
+  covered its migrations.
+- Rolling back a release that changed **only** a post-migration file is refused until the previous
+  release's `docs-migrate` has run again (pin the previous `images.docs_migrate`, run it, require
+  exit `0`, then pin the previous `images.docs_api`). That re-applies the previous files, so the
+  database matches the build that serves it.
+- A database first migrated by the newer release (a new tenant, a fresh or restored environment) has
+  no run of the older files at all: run the older `docs-migrate` the same way, or roll forward.
+- Rolling back past a release that added a migration **and** changed a post-migration file is
+  accepted with the newer file in effect, as the expand-only rule (§6) requires of every release;
+  only a release with no migration leaves nothing to tell the two versions apart by, hence the
+  re-run above.
+
+**Between the two applies.** In a release that changes only post-migration files, the previous
+API's tasks keep serving after step 6, but a replaced task (a crash, a Fargate retirement, the
+nonprod nightly scale-to-zero) is refused until step 8 has rolled the new API, because the new
+files are then in effect. Keep steps 6 to 8 together. With several tenants, a tenant database that
+cannot be reached at start-up is logged and skipped (one customer's outage does not stop the others)
+and is not checked again until the next start; the hosted Docs serves one tenant, where an
+unreachable database refuses the start.
 
 ## 3. Configuration
 
@@ -276,7 +393,7 @@ For the first production deployment of the validated RC, the step-by-step proced
 Go/No-Go checklist is [`go-live-runbook.md`](./go-live-runbook.md).
 
 - [ ] CI green on the commit: `format:check`, `lint`, `typecheck`, `test`, `test:integration` against **two** real tenant databases, `build`, and the product-isolation job
-- [ ] The three images built from that commit, tagged with it
+- [ ] The images built from that commit, tagged with it — `api` and `migrate` from the same run
 - [ ] `scripts/migrate-tenants.mjs` run against staging's catalogue; the post-migration gate passed
 - [ ] A backup of every tenant database and the object store, taken immediately before the
       production migration
@@ -290,7 +407,8 @@ Go/No-Go checklist is [`go-live-runbook.md`](./go-live-runbook.md).
       recorded a baseline, so the first run *is* the baseline rather than a comparison. A run with
       more than 1% failures or 429s is not a baseline
 - [ ] The backup restore test is within its quarter ([backup-and-restore.md](./backup-and-restore.md))
-- [ ] Production migration from a checkout at the release commit, then API, then web — see §1 on
+- [ ] Production migration with the `migrate` image of the release commit (exit code 0), then API,
+      then web — see §1 on
       why the worker image is not part of an ordinary deployment
 - [ ] `/api/health/ready` answering **200** on every instance before the load balancer is opened.
       It answers 503 while any dependency is DOWN, so the status code is the gate and the body names

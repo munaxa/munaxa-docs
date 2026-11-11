@@ -8,7 +8,9 @@
 # push an image: what runs in Production is only what the publishing workflow built.
 
 locals {
-  ecr_repositories = ["api", "web", "antivirus"]
+  # `migrate` (DC-01): the one-off migration image the shared hosting's docs-migrate task runs. It is
+  # published from the same commit as `api`; creating the repository is an owner-approved apply.
+  ecr_repositories = ["api", "web", "antivirus", "migrate"]
   ecr_prefix       = "munaxa-docs"
   ecr_repository_arns = [
     for name in local.ecr_repositories : "arn:aws:ecr:${var.region}:${var.account_id}:repository/${local.ecr_prefix}/${name}"

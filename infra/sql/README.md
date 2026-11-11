@@ -32,6 +32,16 @@ Skipping step 4 is not harmless — `post-migrate/01-tenant-isolation.sql` raise
 tenant-scoped table lacks a row-level security policy, so a deploy that forgets it fails loudly
 rather than shipping a table without isolation.
 
+Each run of step 4 is recorded in `munaxa_meta.post_migrate_run` by `scripts/apply-post-migrate.mjs`
+(its own schema, so Prisma never sees it as drift; `edms_app` may only read it): a row opened before
+the first file, with each file's name and SHA-256 and the Prisma migrations applied at that moment,
+and closed after the last file. The API refuses to start, and provisioning refuses to run, while the
+newest run is still open (it failed, was stopped, or is running), when a migration was applied after
+the latest closed run began, or unless the running build's version of every file is in effect (the
+latest closed run's version, or, on a database ahead of the build, one from a closed run
+that covered every migration of the build). So a run that failed in any file, was skipped after a
+new migration, or left another build's version in effect is seen (DC-01). Rows are only added.
+
 ## Why `edms_app` has no password here
 
 `01-roles.sql` creates it with `LOGIN` and no password, which is right for production: the credential
