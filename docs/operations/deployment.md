@@ -117,8 +117,9 @@ No connection string or password is ever printed: the CLI's output is redacted b
 
 **The API and provisioning refuse an unmigrated database.** `provision.js` checks the tenant's
 database first and exits `3` (nothing written) unless every migration this build carries is applied,
-none is failed, the post-migration SQL completed after the last migration with this build's version
-of every file (the run record in `munaxa_meta.post_migrate_run`, infra/sql/README.md), and every
+none is failed, the post-migration SQL completed after the last migration with no newer run left
+unfinished, some completed run applied this build's version of every file (the run record in
+`munaxa_meta.post_migrate_run`, infra/sql/README.md), and every
 tenant-scoped table has forced row-level security; it exits `4` when the tenant is already provisioned. The API runs the same check before it listens
 and exits non-zero on a reachable database that fails it, so it never becomes healthy against an
 unmigrated schema. A database *ahead* of the build (the rollback in §6) passes.
@@ -183,8 +184,8 @@ backward-compatible has no image rollback: its way back is restoring the pre-mig
 new database and repointing the catalogue (go-live runbook §20), with the data written since lost.
 
 A rollback also needs the previous build's post-migration files to have completed on that database
-once: the gate accepts an older build against a newer schema only if a recorded run applied the
-older build's version of every post-migration file. A database first migrated by the newer release
+once: the gate accepts an older build only if a completed run applied the older build's version of
+every post-migration file (the previous release's run counts). A database first migrated by the newer release
 (a new tenant, a fresh or restored environment) has no such run when that release changed a
 post-migration file, so the older API refuses it, and with several tenants refuses to start. Roll
 such a database forward, or restore it, instead.

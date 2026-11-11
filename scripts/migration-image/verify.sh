@@ -23,7 +23,8 @@
 #             migration, and on a database whose post-migration SQL did not run; succeeds after the
 #             migration (exit 0); a re-run changes nothing (exit 4)
 #   P-6..P-7  provisioning refused, for the post-migration reason, when only 01-tenant-isolation.sql applied
-#   P-8       provisioning refused when a migration was applied after the last post-migration run
+#   P-8..P-9  provisioning refused when a migration was applied after the last post-migration run,
+#             and while a newer run is unfinished
 #   A-1..A-3  the API refuses to start on an unmigrated or partly post-migrated database and starts on a
 #             migrated one
 #   C-1       no password and no connection string appears in any output
@@ -275,6 +276,13 @@ c=$(code_of provision dc01_upgrade "$work/p-upgrade.log")
 [ "$c" = 3 ] && grep -q 'post-migration SQL has not completed since 1 migration' "$work/p-upgrade.log" && [ "$(tenants dc01_upgrade)" = 0 ] \
   && ok "P-8 provisioning refused when a migration was applied after the last post-migration run (exit 3)" \
   || bad "P-8 provisioning after an unfinished upgrade exited $c"
+# A run opened after the last closed one and never closed: what a run that failed or was stopped in
+# 02-04 leaves behind, whatever file versions earlier runs recorded.
+pg -d dc01_upgrade -c "SET ROLE edms_owner; INSERT INTO munaxa_meta.post_migrate_run (run, files, migrations) VALUES (gen_random_uuid(), '{}', '{}')"
+c=$(code_of provision dc01_upgrade "$work/p-open.log")
+[ "$c" = 3 ] && grep -q 'newer than the last completed one did not complete' "$work/p-open.log" \
+  && ok "P-9 provisioning refused while a newer post-migration run is unfinished (exit 3)" \
+  || bad "P-9 provisioning with an unfinished run exited $c"
 c=$(code_of provision dc01_fresh "$work/p-ok.log")
 [ "$c" = 0 ] && grep -q "Provisioned 'acme'" "$work/p-ok.log" && [ "$(tenants dc01_fresh)" = 1 ] \
   && ok "P-4 provisioning succeeds after the migration (exit 0, one tenant)" || bad "P-4 provisioning exited $c"

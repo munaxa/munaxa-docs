@@ -11,6 +11,7 @@ import {
   type MigrationRow,
   EVER_APPLIED_SQL,
   LATEST_RUN_SQL,
+  OPEN_RUN_SQL,
   POST_MIGRATE_READABLE_SQL,
   type RawQuerier,
   SchemaNotReadyError,
@@ -47,6 +48,7 @@ const facts = (over: Partial<Parameters<typeof evaluateSchema>[0]> = {}) => ({
   rows: EXPECTED.map(done),
   postMigrateReadable: true,
   latestRun: { files: POST.map(entry), migrations: EXPECTED },
+  openRun: false,
   everApplied: POST.map(entry),
   unprotectedTables: [],
   ...over,
@@ -143,8 +145,27 @@ describe('evaluateSchema', () => {
     ]);
   });
 
-  it('refuses a file reverted to a version an earlier run applied, when the last run did not', () => {
-    // v1 applied, then v2, then back to v1 whose run failed: v1 is in the history, not the last run.
+  it('refuses while a run newer than the last completed one is open (failed, stopped, running)', () => {
+    // v1 applied, then v2, then back to v1 whose run failed: v1 is in the history, but the failed
+    // run is newer than the last completed one.
+    const v2 = { file: '02-audit-immutability.sql', sha256: 'e'.repeat(64) };
+    const result = evaluateSchema(
+      facts({
+        latestRun: { files: [entry(POST[0] ?? v2), entry(v2)], migrations: EXPECTED },
+        everApplied: [...POST.map(entry), entry(v2)],
+        openRun: true,
+      }),
+      BUILD,
+    );
+    expect(result.ready).toBe(false);
+    expect(result.problems).toEqual([
+      'a post-migration run newer than the last completed one did not complete (it failed, was ' +
+        'stopped, or is still running): run the migration again',
+    ]);
+  });
+
+  it('lets the previous build start after a release that changed only a post-migration file', () => {
+    // Release B changed 02 and ran; the previous API (A, same migrations) is a rollback target.
     const v2 = { file: '02-audit-immutability.sql', sha256: 'e'.repeat(64) };
     const result = evaluateSchema(
       facts({
@@ -153,11 +174,7 @@ describe('evaluateSchema', () => {
       }),
       BUILD,
     );
-    expect(result.ready).toBe(false);
-    expect(result.problems).toEqual([
-      'post-migration SQL of this build not applied (never run, failed, or changed since): ' +
-        '02-audit-immutability.sql',
-    ]);
+    expect(result.ready).toBe(true);
   });
 
   it('refuses when the build carries no migrations at all', () => {
@@ -194,6 +211,7 @@ describe('evaluateSchema', () => {
           files: POST.slice(0, 1).map(entry).concat(entry(changed)),
           migrations: EXPECTED,
         },
+        everApplied: POST.slice(0, 1).map(entry).concat(entry(changed)),
       }),
       BUILD,
     );
@@ -238,6 +256,7 @@ describe('checkSchemaReadiness', () => {
         [MIGRATION_ROWS_SQL, EXPECTED.map(done)],
         [POST_MIGRATE_READABLE_SQL, [{ readable: true }]],
         [LATEST_RUN_SQL, [{ files: POST.map(entry), migrations: EXPECTED }]],
+        [OPEN_RUN_SQL, [{ open: false }]],
         [EVER_APPLIED_SQL, POST.map((row) => ({ entry: entry(row) }))],
         [UNPROTECTED_TABLES_SQL, []],
       ]),

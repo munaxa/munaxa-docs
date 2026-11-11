@@ -17,13 +17,14 @@ import { dirname, join, resolve } from 'node:path';
  * 2. every migration this build carries in `prisma/migrations` has finished and was not rolled back;
  * 3. no migration is failed or still running (finished_at and rolled_back_at both empty) — Prisma's
  *    own definition, the one `migrate deploy` refuses to continue past;
- * 4. the post-migration SQL in `infra/sql/post-migrate` completed *after* the last migration: the
- *    latest row of `munaxa_meta.post_migrate_run` (written by `scripts/apply-post-migrate.mjs` only
- *    once every file applied) lists every migration now applied, and carries the SHA-256 of every
- *    post-migration file this build carries. So a run that failed in any file, was skipped after a
- *    new migration, or predates a changed (or reverted) file is seen, not only the row-level
- *    security of 01-tenant-isolation.sql. On a database *ahead* of this build (a rollback) the file
- *    versions may come from any completed run, since the newer build's run replaced them;
+ * 4. the post-migration SQL in `infra/sql/post-migrate` completed *after* the last migration, per
+ *    `munaxa_meta.post_migrate_run` (`scripts/apply-post-migrate.mjs` opens a row before its first
+ *    file with the migrations applied at that moment, and closes it after its last): the latest
+ *    closed run began after every migration now applied; no newer run is still open (failed,
+ *    stopped or running); and some closed run applied this build's version of every file (any
+ *    closed run, so the previous build still starts after a release that changed a file). So a run
+ *    that failed in any file, or was skipped after a new migration, is seen, not only the row-level
+ *    security of 01-tenant-isolation.sql;
  * 5. every tenant-scoped table has row-level security enabled and forced, with its
  *    `tenant_isolation` policy (checked directly as well, because it is the isolation boundary).
  *
@@ -57,7 +58,7 @@ export interface PostMigrateFile {
 export interface PostMigrateRun {
   /** `<file>:<sha256>` of each file the run applied. */
   readonly files: readonly string[];
-  /** The Prisma migrations applied when the run completed. */
+  /** The Prisma migrations applied when the run began, before its first file. */
   readonly migrations: readonly string[];
 }
 
@@ -69,6 +70,8 @@ export interface SchemaFacts {
   readonly postMigrateReadable: boolean;
   /** The latest completed post-migration run, if any. */
   readonly latestRun: PostMigrateRun | undefined;
+  /** A run newer than the latest completed one never completed (failed, killed, or running). */
+  readonly openRun: boolean;
   /** `<file>:<sha256>` of every file version any completed run applied. */
   readonly everApplied: readonly string[];
   /** Tenant-scoped tables without forced row-level security and their isolation policy. */
@@ -98,10 +101,20 @@ export const POST_MIGRATE_READABLE_SQL = `
                     AND has_table_privilege(c.oid, 'SELECT')) AS readable`;
 
 export const LATEST_RUN_SQL = `
-  SELECT files, migrations FROM munaxa_meta.post_migrate_run ORDER BY id DESC LIMIT 1`;
+  SELECT files, migrations FROM munaxa_meta.post_migrate_run
+   WHERE completed_at IS NOT NULL ORDER BY id DESC LIMIT 1`;
+
+/** A run opened after the latest closed one and never closed: failed, killed, or still running. */
+export const OPEN_RUN_SQL = `
+  SELECT EXISTS (
+    SELECT 1 FROM munaxa_meta.post_migrate_run
+     WHERE completed_at IS NULL
+       AND id > COALESCE((SELECT max(id) FROM munaxa_meta.post_migrate_run
+                           WHERE completed_at IS NOT NULL), 0)) AS open`;
 
 export const EVER_APPLIED_SQL = `
-  SELECT DISTINCT unnest(files) AS entry FROM munaxa_meta.post_migrate_run`;
+  SELECT DISTINCT unnest(files) AS entry FROM munaxa_meta.post_migrate_run
+   WHERE completed_at IS NOT NULL`;
 
 /**
  * The tables 01-tenant-isolation.sql protects, discovered the same way (every `public` table with a
@@ -134,6 +147,10 @@ export async function readSchemaFacts(db: RawQuerier): Promise<SchemaFacts> {
   const [latestRun] = postMigrateReadable
     ? await db.$queryRawUnsafe<PostMigrateRun[]>(LATEST_RUN_SQL)
     : [];
+  const [open] = postMigrateReadable
+    ? await db.$queryRawUnsafe<{ open: boolean | null }[]>(OPEN_RUN_SQL)
+    : [];
+  const openRun = open?.open === true;
   const everApplied = postMigrateReadable
     ? (await db.$queryRawUnsafe<{ entry: string }[]>(EVER_APPLIED_SQL)).map((row) => row.entry)
     : [];
@@ -143,6 +160,7 @@ export async function readSchemaFacts(db: RawQuerier): Promise<SchemaFacts> {
     rows,
     postMigrateReadable,
     latestRun,
+    openRun,
     everApplied,
     unprotectedTables: unprotected.map((row) => row.name),
   };
@@ -212,9 +230,16 @@ export function evaluateSchema(facts: SchemaFacts, build: BuildSchema): SchemaRe
           `applied, the first being ${since[0] ?? ''}: the last migration run did not finish`,
       );
     }
-    // Up to date: this build's file versions must be the latest run's. Ahead (a rollback): the
-    // newer build's run replaced them, so any completed run of them counts.
-    const reference = new Set(unknown.length > 0 ? facts.everApplied : run.files);
+    if (facts.openRun) {
+      problems.push(
+        'a post-migration run newer than the last completed one did not complete (it failed, was ' +
+          'stopped, or is still running): run the migration again',
+      );
+    }
+    // Any completed run of this build's file versions counts, so the previous build still starts
+    // after a release that changed a file (a rollback). A later run of other versions that failed
+    // is the open run above.
+    const reference = new Set(facts.everApplied);
     const missing = build.postMigrate
       .filter((row) => !reference.has(`${row.file}:${row.sha256}`))
       .map((row) => row.file);

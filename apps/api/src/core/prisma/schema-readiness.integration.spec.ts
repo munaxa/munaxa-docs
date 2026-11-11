@@ -67,7 +67,8 @@ describe('schema readiness against PostgreSQL', () => {
   it('cannot write the post-migration record as the application role', async () => {
     await expect(
       app.$executeRawUnsafe(
-        `INSERT INTO munaxa_meta.post_migrate_run (files, migrations) VALUES ('{}', '{}')`,
+        `INSERT INTO munaxa_meta.post_migrate_run (run, completed_at, files, migrations)
+         VALUES (gen_random_uuid(), now(), '{}', '{}')`,
       ),
     ).rejects.toThrow(/permission denied/);
   });
@@ -110,10 +111,12 @@ describe('schema readiness against PostgreSQL', () => {
     await fresh.$executeRawUnsafe('CREATE SCHEMA munaxa_meta');
     await fresh.$executeRawUnsafe(`
       CREATE TABLE munaxa_meta.post_migrate_run (
-        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, completed_at timestamptz DEFAULT now(),
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, run uuid NOT NULL UNIQUE,
+        started_at timestamptz DEFAULT now(), completed_at timestamptz,
         files text[] NOT NULL, migrations text[] NOT NULL)`);
     await fresh.$executeRawUnsafe(
-      'INSERT INTO munaxa_meta.post_migrate_run (files, migrations) VALUES ($1, $2)',
+      `INSERT INTO munaxa_meta.post_migrate_run (run, completed_at, files, migrations)
+       VALUES (gen_random_uuid(), now(), $1, $2)`,
       [`${isolation?.file ?? ''}:${isolation?.sha256 ?? ''}`],
       [first],
     );
@@ -132,5 +135,13 @@ describe('schema readiness against PostgreSQL', () => {
     expect(later.problems).toContain(
       `the post-migration SQL has not completed since 1 migration(s) were applied, the first being ${second ?? ''}: the last migration run did not finish`,
     );
+
+    // A newer run that opened and never closed (failed or stopped part-way).
+    await fresh.$executeRawUnsafe(
+      `INSERT INTO munaxa_meta.post_migrate_run (run, files, migrations)
+       VALUES (gen_random_uuid(), '{}', '{}')`,
+    );
+    const open = await checkSchemaReadiness(fresh);
+    expect(open.problems.join()).toMatch(/newer than the last completed one did not complete/);
   });
 });
