@@ -17,9 +17,13 @@
 #             image gained none of it
 #   M-1..M-9  migrations: a fresh database migrates (exit 0); a re-run is a no-op (exit 0); a
 #             failing migration exits 1 and stays failed on every re-run (never skipped, never reset);
-#             wrong credentials exit 1; no URL exits 2; two runs at once never both "succeed" into a
-#             broken state; every run is read-only-root, capability-free
+#             wrong credentials exit 1; no URL exits 2; two runs at once both succeed, one after the
+#             other (the migration lock); every run is read-only-root, capability-free
 #   M-10      the application role cannot write the Prisma migration history
+#   M-11      while another session holds the migration lock a run exits 3 and changes nothing, and
+#             runs normally once the lock is free (L-1)
+#   M-12      no default privilege gives the application role tables, so it has no write on the
+#             history even straight after `migrate deploy` on a fresh database (L-2)
 #   P-1..P-5  provisioning: refused (exit 3, nothing written) on an unmigrated database, on a failed
 #             migration, and on a database whose post-migration SQL did not run; succeeds after the
 #             migration (exit 0); a re-run changes nothing (exit 4)
@@ -148,7 +152,7 @@ sleep 2 # the image restarts its server once after initialisation
 pg() { docker exec -i -e PGPASSWORD="$superuser_password" dc01-postgres psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -q -t -A "$@"; }
 pg -d postgres <infra/sql/cluster/01-roles.sql
 pg -d postgres -c "ALTER ROLE edms_owner PASSWORD '${owner_password//\'/\'\'}'" -c "ALTER ROLE edms_app PASSWORD '$app_password'"
-for db in fresh failing partial nopost rlsonly upgrade revert race; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
+for db in fresh failing partial nopost rlsonly upgrade revert race locked window; do pg -d postgres -c "CREATE DATABASE dc01_$db OWNER edms_owner"; done
 # `failing`: a type the second migration creates, so migration 1 applies and migration 2 fails.
 failing_type=$(grep -m1 -o 'CREATE TYPE "[a-z_]*"' prisma/migrations/20260803162912_identity/migration.sql | cut -d'"' -f2)
 pg -d dc01_failing -c "SET ROLE edms_owner; CREATE TYPE \"$failing_type\" AS ENUM ('X');"
@@ -195,8 +199,8 @@ set -e
 [ "$n" = 2 ] && grep -q 'DATABASE_MIGRATION_URL is not set' "$work/n.log" \
   && ok "M-7 no migration URL exits 2 (configuration), touching nothing" || bad "M-7 missing URL exited $n"
 
-# Two runs at once on one fresh database: Prisma's advisory lock serialises the migrations; the SQL
-# around them is idempotent. Neither may report success over a broken database.
+# Two runs at once on one fresh database: the migration lock (L-1) makes the second wait for the
+# first, so both succeed and never interleave; a third finds nothing to do.
 set +e
 run_migrate dc01_race "$work/r1.log" &
 p1=$!
@@ -207,15 +211,14 @@ wait "$p2"; r2=$?
 set -e
 c=$(code_of run_migrate dc01_race "$work/r3.log")
 dupes=$(pg -d dc01_race -c "SELECT count(*) - count(DISTINCT migration_name) FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL")
-if { [ "$r1" = 0 ] || [ "$r2" = 0 ]; } && [ "$c" = 0 ] && [ "$dupes" = 0 ] && grep -q 'No pending migrations' "$work/r3.log"; then
-  ok "M-8 two concurrent runs (exit $r1 and $r2): at least one succeeded, no migration applied twice, a third run finds nothing to do"
-  for log in "$work/r1.log" "$work/r2.log"; do
-    if grep -q 'MIGRATION FAILED' "$log"; then
-      echo "       the other run failed loudly: $(grep -m1 -oE "(P[0-9]{4}|deadlock detected|advisory lock|already exists)[^.]*" "$log" || echo 'see its log')"
-    fi
-  done
+runs=$(pg -d dc01_race -c "SELECT count(*) FILTER (WHERE completed_at IS NOT NULL) || '/' || count(*) FILTER (WHERE completed_at IS NULL) FROM munaxa_meta.post_migrate_run")
+overlap=$(pg -d dc01_race -c "SELECT count(*) FROM munaxa_meta.post_migrate_run a JOIN munaxa_meta.post_migrate_run b ON a.id < b.id AND b.started_at < a.completed_at")
+if [ "$r1" = 0 ] && [ "$r2" = 0 ] && [ "$c" = 0 ] && [ "$dupes" = 0 ] && [ "$runs" = "3/0" ] && [ "$overlap" = 0 ] \
+  && grep -q 'No pending migrations' "$work/r3.log"; then
+  ok "M-8 two concurrent runs both exit 0 and never overlap (the migration lock); no migration applied twice, no run left open, a third run finds nothing to do"
+  grep -q 'waiting up to' "$work/r1.log" "$work/r2.log" && echo "       one of them waited for the other's lock"
 else
-  bad "M-8 concurrent runs exited $r1/$r2, follow-up $c, duplicates $dupes"
+  bad "M-8 concurrent runs exited $r1/$r2, follow-up $c, duplicates $dupes, completed/open runs $runs, overlapping runs $overlap"
 fi
 if pg -d dc01_fresh -c "SET ROLE edms_app; INSERT INTO _prisma_migrations (id, checksum, migration_name, finished_at, applied_steps_count) VALUES ('forged', 'x', '20990101000000_forged', now(), 1)" >/dev/null 2>&1; then
   bad "M-10 the application role could write the Prisma migration history"
@@ -224,6 +227,36 @@ else
 fi
 grep -hE 'EROFS|read-only file system' "$work"/m*.log "$work"/r*.log && bad "M-9 a migration wrote to its read-only root" \
   || ok "M-9 every migration ran on a read-only root filesystem with no capabilities"
+
+# M-11: another session holds the migration lock on `locked` (the lock's documented identity).
+pg -d dc01_locked -c "SELECT pg_advisory_lock(1297436248, 1145915719)" -c "SELECT pg_sleep(600)" </dev/null >/dev/null 2>&1 &
+holder=$!
+for _ in $(seq 1 50); do
+  [ "$(pg -d dc01_locked -c "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 1297436248 AND objid = 1145915719 AND objsubid = 2 AND granted")" = 1 ] && break
+  sleep 0.2
+done
+c=$(code_of run_migrate dc01_locked "$work/l1.log" -e MIGRATION_LOCK_TIMEOUT_SECONDS=2)
+touched=$(pg -d dc01_locked -c "SELECT (to_regclass('public._prisma_migrations') IS NOT NULL OR to_regnamespace('munaxa_meta') IS NOT NULL OR to_regprocedure('public.current_tenant_id()') IS NOT NULL OR EXISTS (SELECT 1 FROM pg_default_acl))::text")
+pg -d dc01_locked -c "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND classid = 1297436248 AND objid = 1145915719 AND objsubid = 2" >/dev/null
+wait "$holder" 2>/dev/null || true
+c2=$(code_of run_migrate dc01_locked "$work/l2.log")
+[ "$c" = 3 ] && grep -q 'MIGRATION LOCKED' "$work/l1.log" && [ "$touched" = false ] && [ "$c2" = 0 ] \
+  && ok "M-11 a run refused by a held migration lock exits 3 and changes nothing; once the lock is free it migrates (exit 0)" \
+  || bad "M-11 locked run exited $c (database touched: $touched), the run after release exited $c2"
+
+# M-12: what `migrate deploy` leaves straight after creating the history on a fresh database, before
+# any post-migration SQL: the per-database SQL, then the migrations, as the runner does them.
+for step in "db execute --file infra/sql/database/01-grants.sql" "migrate deploy"; do
+  # shellcheck disable=SC2086
+  docker run --rm "${hardened[@]}" -e DATABASE_URL="$(owner_url dc01_window)" --entrypoint node "$MIGRATE_IMAGE" \
+    node_modules/prisma/build/index.js $step --schema prisma/schema.prisma >>"$work/wn.log" 2>&1 \
+    || { sed 's/^/    /' "$work/wn.log"; echo "setting up the window database failed at: $step"; exit 1; }
+done
+window=$(pg -d dc01_window -c "SELECT has_table_privilege('edms_app', '_prisma_migrations', 'INSERT') OR has_table_privilege('edms_app', '_prisma_migrations', 'UPDATE') OR has_table_privilege('edms_app', '_prisma_migrations', 'DELETE') OR has_table_privilege('edms_app', '_prisma_migrations', 'TRUNCATE')")
+defaults=$(pg -d dc01_fresh -c "SELECT count(*) FROM pg_default_acl WHERE defaclobjtype = 'r' AND array_to_string(defaclacl, ',') LIKE '%edms_app=%'")
+[ "$window" = f ] && [ "$defaults" = 0 ] \
+  && ok "M-12 no default privilege hands tables to the application role: no write on the history even straight after migrate deploy" \
+  || bad "M-12 write on the history after migrate deploy: $window; default table grants to edms_app: $defaults"
 
 # `nopost`: the migrations without the post-migration SQL — the state a runner that skipped it leaves.
 docker run --rm "${hardened[@]}" -e DATABASE_URL="$(owner_url dc01_nopost)" --entrypoint node "$MIGRATE_IMAGE" \

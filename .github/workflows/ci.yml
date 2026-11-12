@@ -394,6 +394,16 @@ jobs:
       # front of ClamAV's clamd, configured by `infra/antivirus/`, with ClamAV's official signatures.
       # No double stands in for it: a suite that asserts EICAR is blocked has nothing to assert
       # against a mock. The packages are Ubuntu's own, the same versions the RC was validated on.
+      # L-1 and L-2 (docs-migration-path hardening): the migration lock and the privileges on
+      # Prisma's migration history, each test on a disposable database of this same server that it
+      # makes and drops (scripts/__tests__/integration/database.mjs). One at a time: they observe
+      # locks and privileges, which a parallel test would disturb.
+      - name: Migration runner integration tests
+        run: node --test --test-concurrency=1 scripts/__tests__/integration/*.test.mjs
+        env:
+          MIGRATION_TEST_ADMIN_URL: postgresql://edms_owner@127.0.0.1:5432/postgres
+          MIGRATION_TEST_OWNER_URL: postgresql://edms_owner@127.0.0.1:5432/postgres
+
       - name: Install the antivirus scanner
         run: |
           set -euo pipefail

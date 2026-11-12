@@ -111,11 +111,58 @@ Every tenant ends with `prisma migrate status`, which must agree that nothing is
 before the runner counts the tenant as migrated. A failed migration stays recorded as failed in
 `_prisma_migrations`, and every later run refuses with `P3009` until an operator resolves it — the
 runner never resets a database, never runs `db push`, `migrate dev` or `migrate resolve`, and never
-rewrites history. Prisma's advisory lock serialises only `migrate deploy` between two runs at once;
-the post-migration SQL is not serialised, so a race can fail loudly (a deadlock, say) and leave the
-gate refusing until a single follow-up run completes (scripts/migration-image/verify.sh M-8). Never
-start a second copy.
-No connection string or password is ever printed: the CLI's output is redacted before it is written.
+rewrites history.
+
+**One run per tenant database at a time — enforced, not just asked for (L-1).** Before it reads or
+changes anything in a tenant database, the runner takes that database's **migration lock** and holds
+it until the tenant's last step (`migrate status`) has passed:
+
+- The lock is a PostgreSQL session-level advisory lock, `pg_try_advisory_lock(1297436248,
+  1145915719)` (the ASCII of `MUNX`, `DMIG`), on a dedicated connection named
+  `munaxa-docs-migrate-lock`. Advisory locks are per database, so it is one lock per tenant database.
+  It is a different key from the one Prisma takes around `migrate deploy`, which still happens inside
+  it. An operator sees it in `pg_locks` (`locktype = 'advisory' AND classid = 1297436248 AND objid =
+  1145915719 AND objsubid = 2`).
+- **A second run waits, then gives up without touching anything.** It retries for
+  `MIGRATION_LOCK_TIMEOUT_SECONDS` (default `120`, `0` to `3600`; anything else is exit `2`), then
+  exits **`3`**, naming the backend that holds the lock. Nothing was read or changed in that tenant's
+  database; with a catalogue, earlier tenants are migrated. Wait for the other run to finish, then run
+  again.
+- **It fails closed.** A database that cannot be reached, or credentials it refuses, fail the run
+  (exit `1`, `P1001`/`P1000` named) before the first step; the runner never carries on unlocked.
+- **Every SQL step proves the lock in its own transaction.** The per-database SQL, the opening and
+  closing of the post-migration run record and every post-migration file start with a check that
+  the run's own lock session still holds the lock, so a step that starts after the lock was lost
+  commits nothing. The check is made once, at the start of the step's transaction: a lock session
+  that dies while a step is running does not undo that step, and `prisma migrate deploy` (which
+  holds Prisma's own advisory lock) is not checked this way. A heartbeat (every 5 s; a check that
+  does not answer within 10 s counts as lost) notices a lost lock session, stops a running SQL
+  step, lets a running `migrate deploy` finish rather than leave a half-applied migration, and
+  fails the run (exit `1`, "the migration lock was lost").
+- **Released on every path.** The runner unlocks after the last step, success or failure. SIGTERM or
+  SIGINT stops the running step's process group (the Prisma CLI and its schema engine), waits for it
+  to exit, then releases the lock and exits `1`; the lock is also released by PostgreSQL whenever the
+  session ends, so a killed task cannot leave it held.
+- `scripts/apply-post-migrate.mjs` run on its own (`pnpm db:post-migrate`, the DR rehearsal) takes
+  the same lock itself. `MIGRATION_LOCK_BACKEND_PID` is internal to the runner (it tells the nested
+  post-migration step which session holds the run's lock); never set it by hand, since a
+  post-migration run given another run's backend would take no lock of its own.
+
+Only runners of this release onward take the lock: an image built before it does not, so the
+procedure still runs one `docs-migrate` at a time.
+
+**The application role never has write on Prisma's history (L-2).** The gate below trusts
+`_prisma_migrations`, so `edms_app` may only read it. No default privilege hands new tables to the
+application (infra/sql/database/01-grants.sql withdraws the one earlier releases set, and the write
+on an existing history, before every migration); the post-migration SQL grants the application its
+tables and takes the write on the history back in the same transaction as each file, so no other
+session ever sees it.
+
+Output is streamed as each command produces it (L-6), so a long or stuck `migrate deploy` is visible
+in the log while it runs. No connection string or password is ever printed: every line is redacted
+before it is written, a very long line is written in pieces cut only where no secret or URL can
+straddle the cut, and a run of characters without whitespace too long to hold is withheld rather than
+split.
 
 **The API and provisioning refuse an unmigrated database.** `provision.js` checks the tenant's
 database first and exits `3` (nothing written) unless every migration this build carries is applied,
@@ -157,10 +204,14 @@ Then the `docs-api` service, which refuses to start until step 2 has finished.
    that changes `images.docs_api` starts the API rollout at once, before the migration has run.
 4. Back up the tenant database (§1 step 1).
 5. Run `docs-migrate` once (`aws ecs run-task`, the task's own security group, public subnet with a
-   public IP as the other tasks), and wait for it to stop. Never start a second copy while one runs.
+   public IP as the other tasks), and wait for it to stop. Do not start a second copy while one
+   runs; if one is started anyway, the migration lock (§2) makes it wait and then exit `3` having
+   changed nothing.
 6. Read the container's **exit code** (`aws ecs describe-tasks … containers[0].exitCode`), not only
-   its log: `0` migrated and verified; anything else stops the release here. The log, in
-   `/munaxa/<env>/docs-migrate`, names the tenant and step and never a credential.
+   its log: `0` migrated and verified; anything else stops the release here (`1` failed, cancelled or
+   lost its lock; `2` configuration, nothing touched; `3` another run held the lock, nothing touched —
+   find and wait for that run, then run again). The log, in `/munaxa/<env>/docs-migrate`, streams
+   while the task runs, names the tenant and step and never a credential.
 7. For a first deployment: run `docs-provision`; exit `0` provisioned, `4` already provisioned
    (nothing changed), `3` the database is not migrated (go back to step 5).
 8. **Second apply: the API.** Only after step 6 returned `0`, pin the paired `images.docs_api` (and
