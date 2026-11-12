@@ -175,4 +175,21 @@ describe('privileges on the migration history', { skip, concurrency: false }, ()
     assert.equal(history.select, true);
     assert.deepEqual(writes(history), NO_WRITE);
   });
+
+  test('a write the REVOKE cannot take away (through PUBLIC) fails the run instead of passing', async () => {
+    const db = await database();
+    const result = await migrate(db.ownerUrl);
+    assert.equal(result.status, EXIT.OK, result.output);
+    // A route the REVOKE FROM edms_app does not cover: the right granted to every role.
+    await db.db.$executeRawUnsafe('GRANT INSERT ON public._prisma_migrations TO PUBLIC');
+    assert.equal((await appPrivileges(db.db, 'public._prisma_migrations')).insert, true);
+
+    const again = await migrate(db.ownerUrl);
+    assert.equal(again.status, EXIT.MIGRATION_FAILED, again.output);
+    assert.match(again.output, /edms_app can still write public\._prisma_migrations/);
+
+    const post = await run('apply-post-migrate.mjs', { DATABASE_MIGRATION_URL: db.ownerUrl });
+    assert.equal(post.status, EXIT.MIGRATION_FAILED, post.output);
+    assert.match(post.output, /edms_app can still write public\._prisma_migrations/);
+  });
 });

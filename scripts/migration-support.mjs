@@ -111,6 +111,23 @@ export function secretsIn(urls) {
     } catch {
       // Not a URL at all; the pattern above replaces anything URL-shaped.
     }
+    // The password exactly as written in the URL: `new URL` re-encodes some characters (`^` becomes
+    // `%5E`), so neither form above would match a quote of the original text.
+    const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(url)?.[1] ?? '';
+    const userinfo = authority.includes('@') ? authority.slice(0, authority.lastIndexOf('@')) : '';
+    if (userinfo.includes(':')) {
+      const raw = userinfo.slice(userinfo.indexOf(':') + 1);
+      secrets.add(raw);
+      try {
+        secrets.add(decodeURIComponent(raw));
+      } catch {
+        // As above.
+      }
+    }
+  }
+  // As they would appear inside a JSON string (a quote or backslash escaped).
+  for (const secret of [...secrets]) {
+    secrets.add(JSON.stringify(secret).slice(1, -1));
   }
   // Very short values would redact ordinary words; a real password is never this short. Longest
   // first, so a password that contains another one is replaced whole.
@@ -145,6 +162,15 @@ export function createRedactingWriter(write, urls = [], { prefix = '' } = {}) {
   const secrets = secretsIn(urls);
   const margin = Math.max(0, ...secrets.map((secret) => secret.length));
   const lineCutIsSafe = !secrets.some((secret) => /[\r\n]/.test(secret));
+  // A withheld run ends at the first whitespace character that no secret contains: a secret that
+  // began inside the dropped run and contained that character could otherwise have its tail written.
+  // If the secrets contain every kind of whitespace, a withheld run lasts to the end of the output.
+  const enders = [' ', '\t', '\n', '\r', '\f', '\v'].filter(
+    (c) => !secrets.some((secret) => secret.includes(c)),
+  );
+  const WITHHOLD_ENDS = enders.length
+    ? new RegExp(`[${enders.map((c) => JSON.stringify(c).slice(1, -1)).join('')}]`)
+    : /$^/;
   const limit = Math.max(MAX_PENDING, 2 * margin);
   let pending = '';
   let withholding = false;
@@ -183,9 +209,9 @@ export function createRedactingWriter(write, urls = [], { prefix = '' } = {}) {
     }
   };
 
-  // Drops a withheld run up to the first whitespace in `text`; returns what follows it.
+  // Drops a withheld run up to the first character that ends it in `text`; returns what follows.
   const skipWithheld = (text) => {
-    const index = text.search(WHITESPACE);
+    const index = text.search(WITHHOLD_ENDS);
     if (index < 0) {
       return '';
     }
@@ -630,8 +656,23 @@ export async function acquireMigrationLock(
 
   let lost;
   let checking = false;
+  let released = false;
+  // A check that does not answer within this long counts as a lost session: a half-open connection
+  // would otherwise leave the heartbeat waiting forever while another run takes the lock.
+  const checkTimeoutMs = Math.max(2 * heartbeatMs, 5_000);
+  const timedState = () => {
+    let timer;
+    return Promise.race([
+      state(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('no answer')), checkTimeoutMs);
+        timer.unref?.();
+      }),
+    ]).finally(() => clearTimeout(timer));
+  };
   const markLost = (reason) => {
-    if (!lost) {
+    // A check still in flight when release() ran says nothing about a later tenant's run.
+    if (!lost && !released) {
       lost = new MigrationLockLost(reason);
       onLost?.(lost);
     }
@@ -641,19 +682,18 @@ export async function acquireMigrationLock(
       return;
     }
     checking = true;
-    state()
+    timedState()
       .then((now) => {
         if (now.pid !== pid) markLost('its connection was replaced');
         else if (!now.held) markLost('the database no longer reports it held');
       })
-      .catch(() => markLost('its connection failed'))
+      .catch(() => markLost('its connection failed or stopped answering'))
       .finally(() => {
         checking = false;
       });
   }, heartbeatMs);
   heartbeat.unref();
 
-  let released = false;
   return {
     /** The backend id of the lock's session, for `assertLockHeldSql`. */
     pid,
@@ -664,9 +704,9 @@ export async function acquireMigrationLock(
       }
       let now;
       try {
-        now = await state();
+        now = await timedState();
       } catch {
-        markLost('its connection failed');
+        markLost('its connection failed or stopped answering');
         throw lost;
       }
       if (now.pid !== pid || !now.held) {

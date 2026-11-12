@@ -46,6 +46,11 @@ DO $$
 BEGIN
   IF to_regclass('public._prisma_migrations') IS NOT NULL THEN
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._prisma_migrations FROM edms_app;
+    -- A REVOKE by a role that does not own the table only warns. Whoever owns it, and whether the
+    -- right comes directly, through PUBLIC or through a role, the application must end with none.
+    IF has_table_privilege('edms_app', 'public._prisma_migrations', 'INSERT, UPDATE, DELETE, TRUNCATE') THEN
+      RAISE EXCEPTION 'edms_app can still write public._prisma_migrations (is it owned by edms_owner?)';
+    END IF;
   END IF;
 END
 $$;

@@ -158,9 +158,20 @@ const execute = async (label, sql) => {
 
 // After every file, in the same transaction as the file: 01-tenant-isolation.sql's GRANT on every
 // table in `public` never leaves the application role able to write the history the gate trusts.
+const ASSERT_HISTORY_READ_ONLY = `
+-- A REVOKE by a role that does not own the table only warns: prove the result, whatever the route.
+DO $$
+BEGIN
+  IF has_table_privilege('edms_app', 'public._prisma_migrations', 'INSERT, UPDATE, DELETE, TRUNCATE') THEN
+    RAISE EXCEPTION 'edms_app can still write public._prisma_migrations (is it owned by edms_owner?)';
+  END IF;
+END
+$$;
+`;
+
 const KEEP_HISTORY_READ_ONLY = `
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._prisma_migrations FROM edms_app;
-`;
+${ASSERT_HISTORY_READ_ONLY}`;
 
 // Opened before any file runs, so the migrations it lists are those the files then run against: a
 // migration another runner applies meanwhile is not claimed by this run. Closed only when every file
@@ -207,7 +218,7 @@ await execute(
   `
 -- 01-tenant-isolation.sql grants the application role write on every table in \`public\`, which
 -- includes Prisma's history: the gate trusts that history, so edms_app may only read it.
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._prisma_migrations FROM edms_app;
+${KEEP_HISTORY_READ_ONLY}
 UPDATE munaxa_meta.post_migrate_run SET completed_at = now() WHERE run = '${run}';
 `,
 );

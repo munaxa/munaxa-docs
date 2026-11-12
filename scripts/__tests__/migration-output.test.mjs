@@ -156,6 +156,31 @@ test('a huge run without whitespace is withheld, not cut, so no URL can be writt
   assert.doesNotMatch(out.text, /xxxx|@host/);
 });
 
+test('a secret containing whitespace that straddles the end of a withheld run is not written', () => {
+  const out = collector();
+  const writer = createRedactingWriter(out.write, ['postgresql://u:ab%20cdSECRET@db/edms_acme']);
+  writer.push(`${'x'.repeat(70_000)}ab`);
+  writer.push(' cdSECRET tail\nnext line\n');
+  writer.end();
+  assert.ok(!out.text.includes('cdSECRET') && !out.text.includes('SECRET'), out.text.slice(-200));
+  assert.match(out.text, /\[output withheld: .*\]\n[\s\S]*next line\n$/);
+});
+
+test('the password as written in the URL, decoded, re-encoded or JSON-escaped is redacted', () => {
+  for (const [url, forms] of [
+    ['postgresql://u:Pa^ss%40word@db/edms_acme', ['Pa^ss%40word', 'Pa^ss@word', 'Pa%5Ess%40word']],
+    ['postgresql://u:quo%22te%5Cpw@db/edms_acme', ['quo"te\\pw', 'quo\\"te\\\\pw']],
+  ]) {
+    for (const form of forms) {
+      const out = collector();
+      const writer = createRedactingWriter(out.write, [url]);
+      writer.push(`value=${form} end\n`);
+      writer.end();
+      assert.equal(out.text, 'value=*** end\n', form);
+    }
+  }
+});
+
 test('large output streams through with bounded pieces and nothing lost', async () => {
   let lines = 0;
   let largest = 0;

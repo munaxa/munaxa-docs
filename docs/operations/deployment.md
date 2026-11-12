@@ -132,15 +132,21 @@ it until the tenant's last step (`migrate status`) has passed:
   (exit `1`, `P1001`/`P1000` named) before the first step; the runner never carries on unlocked.
 - **Every SQL step proves the lock in its own transaction.** The per-database SQL, the opening and
   closing of the post-migration run record and every post-migration file start with a check that
-  the run's own lock session still holds the lock, so nothing of a run whose lock was lost commits.
-  A heartbeat (every 5 s) notices a lost lock session and stops the run (exit `1`, "the migration
-  lock was lost").
+  the run's own lock session still holds the lock, so a step that starts after the lock was lost
+  commits nothing. The check is made once, at the start of the step's transaction: a lock session
+  that dies while a step is running does not undo that step, and `prisma migrate deploy` (which
+  holds Prisma's own advisory lock) is not checked this way. A heartbeat (every 5 s; a check that
+  does not answer within 10 s counts as lost) notices a lost lock session, stops a running SQL
+  step, lets a running `migrate deploy` finish rather than leave a half-applied migration, and
+  fails the run (exit `1`, "the migration lock was lost").
 - **Released on every path.** The runner unlocks after the last step, success or failure. SIGTERM or
   SIGINT stops the running step's process group (the Prisma CLI and its schema engine), waits for it
   to exit, then releases the lock and exits `1`; the lock is also released by PostgreSQL whenever the
   session ends, so a killed task cannot leave it held.
 - `scripts/apply-post-migrate.mjs` run on its own (`pnpm db:post-migrate`, the DR rehearsal) takes
-  the same lock itself.
+  the same lock itself. `MIGRATION_LOCK_BACKEND_PID` is internal to the runner (it tells the nested
+  post-migration step which session holds the run's lock); never set it by hand, since a
+  post-migration run given another run's backend would take no lock of its own.
 
 Only runners of this release onward take the lock: an image built before it does not, so the
 procedure still runs one `docs-migrate` at a time.

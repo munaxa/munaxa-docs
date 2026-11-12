@@ -181,8 +181,13 @@ async function migrate(tenant) {
       process.stdout.write(
         `  waiting up to ${lockWait}s for the migration lock: another migration run holds it\n`,
       ),
-    // A lost lock stops the running step; the step then fails and names the reason.
-    onLost: () => void stopRunningChildren(),
+    // A lost lock stops the running SQL step; the step then fails and names the reason. A running
+    // `prisma migrate deploy` is left to finish (it holds Prisma's own advisory lock, and killing it
+    // mid-migration leaves a failed migration that needs `migrate resolve`); the run fails right
+    // after it instead.
+    onLost: () => {
+      if (current.step !== 'prisma migrate deploy') void stopRunningChildren();
+    },
     signal: cancellation.signal,
   });
   process.stdout.write('  migration lock held\n');
