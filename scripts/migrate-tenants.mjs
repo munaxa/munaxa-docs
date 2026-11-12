@@ -28,23 +28,45 @@
 // dev`, `db push` or `--accept-data-loss`. A failed migration stays recorded as failed in
 // `_prisma_migrations`, so `migrate deploy` refuses to continue past it on every later run until an
 // operator has resolved it (docs/operations/deployment.md §2); nothing here marks it rolled back or
-// rewrites the history. Prisma's advisory lock serialises only `migrate deploy`; the SQL around it is
-// idempotent but not serialised, so two runners at once can fail (a deadlock in the post-migration
-// SQL, for one) or leave an unfinished post-migration run that keeps the API and provisioning
-// refusing until a single run completes. Run one copy at a time.
+// rewrites the history.
+//
+// ## One run per database at a time (L-1)
+//
+// Before it reads or changes anything in a tenant database, the runner takes that database's
+// migration lock (migration-support.mjs `MIGRATION_LOCK`, a PostgreSQL advisory lock on its own
+// connection) and holds it until `migrate status` has passed. A second runner — another copy, or
+// another release's — waits up to MIGRATION_LOCK_TIMEOUT_SECONDS (default 120, at most 3600) and
+// then exits 3 having touched nothing in that database. If the database cannot be reached the run
+// fails (exit 1) rather than going on unlocked. Every SQL step re-checks, inside its own
+// transaction, that this run's session still holds the lock, and a heartbeat stops the run if that
+// session is lost. SIGTERM or SIGINT stops the running child, then releases the lock, then exits 1.
 //
 // ## How it ends
 //
 // After the post-migration SQL, `prisma migrate status` must agree that nothing is pending or failed
 // before a tenant counts as migrated. Exit 0 only when every tenant passed all four steps; exit 1 on a
 // migration failure (the database needs attention); exit 2 on a configuration error (nothing was
-// touched). No connection string is ever printed: output is redacted before it is written.
+// touched); exit 3 when another run held a tenant's migration lock for the whole wait (nothing was
+// read or changed in that tenant's database). No connection string is ever printed: output is
+// streamed as the commands produce it, redacted before it is written.
 
-import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { EXIT, repositoryRoot, runPrisma } from './migration-support.mjs';
+import {
+  EXIT,
+  MigrationLockLost,
+  MigrationLockTimeout,
+  acquireMigrationLock,
+  assertLockHeldSql,
+  childEnvironment,
+  describeConnectionError,
+  lockWaitSeconds,
+  repositoryRoot,
+  runPrisma,
+  runStreaming,
+  stopRunningChildren,
+} from './migration-support.mjs';
 
 /**
  * The per-database SQL: grants, default privileges, and the tenant discriminator function the
@@ -149,50 +171,106 @@ function sqlFilesIn(directory) {
 /**
  * The steps for one tenant, in the only order that works: the per-database SQL (the schema is still
  * empty), the migrations, the post-migration SQL (it references the tables the migrations made), and
- * a status check that the migrations really are all applied.
+ * a status check that the migrations really are all applied — all under the tenant database's
+ * migration lock, taken before the first step and released after the last.
  */
-function migrate(tenant) {
-  for (const file of sqlFilesIn(DATABASE_SQL)) {
-    step(`database SQL ${file.slice(DATABASE_SQL.length + 1)}`, () =>
-      runPrisma(['db', 'execute', '--file', file], tenant.url, { quiet: true }),
-    );
-  }
-  step('prisma migrate deploy', () => runPrisma(['migrate', 'deploy'], tenant.url));
-  // The post-migration SQL is not optional and not separate: it is the row-level security policies and
-  // the audit append-only trigger, and `01-tenant-isolation.sql` raises if a tenant-scoped table is
-  // missing a policy. A tenant migrated without it is a tenant whose isolation backstop is absent.
-  step('post-migration SQL', () => {
-    const child = spawnSync(
-      process.execPath,
-      [join(repositoryRoot, 'scripts', 'apply-post-migrate.mjs')],
-      {
-        cwd: repositoryRoot,
-        stdio: ['ignore', 'inherit', 'inherit'],
-        // The URL in the environment only, never on the command line.
-        env: { ...process.env, DATABASE_URL: tenant.url, DATABASE_MIGRATION_URL: tenant.url },
-      },
-    );
-    return child.status ?? 1;
+async function migrate(tenant) {
+  const lock = await acquireMigrationLock(tenant.url, {
+    waitSeconds: lockWait,
+    onWait: () =>
+      process.stdout.write(
+        `  waiting up to ${lockWait}s for the migration lock: another migration run holds it\n`,
+      ),
+    // A lost lock stops the running step; the step then fails and names the reason.
+    onLost: () => void stopRunningChildren(),
+    signal: cancellation.signal,
   });
-  // Exit 0 only when every migration in prisma/migrations is applied and none is failed.
-  step('prisma migrate status', () =>
-    runPrisma(['migrate', 'status'], tenant.url, { quiet: true }),
-  );
+  process.stdout.write('  migration lock held\n');
+  try {
+    for (const file of sqlFilesIn(DATABASE_SQL)) {
+      // Through stdin, after a check in the same transaction that this run still holds the lock.
+      await step(lock, `database SQL ${file.slice(DATABASE_SQL.length + 1)}`, () =>
+        runPrisma(['db', 'execute', '--stdin'], tenant.url, {
+          input: `${assertLockHeldSql(lock.pid)}\n${readFileSync(file, 'utf8')}\n`,
+        }),
+      );
+    }
+    await step(lock, 'prisma migrate deploy', () => runPrisma(['migrate', 'deploy'], tenant.url));
+    // The post-migration SQL is not optional and not separate: it is the row-level security policies
+    // and the audit append-only trigger, and `01-tenant-isolation.sql` raises if a tenant-scoped table
+    // is missing a policy. A tenant migrated without it is a tenant whose isolation backstop is absent.
+    await step(lock, 'post-migration SQL', () =>
+      runStreaming(process.execPath, [join(repositoryRoot, 'scripts', 'apply-post-migrate.mjs')], {
+        // The URL in the environment only, never on the command line; the lock's backend, so every
+        // statement it runs first checks that this run still holds the lock.
+        env: childEnvironment(tenant.url, { MIGRATION_LOCK_BACKEND_PID: String(lock.pid) }),
+        urls: [tenant.url],
+        prefix: '',
+      }),
+    );
+    // Exit 0 only when every migration in prisma/migrations is applied and none is failed.
+    await step(lock, 'prisma migrate status', () => runPrisma(['migrate', 'status'], tenant.url));
+    current.step = 'releasing the migration lock';
+    await lock.assertHeld();
+  } finally {
+    await lock.release();
+  }
 }
 
-function step(name, work) {
+async function step(lock, name, work) {
+  current.step = name;
+  if (cancelled) {
+    throw new Cancelled();
+  }
+  await lock.assertHeld();
   process.stdout.write(`  ${name}\n`);
-  const status = work();
+  const status = await work();
+  if (cancelled) {
+    throw new Cancelled();
+  }
   if (status !== 0) {
+    // A step that failed because the lock's session went away (its own guard refused) says so.
+    await lock.assertHeld();
     throw new StepFailed(name);
+  }
+  if (lock.lost) {
+    throw lock.lost;
   }
 }
 
 class StepFailed extends Error {}
 
+class Cancelled extends Error {}
+
+const lockWait = lockWaitSeconds();
+if (lockWait === null) {
+  fail('MIGRATION_LOCK_TIMEOUT_SECONDS must be a whole number of seconds from 0 to 3600.');
+}
+
 const tenants = tenantsToMigrate();
 if (tenants.length === 0) {
   fail('The tenant catalogue lists no tenants, so there is nothing to migrate.');
+}
+
+// Where the run is, so a failure or a cancellation can name it.
+const current = { step: undefined };
+const cancellation = new AbortController();
+let cancelled;
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => {
+    cancelled = signal;
+    cancellation.abort();
+    process.stderr.write(`\nReceived ${signal}: stopping the running step.\n`);
+    // The step's failure path reports and exits once its child has exited and the lock is released.
+    void stopRunningChildren();
+    // If nothing is running (waiting for the lock, between steps), end anyway: the lock's session
+    // ends with this process.
+    setTimeout(() => {
+      process.stderr.write(`MIGRATION CANCELLED by ${signal}.\n`);
+      process.exit(EXIT.MIGRATION_FAILED);
+    }, 20_000).unref();
+  });
 }
 
 process.stdout.write(`Migrating ${tenants.length} tenant database(s).\n\n`);
@@ -200,15 +278,35 @@ process.stdout.write(`Migrating ${tenants.length} tenant database(s).\n\n`);
 for (const [index, tenant] of tenants.entries()) {
   const position = `[${index + 1}/${tenants.length}]`;
   process.stdout.write(`${position} ${tenant.slug}\n`);
+  current.step = 'acquiring the migration lock';
 
   try {
-    migrate(tenant);
+    await migrate(tenant);
   } catch (error) {
+    if (error instanceof MigrationLockTimeout) {
+      console.error(
+        `\nMIGRATION LOCKED: ${position} ${tenant.slug}: ${error.message}. Nothing was read or ` +
+          "changed in this tenant's database; earlier tenants are migrated. Let the other run finish, " +
+          'then re-run.',
+      );
+      process.exit(EXIT.LOCKED);
+    }
+    if (cancelled) {
+      console.error(
+        `\nMIGRATION CANCELLED by ${cancelled}: ${position} ${tenant.slug} at '${current.step}'. ` +
+          'The running step was stopped and the lock released. Earlier tenants are migrated; ' +
+          'nothing was rolled back or reset. Re-run to finish.',
+      );
+      process.exit(EXIT.MIGRATION_FAILED);
+    }
     // The child already wrote its own (redacted) diagnostics; this names the tenant and the step.
-    const where = error instanceof StepFailed ? ` at '${error.message}'` : '';
+    const why =
+      error instanceof StepFailed
+        ? ''
+        : `: ${error instanceof MigrationLockLost ? error.message : describeConnectionError(error, [tenant.url])}`;
     console.error(
-      `\nMIGRATION FAILED: ${position} ${tenant.slug}${where}. Earlier tenants are migrated; ` +
-        'nothing was rolled back or reset. Fix the cause, then re-run.',
+      `\nMIGRATION FAILED: ${position} ${tenant.slug} at '${current.step}'${why}. ` +
+        'Earlier tenants are migrated; nothing was rolled back or reset. Fix the cause, then re-run.',
     );
     process.exit(EXIT.MIGRATION_FAILED);
   }

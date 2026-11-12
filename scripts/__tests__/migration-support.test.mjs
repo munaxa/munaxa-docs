@@ -50,6 +50,17 @@ test('exits 2, touching nothing, without a migration URL', () => {
   assert.match(result.stderr, /DATABASE_MIGRATION_URL is not set/);
 });
 
+test('exits 2, touching nothing, for a lock wait that is not 0 to 3600 whole seconds', () => {
+  for (const wait of ['-1', '3601', '1.5', 'soon']) {
+    const result = runner({
+      DATABASE_MIGRATION_URL: 'postgresql://edms_owner:x@127.0.0.1:9/edms_none',
+      MIGRATION_LOCK_TIMEOUT_SECONDS: wait,
+    });
+    assert.equal(result.status, EXIT.CONFIGURATION, wait);
+    assert.match(result.stderr, /MIGRATION_LOCK_TIMEOUT_SECONDS must be a whole number/);
+  }
+});
+
 test('exits 2 before any database for a catalogue tenant with no migration URL', () => {
   const result = runner({ TENANT_CATALOGUE: JSON.stringify({ tenants: [{ slug: 'acme' }] }) });
   assert.equal(result.status, EXIT.CONFIGURATION);
@@ -60,7 +71,13 @@ test('exits 1 and names the tenant and step when the database cannot be reached,
   const url = 'postgresql://edms_owner:never-print-me@127.0.0.1:9/edms_none';
   const result = runner({ DATABASE_MIGRATION_URL: url, TENANT_SLUG: 'acme' });
   assert.equal(result.status, EXIT.MIGRATION_FAILED);
-  assert.match(result.stderr, /MIGRATION FAILED: \[1\/1\] acme at 'database SQL 01-grants\.sql'/);
+  // L-1: the lock is the first thing the run asks of the database, and an unreachable database is a
+  // failure, never a reason to go on unlocked.
+  assert.match(
+    result.stderr,
+    /MIGRATION FAILED: \[1\/1\] acme at 'acquiring the migration lock': P1001/,
+  );
+  assert.doesNotMatch(result.stdout, /database SQL|migrate deploy/);
   assert.doesNotMatch(result.stdout + result.stderr, /never-print-me/);
   assert.doesNotMatch(result.stdout + result.stderr, /postgres(ql)?:\/\/[^*]/);
 });

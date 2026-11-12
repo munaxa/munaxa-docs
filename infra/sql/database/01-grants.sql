@@ -21,18 +21,34 @@ $$;
 
 GRANT USAGE ON SCHEMA public TO edms_app;
 
--- Every table edms_owner creates from here on is readable and writable by the application.
+-- Tables get their application grants from the post-migration SQL, never from default privileges
+-- (L-2, docs-migration-path report). ../post-migrate/01-tenant-isolation.sql grants the application
+-- read and write on every table in `public` after every migration, in the same transaction that
+-- revokes write on Prisma's history again, and 02-audit-immutability.sql then takes UPDATE and
+-- DELETE off audit_event. A default privilege used to grant the same thing at creation, and so gave
+-- the application role write on `_prisma_migrations` — the history the start-up and provisioning
+-- gate trusts — from the moment `prisma migrate deploy` created it on a fresh database until the
+-- post-migration SQL revoked it. Nothing needs a table before the post-migration SQL has run: the
+-- gate keeps provisioning and the API off a database until it has.
 --
--- Audit is the one table that must not be updatable or deletable, and it is handled by a targeted
--- REVOKE in ../post-migrate/02-audit-immutability.sql. It is deliberately NOT done with a
--- default-privilege REVOKE: default privileges are cumulative and untargeted, so revoking UPDATE and
--- DELETE here would strip them from *every* future table — the application could insert a user and
--- then never deactivate one.
+-- So the default is withdrawn here, before every migration. On a fresh database this is a no-op; on
+-- one migrated by an earlier release it removes the default those releases set. Sequences keep
+-- their default (USAGE, SELECT), which gives no write on any table.
 ALTER DEFAULT PRIVILEGES FOR ROLE edms_owner IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO edms_app;
+  REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM edms_app;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE edms_owner IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO edms_app;
+
+-- And Prisma's history is read-only to the application from before the first statement of the
+-- migration, on a database whose earlier run (any release, any outcome) left write in place.
+DO $$
+BEGIN
+  IF to_regclass('public._prisma_migrations') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public._prisma_migrations FROM edms_app;
+  END IF;
+END
+$$;
 
 -- The tenant discriminator every row-level security policy is keyed on.
 --

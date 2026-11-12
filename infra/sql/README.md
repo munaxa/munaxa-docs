@@ -42,6 +42,19 @@ latest closed run's version, or, on a database ahead of the build, one from a cl
 that covered every migration of the build). So a run that failed in any file, was skipped after a
 new migration, or left another build's version in effect is seen (DC-01). Rows are only added.
 
+Steps 2 to 4 of one tenant run under that tenant database's **migration lock**, a PostgreSQL
+advisory lock taken by `scripts/migrate-tenants.mjs` before step 2 and released after the final
+`migrate status`; every SQL statement of steps 2 and 4 checks, in its own transaction, that its run
+still holds it (L-1; docs/operations/deployment.md §2).
+
+**Who may write what.** The application role gets its table grants from step 4
+(`01-tenant-isolation.sql`), never from default privileges: `database/01-grants.sql` withdraws the
+default table grant earlier releases set, keeps only the sequence default, and revokes any write on
+`_prisma_migrations` left on an existing database. Step 4 runs each file together with a revoke of
+the write on `_prisma_migrations`, in one transaction, so `edms_app` can read Prisma's history (the
+gate does) and never write it, at any moment, on a fresh database or an old one (L-2). It also
+cannot write the run record.
+
 ## Why `edms_app` has no password here
 
 `01-roles.sql` creates it with `LOGIN` and no password, which is right for production: the credential
@@ -68,7 +81,7 @@ volume needs the script run by hand, or `docker compose down -v` first.
 A PostgreSQL role is cluster-scoped and a grant is not. `edms_app` is the same role in every
 tenant database, so creating it per database would fail on the second one — and a deployment that
 let that failure pass quietly would have a database whose application role was never restricted to
-`NOBYPASSRLS`. `GRANT CONNECT`, the schema grants, the default privileges and
+`NOBYPASSRLS`. `GRANT CONNECT`, the schema grants, the default privileges (sequences only) and
 `current_tenant_id()` all belong to a database, so they are applied once per database, against
 `current_database()` rather than a hardcoded name.
 
