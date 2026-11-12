@@ -39,6 +39,7 @@
 // and docs/operations/deployment.md §2a for how it behaves.
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -713,12 +714,55 @@ export function describeConnectionError(error, urls = []) {
 
 let prismaClientModule;
 
+/**
+ * Whether `@prisma/client` has a generated client next to it. A fresh checkout after `pnpm install`
+ * has none (the migration image always has one: its build runs `prisma generate`), and importing
+ * the package without one fails with "Cannot find module '.prisma/client/default'".
+ */
+function generatedClientPresent(clientEntry) {
+  try {
+    const generated = createRequire(clientEntry).resolve('.prisma/client/default');
+    return existsSync(join(dirname(generated), 'schema.prisma'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Generates the Prisma client from this repository's schema when it is missing, the same as `pnpm
+ * prisma:generate`. It reads only the schema and writes only into `node_modules`; it connects to no
+ * database. Throws when generation fails, which the caller reports as a connection-stage failure
+ * before any database is touched.
+ */
+async function ensureGeneratedClient(clientEntry) {
+  if (generatedClientPresent(clientEntry)) return;
+  process.stdout.write('    generating the Prisma client (none in this checkout yet)\n');
+  const env = { ...process.env, CHECKPOINT_DISABLE: '1', PRISMA_HIDE_UPDATE_MESSAGE: '1' };
+  delete env.TENANT_CATALOGUE;
+  delete env.TENANT_CATALOGUE_PATH;
+  const status = await runStreaming(
+    process.execPath,
+    [prismaCli(), 'generate', '--schema', schemaPath],
+    { env, urls: [process.env.DATABASE_MIGRATION_URL, process.env.DATABASE_URL] },
+  );
+  if (status !== 0 || !generatedClientPresent(clientEntry)) {
+    throw Object.assign(new Error(`prisma generate exited with status ${status}`), {
+      code: 'PRISMA_GENERATE_FAILED',
+    });
+  }
+}
+
 function importPrismaClient() {
   // Resolved from the repository root, like the CLI, so the generated client the lockfile pinned is
   // the one in use — in a checkout and in the migration image alike.
-  prismaClientModule ??= import(
-    pathToFileURL(createRequire(join(repositoryRoot, 'package.json')).resolve('@prisma/client'))
-      .href
-  );
+  prismaClientModule ??= (async () => {
+    const entry = createRequire(join(repositoryRoot, 'package.json')).resolve('@prisma/client');
+    await ensureGeneratedClient(entry);
+    return import(pathToFileURL(entry).href);
+  })();
+  // A failed attempt is not cached, so a later call can try again.
+  prismaClientModule.catch(() => {
+    prismaClientModule = undefined;
+  });
   return prismaClientModule;
 }
