@@ -1,0 +1,20 @@
+# Grype configuration for .github/scripts/scan-image.sh. Exceptions only: one rule per
+# vulnerability, each with the owner who accepted it and an expiry, on the line above it:
+#   # exception: <CVE> owner=<who approved> expires=<YYYY-MM-DD> reason=<why>
+# The script refuses a rule without that line, a rule past its expiry, and any rule that ignores a
+# class of findings (by fix state, severity or namespace).
+#
+# PROPOSED, NOT ACCEPTED (decision D-G1, munaxa-platform docs/security/2026-11-20-...): the owner
+# may accept CVE-2026-84243 for Testing only by uncommenting the two lines below. Until then the
+# image scan fails on it, as it should.
+#
+# CVE-2026-84243 is glibc's gettext honouring a LANGUAGE value with '/' or '..' (all glibc >= 2.0,
+# no fixed release; Debian 12 2.36-9+deb12u14 and Debian 13 are both affected, so a newer Debian
+# base does not clear it). Exploitation needs an attacker who sets the process environment AND
+# places a crafted .mo catalog. In the api, web and migrate images the environment comes only from
+# the ECS task definition, the root filesystem is read-only-capable with no shell, no package
+# manager and no locale or message-catalog data, and Node and the Prisma engines do not call
+# gettext (the node binary references no gettext symbol).
+ignore:
+  # exception: CVE-2026-84243 owner=PENDING expires=2026-12-31 reason=no-glibc-fix-Testing-only-D-G1
+  # - vulnerability: CVE-2026-84243

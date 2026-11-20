@@ -811,6 +811,29 @@ jobs:
           [ "$failed" = 0 ] || { echo "FAIL - the web image does not serve its brand artwork."; docker logs web-ci | tail -20; exit 1; }
           echo "OK - every branding asset the login page references is served."
 
+      # A vulnerability scan of the two release images this job loads (OS and npm packages), with
+      # SBOMs kept, failing on HIGH or CRITICAL. This is CI's own scan; ECR's scan of a published
+      # digest is separate evidence. Expected today: CVE-2026-84243 (glibc gettext, HIGH), which no
+      # glibc release fixes yet; it fails this step until the owner accepts it for Testing in
+      # .grype.yaml (decision D-G1, docs/security in munaxa-platform). Nothing is suppressed here.
+      - name: Scan the API and web images (SBOM, HIGH and CRITICAL fail)
+        run: |
+          set -euo pipefail
+          status=0
+          for target in api web; do
+            .github/scripts/scan-image.sh "munaxa-docs-$target:ci" "docs-$target" image-reports || status=1
+          done
+          exit $status
+
+      - name: Keep the SBOMs and scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 90
+
   migration-image:
     name: Migration image · disposable databases
     runs-on: ubuntu-latest
@@ -869,6 +892,18 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
       # Pulled while the optional Docker Hub login is active; nothing after this pulls.
+      - name: Scan the migration image (SBOM, HIGH and CRITICAL fail)
+        run: .github/scripts/scan-image.sh munaxa-docs-migrate:ci docs-migrate image-reports
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports-migrate
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Pull the disposable database and cache images
         run: |
           set -euo pipefail
