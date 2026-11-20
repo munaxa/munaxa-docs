@@ -39,7 +39,13 @@
 # `bookworm-slim` rather than Alpine. Prisma's query engine ships glibc and musl builds and the
 # glibc one is the tested path; the OpenSSL version a Prisma binary is compiled against is the
 # classic source of a container that builds and cannot connect.
-FROM node:22-bookworm-slim AS build
+#
+# Pinned by digest (the multi-platform index of node:22-bookworm-slim as published on 20 Nov 2026),
+# so a release tag rebuilds from the same base layers instead of whatever the tag points at that day
+# — the convention munaxa-control already follows. To move it: resolve the tag's current index
+# digest, replace it here, and let CI's image and release-smoke jobs prove the new base.
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
 ENV PNPM_HOME=/pnpm
@@ -112,7 +118,7 @@ RUN pnpm prisma:generate && ./node_modules/.bin/turbo run build
 # `dumb-init` because Node is a poor PID 1: it does not reap zombies and it does not forward
 # signals to children, and 20 §4 requires workers to drain in-flight jobs before exiting — which
 # they can only do if SIGTERM reaches them.
-FROM node:22-bookworm-slim AS runtime-fs
+FROM ${NODE_IMAGE} AS runtime-fs
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
  && apt-get install --yes --no-install-recommends ca-certificates \
@@ -167,7 +173,7 @@ ENTRYPOINT ["dumb-init", "--"]
 # published before it was built, so the runtime takes bookworm's later security fixes for packages
 # already in it. It moves Debian 12 packages within Debian 12 only; it pins nothing and adds no
 # repository.
-FROM node:22-bookworm-slim AS runtime-debian
+FROM ${NODE_IMAGE} AS runtime-debian
 WORKDIR /app
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
