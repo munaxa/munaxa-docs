@@ -1,0 +1,50 @@
+# Pull Docker Hub images through mirror.gcr.io, Google's public read-through cache of Docker Hub,
+# before falling back to Docker Hub itself.
+#
+# Why: on 20 Nov 2026 Docs CI lost 8 required jobs twice to `429 Too Many Requests` from
+# registry-1.docker.io, while the run was already logged in with DOCKERHUB_USERNAME and
+# DOCKERHUB_TOKEN ("Docker Hub pulls: authenticated"). A login raises the limit; it does not remove
+# it, and one CI run here pulls node, ubuntu, postgres, redis, moby/buildkit, syft and grype several
+# times across eight jobs. The mirror takes those pulls off Docker Hub's limit.
+#
+# What it changes, and what it does not:
+#   - The Docker daemon gets `registry-mirrors: ["https://mirror.gcr.io"]` (docker pull / docker run,
+#     and booting the buildx builder). The daemon tries the mirror first and Docker Hub second, so
+#     the Docker Hub login (.github/actions/docker-hub-auth) still applies to the fallback.
+#   - BuildKit, which resolves `FROM` itself, gets the same mirror through `buildkitd-config`
+#     (output below), passed to docker/setup-buildx-action.
+#   - Integrity is unchanged: every base image in ./Dockerfile and infra/antivirus/Dockerfile is
+#     pinned by digest, and a digest names content, so a mirror cannot substitute it. The CI-only
+#     service images (postgres:16-alpine, redis:7-alpine) are by tag, as before.
+#   - Only docker.io is mirrored. ECR, GHCR and every other registry are untouched.
+#   - No credential is involved; nothing is printed but the resulting mirror list.
+name: Docker Hub mirror
+description: Use mirror.gcr.io for Docker Hub pulls in the Docker daemon and in BuildKit.
+outputs:
+  buildkitd-config:
+    description: Path of a buildkitd.toml with the same mirror, for docker/setup-buildx-action
+    value: ${{ steps.mirror.outputs.config }}
+runs:
+  using: composite
+  steps:
+    - name: Configure the Docker Hub mirror
+      id: mirror
+      shell: bash
+      run: |
+        set -euo pipefail
+        mirror=https://mirror.gcr.io
+        daemon=/etc/docker/daemon.json
+        current='{}'
+        if sudo test -s "$daemon"; then current=$(sudo cat "$daemon"); fi
+        jq --arg m "$mirror" '.["registry-mirrors"] = (((.["registry-mirrors"] // []) + [$m]) | unique)' \
+          <<<"$current" | sudo tee "$daemon" >/dev/null
+        sudo systemctl restart docker
+        for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+        mirrors=$(docker info --format '{{json .RegistryConfig.Mirrors}}')
+        case "$mirrors" in
+          *mirror.gcr.io*) echo "Docker daemon registry mirrors: $mirrors" ;;
+          *) echo "::error title=Docker Hub mirror::the Docker daemon did not take the mirror ($mirrors)"; exit 1 ;;
+        esac
+        config="$RUNNER_TEMP/buildkitd.toml"
+        printf '[registry."docker.io"]\n  mirrors = ["mirror.gcr.io"]\n' > "$config"
+        echo "config=$config" >> "$GITHUB_OUTPUT"

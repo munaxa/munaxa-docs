@@ -4,7 +4,10 @@
 #
 # Signatures are not baked in: `freshclam` fetches ClamAV's official databases when the container
 # starts, into the `antivirus-signatures` volume, so a stale image never scans with stale signatures.
-FROM ubuntu:24.04
+# Ubuntu 24.04 pinned by digest (the multi-platform index of ubuntu:noble-20261110), so a rebuild
+# starts from the same bytes; `upgrade` below still takes the later security fixes. To move it,
+# resolve a newer dated noble tag's index digest and let CI's build and scan prove it.
+FROM ubuntu:noble-20261110@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
 
 # `upgrade` first: the base image only carries the updates published before it was built, so the
 # image takes Ubuntu's later security fixes for packages already in it (zlib and xz-utils on

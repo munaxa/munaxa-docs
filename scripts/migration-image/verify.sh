@@ -89,10 +89,16 @@ image_prisma=$(docker run --rm "${hardened[@]}" --entrypoint node "$MIGRATE_IMAG
   && ok "I-1 the migration image runs the Prisma CLI the lockfile pins ($image_prisma)" \
   || bad "I-1 Prisma CLI in the image is '$image_prisma', the lockfile pins '$lock_prisma'"
 
-grep -q 'schema-engine-debian-openssl-3\.0\.x$' <<<"$migrate_files" \
-  && grep -q '^usr/lib/x86_64-linux-gnu/libssl\.so\.3' <<<"$migrate_files" \
-  && ok "I-2 the migration image carries the schema engine its own OpenSSL 3 runtime asks for" \
-  || bad "I-2 no schema-engine-debian-openssl-3.0.x (or no libssl3) in the migration image"
+# musl (Alpine) since 20 Nov 2026: the engine family follows the image's libc.
+if grep -q '^lib/ld-musl-x86_64\.so\.1$' <<<"$migrate_files"; then
+  engine_family=linux-musl; libssl3='^usr/lib/libssl\.so\.3'
+else
+  engine_family=debian; libssl3='^usr/lib/x86_64-linux-gnu/libssl\.so\.3'
+fi
+grep -q "schema-engine-$engine_family-openssl-3\.0\.x\$" <<<"$migrate_files" \
+  && grep -q "$libssl3" <<<"$migrate_files" \
+  && ok "I-2 the migration image carries the schema engine its own OpenSSL 3 runtime asks for ($engine_family)" \
+  || bad "I-2 no schema-engine-$engine_family-openssl-3.0.x (or no libssl3) in the migration image"
 
 image_digest=$(docker run --rm "${hardened[@]}" --entrypoint node "$MIGRATE_IMAGE" -e '
   const { createHash } = require("node:crypto"); const fs = require("node:fs"); const p = require("node:path");
@@ -129,7 +135,10 @@ if grep -qE '^(bin|usr/bin)/(sh|bash|dash)$' <<<"$migrate_files"; then bad "I-5 
     ok "I-5 no shell, no .npmrc, no .env and no database variable baked into the migration image"
   fi
 fi
-if grep -q 'schema-engine-debian-openssl-3\.0\.x$' <<<"$api_files" || grep -qE '^(bin|usr/bin)/(sh|bash)$' <<<"$api_files"; then
+# On the Alpine build stage the install itself carries the native (musl) schema engine, so the API
+# image's node_modules hold it too; what the migration target must not add is a second engine
+# family or a shell.
+if grep -q 'schema-engine-debian-openssl-3\.0\.x$' <<<"$api_files" || grep -qE '^(bin|usr/bin)/(sh|bash|busybox)$' <<<"$api_files"; then
   bad "I-6 the API image gained the migration image's tooling or a shell"
 else
   ok "I-6 the API image is unchanged by the migration target (no extra schema engine, no shell)"

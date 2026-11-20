@@ -28,7 +28,7 @@ case "$cmd" in
         break
       fi
       if [ "$attempt" = 3 ]; then
-        echo "::error title=Docker pull::Could not pull $image after 3 attempts. If the error above is 'toomanyrequests', set the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets."
+        echo "::error title=Docker pull::Could not pull $image after 3 attempts. If the error above is 'toomanyrequests', both mirror.gcr.io (.github/actions/registry-mirror) and Docker Hub refused the pull; check that DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are set, and re-run later."
         exit 1
       fi
       echo "::warning::docker pull $image failed (attempt $attempt of 3); retrying in $((attempt * 5)) s"

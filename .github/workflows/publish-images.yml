@@ -146,7 +146,13 @@ jobs:
         with:
           ref: ${{ needs.source.outputs.sha }}
 
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
       # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
       # argument is recorded in the image's history. The same construction the CI images job uses.
@@ -171,13 +177,15 @@ jobs:
         # A 12-hour registry token from the role's session, piped straight to docker; never echoed.
         run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
-      - name: Build and push
-        id: build
+      # Built and loaded first, scanned, and only then pushed: an image with a HIGH or CRITICAL finding
+      # that no approved exception (.grype.yaml) covers never reaches ECR.
+      - name: Build (not pushed yet)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ${{ matrix.target }}
-          push: true
+          push: false
+          load: true
           tags: |
             ${{ env.REPOSITORY }}:${{ env.SHORT }}
             ${{ env.REPOSITORY }}:sha-${{ env.SHA }}
@@ -191,6 +199,29 @@ jobs:
             org.opencontainers.image.revision=${{ env.SHA }}
             org.opencontainers.image.version=${{ env.SHORT }}
             org.opencontainers.image.title=${{ matrix.image }}
+
+      - name: Scan before pushing (SBOM, HIGH and CRITICAL fail)
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: .github/scripts/scan-image.sh "$REPOSITORY:sha-$SHA" "$IMAGE" image-reports
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports-${{ matrix.target }}
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 400
+
+      - name: Push
+        id: build
+        run: |
+          set -euo pipefail
+          docker push -q "$REPOSITORY:$SHORT" >/dev/null
+          docker push -q "$REPOSITORY:sha-$SHA" >/dev/null
+          digest="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$REPOSITORY:sha-$SHA" | sed -n "s#^$REPOSITORY@##p" | head -n1)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Fail if no digest was produced
         env:
@@ -241,10 +272,17 @@ jobs:
           cid=$(docker create "$REF")
           files=$(docker export "$cid" | tar -tf -)
           docker container rm "$cid" >/dev/null
-          ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          # The libc decides the engine family: musl (Alpine, the release images since 20 Nov 2026) or glibc.
+          if grep -q '^lib/ld-musl-x86_64\.so\.1$' <<<"$files"; then
+            family=linux-musl
+            ssl=$(sed -n 's#^usr/lib/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          else
+            family=debian
+            ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          fi
           case "${ssl:-}" in
-            3) want=debian-openssl-3.0.x ;;
-            1) want=debian-openssl-1.1.x ;;
+            3) want=$family-openssl-3.0.x ;;
+            1) want=$family-openssl-1.1.x ;;
             *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
           esac
           grep -q "^app/node_modules/.*/libquery_engine-$want\.so\.node$" <<<"$files" \
@@ -322,7 +360,13 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
       # Built and loaded first, and only pushed once it has proved it scans.
       - name: Build the scanner (not yet pushed)
@@ -381,6 +425,18 @@ jobs:
           node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 300 \
             || { docker logs av-candidate | tail -40; exit 1; }
           docker rm -f av-candidate >/dev/null
+
+      - name: Scan the candidate before pushing (SBOM, HIGH and CRITICAL fail)
+        run: .github/scripts/scan-image.sh munaxa-docs-antivirus:candidate munaxa-docs-antivirus image-reports
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports-antivirus
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 400
 
       - name: Assume the image publisher role through GitHub OIDC
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -567,6 +623,10 @@ jobs:
         with:
           name: release-smoke-images
           path: smoke-images
+
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
 
       - name: Confirm this job holds no AWS or OIDC credential
         run: |
