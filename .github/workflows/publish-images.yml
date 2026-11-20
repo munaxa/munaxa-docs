@@ -171,13 +171,15 @@ jobs:
         # A 12-hour registry token from the role's session, piped straight to docker; never echoed.
         run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 
-      - name: Build and push
-        id: build
+      # Built and loaded first, scanned, and only then pushed: an image with a HIGH or CRITICAL finding
+      # that no approved exception (.grype.yaml) covers never reaches ECR.
+      - name: Build (not pushed yet)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: ${{ matrix.target }}
-          push: true
+          push: false
+          load: true
           tags: |
             ${{ env.REPOSITORY }}:${{ env.SHORT }}
             ${{ env.REPOSITORY }}:sha-${{ env.SHA }}
@@ -191,6 +193,29 @@ jobs:
             org.opencontainers.image.revision=${{ env.SHA }}
             org.opencontainers.image.version=${{ env.SHORT }}
             org.opencontainers.image.title=${{ matrix.image }}
+
+      - name: Scan before pushing (SBOM, HIGH and CRITICAL fail)
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: .github/scripts/scan-image.sh "$REPOSITORY:sha-$SHA" "$IMAGE" image-reports
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports-${{ matrix.target }}
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 400
+
+      - name: Push
+        id: build
+        run: |
+          set -euo pipefail
+          docker push -q "$REPOSITORY:$SHORT" >/dev/null
+          docker push -q "$REPOSITORY:sha-$SHA" >/dev/null
+          digest="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$REPOSITORY:sha-$SHA" | sed -n "s#^$REPOSITORY@##p" | head -n1)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Fail if no digest was produced
         env:
@@ -381,6 +406,18 @@ jobs:
           node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 300 \
             || { docker logs av-candidate | tail -40; exit 1; }
           docker rm -f av-candidate >/dev/null
+
+      - name: Scan the candidate before pushing (SBOM, HIGH and CRITICAL fail)
+        run: .github/scripts/scan-image.sh munaxa-docs-antivirus:candidate munaxa-docs-antivirus image-reports
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports-antivirus
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 400
 
       - name: Assume the image publisher role through GitHub OIDC
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0

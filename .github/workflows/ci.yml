@@ -816,6 +816,14 @@ jobs:
       # digest is separate evidence. Expected today: CVE-2026-84243 (glibc gettext, HIGH), which no
       # glibc release fixes yet; it fails this step until the owner accepts it for Testing in
       # .grype.yaml (decision D-G1, docs/security in munaxa-platform). Nothing is suppressed here.
+      # The antivirus image (c-icap and ClamAV on Ubuntu 24.04), built here so its scan is evidence on
+      # every pull request and not only at release. It needs no registry credential.
+      - name: Build the antivirus image
+        run: docker build -t munaxa-docs-antivirus:ci infra/antivirus
+
+      - name: Scan the antivirus image (SBOM, HIGH and CRITICAL fail)
+        run: .github/scripts/scan-image.sh munaxa-docs-antivirus:ci docs-antivirus image-reports
+
       - name: Scan the API and web images (SBOM, HIGH and CRITICAL fail)
         run: |
           set -euo pipefail
@@ -829,7 +837,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: image-reports
+          name: image-reports-images
           path: image-reports/
           if-no-files-found: warn
           retention-days: 90
