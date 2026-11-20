@@ -29,10 +29,13 @@
 #
 # **No LibreOffice and no Tesseract.** Both are real system packages this product can use —
 # `OFFICE_DRIVER=LIBREOFFICE` and `OCR_DRIVER=TESSERACT` shell out to them by a configured path —
-# and both are large: LibreOffice is roughly 600 MB, Tesseract with Arabic data around 120 MB. They
-# belong in the **worker** image of a deployment that wants them, which is why the worker target
-# below takes them as a build argument rather than either always paying for them or never offering
-# them. The API image has neither, and refuses honestly if configured for them.
+# and both are large: LibreOffice is roughly 600 MB, Tesseract with Arabic data around 120 MB. No
+# image here carries them. The code that calls them is in the API (`libreoffice.converter.ts`,
+# `tesseract-ocr.adapter.ts`), and every consumer runs in the API process (`apps/worker/src/main.ts`),
+# so the worker build arguments that used to install them put binaries where nothing called them.
+# The API image has neither, and refuses honestly if configured for them. An image that carries an
+# engine is a separate, scanned target to design when a deployment needs one (docs/operations/
+# deployment.md).
 
 # --- Base images ---------------------------------------------------------------------------------
 #
@@ -53,10 +56,9 @@
 # them. CI's images, migration-image and release-smoke jobs run all three images against real
 # PostgreSQL, Redis, object storage and the antivirus scanner.
 #
-# The worker is not a release image and keeps Debian (`runtime-debian`, `build-debian` below) because
-# its optional LibreOffice and Tesseract are Debian packages.
+# Since 20 Nov 2026 (later the same day) the worker is on the same runtime: it carried the Debian userland only for the
+# optional LibreOffice and Tesseract packages, which nothing in the worker calls (see above).
 ARG NODE_IMAGE=node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a
-ARG NODE_DEBIAN_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
 FROM ${NODE_IMAGE} AS alpine
 # The split is the point: `apk list -I <name>` prints `<name>-<version> <arch> ...` and $1 is the first word.
@@ -71,46 +73,6 @@ RUN apk add --no-cache 'zlib=1.4-r0' 'libssl3=3.5.9-r1' 'libcrypto3=3.5.9-r1' &&
 
 # --- Build ------------------------------------------------------------------------------------
 FROM alpine AS build
-WORKDIR /app
-
-ENV PNPM_HOME=/pnpm
-ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
-
-# The manifests first, so a change to source does not re-resolve the dependency graph. Every
-# workspace member's manifest has to be present or pnpm resolves a different graph from the one the
-# lockfile describes.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-COPY apps/api/package.json      apps/api/
-COPY apps/web/package.json      apps/web/
-COPY apps/worker/package.json   apps/worker/
-COPY packages/domain/package.json    packages/domain/
-COPY packages/contracts/package.json packages/contracts/
-COPY packages/i18n/package.json      packages/i18n/
-COPY packages/utils/package.json     packages/utils/
-COPY prisma/schema.prisma prisma/
-
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
-    pnpm install --frozen-lockfile
-
-COPY . .
-
-# `turbo` by its own path rather than through `pnpm build`, and the reason is a race rather than a
-# preference. pnpm exports its resolved configuration to child processes as `pnpm_config_*`
-# environment variables, and it serialises them as strings — so `verify-deps-before-run`, whose
-# default is the boolean `false`, reaches every nested pnpm as the string `"false"`, which is
-# truthy. Each of those children therefore re-runs `checkDepsStatus`, which reads
-# `node_modules/.pnpm-workspace-state-v1.json` with `readFileSync` + `JSON.parse` and rewrites it
-# with a non-atomic `writeFile`. Turbo builds nine packages concurrently, so a reader can observe a
-# half-written file and the build dies with `Unexpected end of JSON input` — intermittently, which
-# is the worst way for a required check to fail. Invoking turbo directly means no pnpm parent, so
-# no child inherits the setting and nothing touches the file. `apps/web`'s `prebuild` hook was the
-# other source of a nested pnpm and now calls its binary directly for the same reason.
-RUN pnpm prisma:generate && ./node_modules/.bin/turbo run build
-
-# --- Build for the worker (Debian) ---------------------------------------------------------------
-# The same steps on Debian, for the worker only: its node_modules must carry glibc native builds.
-FROM ${NODE_DEBIAN_IMAGE} AS build-debian
 WORKDIR /app
 
 ENV PNPM_HOME=/pnpm
@@ -217,34 +179,6 @@ ENV NODE_OPTIONS=--max-old-space-size=768
 USER node
 ENTRYPOINT ["dumb-init", "--"]
 
-# --- The worker's runtime base ------------------------------------------------------------------
-#
-# The worker can install LibreOffice and Tesseract (below), which needs a package manager, so it
-# keeps the full `node:22-bookworm-slim` userland. It is not one of the published release images.
-#
-# `upgrade` first, as the antivirus image does: the base image carries only the Debian updates
-# published before it was built, so the runtime takes bookworm's later security fixes for packages
-# already in it. It moves Debian 12 packages within Debian 12 only; it pins nothing and adds no
-# repository.
-FROM ${NODE_DEBIAN_IMAGE} AS runtime-debian
-WORKDIR /app
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
- && apt-get install --yes --no-install-recommends dumb-init ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-
-# Nothing in these images changes user: they run as `node` from the first process and carry no
-# sudo. The base image's setuid and setgid programs (mount, umount, su, passwd, chsh, chfn,
-# gpasswd, newgrp, chage, expiry, unix_chkpwd) are therefore only a way for code running as
-# `node` to reach root. Clear the bits, and fail the build if any remain.
-RUN find / -xdev -type f -perm /6000 -exec chmod ug-s {} + \
- && test -z "$(find / -xdev -type f -perm /6000)"
-
-ENV NODE_ENV=production
-ENV NODE_OPTIONS=--max-old-space-size=768
-USER node
-ENTRYPOINT ["dumb-init", "--"]
-
 # --- API ---------------------------------------------------------------------------------------
 FROM runtime AS api
 
@@ -342,29 +276,19 @@ CMD ["node", "server.mjs"]
 
 # --- Worker ------------------------------------------------------------------------------------
 #
-# The one target that takes build arguments, and they are the two system packages this product can
-# use and most deployments do not want. `OFFICE_DRIVER` and `OCR_DRIVER` still decide whether the
-# binaries are *called*; these decide whether they are *present*, which is a property of the image
-# rather than of the environment — an image without LibreOffice cannot be configured into having it.
-FROM runtime-debian AS worker
-ARG WITH_LIBREOFFICE=false
-ARG WITH_TESSERACT=false
+# The same `runtime` as the API (scratch, musl, no shell, no package manager, uid 1000) with the
+# worker's build output. It loads nothing native (NestJS, BullMQ, ioredis), and today it composes no
+# consumer: they all run in the API process (`apps/worker/src/main.ts`). It used to be the one Debian
+# image, and the one with build arguments, so that LibreOffice and Tesseract could be installed into
+# it; nothing in the worker calls either, and the Debian userland scanned with a CRITICAL glibc
+# finding that no Debian release fixes. CI builds it, starts it and scans it like the release images;
+# no workflow publishes it.
+FROM runtime AS worker
 
-USER root
-RUN set -eux; \
-    packages=""; \
-    if [ "$WITH_LIBREOFFICE" = "true" ]; then packages="$packages libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress fonts-dejavu"; fi; \
-    if [ "$WITH_TESSERACT" = "true" ]; then packages="$packages tesseract-ocr tesseract-ocr-ara tesseract-ocr-eng"; fi; \
-    if [ -n "$packages" ]; then \
-      apt-get update && apt-get install --yes --no-install-recommends $packages && rm -rf /var/lib/apt/lists/*; \
-    fi
-USER node
-
-COPY --from=build-debian --chown=node:node /app/node_modules              ./node_modules
-COPY --from=build-debian --chown=node:node /app/packages                  ./packages
-COPY --from=build-debian --chown=node:node /app/prisma                    ./prisma
-COPY --from=build-debian --chown=node:node /app/apps/worker/dist          ./apps/worker/dist
-COPY --from=build-debian --chown=node:node /app/apps/worker/node_modules  ./apps/worker/node_modules
-COPY --from=build-debian --chown=node:node /app/apps/worker/package.json  ./apps/worker/
+COPY --from=build --chown=node:node /app/node_modules              ./node_modules
+COPY --from=build --chown=node:node /app/packages                  ./packages
+COPY --from=build --chown=node:node /app/apps/worker/dist          ./apps/worker/dist
+COPY --from=build --chown=node:node /app/apps/worker/node_modules  ./apps/worker/node_modules
+COPY --from=build --chown=node:node /app/apps/worker/package.json  ./apps/worker/
 
 CMD ["node", "apps/worker/dist/main.js"]

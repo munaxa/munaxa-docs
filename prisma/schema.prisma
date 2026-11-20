@@ -39,11 +39,12 @@
 // Naming the target removes the detection step from the deployment's critical path. `native` stays
 // first so a developer's own machine — macOS, arm64, a different libc — still gets its engine.
 //
-// Since 20 Nov 2026 the api, web and migrate images are Alpine (musl), so they need
-// `linux-musl-openssl-3.0.x`; the worker image is still Debian and keeps `debian-openssl-3.0.x`.
+// Since 20 Nov 2026 every image is Alpine (musl), so the deployed target is
+// `linux-musl-openssl-3.0.x`. The worker loads no Prisma engine. `native` covers CI's Ubuntu runners
+// and developers' machines.
 generator client {
   provider      = "prisma-client-js"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
