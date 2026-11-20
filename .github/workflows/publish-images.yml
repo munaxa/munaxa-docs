@@ -266,10 +266,17 @@ jobs:
           cid=$(docker create "$REF")
           files=$(docker export "$cid" | tar -tf -)
           docker container rm "$cid" >/dev/null
-          ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          # The libc decides the engine family: musl (Alpine, the release images since 20 Nov 2026) or glibc.
+          if grep -q '^lib/ld-musl-x86_64\.so\.1$' <<<"$files"; then
+            family=linux-musl
+            ssl=$(sed -n 's#^usr/lib/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          else
+            family=debian
+            ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          fi
           case "${ssl:-}" in
-            3) want=debian-openssl-3.0.x ;;
-            1) want=debian-openssl-1.1.x ;;
+            3) want=$family-openssl-3.0.x ;;
+            1) want=$family-openssl-1.1.x ;;
             *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
           esac
           grep -q "^app/node_modules/.*/libquery_engine-$want\.so\.node$" <<<"$files" \

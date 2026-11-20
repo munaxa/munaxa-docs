@@ -34,18 +34,83 @@
 # below takes them as a build argument rather than either always paying for them or never offering
 # them. The API image has neither, and refuses honestly if configured for them.
 
+# --- Base images ---------------------------------------------------------------------------------
+#
+# The release images (api, web, migrate) are Alpine (musl) since 20 Nov 2026. The Debian 12
+# userland they carried before (glibc 2.36, gcc-12 runtime libraries, OpenSSL 3.0.22) scans, in the
+# CI image scan of that day (Grype), with 1 CRITICAL (glibc CVE-2026-5450) and 11 HIGH findings,
+# most marked "won't fix" by Debian for bookworm and one (glibc CVE-2026-84243, gettext) affecting
+# every glibc release, so no Debian base, 12 or 13, clears them. musl has none of that code.
+#
+# The base is the one Munaxa Identity, Control, Work and School ship: node:22-alpine (Node 22.23.5,
+# Alpine 3.24.4) as published on 11 Nov 2026, pinned by digest, with zlib 1.4-r0 (CVE-2026-4738) and
+# libssl3/libcrypto3 3.5.9-r1 (4 HIGH in 3.5.9-r0, fixed in Alpine's 3.5.9-r1), exact versions so a
+# rebuild either takes the same packages or fails.
+#
+# Prisma ships musl engines (`linux-musl-openssl-3.0.x`), the lockfile already carries the musl
+# builds of every native package the workspace installs (Next.js's SWC, sharp, unrs-resolver,
+# esbuild's static binary), and the build runs on the same libc it ships, so `pnpm install` selects
+# them. CI's images, migration-image and release-smoke jobs run all three images against real
+# PostgreSQL, Redis, object storage and the antivirus scanner.
+#
+# The worker is not a release image and keeps Debian (`runtime-debian`, `build-debian` below) because
+# its optional LibreOffice and Tesseract are Debian packages.
+ARG NODE_IMAGE=node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a
+ARG NODE_DEBIAN_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
+
+FROM ${NODE_IMAGE} AS alpine
+# The split is the point: `apk list -I <name>` prints `<name>-<version> <arch> ...` and $1 is the first word.
+# hadolint ignore=SC2046
+RUN apk add --no-cache 'zlib=1.4-r0' 'libssl3=3.5.9-r1' 'libcrypto3=3.5.9-r1' && \
+    for want in zlib=1.4-r0 libssl3=3.5.9-r1 libcrypto3=3.5.9-r1; do \
+      name="${want%%=*}" && set -- $(apk list -I "$name" 2>/dev/null) && installed="${1#"$name"-}" && \
+      if [ "$installed" != "${want#*=}" ]; then \
+        echo "$name is '$installed', expected ${want#*=}" >&2; exit 1; \
+      fi; \
+    done
+
 # --- Build ------------------------------------------------------------------------------------
-#
-# `bookworm-slim` rather than Alpine. Prisma's query engine ships glibc and musl builds and the
-# glibc one is the tested path; the OpenSSL version a Prisma binary is compiled against is the
-# classic source of a container that builds and cannot connect.
-#
-# Pinned by digest (the multi-platform index of node:22-bookworm-slim as published on 20 Nov 2026),
-# so a release tag rebuilds from the same base layers instead of whatever the tag points at that day
-# — the convention munaxa-control already follows. To move it: resolve the tag's current index
-# digest, replace it here, and let CI's image and release-smoke jobs prove the new base.
-ARG NODE_IMAGE=node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
-FROM ${NODE_IMAGE} AS build
+FROM alpine AS build
+WORKDIR /app
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+
+# The manifests first, so a change to source does not re-resolve the dependency graph. Every
+# workspace member's manifest has to be present or pnpm resolves a different graph from the one the
+# lockfile describes.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY apps/api/package.json      apps/api/
+COPY apps/web/package.json      apps/web/
+COPY apps/worker/package.json   apps/worker/
+COPY packages/domain/package.json    packages/domain/
+COPY packages/contracts/package.json packages/contracts/
+COPY packages/i18n/package.json      packages/i18n/
+COPY packages/utils/package.json     packages/utils/
+COPY prisma/schema.prisma prisma/
+
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
+    pnpm install --frozen-lockfile
+
+COPY . .
+
+# `turbo` by its own path rather than through `pnpm build`, and the reason is a race rather than a
+# preference. pnpm exports its resolved configuration to child processes as `pnpm_config_*`
+# environment variables, and it serialises them as strings — so `verify-deps-before-run`, whose
+# default is the boolean `false`, reaches every nested pnpm as the string `"false"`, which is
+# truthy. Each of those children therefore re-runs `checkDepsStatus`, which reads
+# `node_modules/.pnpm-workspace-state-v1.json` with `readFileSync` + `JSON.parse` and rewrites it
+# with a non-atomic `writeFile`. Turbo builds nine packages concurrently, so a reader can observe a
+# half-written file and the build dies with `Unexpected end of JSON input` — intermittently, which
+# is the worst way for a required check to fail. Invoking turbo directly means no pnpm parent, so
+# no child inherits the setting and nothing touches the file. `apps/web`'s `prebuild` hook was the
+# other source of a nested pnpm and now calls its binary directly for the same reason.
+RUN pnpm prisma:generate && ./node_modules/.bin/turbo run build
+
+# --- Build for the worker (Debian) ---------------------------------------------------------------
+# The same steps on Debian, for the worker only: its node_modules must carry glibc native builds.
+FROM ${NODE_DEBIAN_IMAGE} AS build-debian
 WORKDIR /app
 
 ENV PNPM_HOME=/pnpm
@@ -101,50 +166,38 @@ RUN pnpm prisma:generate && ./node_modules/.bin/turbo run build
 
 # --- The runtime filesystem ---------------------------------------------------------------------
 #
-# The API and web images run Node and nothing else, so they carry a Debian 12 userland of exactly
-# what Node and its native modules load: glibc, libgcc and libstdc++, OpenSSL 3 (Prisma's
-# `debian-openssl-3.0.x` engine links libssl.so.3 and libcrypto.so.3), the CA bundle, `dumb-init`,
-# and `base-files` and `netbase` for /etc/os-release and /etc/services. No shell, no package
-# manager, no util-linux, no zlib and no setuid program. `node:22-bookworm-slim` carried all of
-# those, and with them every finding in docs/reports/image-vulnerability-remediation-2026-10-25.md:
-# util-linux and zlib are absent here, not patched or hidden.
+# The API, web and migrate images run Node and nothing else, so they carry an Alpine userland of
+# exactly what Node and its native modules load: musl, libgcc and libstdc++, OpenSSL 3 (Prisma's
+# `linux-musl-openssl-3.0.x` engines link libssl.so.3 and libcrypto.so.3), zlib, the CA bundle,
+# `dumb-init`, and alpine-release for /etc/os-release. No shell (no busybox), no package manager
+# (no apk-tools), no util-linux and no setuid program.
 #
-# The packages are the current Debian 12 ones: `upgrade` first, then `apt-get download`, which
-# checks each file against the signed archive indices. Each package's control record goes into
-# /var/lib/dpkg/status, so scanners see every package and version that is present. `node` is the
-# official binary from the same `node:22-bookworm-slim` the build stage uses, so the image runs the
-# Node release the build was tested with.
+# `apk add --root` installs the packages, signature-checked against the keys in the pinned image,
+# into an empty root with their package database (lib/apk/db/installed), so scanners see every
+# package and version that is present. `node` is the binary of the same pinned image the build
+# stage uses, so the image runs the Node release the build was tested with.
 #
 # `dumb-init` because Node is a poor PID 1: it does not reap zombies and it does not forward
 # signals to children, and 20 §4 requires workers to drain in-flight jobs before exiting — which
 # they can only do if SIGTERM reaches them.
-FROM ${NODE_IMAGE} AS runtime-fs
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
- && apt-get install --yes --no-install-recommends ca-certificates \
- && mkdir -p /tmp/debs /rootfs/var/lib/dpkg /rootfs/etc/ssl/certs /rootfs/tmp /rootfs/home/node /rootfs/usr/local/bin \
- && cd /tmp/debs \
- && apt-get download base-files netbase libc6 libgcc-s1 gcc-12-base libstdc++6 libssl3 dumb-init \
- && for deb in ./*.deb; do \
-      dpkg-deb --extract "$deb" /rootfs \
-      && dpkg-deb --field "$deb" | sed '/^Package:/a Status: install ok installed' >> /rootfs/var/lib/dpkg/status \
-      && echo >> /rootfs/var/lib/dpkg/status \
-      || exit 1; \
-    done \
- && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ \
- && { dpkg-query --status ca-certificates \
-        | grep -E '^(Package|Status|Priority|Section|Installed-Size|Maintainer|Architecture|Multi-Arch|Version|Depends|Description):'; \
-      echo; } >> /rootfs/var/lib/dpkg/status \
- && printf 'root:x:0:0:root:/root:/usr/sbin/nologin\nnode:x:1000:1000::/home/node:/usr/sbin/nologin\nnobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n' > /rootfs/etc/passwd \
- && printf 'root:x:0:\nnode:x:1000:\nnogroup:x:65534:\n' > /rootfs/etc/group \
- && printf 'passwd: files\ngroup: files\nshadow: files\nhosts: files dns\nnetworks: files\nprotocols: files\nservices: files\n' > /rootfs/etc/nsswitch.conf \
+FROM alpine AS runtime-fs
+RUN mkdir -p /rootfs/etc/apk /rootfs/tmp /rootfs/home/node /rootfs/usr/local/bin \
+ && cp -r /etc/apk/keys /rootfs/etc/apk/keys \
+ && apk add --no-cache --root /rootfs --initdb --no-scripts --repositories-file /etc/apk/repositories \
+      alpine-release musl 'zlib=1.4-r0' libgcc libstdc++ 'libssl3=3.5.9-r1' 'libcrypto3=3.5.9-r1' \
+      ca-certificates-bundle dumb-init \
+ && rm -rf /rootfs/etc/apk/keys /rootfs/var/cache/apk \
+ && printf 'root:x:0:0:root:/root:/sbin/nologin\nnode:x:1000:1000::/home/node:/sbin/nologin\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n' > /rootfs/etc/passwd \
+ && printf 'root:x:0:\nnode:x:1000:\nnobody:x:65534:\n' > /rootfs/etc/group \
+ && cp /etc/services /etc/protocols /rootfs/etc/ \
  && cp /usr/local/bin/node /rootfs/usr/local/bin/node \
- && ldconfig -r /rootfs \
  && chmod 1777 /rootfs/tmp \
  && chown 1000:1000 /rootfs/home/node \
- && rm -rf /rootfs/usr/share/doc /rootfs/usr/share/man /rootfs/usr/share/info /rootfs/usr/share/lintian \
  && test -z "$(find /rootfs -xdev -type f -perm /6000)" \
- && test ! -e /rootfs/bin/sh && test ! -e /rootfs/usr/bin/sh
+ && test ! -e /rootfs/bin/sh && test ! -e /rootfs/bin/busybox && test ! -e /rootfs/sbin/apk \
+ && test -e /rootfs/lib/ld-musl-x86_64.so.1 && test -s /rootfs/etc/ssl/certs/ca-certificates.crt \
+ && test -x /rootfs/usr/bin/dumb-init && test -s /rootfs/lib/apk/db/installed \
+ && chroot /rootfs /usr/local/bin/node -e 'require("crypto").createHash("sha256"); require("zlib").gzipSync("x")'
 
 # --- The shared runtime base --------------------------------------------------------------------
 FROM scratch AS runtime
@@ -173,7 +226,7 @@ ENTRYPOINT ["dumb-init", "--"]
 # published before it was built, so the runtime takes bookworm's later security fixes for packages
 # already in it. It moves Debian 12 packages within Debian 12 only; it pins nothing and adds no
 # repository.
-FROM ${NODE_IMAGE} AS runtime-debian
+FROM ${NODE_DEBIAN_IMAGE} AS runtime-debian
 WORKDIR /app
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --no-install-recommends \
@@ -230,16 +283,14 @@ CMD ["node", "apps/api/dist/main.js"]
 #
 # ## The schema engine its runtime asks for
 #
-# The build stage has no libssl, so the engines downloaded at install time are the
-# `debian-openssl-1.1.x` ones (see `prisma/schema.prisma`), while this runtime carries OpenSSL 3 and
-# the CLI asks for `schema-engine-debian-openssl-3.0.x`. The query engine is pinned by `binaryTargets`;
-# the schema engine is not something a schema can pin, so this stage fetches the 3.0.x one for the
-# Prisma version the lockfile already resolved (`PRISMA_CLI_BINARY_TARGETS`). The binary is not in the
-# lockfile: the CLI downloads it from Prisma's engine CDN for the engine commit that version names and
-# checks it against a SHA-256 served from the same place, so a rebuild trusts that CDN; what runs is
-# fixed by the published image digest, not by a rebuild. It happens here, on top of the shared build stage,
-# so the API image does not gain a second schema engine. CI and the release smoke ask the image the
-# same question the deployment does: run it.
+# The query engine is pinned by `binaryTargets` (`prisma/schema.prisma`); the schema engine is not
+# something a schema can pin, so this stage makes sure the CLI holds the `linux-musl-openssl-3.0.x`
+# one for the Prisma version the lockfile already resolved (`PRISMA_CLI_BINARY_TARGETS`). On the
+# Alpine build stage that is already the native engine, so this normally downloads nothing; if it
+# does, the CLI fetches it from Prisma's engine CDN for the engine commit that version names and
+# checks it against a SHA-256 served from the same place, so a rebuild trusts that CDN; what runs
+# is fixed by the published image digest, not by a rebuild. CI and the release smoke ask the image
+# the same question the deployment does: run it.
 #
 # ## What it needs at run time
 #
@@ -248,9 +299,9 @@ CMD ["node", "apps/api/dist/main.js"]
 # Nothing is baked in: no URL, no credential, no catalogue. It writes nothing to its own filesystem,
 # so it runs with a read-only root filesystem and no capabilities.
 FROM build AS migrate-engines
-ENV PRISMA_CLI_BINARY_TARGETS=debian-openssl-3.0.x
+ENV PRISMA_CLI_BINARY_TARGETS=linux-musl-openssl-3.0.x
 RUN node node_modules/prisma/build/index.js version >/dev/null \
- && find node_modules/.pnpm -name 'schema-engine-debian-openssl-3.0.x' -type f | grep -q .
+ && find node_modules/.pnpm -name 'schema-engine-linux-musl-openssl-3.0.x' -type f | grep -q .
 
 FROM runtime AS migrate
 
@@ -309,11 +360,11 @@ RUN set -eux; \
     fi
 USER node
 
-COPY --from=build --chown=node:node /app/node_modules              ./node_modules
-COPY --from=build --chown=node:node /app/packages                  ./packages
-COPY --from=build --chown=node:node /app/prisma                    ./prisma
-COPY --from=build --chown=node:node /app/apps/worker/dist          ./apps/worker/dist
-COPY --from=build --chown=node:node /app/apps/worker/node_modules  ./apps/worker/node_modules
-COPY --from=build --chown=node:node /app/apps/worker/package.json  ./apps/worker/
+COPY --from=build-debian --chown=node:node /app/node_modules              ./node_modules
+COPY --from=build-debian --chown=node:node /app/packages                  ./packages
+COPY --from=build-debian --chown=node:node /app/prisma                    ./prisma
+COPY --from=build-debian --chown=node:node /app/apps/worker/dist          ./apps/worker/dist
+COPY --from=build-debian --chown=node:node /app/apps/worker/node_modules  ./apps/worker/node_modules
+COPY --from=build-debian --chown=node:node /app/apps/worker/package.json  ./apps/worker/
 
 CMD ["node", "apps/worker/dist/main.js"]
