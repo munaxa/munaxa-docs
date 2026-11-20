@@ -146,7 +146,13 @@ jobs:
         with:
           ref: ${{ needs.source.outputs.sha }}
 
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
       # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
       # argument is recorded in the image's history. The same construction the CI images job uses.
@@ -354,7 +360,13 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
       # Built and loaded first, and only pushed once it has proved it scans.
       - name: Build the scanner (not yet pushed)
@@ -611,6 +623,10 @@ jobs:
         with:
           name: release-smoke-images
           path: smoke-images
+
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
 
       - name: Confirm this job holds no AWS or OIDC credential
         run: |
