@@ -57,6 +57,10 @@ env:
   NODE_VERSION: '22'
   PNPM_VERSION: '10.33.0'
 
+# Least privilege by default; a job that needs more declares it itself.
+permissions:
+  contents: read
+
 jobs:
   node:
     name: Lint · Typecheck · Test · Build
@@ -65,13 +69,15 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -141,7 +147,7 @@ jobs:
       # moved" from "this machine has a different font".
       - name: Upload the screenshots when they disagree
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: screenshots
           path: apps/web/src/test/__screenshots__/
@@ -207,7 +213,9 @@ jobs:
       SECOND_DATABASE_MIGRATION_URL: postgresql://edms_owner@127.0.0.1:5432/ci_edms_rival
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before anything is pulled
       # from Docker Hub. Without the secrets (also forks and Dependabot) pulls stay anonymous.
@@ -242,11 +250,11 @@ jobs:
           docker logout >/dev/null
           bash "$c" wait postgres redis
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -308,12 +316,12 @@ jobs:
       # same credentials, so nothing downstream of these steps changes.
       - name: Restore the object store binaries
         id: object-store-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ runner.temp }}/object-store/bin
           key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: steps.object-store-cache.outputs.cache-hit != 'true'
         with:
           # MinIO's `go.mod` at this tag asks for 1.24; `mc`'s asks for 1.23.
@@ -424,7 +432,7 @@ jobs:
       # One download a day rather than one a run: ClamAV's mirrors throttle clients that fetch the
       # full databases repeatedly, and a throttled job would have no scanner at all.
       - name: Restore the ClamAV signatures
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ runner.temp }}/clamav-db
           key: clamav-db-${{ steps.signatures.outputs.day }}
@@ -565,7 +573,9 @@ jobs:
         {"id":"019489f0-0000-7000-8000-0000000000b2","slug":"rival"}]}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before anything is pulled
       # from Docker Hub. Without the secrets (also forks and Dependabot) pulls stay anonymous.
@@ -605,11 +615,11 @@ jobs:
           docker logout >/dev/null
           bash "$c" wait postgres postgres-dr redis
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -675,7 +685,7 @@ jobs:
       # else, and the exception behind that id is in the API's log alone.
       - name: Upload the server logs when the suite fails
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-server-logs-${{ strategy.job-index }}
           path: |
@@ -701,7 +711,9 @@ jobs:
     # registry, under which credentials, with which retention — and this repository has none of
     # those answers. What it can assert is that the images build from this commit.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Before setup-buildx: booting the builder pulls moby/buildkit from Docker Hub, and the
       # Dockerfile's base images (node:22-alpine, ubuntu for the antivirus) come from there too.
@@ -716,7 +728,7 @@ jobs:
           token: ${{ secrets.DOCKERHUB_TOKEN }}
           login: 'true'
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
           buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
@@ -733,7 +745,7 @@ jobs:
       # The build stage is shared by all three targets and is the expensive one, so the cache is
       # what keeps this job from doubling the pipeline's wall-clock.
       - name: Build the API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: api
@@ -786,7 +798,7 @@ jobs:
           fi
 
       - name: Build the worker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: worker
@@ -828,7 +840,7 @@ jobs:
           echo "OK - worker: musl, no glibc, no shell, no package manager, user node, boots read-only with no capabilities."
 
       - name: Build the web image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: web
@@ -886,7 +898,7 @@ jobs:
 
       - name: Keep the SBOMs and scan reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-reports-images
           path: image-reports/
@@ -907,7 +919,9 @@ jobs:
     # failed, concurrent runs, the provisioning and API start-up gates, and no credential in any log.
     # It builds and does not push; nothing here reaches a registry, AWS or any real database.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Docker Hub mirror (mirror.gcr.io)
         id: hub-mirror
@@ -920,7 +934,7 @@ jobs:
           token: ${{ secrets.DOCKERHUB_TOKEN }}
           login: 'true'
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
           buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
@@ -933,7 +947,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build the migration image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: migrate
@@ -945,7 +959,7 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Build the API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: api
@@ -962,7 +976,7 @@ jobs:
 
       - name: Keep the SBOM and scan report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-reports-migrate
           path: image-reports/
@@ -976,7 +990,7 @@ jobs:
           docker pull -q redis:7-alpine
           docker logout >/dev/null
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -998,7 +1012,9 @@ jobs:
     # publishing workflow runs the same script against the digests it pushed to ECR; this job never
     # touches a registry or AWS. It is not a required check: the release gate is the publishing run.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Docker Hub mirror (mirror.gcr.io)
         id: hub-mirror
@@ -1011,7 +1027,7 @@ jobs:
           token: ${{ secrets.DOCKERHUB_TOKEN }}
           login: 'true'
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
         with:
           buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
@@ -1024,7 +1040,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build the API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: api
@@ -1035,7 +1051,7 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Build the migration image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: migrate
@@ -1046,7 +1062,7 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Build the web image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: web
@@ -1057,7 +1073,7 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Build the antivirus image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: infra/antivirus
           load: true
@@ -1073,11 +1089,11 @@ jobs:
           docker pull -q redis:7-alpine
           docker logout >/dev/null
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -1092,12 +1108,12 @@ jobs:
       # The same pinned object store as the integration job, from the same cache.
       - name: Restore the object store binaries
         id: object-store-cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ runner.temp }}/object-store/bin
           key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: steps.object-store-cache.outputs.cache-hit != 'true'
         with:
           go-version: '1.24'
@@ -1121,7 +1137,9 @@ jobs:
     name: Product isolation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       # The dependency rules are one-directional: this product may depend on the platform
       # and on nothing else in the ecosystem. Catching a stray cross-product import here is
       # far cheaper than untangling it after it ships.
@@ -1157,7 +1175,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - name: Shell scripts pass shellcheck
         run: shellcheck scripts/terraform/*.sh scripts/terraform/tests/*.sh
       - name: Plan-review gate tests
