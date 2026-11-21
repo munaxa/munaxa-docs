@@ -43,7 +43,7 @@ the runner shelled out to `pnpm exec prisma`, and the runtime images carry neith
 so the hosted Docs had no way to migrate at all. The runner now starts the Prisma CLI by its own path
 (`scripts/migration-support.mjs`), and the `migrate` target of ./Dockerfile carries exactly what
 migrating needs: the same `node_modules` the API was built with (Prisma CLI, the generated client, and
-the `debian-openssl-3.0.x` schema engine its runtime asks for), `prisma/`, `infra/sql/` and the three
+the `linux-musl-openssl-3.0.x` schema engine its Alpine runtime asks for), `prisma/`, `infra/sql/` and the three
 migration scripts, on the same no-shell runtime base as the API. A checkout at the release commit
 still works and runs the same file. [§2a](#2a-the-migration-image-and-the-hosted-docs-migrate-task)
 is the procedure for the shared AWS hosting.
@@ -84,11 +84,13 @@ added (`docs/reports/release-candidate-final-validation.md`):
    (every upload is recorded `SKIPPED`). Permitted targets and the database rule (never restore over
    the live database) are in the go-live runbook §20.
 
-**Worker images are built per deployment shape.** `--build-arg WITH_LIBREOFFICE=true` and
-`--build-arg WITH_TESSERACT=true` decide whether the binaries are *present*; `OFFICE_DRIVER` and
-`OCR_DRIVER` decide whether they are *called*. Both, because an image without LibreOffice cannot be
-configured into having it and an image with it should not be paying 600 MB in a deployment that
-previews nothing but PDFs.
+**No image carries LibreOffice or Tesseract.** `OFFICE_DRIVER=LIBREOFFICE` and
+`OCR_DRIVER=TESSERACT` call binaries by a configured path, and the code that calls them runs in the
+API process, whose image has neither and refuses at boot if configured for them. The worker's former
+`WITH_LIBREOFFICE` and `WITH_TESSERACT` build arguments were removed on 20 Nov 2026 with its Debian
+runtime: they installed the binaries into an image that never called them. A deployment that needs
+an engine needs a separate image target, built on the same pinned Alpine base and passing the same
+verify and HIGH/CRITICAL scan gate, plus the API or worker composition that calls it.
 
 ## 2. The order the migration runner enforces, and why it fails loudly
 

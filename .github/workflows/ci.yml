@@ -211,6 +211,10 @@ jobs:
 
       # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before anything is pulled
       # from Docker Hub. Without the secrets (also forks and Dependabot) pulls stay anonymous.
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - name: Docker Hub authentication
         uses: ./.github/actions/docker-hub-auth
         with:
@@ -565,6 +569,10 @@ jobs:
 
       # Optional Docker Hub login (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN), before anything is pulled
       # from Docker Hub. Without the secrets (also forks and Dependabot) pulls stay anonymous.
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - name: Docker Hub authentication
         uses: ./.github/actions/docker-hub-auth
         with:
@@ -696,7 +704,11 @@ jobs:
       - uses: actions/checkout@v6
 
       # Before setup-buildx: booting the builder pulls moby/buildkit from Docker Hub, and the
-      # Dockerfile's base image (node:22-bookworm-slim) comes from there too.
+      # Dockerfile's base images (node:22-alpine, ubuntu for the antivirus) come from there too.
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - name: Docker Hub authentication
         uses: ./.github/actions/docker-hub-auth
         with:
@@ -705,6 +717,8 @@ jobs:
           login: 'true'
 
       - uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
       # The registry credential, as a build *secret* rather than a build argument: an argument is
       # recorded in the image's history and readable by anybody who can `docker history` it.
@@ -749,10 +763,17 @@ jobs:
           cid=$(docker create munaxa-docs-api:ci)
           files=$(docker export "$cid" | tar -tf -)
           docker container rm "$cid" >/dev/null
-          ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          # The libc decides the engine family: musl (Alpine, the release images since 20 Nov 2026) or glibc.
+          if grep -q '^lib/ld-musl-x86_64\.so\.1$' <<<"$files"; then
+            family=linux-musl
+            ssl=$(sed -n 's#^usr/lib/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          else
+            family=debian
+            ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          fi
           case "${ssl:-}" in
-            3) want=debian-openssl-3.0.x ;;
-            1) want=debian-openssl-1.1.x ;;
+            3) want=$family-openssl-3.0.x ;;
+            1) want=$family-openssl-1.1.x ;;
             *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
           esac
           echo "This runtime requires: $want"
@@ -770,9 +791,41 @@ jobs:
           context: .
           target: worker
           push: false
-          load: false
+          # Loaded since 20 Nov 2026: the worker is started and scanned below like the release images.
+          load: true
+          tags: munaxa-docs-worker:ci
           secret-files: npmrc=${{ runner.temp }}/npmrc
           cache-from: type=gha
+
+      # The worker moved from Debian (CRITICAL glibc CVE-2026-5450 and HIGH findings no Debian
+      # release fixes) to the API's scratch Alpine runtime. This asserts the move from the image
+      # itself: musl loader and no glibc, no shell, no package manager, no LibreOffice or Tesseract,
+      # uid 1000, and the process boots under the same hardening a deployment uses (read-only root,
+      # no capabilities, no privilege escalation) and logs its start line.
+      - name: The worker image runs on the Alpine runtime, as node, with no glibc and no shell
+        run: |
+          set -euo pipefail
+          image=munaxa-docs-worker:ci
+          cid=$(docker create "$image")
+          files=$(docker export "$cid" | tar -tf -)
+          docker container rm "$cid" >/dev/null
+          fail() { echo "FAIL - $*"; exit 1; }
+          grep -q '^lib/ld-musl-x86_64\.so\.1$' <<<"$files" || fail "no musl loader in the worker image"
+          ! grep -qE '(^|/)(ld-linux-x86-64\.so\.2|libc\.so\.6)$|^usr/lib/x86_64-linux-gnu/' <<<"$files" || fail "a glibc library is in the worker image"
+          ! grep -qE '^(bin|usr/bin|sbin|usr/sbin)/(sh|bash|dash|busybox|apk|apt|apt-get|dpkg)$' <<<"$files" || fail "a shell or package manager is in the worker image"
+          ! grep -qiE '(^|/)(soffice|libreoffice|tesseract)(/|$)' <<<"$files" || fail "LibreOffice or Tesseract is in the worker image"
+          ! grep -qE '(^|/)\.npmrc$' <<<"$files" || fail "an .npmrc is in the worker image"
+          user=$(docker image inspect --format '{{.Config.User}}' "$image")
+          [ "$user" = node ] || fail "the worker image runs as '$user', not node"
+          set +e
+          out=$(timeout 60 docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp "$image" 2>&1)
+          code=$?
+          set -e
+          echo "$out" | tail -20
+          case "$code" in 0|124) ;; *) fail "the worker exited with $code" ;; esac
+          grep -q 'Worker started\.' <<<"$out" || fail "the worker did not log its start line"
+          echo "OK - worker: musl, no glibc, no shell, no package manager, user node, boots read-only with no capabilities."
 
       - name: Build the web image
         uses: docker/build-push-action@v6
@@ -811,6 +864,35 @@ jobs:
           [ "$failed" = 0 ] || { echo "FAIL - the web image does not serve its brand artwork."; docker logs web-ci | tail -20; exit 1; }
           echo "OK - every branding asset the login page references is served."
 
+      # A vulnerability scan of the images this job loads (OS and npm packages), with SBOMs kept,
+      # failing on HIGH or CRITICAL. This is CI's own scan; ECR's scan of a published digest is
+      # separate evidence. .grype.yaml holds no exception; nothing is suppressed here.
+      # The antivirus image (c-icap and ClamAV on Ubuntu 24.04), built here so its scan is evidence on
+      # every pull request and not only at release. It needs no registry credential.
+      - name: Build the antivirus image
+        run: docker build -t munaxa-docs-antivirus:ci infra/antivirus
+
+      - name: Scan the antivirus image (SBOM, HIGH and CRITICAL fail)
+        run: .github/scripts/scan-image.sh munaxa-docs-antivirus:ci docs-antivirus image-reports
+
+      - name: Scan the API, web and worker images (SBOM, HIGH and CRITICAL fail)
+        run: |
+          set -euo pipefail
+          status=0
+          for target in api web worker; do
+            .github/scripts/scan-image.sh "munaxa-docs-$target:ci" "docs-$target" image-reports || status=1
+          done
+          exit $status
+
+      - name: Keep the SBOMs and scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports-images
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 90
+
   migration-image:
     name: Migration image · disposable databases
     runs-on: ubuntu-latest
@@ -827,6 +909,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - name: Docker Hub authentication
         uses: ./.github/actions/docker-hub-auth
         with:
@@ -835,6 +921,8 @@ jobs:
           login: 'true'
 
       - uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
       - name: Write the registry credential for the build secret
         run: |
@@ -869,6 +957,18 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
 
       # Pulled while the optional Docker Hub login is active; nothing after this pulls.
+      - name: Scan the migration image (SBOM, HIGH and CRITICAL fail)
+        run: .github/scripts/scan-image.sh munaxa-docs-migrate:ci docs-migrate image-reports
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-reports-migrate
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Pull the disposable database and cache images
         run: |
           set -euo pipefail
@@ -900,6 +1000,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
       - name: Docker Hub authentication
         uses: ./.github/actions/docker-hub-auth
         with:
@@ -908,6 +1012,8 @@ jobs:
           login: 'true'
 
       - uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
 
       - name: Write the registry credential for the build secret
         run: |
