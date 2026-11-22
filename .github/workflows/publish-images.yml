@@ -200,10 +200,14 @@ jobs:
             org.opencontainers.image.version=${{ env.SHORT }}
             org.opencontainers.image.title=${{ matrix.image }}
 
-      - name: Scan before pushing (SBOM, HIGH and CRITICAL fail)
+      # Permanent gate first; only if it fails, the TEMPORARY Testing-only D-SSL exception (expires
+      # 2026-12-01T00:00:00Z, exact OpenSSL 3.5.9-r1 findings only). An image accepted this way is a
+      # Testing-only image: the platform stack refuses every product image in production while the
+      # exception exists (munaxa-platform infra/aws/stack/dssl-exception.tf).
+      - name: Scan before pushing (SBOM, HIGH and CRITICAL fail; D-SSL Testing exception only)
         env:
           IMAGE: ${{ matrix.image }}
-        run: .github/scripts/scan-image.sh "$REPOSITORY:sha-$SHA" "$IMAGE" image-reports
+        run: .github/scripts/scan-image-testing.sh "$REPOSITORY:sha-$SHA" "$IMAGE" image-reports testing
 
       - name: Keep the SBOM and scan report
         if: always()
