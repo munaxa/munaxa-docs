@@ -1,6 +1,6 @@
 import type { Page } from 'playwright';
 
-import { en } from '@edms/i18n';
+import { ar, en } from '@edms/i18n';
 
 /**
  * Driving and measuring the theme, shared by the suites that do both — Phase 8.2.
@@ -45,7 +45,9 @@ export async function waitForHydration(page: Page): Promise<void> {
       [...document.querySelectorAll('button[aria-label]')].some((button) =>
         labels.includes(button.getAttribute('aria-label') ?? ''),
       ),
-    [en.nav.lightMode, en.nav.darkMode] as readonly string[],
+    // Every shipped locale's labels: a page served in Arabic (`edms_locale=ar`) resolves to
+    // "فاتح"/"داكن", and waiting only for the English ones would time out on a hydrated page.
+    [en.nav.lightMode, en.nav.darkMode, ar.nav.lightMode, ar.nav.darkMode] as readonly string[],
   );
 }
 
