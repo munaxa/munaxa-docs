@@ -44,7 +44,9 @@ resource "aws_ecr_repository" "images" {
 }
 
 # Bounded storage cost. Untagged layers left by failed pushes go after 7 days; of the released
-# images, the newest 20 are kept, which covers every release a rollback could need.
+# images, the newest 20 are kept, which covers every release a rollback could need. Testing images
+# (testing-* tags, publish-images-testing.yml) are counted on their own: the newest 30 are kept, so
+# Testing builds can never push a release image out.
 resource "aws_ecr_lifecycle_policy" "images" {
   for_each = aws_ecr_repository.images
 
@@ -64,6 +66,17 @@ resource "aws_ecr_lifecycle_policy" "images" {
       },
       {
         rulePriority = 2
+        description  = "Keep the newest 30 Testing images"
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = ["testing-*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = 30
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 3
         description  = "Keep the newest 20 released images"
         selection = {
           tagStatus      = "tagged"
@@ -134,6 +147,56 @@ data "aws_iam_policy_document" "image_publisher_trust" {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:job_workflow_ref"
       values   = ["${var.github_repository}/.github/workflows/publish-images.yml@refs/tags/image/*"]
+    }
+  }
+
+  # Testing (nonprod) images without a reviewer: only the `image-testing` environment, only on main
+  # (reviewed history), and only publish-images-testing.yml as it is on main. That workflow pushes
+  # testing-* tags only; release tags stay with the statement above. Same repositories, same
+  # push-only permissions, and tags are immutable, so a Testing run cannot replace a release image.
+  statement {
+    sid     = "GitHubActionsTestingImagePublishing"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${local.github_owner}@${var.github_owner_id}/${local.github_repository_name}@${var.github_repository_id}:environment:${var.github_testing_image_environment}"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_owner_id"
+      values   = [var.github_owner_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_repository_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:ref"
+      values   = ["refs/heads/main"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:job_workflow_ref"
+      values   = ["${var.github_repository}/.github/workflows/publish-images-testing.yml@refs/heads/main"]
     }
   }
 }

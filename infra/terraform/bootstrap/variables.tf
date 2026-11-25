@@ -88,6 +88,17 @@ variable "github_image_environment" {
   }
 }
 
+variable "github_testing_image_environment" {
+  description = "The GitHub environment whose jobs may assume the image publisher for Testing images: no reviewer, so the trust also requires refs/heads/main and publish-images-testing.yml."
+  type        = string
+  default     = "image-testing"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]+$", var.github_testing_image_environment)) && var.github_testing_image_environment != var.github_image_environment
+    error_message = "Use a single environment name, with no wildcard, different from github_image_environment."
+  }
+}
+
 variable "github_ref" {
   description = "The only Git ref whose runs may assume the CI role."
   type        = string

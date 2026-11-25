@@ -1,0 +1,760 @@
+# Publishing the Munaxa Docs images to Amazon ECR for **Testing (nonprod) only**, without a manual
+# approval, so the Testing stack can pin a fresh digest after every merge.
+#
+#   munaxa-docs/api        the `api` target of ./Dockerfile
+#   munaxa-docs/web        the `web` target of ./Dockerfile
+#   munaxa-docs/migrate    the `migrate` target of ./Dockerfile
+#   munaxa-docs/antivirus  ./infra/antivirus
+#
+# A copy of publish-images.yml (the production release path, unchanged: an image/<sha> tag and the
+# owner's approval in the `image-release` environment) with four differences:
+#
+# - **When.** After CI succeeds on a commit pushed to main, or dispatched from main for one commit
+#   on main. Never from a branch, a tag or a pull request. A commit that changes only
+#   documentation publishes nothing.
+# - **Where it may push.** The `image-testing` environment, which has no required reviewer. The
+#   image publisher role (infra/terraform/bootstrap/ecr.tf) trusts that environment only for this
+#   file on refs/heads/main, so no other workflow, branch or tag can use it. The role may still push
+#   only to these four repositories, and cannot delete or overwrite anything (immutable tags, no
+#   delete permission).
+# - **Tags.** `testing-<short>` and `testing-sha-<full>`, never `<short>` or `sha-<full>`, so a
+#   Testing build can never take a production release tag, and the registry keeps the newest 30
+#   Testing builds separately from the 20 release builds (lifecycle policy in ecr.tf).
+# - **Nothing is deployed.** Publishing only puts an image in ECR. Testing changes when its pinned
+#   digest changes (munaxa-platform infra/aws, an owner-approved apply). Production keeps its own
+#   gates and pins only images from the owner-approved release path.
+#
+# Everything else is the release path's: build and load, verify, scan (HIGH or CRITICAL refuses an
+# image; only the Testing-only D-SSL exception, until it expires, can accept a listed finding),
+# push, pull back by digest, the antivirus probe (clean passes, EICAR blocked) before and after the
+# push, and the release smoke with no AWS session. No registry credential exists; the role is
+# assumed through GitHub OIDC.
+
+name: Publish images for Testing
+
+on:
+  # After the CI workflow finishes on a commit pushed to main (a merged pull request). The source job
+  # publishes only when that run succeeded.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # By hand or by Claude, from main only, for one commit already on main (default: main's head).
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Full 40-character commit SHA on main to publish (empty: the head of main)'
+        required: false
+        default: ''
+
+concurrency:
+  group: publish-testing-${{ github.event.workflow_run.head_sha || inputs.sha || github.sha }}
+  cancel-in-progress: false # never cancel a half-finished push to a registry
+
+permissions:
+  contents: read
+  packages: read # the @munaxa/* npm packages on GitHub Packages, read during the build
+  id-token: write # GitHub OIDC, for the image publisher role
+
+env:
+  AWS_REGION: eu-central-1
+  REGISTRY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com
+  PUBLISHER_ROLE_ARN: arn:aws:iam::229251310592:role/munaxa-docs/bootstrap/munaxa-docs-eu-prod-image-publisher
+
+jobs:
+  source:
+    name: Resolve the source commit
+    # A failed or cancelled CI run is not an error here, just nothing to publish.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # no registry, no AWS
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      short: ${{ steps.resolve.outputs.short }}
+      publish: ${{ steps.changes.outputs.publish }}
+    steps:
+      - name: Choose the commit (green CI on main, or a dispatch from main)
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          # The workflow that runs is main's (reviewed) copy. The publisher role's trust in AWS
+          # enforces the same thing: environment image-testing, ref refs/heads/main, this file.
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Testing images are published from main only, not from $GITHUB_REF"; exit 1
+          fi
+          case "$EVENT" in
+            workflow_run)
+              if [ "$RUN_EVENT" != push ] || [ "$RUN_BRANCH" != main ] || [ "$RUN_REPOSITORY" != "$GITHUB_REPOSITORY" ] || [ "$RUN_CONCLUSION" != success ]; then
+                echo "::error::only a successful CI run of a push to main publishes ($RUN_EVENT, $RUN_BRANCH, $RUN_REPOSITORY, $RUN_CONCLUSION)"; exit 1
+              fi
+              sha="$RUN_SHA" ;;
+            push) sha="$GITHUB_SHA" ;;
+            workflow_dispatch) sha="${INPUT_SHA:-$GITHUB_SHA}" ;;
+            *) echo "::error::unexpected event $EVENT"; exit 1 ;;
+          esac
+          # A full SHA only: a short one is ambiguous in principle.
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::not a full 40-hex commit SHA: '$sha'"; exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: ${{ steps.resolve.outputs.sha }}
+          fetch-depth: 0 # the whole history, for the ancestry check against main
+
+      # Nothing to publish when the commit changes only documentation: the images would be the
+      # same, and every publish costs registry space. A dispatch always publishes.
+      - name: Decide whether this commit can change an image
+        id: changes
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && git rev-parse -q --verify "$SHA^" >/dev/null \
+            && git diff --quiet "$SHA^" "$SHA" -- . ':(glob,exclude)docs/**' ':(glob,exclude)**/*.md'; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$SHA changes only documentation: nothing to publish" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Confirm the commit is in reviewed history (on main)
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main: only merged, reviewed commits are published"; exit 1
+          fi
+          echo "$SHA is on main"
+
+      - name: Confirm the checkout is that commit and is clean
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$SHA" ] || { echo "::error::checked out $(git rev-parse HEAD), expected $SHA"; exit 1; }
+          [ -z "$(git status --porcelain)" ] || { echo "::error::working tree not clean"; git status --porcelain; exit 1; }
+          echo "Building $SHA"
+
+  application:
+    name: ${{ matrix.image }}
+    needs: source
+    if: needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: image-testing # no reviewer; the publisher role trusts it only on main and only for this file
+    strategy:
+      fail-fast: false # one image failing should not hide the other's result
+      matrix:
+        include:
+          - image: munaxa-docs-api
+            repository: munaxa-docs/api
+            target: api
+          - image: munaxa-docs-web
+            repository: munaxa-docs/web
+            target: web
+          - image: munaxa-docs-migrate
+            repository: munaxa-docs/migrate
+            target: migrate
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+      SHORT: ${{ needs.source.outputs.short }}
+      # Job-level env cannot read the env context; the registry host is written out.
+      REPOSITORY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/${{ matrix.repository }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
+
+      # The registry credential for `@munaxa/*`, as a build *secret* rather than a build argument: an
+      # argument is recorded in the image's history. The same construction the CI images job uses.
+      - name: Write the package-registry credential for the build secret
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/npmrc"
+        env:
+          # GITHUB_TOKEN reads @munaxa/* only if each package is granted to this repository, so a
+          # build without PLATFORM_PACKAGES_TOKEN is refused with ERR_PNPM_FETCH_403 (as in ci.yml).
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Assume the image publisher role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.PUBLISHER_ROLE_ARN }}
+          role-session-name: gha-publish-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Authenticate to ECR
+        # A 12-hour registry token from the role's session, piped straight to docker; never echoed.
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+      # Built and loaded first, scanned, and only then pushed: an image with a HIGH or CRITICAL finding
+      # that no approved exception (.grype.yaml) covers never reaches ECR.
+      - name: Build (not pushed yet)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          push: false
+          load: true
+          tags: |
+            ${{ env.REPOSITORY }}:testing-${{ env.SHORT }}
+            ${{ env.REPOSITORY }}:testing-sha-${{ env.SHA }}
+          secret-files: npmrc=${{ runner.temp }}/npmrc
+          # A single-platform manifest, so the digest names the image itself rather than an index
+          # over it. Predictable pinning matters more than multi-arch, which nothing here asks for.
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.version=${{ env.SHORT }}
+            org.opencontainers.image.title=${{ matrix.image }}
+
+      # Permanent gate first; only if it fails, the TEMPORARY Testing-only D-SSL exception (expires
+      # 2026-12-01T00:00:00Z, exact OpenSSL 3.5.9-r1 findings only). An image accepted this way is a
+      # Testing-only image: the platform stack refuses every product image in production while the
+      # exception exists (munaxa-platform infra/aws/stack/dssl-exception.tf).
+      - name: Scan before pushing (SBOM, HIGH and CRITICAL fail; D-SSL Testing exception only)
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: .github/scripts/scan-image-testing.sh "$REPOSITORY:testing-sha-$SHA" "$IMAGE" image-reports testing
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-reports-${{ matrix.target }}
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 400
+
+      - name: Push
+        id: build
+        run: |
+          set -euo pipefail
+          docker push -q "$REPOSITORY:testing-$SHORT" >/dev/null
+          docker push -q "$REPOSITORY:testing-sha-$SHA" >/dev/null
+          digest="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$REPOSITORY:testing-sha-$SHA" | sed -n "s#^$REPOSITORY@##p" | head -n1)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Fail if no digest was produced
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no digest was produced; nothing pinnable was published"; exit 1
+          fi
+          echo "Published $REPOSITORY@$DIGEST"
+
+      - name: Pull by digest and verify the revision label
+        env:
+          REF: ${{ env.REPOSITORY }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "$REF"
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REF")
+          echo "revision label: $revision"
+          [ "$revision" = "$SHA" ] || { echo "::error::revision label $revision != $SHA"; exit 1; }
+
+          # The runtime has no shell, so the user is asked of the image's own `node`, and the
+          # filesystem is read from outside the image.
+          uid=$(docker run --rm --entrypoint node "$REF" -e 'process.stdout.write(String(process.getuid()))')
+          [ -n "$uid" ] && [ "$uid" != "0" ] || { echo "::error::image runs as root (uid '${uid}')"; exit 1; }
+          echo "runs as: $(docker inspect --format '{{.Config.User}}' "$REF") (uid $uid)"
+
+          if docker history --no-trunc --format '{{.CreatedBy}}' "$REF" \
+               | grep -E 'ghp_|ghs_|github_pat_|_authToken=[A-Za-z0-9]' >/dev/null; then
+            echo "::error::a credential appears in image history"; exit 1
+          fi
+          cid=$(docker create "$REF")
+          docker export "$cid" > "$RUNNER_TEMP/image-fs.tar"
+          docker container rm "$cid" >/dev/null
+          mapfile -t npmrcs < <(tar -tf "$RUNNER_TEMP/image-fs.tar" | grep -E '(^|/)\.npmrc$' || true)
+          if [ "${#npmrcs[@]}" -gt 0 ] \
+               && tar -xOf "$RUNNER_TEMP/image-fs.tar" "${npmrcs[@]}" | grep '_authToken=[A-Za-z0-9]' >/dev/null; then
+            echo "::error::an npmrc carrying a token is present in the image"; exit 1
+          fi
+          echo "no credentials in history or filesystem"
+
+      # Phase 9.2: the query engine the runtime's OpenSSL asks for must be in the image.
+      - name: The API image carries the query engine its own runtime asks for
+        if: matrix.target == 'api'
+        env:
+          REF: ${{ env.REPOSITORY }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cid=$(docker create "$REF")
+          files=$(docker export "$cid" | tar -tf -)
+          docker container rm "$cid" >/dev/null
+          # The libc decides the engine family: musl (Alpine, the release images since 20 Nov 2026) or glibc.
+          if grep -q '^lib/ld-musl-x86_64\.so\.1$' <<<"$files"; then
+            family=linux-musl
+            ssl=$(sed -n 's#^usr/lib/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          else
+            family=debian
+            ssl=$(sed -n 's#^usr/lib/x86_64-linux-gnu/libssl\.so\.\([0-9]\).*#\1#p' <<<"$files" | sort -u | head -n 1)
+          fi
+          case "${ssl:-}" in
+            3) want=$family-openssl-3.0.x ;;
+            1) want=$family-openssl-1.1.x ;;
+            *) echo "Could not determine the runtime OpenSSL major version."; exit 1 ;;
+          esac
+          grep -q "^app/node_modules/.*/libquery_engine-$want\.so\.node$" <<<"$files" \
+            || { echo "FAIL - no libquery_engine-$want.so.node"; exit 1; }
+          echo "OK - query engine $want present"
+
+      # STG-12: the pulled web image serves every branding URL its login page references, plus the
+      # one favicon the release package names explicitly.
+      - name: The web image serves the Munaxa artwork
+        if: matrix.target == 'web'
+        env:
+          REF: ${{ env.REPOSITORY }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker run -d --name web-verify -e PORT=3000 -e NEXT_PUBLIC_API_URL=http://127.0.0.1:9 \
+            -p 127.0.0.1:3000:3000 "$REF"
+          trap 'docker rm -f web-verify >/dev/null' EXIT
+          for _ in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:3000/login && break; sleep 1; done
+          paths=$(curl -sf http://127.0.0.1:3000/login | grep -oE '(src|href)="/branding/[^"]+"' \
+            | sed -E 's/^[a-z]+="([^"]+)"$/\1/' | sort -u)
+          echo "$paths" | grep -q '/favicon/' || { echo "FAIL - the login page references no favicon."; exit 1; }
+          echo "$paths" | grep -q '/logos/'   || { echo "FAIL - the login page references no logo."; exit 1; }
+          failed=0
+          for path in $paths /branding/docs/favicon/favicon-32.png; do
+            answer=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:3000$path")
+            echo "$path -> $answer"
+            case "$answer" in "200 image/"*) ;; *) failed=1 ;; esac
+          done
+          [ "$failed" = 0 ] || { echo "FAIL - the web image does not serve its artwork."; docker logs web-verify | tail -20; exit 1; }
+          echo "OK - every branding asset is served."
+
+      # An artifact rather than a job output: a matrix's legs overwrite each other's outputs.
+      - name: Record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p digests && printf '%s@%s\n' "$REPOSITORY" "$DIGEST" > "digests/$TARGET"
+          {
+            echo "### ${{ matrix.image }}"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| source commit | \`$SHA\` |"
+            echo "| reference | \`$REPOSITORY@$DIGEST\` |"
+            echo "| revision label | verified \`$SHA\` |"
+            echo "| run | ${{ github.run_id }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digest-${{ matrix.target }}
+          path: digests/${{ matrix.target }}
+          retention-days: 90
+
+  antivirus:
+    name: munaxa-docs-antivirus
+    needs: source
+    if: needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: image-testing # no reviewer; the publisher role trusts it only on main and only for this file
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      clamav: ${{ steps.versions.outputs.clamav }}
+      cicap: ${{ steps.versions.outputs.cicap }}
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+      SHORT: ${{ needs.source.outputs.short }}
+      REPOSITORY: 229251310592.dkr.ecr.eu-central-1.amazonaws.com/munaxa-docs/antivirus
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          buildkitd-config: ${{ steps.hub-mirror.outputs.buildkitd-config }}
+
+      # Built and loaded first, and only pushed once it has proved it scans.
+      - name: Build the scanner (not yet pushed)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: infra/antivirus
+          push: false
+          load: true
+          tags: munaxa-docs-antivirus:candidate
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.version=${{ env.SHORT }}
+            org.opencontainers.image.title=munaxa-docs-antivirus
+
+      - name: Record the scanner versions this build installed
+        id: versions
+        run: |
+          set -euo pipefail
+          clamav=$(docker run --rm --entrypoint clamd munaxa-docs-antivirus:candidate --version | head -1)
+          cicap=$(docker run --rm --entrypoint c-icap munaxa-docs-antivirus:candidate -V 2>&1 | head -1)
+          packages=$(docker run --rm --entrypoint dpkg-query munaxa-docs-antivirus:candidate \
+            -W -f '${Package}=${Version}\n' clamav-daemon clamav-freshclam c-icap libc-icap-mod-virus-scan)
+          echo "clamd --version: $clamav"
+          echo "c-icap -V:       $cicap"
+          echo "$packages"
+          [ -n "$clamav" ] && [ -n "$cicap" ] || { echo "::error::could not read scanner versions"; exit 1; }
+          echo "clamav=$clamav" >> "$GITHUB_OUTPUT"
+          echo "cicap=$cicap" >> "$GITHUB_OUTPUT"
+          { echo "packages<<EOF"; echo "$packages"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+
+      - name: Probe the candidate — clean passed, EICAR blocked
+        run: |
+          set -euo pipefail
+          docker volume create av-signatures >/dev/null
+          docker run -d --name av-candidate -p 127.0.0.1:1344:1344 \
+            -v av-signatures:/var/lib/clamav munaxa-docs-antivirus:candidate
+          # freshclam fetches the official databases at start, so the first probe waits for them.
+          node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 600 \
+            || { docker logs av-candidate | tail -40; exit 1; }
+
+      # The container never starts as root, the signature update still works as its user, and no
+      # credential reached the image.
+      - name: The candidate runs as non-root and carries no credentials
+        run: sh infra/antivirus/verify-container.sh av-candidate munaxa-docs-antivirus:candidate
+
+      # STG-8/STG-9: a restart — including after an unclean stop — must come back scanning, on the
+      # signatures already in the volume.
+      - name: Probe again after an unclean restart
+        run: |
+          set -euo pipefail
+          docker kill av-candidate >/dev/null
+          docker start av-candidate >/dev/null
+          node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 300 \
+            || { docker logs av-candidate | tail -40; exit 1; }
+          docker rm -f av-candidate >/dev/null
+
+      - name: Scan the candidate before pushing (SBOM, HIGH and CRITICAL fail)
+        run: .github/scripts/scan-image.sh munaxa-docs-antivirus:candidate munaxa-docs-antivirus image-reports
+
+      - name: Keep the SBOM and scan report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-reports-antivirus
+          path: image-reports/
+          if-no-files-found: warn
+          retention-days: 400
+
+      - name: Assume the image publisher role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.PUBLISHER_ROLE_ARN }}
+          role-session-name: gha-publish-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Authenticate to ECR
+        # A 12-hour registry token from the role's session, piped straight to docker; never echoed.
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
+      # The probed image itself is pushed — tagged and pushed, not rebuilt — so the digest in the
+      # registry is the image the probes above accepted, layer for layer.
+      - name: Push the accepted scanner
+        id: build
+        run: |
+          set -euo pipefail
+          for tag in "testing-$SHORT" "testing-sha-$SHA"; do
+            docker tag munaxa-docs-antivirus:candidate "$REPOSITORY:$tag"
+            docker push "$REPOSITORY:$tag"
+          done
+          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' munaxa-docs-antivirus:candidate \
+            | grep "^$REPOSITORY@" | head -1 | sed 's/^.*@//')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the pushed digest is the image that was probed
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          CLAMAV: ${{ steps.versions.outputs.clamav }}
+          CICAP: ${{ steps.versions.outputs.cicap }}
+          # Multi-line, so it travels as an env value rather than inline in the script.
+          PACKAGES: ${{ steps.versions.outputs.packages }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::no digest"; exit 1; }
+          ref="$REPOSITORY@$DIGEST"
+          candidate=$(docker inspect --format '{{.Id}}' munaxa-docs-antivirus:candidate)
+          # Drop every local name for the image, so the pull below really fetches from the registry.
+          docker rmi "$REPOSITORY:testing-$SHORT" "$REPOSITORY:testing-sha-$SHA" munaxa-docs-antivirus:candidate >/dev/null
+          docker pull "$ref"
+          [ "$(docker inspect --format '{{.Id}}' "$ref")" = "$candidate" ] \
+            || { echo "::error::the pushed image is not the probed candidate"; exit 1; }
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ref")
+          [ "$revision" = "$SHA" ] || { echo "::error::revision label $revision != $SHA"; exit 1; }
+          [ "$(docker run --rm --entrypoint clamd "$ref" --version | head -1)" = "$CLAMAV" ] || { echo "::error::ClamAV version drifted"; exit 1; }
+          [ "$(docker run --rm --entrypoint c-icap "$ref" -V 2>&1 | head -1)" = "$CICAP" ] || { echo "::error::c-icap version drifted"; exit 1; }
+          docker run -d --name av-pulled -p 127.0.0.1:1344:1344 -v av-signatures:/var/lib/clamav "$ref"
+          node infra/antivirus/probe.mjs icap://127.0.0.1:1344/avscan --wait 300 \
+            || { docker logs av-pulled | tail -40; exit 1; }
+          docker rm -f av-pulled >/dev/null
+          {
+            echo "### munaxa-docs-antivirus"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| source commit | \`$SHA\` (infra/antivirus) |"
+            echo "| reference | \`$ref\` |"
+            echo "| revision label | verified \`$SHA\` |"
+            echo "| ClamAV | \`$CLAMAV\` |"
+            echo "| c-icap | \`$CICAP\` |"
+            echo "| probe.mjs | exit 0 on the candidate, after an unclean restart, and on the pulled digest |"
+            echo "| run | ${{ github.run_id }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p digests && printf '%s\n' "$ref" > digests/antivirus
+          printf 'clamd --version: %s\nc-icap -V: %s\n' "$CLAMAV" "$CICAP" > digests/antivirus-versions
+          printf '%s\n' "$PACKAGES" >> digests/antivirus-versions
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digest-antivirus
+          path: digests/
+          retention-days: 90
+
+  pull-identity:
+    name: Confirm the release in ECR
+    needs: [source, application, antivirus]
+    runs-on: ubuntu-latest
+    environment: image-testing # no reviewer; the publisher role trusts it only on main and only for this file
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: The four references this run published
+        run: |
+          set -euo pipefail
+          cat digests/api digests/migrate digests/web digests/antivirus digests/antivirus-versions
+          {
+            echo "### Release images"
+            echo ""
+            echo '```'
+            cat digests/api digests/migrate digests/web digests/antivirus
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Production pulls with the ECS execution roles, which only ECS can assume, so this job checks
+      # the registry itself: every published digest exists in its ECR repository.
+      - name: Assume the image publisher role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.PUBLISHER_ROLE_ARN }}
+          role-session-name: gha-publish-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Every digest is in ECR
+        run: |
+          set -euo pipefail
+          for ref in $(cat digests/api digests/migrate digests/web digests/antivirus); do
+            repo="${ref#"$REGISTRY"/}"; repo="${repo%@*}"; digest="${ref#*@}"
+            aws ecr describe-images --repository-name "$repo" --image-ids imageDigest="$digest" \
+              --query 'imageDetails[0].imageDigest' --output text | grep -qx "$digest"
+            echo "| $repo | \`$digest\` present in ECR |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # The release smoke runs in a job with no OIDC permission and no environment (below), so it
+      # cannot mint an AWS session at all. This job, which already holds the publisher session, pulls
+      # the four digests for it and hands them over as an artifact, with each image's local id: the
+      # smoke loads them and refuses to run unless every id matches what was pulled here.
+      - name: Pull the four digests for the release smoke
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
+          mkdir -p smoke-images
+          for name in api migrate web antivirus; do
+            ref=$(head -1 "digests/$name")
+            printf '%s' "$ref" | grep -Eq "^$REGISTRY/munaxa-docs/$name@sha256:[0-9a-f]{64}$" \
+              || { echo "::error::digests/$name is not an ECR digest reference: $ref"; exit 1; }
+            docker pull --quiet "$ref" >/dev/null
+            docker tag "$ref" "release-smoke/$name:$GITHUB_RUN_ID"
+            printf '%s %s %s\n' "$name" "$ref" \
+              "$(docker image inspect --format '{{.Id}}' "release-smoke/$name:$GITHUB_RUN_ID")" \
+              >> smoke-images/identity
+          done
+          docker logout "$REGISTRY" >/dev/null
+          docker save "release-smoke/api:$GITHUB_RUN_ID" "release-smoke/migrate:$GITHUB_RUN_ID" "release-smoke/web:$GITHUB_RUN_ID" \
+            "release-smoke/antivirus:$GITHUB_RUN_ID" | gzip -1 > smoke-images/images.tar.gz
+          cat smoke-images/identity
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-smoke-images
+          path: smoke-images/
+          retention-days: 1
+          compression-level: 0 # already gzipped
+
+  # The release smoke on the digests this run pushed (scripts/release-smoke/): a staging-shaped stack
+  # from the three images, as pulled from ECR, and the blocking checks of runbook §16 and the release
+  # package. A failure fails the run, and digests whose run failed are never deployed.
+  #
+  # Credentials: none. This job has no `id-token` permission and no environment, so it cannot
+  # request a GitHub OIDC token or assume any AWS role, and nothing it runs (the dependency install,
+  # the migrations, the stack) can either. The images come from `pull-identity`, which pulled them
+  # from ECR by digest; they are loaded here and checked against the ids recorded at the pull. The
+  # stack runs on the runner with its own generated secrets, a local object store and a local mail
+  # capture.
+  release-smoke:
+    name: Release smoke on the published digests
+    needs: [source, pull-identity]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read # pnpm install, for the repository's migration runner
+    env:
+      SHA: ${{ needs.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-smoke-images
+          path: smoke-images
+
+      - name: Docker Hub mirror (mirror.gcr.io)
+        id: hub-mirror
+        uses: ./.github/actions/registry-mirror
+
+      - name: Confirm this job holds no AWS or OIDC credential
+        run: |
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::this job can request an OIDC token; refusing to run the smoke"; exit 1
+          fi
+          if env | grep -q '^AWS_\(ACCESS_KEY_ID\|SECRET_ACCESS_KEY\|SESSION_TOKEN\|ROLE_ARN\|WEB_IDENTITY_TOKEN_FILE\)=.'; then
+            echo "::error::an AWS credential variable is set; refusing to run the smoke"; exit 1
+          fi
+          if aws sts get-caller-identity >/dev/null 2>&1; then
+            echo "::error::an AWS credential is usable; refusing to run the smoke"; exit 1
+          fi
+          echo "no OIDC token request and no usable AWS credential"
+
+      - name: Load the published images and confirm they are the digests this run pushed
+        id: images
+        run: |
+          set -euo pipefail
+          gunzip -c smoke-images/images.tar.gz | docker load
+          for name in api migrate web antivirus; do
+            read -r _ ref id < <(grep "^$name " smoke-images/identity)
+            [ "$ref" = "$(head -1 "digests/$name")" ] \
+              || { echo "::error::$name: pulled $ref, but this run published $(head -1 "digests/$name")"; exit 1; }
+            local_ref="release-smoke/$name:$GITHUB_RUN_ID"
+            loaded=$(docker image inspect --format '{{.Id}}' "$local_ref")
+            [ "$loaded" = "$id" ] \
+              || { echo "::error::$name: loaded image $loaded is not the image pulled from $ref ($id)"; exit 1; }
+            echo "$name=$local_ref" >> "$GITHUB_OUTPUT"
+            echo "$name-ref=$ref" >> "$GITHUB_OUTPUT"
+          done
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: '10.33.0'
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@munaxa'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PLATFORM_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Restore the object store binaries
+        id: object-store-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/object-store/bin
+          key: object-store-${{ runner.os }}-minio-07c3a429bfed433e49018cb0f78a52145d4bedeb-mc-7394ce0dd2a80935aded936b09fa12cbb3cb8096
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        with:
+          go-version: '1.24'
+          cache: false
+
+      - name: Build the object store from its pinned source
+        if: steps.object-store-cache.outputs.cache-hit != 'true'
+        run: bash scripts/release-smoke/build-object-store.sh "$RUNNER_TEMP/object-store"
+
+      - name: Release smoke
+        run: |
+          set -euo pipefail
+          {
+            echo "### Release smoke inputs"
+            echo ""
+            echo "| image | digest pulled from ECR |"
+            echo "| --- | --- |"
+            echo "| api | \`$API_REF\` |"
+            echo "| migrate | \`$MIGRATE_REF\` |"
+            echo "| web | \`$WEB_REF\` |"
+            echo "| antivirus | \`$AV_REF\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/release-smoke/run.sh
+        env:
+          API_IMAGE: ${{ steps.images.outputs.api }}
+          MIGRATE_IMAGE: ${{ steps.images.outputs.migrate }}
+          WEB_IMAGE: ${{ steps.images.outputs.web }}
+          AV_IMAGE: ${{ steps.images.outputs.antivirus }}
+          API_REF: ${{ steps.images.outputs.api-ref }}
+          MIGRATE_REF: ${{ steps.images.outputs.migrate-ref }}
+          WEB_REF: ${{ steps.images.outputs.web-ref }}
+          AV_REF: ${{ steps.images.outputs.antivirus-ref }}
+          EXPECTED_REVISION: ${{ needs.source.outputs.sha }}
+          OBJECT_STORE_BIN: ${{ runner.temp }}/object-store/bin
