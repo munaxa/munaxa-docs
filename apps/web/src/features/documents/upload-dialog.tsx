@@ -2,7 +2,7 @@
 
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
-import { Alert, Badge, Button, Dropzone, Progress, formatFileSize } from '@munaxa/ui';
+import { Alert, Badge, Button, Dropzone, Progress, Separator, formatFileSize } from '@munaxa/ui';
 
 import { SUPPORTED_EXTENSIONS } from '@edms/domain';
 
@@ -41,6 +41,13 @@ import { type StoredFile, type UploadProgress, localRejectionFor, uploadFile } f
  * The form is filled in **once** and applied to the whole batch, which is right for how batches
  * arrive: one set of drawings, one project, one review date. Each document still takes its title
  * from its own filename, which is the field that genuinely differs per file.
+ *
+ * **Two columns on a wide screen.** One column of a dropzone, a file list, three pickers, a
+ * description and the type's own fields was taller than a laptop screen, and the dialogue's top and
+ * its submit button ended up off-screen. On `lg` and up the files and the description sit on the
+ * left, and the classification with the type's own fields on the right, short fields paired. Below
+ * `lg` it is one column again, and `FormDialog` scrolls the body if a type has more fields than
+ * fit. The DOM order is the visual order, so tabbing reads the left column and then the right.
  */
 export interface DocumentTypeChoice extends Choice {
   readonly fields: readonly MetadataFieldDefinition[];
@@ -211,108 +218,126 @@ export function UploadDialog({
       onSubmit={submit}
       onSaved={onSaved}
       submitLabel={translate('documents.upload.fileCount', { count: ready.length })}
+      size="wide"
     >
-      <FormSection
-        first
-        title={translate('documents.upload.sectionFiles')}
-        description={translate('documents.upload.sectionFilesHint')}
-      >
-        <Dropzone
-          multiple
-          accept={origin === 'SCAN' ? SCANNER_FORMATS : SUPPORTED_EXTENSIONS.join(',')}
-          onFiles={accept}
-          labels={{
-            prompt: translate(
-              origin === 'SCAN' ? 'documents.upload.scanPrompt' : 'documents.upload.prompt',
-            ),
-            browse: translate('documents.upload.browse'),
-            hint: translate('documents.upload.hint'),
-          }}
-        />
+      <div className="grid gap-4 lg:grid-cols-2 lg:gap-8">
+        <div className="flex min-w-0 flex-col gap-4">
+          <FormSection
+            first
+            title={translate('documents.upload.sectionFiles')}
+            description={translate('documents.upload.sectionFilesHint')}
+          >
+            <Dropzone
+              multiple
+              accept={origin === 'SCAN' ? SCANNER_FORMATS : SUPPORTED_EXTENSIONS.join(',')}
+              onFiles={accept}
+              labels={{
+                prompt: translate(
+                  origin === 'SCAN' ? 'documents.upload.scanPrompt' : 'documents.upload.prompt',
+                ),
+                browse: translate('documents.upload.browse'),
+                hint: translate('documents.upload.hint'),
+              }}
+            />
 
-        {files.length > 0 && (
-          <ul className="flex flex-col gap-3">
-            {files.map((entry) => (
-              <li key={entry.key} className="flex flex-col gap-1">
-                <div className="flex items-center gap-2">
-                  <span className="flex-1 truncate">{entry.file.name}</span>
-                  <span className="text-sm opacity-70">{formatFileSize(entry.file.size)}</span>
-                  <PhaseBadge entry={entry} />
-                </div>
-                {entry.progress.phase === 'transferring' && (
-                  <Progress
-                    value={Math.round(entry.progress.fraction * 100)}
-                    label={translate('documents.upload.phase.transferring')}
-                  />
-                )}
-                {entry.problem !== null && <Alert tone="danger">{entry.problem}</Alert>}
-                {entry.stored !== null && entry.stored.duplicates.length > 0 && (
-                  <DuplicateWarning
-                    matches={entry.stored.duplicates}
-                    acknowledged={entry.acknowledged}
-                    onAcknowledge={() => {
-                      update(entry.key, { acknowledged: true });
-                    }}
-                  />
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
+            {files.length > 0 && (
+              <ul className="flex flex-col gap-3">
+                {files.map((entry) => (
+                  <li key={entry.key} className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 truncate">{entry.file.name}</span>
+                      <span className="text-sm opacity-70">{formatFileSize(entry.file.size)}</span>
+                      <PhaseBadge entry={entry} />
+                    </div>
+                    {entry.progress.phase === 'transferring' && (
+                      <Progress
+                        value={Math.round(entry.progress.fraction * 100)}
+                        label={translate('documents.upload.phase.transferring')}
+                      />
+                    )}
+                    {entry.problem !== null && <Alert tone="danger">{entry.problem}</Alert>}
+                    {entry.stored !== null && entry.stored.duplicates.length > 0 && (
+                      <DuplicateWarning
+                        matches={entry.stored.duplicates}
+                        acknowledged={entry.acknowledged}
+                        onAcknowledge={() => {
+                          update(entry.key, { acknowledged: true });
+                        }}
+                      />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
 
-        {unscanned.length > 0 && (
-          // Stored, and not attachable. Saying so here is the difference between a refusal somebody
-          // understands and one that looks arbitrary two clicks later.
-          <Alert tone="warning">{translate('documents.upload.unscanned')}</Alert>
-        )}
-        {blocked.length > 0 && (
-          <Alert tone="warning">{translate('documents.upload.blockedByDuplicates')}</Alert>
-        )}
-      </FormSection>
+            {unscanned.length > 0 && (
+              // Stored, and not attachable. Saying so here is the difference between a refusal
+              // somebody understands and one that looks arbitrary two clicks later.
+              <Alert tone="warning">{translate('documents.upload.unscanned')}</Alert>
+            )}
+            {blocked.length > 0 && (
+              <Alert tone="warning">{translate('documents.upload.blockedByDuplicates')}</Alert>
+            )}
+          </FormSection>
 
-      <FormSection
-        title={translate('documents.upload.sectionClassification')}
-        description={translate('documents.upload.sectionClassificationHint')}
-      >
-        <SelectField
-          name="documentTypeId"
-          label={translate('documents.field.documentType')}
-          required
-          value={documentTypeId}
-          onValueChange={(value) => {
-            // The type decides which fields exist, so values entered against the previous one are not
-            // values on this one. Re-rendering the field set from the new type is what clears them.
-            setDocumentTypeId(value);
-          }}
-          choices={documentTypes}
-        />
-        <PickerField
-          name="categoryId"
-          label={translate('documents.field.category')}
-          options={categories}
-          clearable
-        />
-        <PickerField
-          name="confidentialityId"
-          label={translate('documents.field.confidentiality')}
-          hint={translate('documents.field.confidentialityHint')}
-          options={confidentialityLevels}
-          clearable
-        />
-      </FormSection>
+          <FormSection title={translate('documents.upload.sectionDetails')}>
+            <TextAreaField name="description" label={translate('documents.field.description')} />
+          </FormSection>
+        </div>
 
-      <FormSection title={translate('documents.upload.sectionDetails')}>
-        <TextAreaField name="description" label={translate('documents.field.description')} />
+        <div className="flex min-w-0 flex-col gap-4">
+          {/* The rule between the two columns' content when they are stacked. Side by side the
+              column gap separates them, and a rule at the top of a column is a stray line. */}
+          <Separator className="my-1 lg:hidden" />
+          <FormSection
+            first
+            title={translate('documents.upload.sectionClassification')}
+            description={translate('documents.upload.sectionClassificationHint')}
+          >
+            <SelectField
+              name="documentTypeId"
+              label={translate('documents.field.documentType')}
+              required
+              value={documentTypeId}
+              onValueChange={(value) => {
+                // The type decides which fields exist, so values entered against the previous one
+                // are not values on this one. Re-rendering the field set from the new type is what
+                // clears them.
+                setDocumentTypeId(value);
+              }}
+              choices={documentTypes}
+            />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <PickerField
+                name="categoryId"
+                label={translate('documents.field.category')}
+                options={categories}
+                clearable
+              />
+              <PickerField
+                name="confidentialityId"
+                label={translate('documents.field.confidentiality')}
+                hint={translate('documents.field.confidentialityHint')}
+                options={confidentialityLevels}
+                clearable
+              />
+            </div>
 
-        {selectedType !== undefined && (
-          <MetadataFields
-            key={selectedType.value}
-            fields={selectedType.fields}
-            userChoices={users}
-            departmentChoices={departments}
-          />
-        )}
-      </FormSection>
+            {selectedType !== undefined && selectedType.fields.length > 0 && (
+              // The type's own fields, beside the type that decides them, and paired in the type's
+              // order: reading across then down is still that order.
+              <div className="grid gap-4 sm:grid-cols-2">
+                <MetadataFields
+                  key={selectedType.value}
+                  fields={selectedType.fields}
+                  userChoices={users}
+                  departmentChoices={departments}
+                />
+              </div>
+            )}
+          </FormSection>
+        </div>
+      </div>
     </FormDialog>
   );
 }

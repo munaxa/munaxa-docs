@@ -22,6 +22,18 @@ import type { ActionResult } from '../../lib/admin/action-result';
  *
  * A failed submission keeps the dialogue open with the server's sentence above the fields. Closing
  * it would throw away what the administrator typed in order to show them an error about it.
+ *
+ * ## Fitting the screen
+ *
+ * The platform's `Dialog` centres its panel in a fixed, non-scrolling overlay and puts no ceiling
+ * on its height. A form taller than the viewport therefore lost its top and its footer off-screen
+ * with no way to reach them, which is what the add-document dialogue did on a laptop. The form body
+ * is capped here at the viewport minus the dialogue's own chrome (title, description, footer and
+ * the overlay's padding, 12.5rem measured), and scrolls inside itself, so the title and the submit
+ * button stay visible whatever the form holds. `dvh` rather than `vh` so a phone's collapsing
+ * address bar does not push the footer under it.
+ *
+ * `size="wide"` is for forms with enough fields to lay out in columns rather than one long run.
  */
 export function FormDialog({
   open,
@@ -31,6 +43,7 @@ export function FormDialog({
   onSubmit,
   onSaved,
   submitLabel,
+  size = 'default',
   children,
 }: {
   open: boolean;
@@ -41,6 +54,8 @@ export function FormDialog({
   /** Called once the write succeeded — where a screen refreshes its list. */
   onSaved: () => void;
   submitLabel?: string | undefined;
+  /** `wide` widens the panel to 64rem (full width on a narrow screen), for multi-column forms. */
+  size?: 'default' | 'wide' | undefined;
   children: ReactNode;
 }): ReactNode {
   const translate = useTranslate();
@@ -76,6 +91,7 @@ export function FormDialog({
       }}
       title={title}
       {...(description !== undefined && { description })}
+      {...(size === 'wide' && { className: 'max-w-5xl' })}
       footer={
         <>
           <Button
@@ -101,7 +117,8 @@ export function FormDialog({
       <form
         id={formId}
         noValidate={false}
-        className="flex flex-col gap-4"
+        // `-mx-1 px-1` keeps focus rings at the edges from being clipped by the scroll container.
+        className="-mx-1 flex max-h-[calc(100dvh-12.5rem)] flex-col gap-4 overflow-y-auto px-1 pb-1"
         onSubmit={(event) => {
           void submit(event);
         }}
