@@ -16,6 +16,7 @@ import {
   startServers,
   stopServers,
 } from './servers';
+import { waitForHydration } from './theme';
 
 const CHROMIUM_PATH =
   process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
@@ -736,7 +737,9 @@ describe('search as each role that can open it', () => {
 
       it('opens a result, which is what a search is for', async () => {
         await gotoPopulated(page, fixture.documentNumber);
-        await page.locator(`main a[href^="/documents/"]`).first().click();
+        const result = page.locator(`main a[href^="/documents/"]`).first();
+        await result.waitFor({ state: 'visible' });
+        await result.click();
         await page.waitForURL(/\/documents\/[0-9a-f-]+/, { timeout: 30_000 });
 
         expect(await page.locator('body').innerText()).not.toMatch(/something went wrong/i);
@@ -824,4 +827,10 @@ async function gotoPopulated(page: Page, query: string): Promise<void> {
   await page.goto(`${WEB_URL}/search?q=${encodeURIComponent(query)}&sort=relevance`, {
     waitUntil: 'networkidle',
   });
+  // And hydrated, before any test clicks. A quiet network is not a hydrated page: a result link
+  // clicked in that gap is swallowed — the server's markup is on screen but the client router that
+  // owns the click is not attached yet — and the URL never moves. That is exactly how CI run
+  // 45630135364 failed "opens a result" (`waitForURL` timed out with an empty navigation log)
+  // and passed unchanged on re-run. Same signal `shell.e2e` uses for the same race.
+  await waitForHydration(page);
 }

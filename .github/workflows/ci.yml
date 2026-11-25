@@ -121,6 +121,20 @@ jobs:
       - name: Migration runner tests
         run: node --test scripts/__tests__/*.test.mjs
 
+      # Next.js's own compile cache, as its documentation recommends for CI ("No build cache found"
+      # was printed on every run). It holds only the compiler's intermediate work; `next build` still
+      # runs in full, still lints, still type-checks, and still writes a fresh `.next` that the
+      # suites read. A changed source file misses the exact key and falls back to the newest cache
+      # for the same lockfile, which Next revalidates file by file. The images are built in their own
+      # jobs from a clean Docker context and never see this cache.
+      - name: Restore the Next.js build cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: apps/web/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/src/**', 'apps/web/next.config.*', 'packages/*/src/**') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+
       - name: Build
         run: pnpm build
 
@@ -670,6 +684,20 @@ jobs:
 
       # The suite runs the artefacts the image ships — `apps/api/dist/main.js` and `next start` over
       # the production build — so it depends on a real build rather than compiling its own.
+      # Next.js's own compile cache, as its documentation recommends for CI ("No build cache found"
+      # was printed on every run). It holds only the compiler's intermediate work; `next build` still
+      # runs in full, still lints, still type-checks, and still writes a fresh `.next` that the
+      # suites read. A changed source file misses the exact key and falls back to the newest cache
+      # for the same lockfile, which Next revalidates file by file. The images are built in their own
+      # jobs from a clean Docker context and never see this cache.
+      - name: Restore the Next.js build cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: apps/web/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/src/**', 'apps/web/next.config.*', 'packages/*/src/**') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+
       - name: Build
         run: pnpm build
 
