@@ -443,14 +443,16 @@ describe('LicenseFileLookup', () => {
 describe('ControlPlaneLookup', () => {
   function port(
     result: OutboundResult,
-  ): OutboundHttpPort & { url: string | null; auth: string | null } {
+  ): OutboundHttpPort & { url: string | null; auth: string | null; label: string | null } {
     const recorder = {
       url: null as string | null,
       auth: null as string | null,
+      label: null as string | null,
       permits: () => Promise.resolve({ allowed: true, reason: null }),
       send: (request: { url: string; headers?: Readonly<Record<string, string>> }) => {
         recorder.url = request.url;
         recorder.auth = request.headers?.['authorization'] ?? null;
+        recorder.label = request.headers?.['munaxa-tenant-label'] ?? null;
         return Promise.resolve(result);
       },
     };
@@ -471,6 +473,22 @@ describe('ControlPlaneLookup', () => {
       `https://control.munaxa.example/api/v1/products/docs/tenants/${TENANT}/entitlements`,
     );
     expect(http.auth).toBe(`Bearer ${'t'.repeat(40)}`);
+    expect(http.label).toBeNull();
+  });
+
+  it('names the tenant by its slug, so Control can offer it to an operator, and asks anyway when it cannot', async () => {
+    const http = port(ok(404, ''));
+    await new ControlPlaneLookup(http, settings, () => Promise.resolve('munaxa-internal')).lookup(
+      TENANT,
+    );
+    expect(http.label).toBe('munaxa-internal');
+
+    const failing = port(ok(404, ''));
+    const answer = await new ControlPlaneLookup(failing, settings, () =>
+      Promise.reject(new Error('registry down')),
+    ).lookup(TENANT);
+    expect(answer.kind).toBe('NONE');
+    expect(failing.label).toBeNull();
   });
 
   it('a 404 is an answer, everything else that is not a valid snapshot for this tenant is an outage', async () => {
