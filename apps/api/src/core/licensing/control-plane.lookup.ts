@@ -7,6 +7,16 @@ import type { EntitlementLookup, EntitlementLookupResult } from './licensing.por
 const TIMEOUT_MS = 3_000;
 
 /**
+ * Sent beside each question: this deployment's name for the tenant (its organisation's slug). Munaxa
+ * Control keeps it only for a tenant no customer holds yet, so an operator linking the tenant picks
+ * it by name from a list instead of copying its identifier. It changes nothing about the answer.
+ */
+export const TENANT_LABEL_HEADER = 'munaxa-tenant-label';
+
+/** How the lookup learns a tenant's name for Control. `null` sends none. */
+export type TenantLabelOf = (tenantId: string) => Promise<string | null>;
+
+/**
  * `LICENSING_MODE=CONTROL_PLANE`: the hosted mode, asking the central subscription service.
  *
  * Through the outbound port, so the service's host must be on the deployment's allow-list like any
@@ -23,13 +33,19 @@ export class ControlPlaneLookup implements EntitlementLookup {
   constructor(
     private readonly http: OutboundHttpPort,
     private readonly settings: { readonly url: string; readonly token: string },
+    private readonly labelOf: TenantLabelOf = () => Promise.resolve(null),
   ) {}
 
   async lookup(tenantId: string): Promise<EntitlementLookupResult> {
+    const label = await this.labelOf(tenantId).catch(() => null);
     const result = await this.http.send({
       url: `${this.settings.url}${entitlementsPath(DOCS_PRODUCT_KEY, tenantId)}`,
       method: 'GET',
-      headers: { authorization: `Bearer ${this.settings.token}`, accept: 'application/json' },
+      headers: {
+        authorization: `Bearer ${this.settings.token}`,
+        accept: 'application/json',
+        ...(label !== null && { [TENANT_LABEL_HEADER]: label }),
+      },
       timeoutMs: TIMEOUT_MS,
     });
     if (!result.ok) return unreachable(result.failure.kind);
