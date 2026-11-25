@@ -10,6 +10,7 @@
     "dev": "tsc -p tsconfig.build.json --watch",
     "start": "node dist/main.js",
     "provision": "node dist/provision.js",
+    "seed:demo": "node dist/seed-demo.js",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
