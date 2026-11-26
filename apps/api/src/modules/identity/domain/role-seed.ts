@@ -162,14 +162,26 @@ export const DEFAULT_ROLE_PERMISSIONS: Readonly<Record<SystemRoleKey, readonly P
     // to say "every role below", which was true of the four spelled out beneath it and quietly
     // false of the two hoisted into constants above; `role-seed.spec.ts` now asserts the row rather
     // than a comment describing it.
-    [SystemRole.LIBRARY_MANAGER]: Object.freeze([Permission.NOTIFICATION_MANAGE]),
+    // `document:approve` and `document:reject` are `T` in this column and the approver's: held as a
+    // key here, and exercised only on a task assigned to them (or delegated to them), which
+    // `WorkflowEngine.decide` enforces per task. The key has to be on the role because
+    // `POST /approval-tasks/{id}/decision` is gated on it by `RbacGuard`; without it the `T` cell
+    // was unreachable and nobody holding only seeded roles could approve anything (26 Nov 2026).
+    [SystemRole.LIBRARY_MANAGER]: Object.freeze([
+      Permission.DOCUMENT_APPROVE,
+      Permission.DOCUMENT_REJECT,
+      Permission.NOTIFICATION_MANAGE,
+    ]),
     // `delegation:manage` is `own`: an author may delegate their own approvals, and the use case
     // enforces the subject. Everything else in the column is `S`.
     [SystemRole.AUTHOR]: Object.freeze([
       Permission.DELEGATION_MANAGE,
       Permission.NOTIFICATION_MANAGE,
     ]),
+    // `T`: the keys, limited to assigned (or delegated) tasks by `WorkflowEngine.decide`.
     [SystemRole.APPROVER]: Object.freeze([
+      Permission.DOCUMENT_APPROVE,
+      Permission.DOCUMENT_REJECT,
       Permission.DELEGATION_MANAGE,
       Permission.NOTIFICATION_MANAGE,
     ]),

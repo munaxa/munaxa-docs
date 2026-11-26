@@ -19,6 +19,7 @@ unless the operator states, for that run, a non-production environment and the t
 | Metadata fields        | Effective date, Next review due, Counterparty, External reference, Amount, Contract end date, Language (English, Arabic, German)                                   |
 | Numbering rules        | `controlled-document` like `POL-QA-0001`; `yearly-record` like `INV-2026-00001` (restarts each year); `general-sequence` like `DOC-000001`                         |
 | Approval               | Approval group `document-approvers` (starts with the tenant's current administrators) and the published workflow `standard-approval` (one stage, any member, 5 days) |
+| Approver role          | The system **Approver** role, added to each administrator in `document-approvers` (their other roles are kept), so the people the workflow routes to can decide |
 | Document types         | Policy, SOP, Work Instruction, Form, Contract (all with approval); Invoice, Report, Memo (reference types, no approval)                                             |
 | Libraries              | Quality Management (Policies, Procedures, Work Instructions, Forms), Human Resources (Policies, Templates), Finance (Contracts, Invoices, Reports), General (Memos, Shared) |
 
@@ -36,6 +37,13 @@ configuration: an administrator edits, retires or deletes it from the administra
   library the same run created.
 - **Respects retirement.** An item an administrator soft-deleted is not restored; anything that
   needs it is skipped and reported.
+- **Approvers can approve.** The Tenant administrator role deliberately has neither
+  `document:approve` nor `document:reject`, so an administrator assigned an approval task could
+  see it but got "no permission" deciding it. The seeder therefore grants the Approver role to the
+  administrators in the starter group. The Tenant administrator role itself is unchanged.
+  Members an administrator added to the group are left to them, a member removed from the group
+  is not touched, and nothing is ever revoked. Re-running the seed on a tenant seeded before this
+  fix grants the role.
 - **Dry run.** `DEMO_SEED_DRY_RUN=true` lists what would be created and writes nothing.
 - **No sample documents.** Uploading files needs storage and the virus scanner; that is left to a
   person trying the product.

@@ -210,3 +210,35 @@ describe('every seeded role can read its own inbox and secure its own sign-in', 
     }
   });
 });
+
+/**
+ * The decision keys follow §6's `T` cells exactly — 26 Nov 2026.
+ *
+ * `POST /approval-tasks/{id}/decision` is gated on `document:approve` by `RbacGuard`, so a `T` cell
+ * is only reachable if the role carries the key; `WorkflowEngine.decide` then limits it to tasks
+ * assigned or delegated to the caller. Before this, no seeded role held it and nobody holding only
+ * seeded roles could approve anything.
+ */
+describe('the approval decision keys', () => {
+  it.each([SystemRole.APPROVER, SystemRole.LIBRARY_MANAGER])(
+    '%s holds document:approve and document:reject (the T cells)',
+    (role) => {
+      const held = new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]);
+      expect(held.has(Permission.DOCUMENT_APPROVE)).toBe(true);
+      expect(held.has(Permission.DOCUMENT_REJECT)).toBe(true);
+    },
+  );
+
+  it.each([
+    SystemRole.TENANT_ADMIN,
+    SystemRole.DOCUMENT_CONTROLLER,
+    SystemRole.AUTHOR,
+    SystemRole.READER,
+    SystemRole.AUDITOR,
+    SystemRole.GUEST,
+  ])('%s holds neither (the — cells; approval is not conferred by seniority)', (role) => {
+    const held = new Set<string>(DEFAULT_ROLE_PERMISSIONS[role]);
+    expect(held.has(Permission.DOCUMENT_APPROVE)).toBe(false);
+    expect(held.has(Permission.DOCUMENT_REJECT)).toBe(false);
+  });
+});
