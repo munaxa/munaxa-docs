@@ -922,11 +922,8 @@ export const en = {
       }),
     },
     nav: {
-      library: 'Library',
-      libraryPicker: 'Choose a library — {name}',
       label: 'Libraries and folders',
       libraries: 'Libraries',
-      folders: 'Folders',
       views: 'Views',
       favorites: 'Favourites',
       recent: 'Recently opened',
@@ -1087,6 +1084,7 @@ export const en = {
       sectionClassificationHint: 'How this document is filed, numbered and who may see it.',
       sectionDetails: 'Details',
 
+      remove: 'Remove {name}',
       title: 'Add documents',
       scanTitle: 'Scan documents',
       into: 'Into {folder}',

@@ -1,3 +1,6 @@
+import { cookies } from 'next/headers';
+import type { Route } from 'next';
+import { redirect } from 'next/navigation';
 import type { ReactNode } from 'react';
 
 import type {
@@ -18,6 +21,7 @@ import {
   suppliesDefaultFolderScope,
 } from '../../../features/documents/documents-view';
 import { recoverSelectedFolderChain } from '../../../features/documents/folder-recovery';
+import { LAST_LOCATION_COOKIE, parseLastLocation } from '../../../features/documents/last-location';
 import { LibraryScreen } from '../../../features/documents/library-screen';
 import {
   adminAccess,
@@ -57,7 +61,8 @@ export default async function DocumentsPage({
     return <AdminForbidden />;
   }
 
-  const state = readListState(await searchParams, DOCUMENT_SORT_FIELDS, DOCUMENT_FILTER_KEYS);
+  const rawParams = await searchParams;
+  const state = readListState(rawParams, DOCUMENT_SORT_FIELDS, DOCUMENT_FILTER_KEYS);
 
   /**
    * What this caller may actually do, resolved once and used twice — for the dialogues below, and
@@ -100,6 +105,32 @@ export default async function DocumentsPage({
    * the error boundary rather than a page pretending the tenant has none.
    */
   const libraries = await adminOptions<Library>('/admin/libraries', 'name');
+
+  /**
+   * Back where the reader left off — asked for 26 Nov 2026.
+   *
+   * A bare `/documents` (the workspace tab, or any link that names nothing) used to open the first
+   * library at its root, so a reader who went to another tab and came back lost their folder. The
+   * rail remembers the last folder in a cookie; this follows it, but only into a library this
+   * caller's own list contains — a stale or foreign value is ignored, never trusted. A redirect
+   * rather than a quiet substitution, so the address bar names the folder on screen and the page
+   * below still has exactly one input: the URL.
+   */
+  if (Object.keys(rawParams).length === 0) {
+    const remembered = parseLastLocation((await cookies()).get(LAST_LOCATION_COOKIE)?.value);
+    const library =
+      remembered === null
+        ? undefined
+        : libraries.data.find((candidate) => candidate.id === remembered.libraryId);
+    if (remembered !== null && library !== undefined) {
+      // One read, on this path only: a folder deleted, moved out of reach or refused since it was
+      // remembered falls back to its library's top rather than to a page about nothing.
+      const held = await adminRead<Folder>(`/admin/folders/${remembered.folderId}`);
+      const folderId =
+        held.ok && held.value.libraryId === library.id ? remembered.folderId : library.rootFolderId;
+      redirect(`/documents?libraryId=${library.id}&folderId=${folderId}` as Route);
+    }
+  }
 
   /**
    * The filing vocabulary, from the operational read model rather than the administrative one.

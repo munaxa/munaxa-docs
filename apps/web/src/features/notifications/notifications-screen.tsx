@@ -16,7 +16,17 @@ import {
   Stack,
   useToast,
 } from '@munaxa/ui';
-import { SlidersHorizontal } from '@munaxa/icons';
+import {
+  Archive,
+  Bell,
+  Check,
+  CheckCheck,
+  ClipboardCheck,
+  FileText,
+  ShieldAlert,
+  SlidersHorizontal,
+  UserRoundCheck,
+} from '@munaxa/icons';
 
 import type {
   InboxNotification,
@@ -116,110 +126,192 @@ export function NotificationsScreen({
       title={translate('notifications.title')}
       description={translate('notifications.subtitle')}
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <Select
-          aria-label={translate('notifications.filter.label')}
-          value={unreadOnly ? 'unread' : 'all'}
-          onChange={(event) => {
-            filter(event.currentTarget.value === 'unread');
-          }}
-        >
-          <option value="all">{translate('notifications.filter.all')}</option>
-          <option value="unread">{translate('notifications.filter.unread')}</option>
-        </Select>
+      {/*
+        Docs v2 dressing — asked for 26 Nov 2026 ("the notification display is not decorated").
 
-        <Badge tone={unreadCount > 0 ? 'default' : 'muted'}>
-          {translate('notifications.unreadCount', { count: unreadCount })}
-        </Badge>
+        The filter was a full-width native select and the cards had no padding, so subject, badge,
+        time and button sat flush against the card's edges. It now follows the approvals inbox:
+        a segmented All / Unread switch of real links, one readable column, and padded cards with
+        a type icon, an unread marker and the time under the subject.
+      */}
+      <div className="flex max-w-[960px] flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <nav
+            aria-label={translate('notifications.filter.label')}
+            className="bg-secondary flex gap-1 self-start rounded-[10px] p-1"
+          >
+            {([false, true] as const).map((onlyUnread) => (
+              <a
+                key={String(onlyUnread)}
+                href={hrefFor(pathname, params.toString(), onlyUnread)}
+                aria-current={unreadOnly === onlyUnread ? 'page' : undefined}
+                onClick={(event) => {
+                  event.preventDefault();
+                  filter(onlyUnread);
+                }}
+                className={SWITCH_ITEM}
+              >
+                {translate(onlyUnread ? 'notifications.filter.unread' : 'notifications.filter.all')}
+              </a>
+            ))}
+          </nav>
 
-        <div className="ms-auto flex gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={working || unreadCount === 0}
-            onClick={() => {
-              void readAll();
-            }}
-          >
-            {translate('notifications.markAllRead')}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              setShowPreferences((open) => !open);
-            }}
-          >
-            {translate('notifications.preferences.toggle')}
-          </Button>
+          <Badge tone={unreadCount > 0 ? 'default' : 'muted'}>
+            {translate('notifications.unreadCount', { count: unreadCount })}
+          </Badge>
+
+          <div className="ms-auto flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={working || unreadCount === 0}
+              onClick={() => {
+                void readAll();
+              }}
+            >
+              <CheckCheck className="size-4" aria-hidden />
+              {translate('notifications.markAllRead')}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-expanded={showPreferences}
+              onClick={() => {
+                setShowPreferences((open) => !open);
+              }}
+            >
+              <SlidersHorizontal className="size-4" aria-hidden />
+              {translate('notifications.preferences.toggle')}
+            </Button>
+          </div>
         </div>
-      </div>
 
-      {showPreferences && (
-        <PreferencesPanel types={types} preferences={preferences} quietHours={quietHours} />
-      )}
+        {showPreferences && (
+          <PreferencesPanel types={types} preferences={preferences} quietHours={quietHours} />
+        )}
 
-      {notifications.length === 0 ? (
-        <EmptyState
-          title={translate(unreadOnly ? 'notifications.emptyUnread' : 'notifications.empty')}
-          description={translate('notifications.emptyHint')}
-        />
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {notifications.map((notification) => (
-            <li key={notification.id}>
-              <Card className="flex flex-col gap-2">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="min-w-0 flex-1 font-medium">{notification.subject}</span>
-                  {notification.readAt === null && (
-                    <Badge>{translate('notifications.unread')}</Badge>
-                  )}
-                  <time className="text-muted-foreground text-sm" dateTime={notification.createdAt}>
-                    {new Date(notification.createdAt).toLocaleString()}
-                  </time>
-                  {notification.readAt === null && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={working}
-                      onClick={() => {
-                        void read(notification.id);
-                      }}
+        {notifications.length === 0 ? (
+          <EmptyState
+            icon={<Bell className="size-5" aria-hidden />}
+            title={translate(unreadOnly ? 'notifications.emptyUnread' : 'notifications.empty')}
+            description={translate('notifications.emptyHint')}
+          />
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {notifications.map((notification) => {
+              const unread = notification.readAt === null;
+              const Icon = iconFor(notification.typeKey);
+              return (
+                <li key={notification.id}>
+                  <Card
+                    className={`flex gap-3 p-4${unread ? ' border-s-primary border-s-[3px]' : ''}`}
+                  >
+                    <span
+                      className={`flex size-9 shrink-0 items-center justify-center rounded-full ${
+                        unread ? 'bg-primary/10 text-primary' : 'bg-secondary text-muted-foreground'
+                      }`}
+                      aria-hidden
                     >
-                      {translate('notifications.markRead')}
-                    </Button>
-                  )}
-                </div>
-                {/*
-                  The plain-text body, which is what the API serves. An in-app notification is
-                  rendered inside the product's own shell, and injecting provider-shaped HTML for
-                  the sake of a paragraph tag would be an XSS vector for a formatting nicety.
-                */}
-                <p className="text-muted-foreground text-sm whitespace-pre-line">
-                  {notification.body}
-                </p>
-              </Card>
-            </li>
-          ))}
-        </ul>
-      )}
+                      <Icon className="size-4" />
+                    </span>
+
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
+                        <span
+                          className={`text-foreground min-w-0 flex-1 text-[15px] ${
+                            unread ? 'font-semibold' : 'font-medium'
+                          }`}
+                        >
+                          {notification.subject}
+                        </span>
+                        {unread && <Badge>{translate('notifications.unread')}</Badge>}
+                      </div>
+
+                      <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
+                        <span>{translate(labelKeyFor(notification.typeKey))}</span>
+                        <time dateTime={notification.createdAt}>
+                          {new Date(notification.createdAt).toLocaleString(undefined, {
+                            dateStyle: 'medium',
+                            timeStyle: 'short',
+                          })}
+                        </time>
+                      </div>
+
+                      {/*
+                        The plain-text body, which is what the API serves. An in-app notification is
+                        rendered inside the product's own shell, and injecting provider-shaped HTML
+                        for the sake of a paragraph tag would be an XSS vector for a formatting
+                        nicety.
+                      */}
+                      <p className="text-muted-foreground text-sm whitespace-pre-line">
+                        {notification.body}
+                      </p>
+
+                      {unread && (
+                        <div className="-ms-3">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={working}
+                            onClick={() => {
+                              void read(notification.id);
+                            }}
+                          >
+                            <Check className="size-4" aria-hidden />
+                            {translate('notifications.markRead')}
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     </WorkspacePage>
   );
 }
 
-/**
- * 18 §5, as a form.
- *
- * One row per notification type, and each row offers exactly what the type allows: a mandatory
- * type's channels may be chosen but not all cleared, a non-digestible one offers no digest, and a
- * channel with no template for that type is not offered at all. Every one of those constraints is
- * computed on the server from the catalogue and arrives on the descriptor — a client that decided
- * which types were silenceable would be deciding whether it could silence a security warning.
- *
- * Quiet hours sit above the list rather than inside it, because they are a property of the person
- * rather than of a type: nobody wants to be quiet for approvals and loud for publications at three
- * in the morning.
- */
+/** The approvals inbox's segmented switch, so the two inboxes read as one product. */
+const SWITCH_ITEM =
+  'focus-visible:ring-ring flex h-9 items-center rounded-md px-3.5 text-[13px] font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:outline-none aria-[current]:bg-card aria-[current]:text-foreground aria-[current]:shadow-xs';
+
+/** The same URL `filter` pushes, so the switch is a real link a reader can open in a new tab. */
+function hrefFor(pathname: string, query: string, onlyUnread: boolean): string {
+  const search = new URLSearchParams(query);
+  if (onlyUnread) {
+    search.set('unread', 'true');
+  } else {
+    search.delete('unread');
+  }
+  const rest = search.toString();
+  return rest === '' ? pathname : `${pathname}?${rest}`;
+}
+
+/** A glyph per family of notification, read from the type key's prefix. */
+function iconFor(typeKey: string): typeof Bell {
+  const family = typeKey.split('.')[0];
+  switch (family) {
+    case 'workflow':
+      return ClipboardCheck;
+    case 'document':
+      return FileText;
+    case 'delegation':
+      return UserRoundCheck;
+    case 'security':
+      return ShieldAlert;
+    case 'retention':
+      return Archive;
+    default:
+      return Bell;
+  }
+}
+
 function PreferencesPanel({
   types,
   preferences,

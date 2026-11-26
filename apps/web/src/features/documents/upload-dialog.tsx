@@ -1,8 +1,9 @@
 'use client';
 
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Alert, Badge, Button, Dropzone, Progress, Separator, formatFileSize } from '@munaxa/ui';
+import { X } from '@munaxa/icons';
 
 import { SUPPORTED_EXTENSIONS } from '@edms/domain';
 
@@ -92,11 +93,32 @@ export function UploadDialog({
   const [files, setFiles] = useState<readonly FileState[]>([]);
   const [documentTypeId, setDocumentTypeId] = useState(documentTypes[0]?.value ?? '');
 
+  /**
+   * One abort handle per file still on its way up, so removing it (or closing the dialogue) stops
+   * the transfer instead of letting it finish into a blob nobody will file.
+   */
+  const transfers = useRef(new Map<string, AbortController>());
+
   useEffect(() => {
     if (!open) {
+      for (const controller of transfers.current.values()) controller.abort();
+      transfers.current.clear();
       setFiles([]);
     }
   }, [open]);
+
+  /**
+   * Take a chosen file back out before filing — asked for 26 Nov 2026.
+   *
+   * The file leaves the list, so it is neither counted on the submit button nor filed. An upload
+   * still in flight is aborted; one already stored is simply not used, and the stored bytes are
+   * unreferenced, which is the same state an abandoned dialogue has always left.
+   */
+  const remove = useCallback((key: string): void => {
+    transfers.current.get(key)?.abort();
+    transfers.current.delete(key);
+    setFiles((current) => current.filter((entry) => entry.key !== key));
+  }, []);
 
   const selectedType = useMemo(
     () => documentTypes.find((type) => type.value === documentTypeId),
@@ -134,9 +156,24 @@ export function UploadDialog({
         if (entry.problem !== null) {
           continue;
         }
-        void uploadFile(entry.file, (progress) => {
-          update(entry.key, { progress });
-        }).then((result) => {
+        // Dropping the same file twice is ignored above, so a key already in flight is not
+        // started again.
+        if (transfers.current.has(entry.key)) {
+          continue;
+        }
+        const controller = new AbortController();
+        transfers.current.set(entry.key, controller);
+        void uploadFile(
+          entry.file,
+          (progress) => {
+            update(entry.key, { progress });
+          },
+          controller.signal,
+        ).then((result) => {
+          if (controller.signal.aborted) {
+            return;
+          }
+          transfers.current.delete(entry.key);
           update(
             entry.key,
             'reason' in result
@@ -248,6 +285,19 @@ export function UploadDialog({
                       <span className="flex-1 truncate">{entry.file.name}</span>
                       <span className="text-sm opacity-70">{formatFileSize(entry.file.size)}</span>
                       <PhaseBadge entry={entry} />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0"
+                        aria-label={translate('documents.upload.remove', { name: entry.file.name })}
+                        title={translate('documents.upload.remove', { name: entry.file.name })}
+                        onClick={() => {
+                          remove(entry.key);
+                        }}
+                      >
+                        <X className="size-4" aria-hidden />
+                      </Button>
                     </div>
                     {entry.progress.phase === 'transferring' && (
                       <Progress
