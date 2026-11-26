@@ -904,11 +904,8 @@ export const ar: Catalogue = {
       }),
     },
     nav: {
-      library: 'المكتبة',
-      libraryPicker: 'اختر مكتبة — {name}',
       label: 'المكتبات والمجلدات',
       libraries: 'المكتبات',
-      folders: 'المجلدات',
       views: 'العروض',
       favorites: 'المفضلة',
       recent: 'فُتحت مؤخرًا',
@@ -1067,6 +1064,7 @@ export const ar: Catalogue = {
       sectionClassificationHint: 'كيف تُحفظ هذه الوثيقة وتُرقَّم ومن يمكنه الاطلاع عليها.',
       sectionDetails: 'التفاصيل',
 
+      remove: 'إزالة {name}',
       title: 'إضافة وثائق',
       scanTitle: 'مسح وثائق ضوئيًا',
       into: 'إلى {folder}',

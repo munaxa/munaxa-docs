@@ -79,6 +79,27 @@ vi.mock('../../../lib/admin/api', () => ({
 // Neither is rendered — the page is called as a function and the element it returns is inspected
 // rather than mounted — but mocking them keeps the client component and the platform out of a node
 // test entirely.
+/**
+ * The remembered location — 26 Nov 2026. A cookie jar the tests fill, and a `redirect` that throws
+ * the way Next's does, so a test can read where the page sent the reader.
+ */
+const { cookieJar, redirect } = vi.hoisted(() => ({
+  cookieJar: new Map<string, string>(),
+  redirect: vi.fn((url: string): never => {
+    throw new Error(`REDIRECT ${url}`);
+  }),
+}));
+vi.mock('next/headers', () => ({
+  cookies: () =>
+    Promise.resolve({
+      get: (name: string) => {
+        const value = cookieJar.get(name);
+        return value === undefined ? undefined : { name, value };
+      },
+    }),
+}));
+vi.mock('next/navigation', () => ({ redirect }));
+
 vi.mock('../../../features/documents/library-screen', () => ({ LibraryScreen: () => null }));
 vi.mock('../../../features/admin-shared', () => ({ AdminForbidden: () => null }));
 
@@ -641,5 +662,82 @@ describe('the filter chips and the owner line', () => {
     expect(await requestsFor([...AUDITOR, Permission.DIRECTORY_VIEW])).toContain(
       '/directory/people',
     );
+  });
+});
+
+describe('coming back to Documents', () => {
+  /*
+   * Asked for 26 Nov 2026: leaving Documents for another tab and returning should keep the same
+   * folder open. A bare `/documents` follows the folder the rail remembered, and only into a
+   * library the caller's own list contains.
+   */
+  const LIB = '019489f0-0000-7000-8000-000000000301';
+  const ROOT = '019489f0-0000-7000-8000-000000000200';
+  const KEPT = '019489f0-0000-7000-8000-000000000201';
+
+  async function bare(
+    cookie: string | undefined,
+    readable: Readonly<Record<string, unknown>> = {},
+    searchParams: Readonly<Record<string, string>> = {},
+  ): Promise<string | null> {
+    cookieJar.clear();
+    if (cookie !== undefined) cookieJar.set('edms_docs_location', cookie);
+    adminAccess.mockResolvedValue({ granted: true, permissions: [Permission.DOCUMENT_VIEW] });
+    adminOptions.mockImplementation((path: string) =>
+      Promise.resolve({
+        data: path === '/admin/libraries' ? [{ id: LIB, name: 'Quality', rootFolderId: ROOT }] : [],
+      }),
+    );
+    adminList.mockResolvedValue({ data: [], meta: { total: 0, hasMore: false } });
+    adminRead.mockImplementation((path: string) => {
+      const found = readable[path.replace('/admin/folders/', '')];
+      return Promise.resolve(
+        found === undefined
+          ? { ok: false as const, code: 'NOT_FOUND' }
+          : { ok: true as const, value: found },
+      );
+    });
+    try {
+      await DocumentsPage({ searchParams: Promise.resolve(searchParams) });
+      return null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (message.startsWith('REDIRECT ')) return message.slice('REDIRECT '.length);
+      throw error;
+    } finally {
+      cookieJar.clear();
+    }
+  }
+
+  it('reopens the remembered folder', async () => {
+    expect(await bare(`${LIB}.${KEPT}`, { [KEPT]: { id: KEPT, libraryId: LIB } })).toBe(
+      `/documents?libraryId=${LIB}&folderId=${KEPT}`,
+    );
+  });
+
+  it('falls back to the library’s top when the folder can no longer be read', async () => {
+    expect(await bare(`${LIB}.${KEPT}`)).toBe(`/documents?libraryId=${LIB}&folderId=${ROOT}`);
+  });
+
+  it('falls back to the library’s top when the folder now belongs to another library', async () => {
+    expect(
+      await bare(`${LIB}.${KEPT}`, {
+        [KEPT]: { id: KEPT, libraryId: '019489f0-0000-7000-8000-000000000399' },
+      }),
+    ).toBe(`/documents?libraryId=${LIB}&folderId=${ROOT}`);
+  });
+
+  it('ignores a library the caller cannot see', async () => {
+    expect(await bare(`019489f0-0000-7000-8000-000000000399.${KEPT}`)).toBeNull();
+  });
+
+  it('ignores a value that does not parse', async () => {
+    expect(await bare('not-a-location')).toBeNull();
+  });
+
+  it('never overrides a URL that names something', async () => {
+    expect(
+      await bare(`${LIB}.${KEPT}`, { [KEPT]: { id: KEPT, libraryId: LIB } }, { favorite: 'true' }),
+    ).toBeNull();
   });
 });

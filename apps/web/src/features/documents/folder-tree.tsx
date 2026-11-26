@@ -2,26 +2,18 @@
 
 import type { Route } from 'next';
 import Link from 'next/link';
-import { Fragment, type ReactNode, useId, useMemo, useState } from 'react';
+import { Fragment, type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react';
 
-import {
-  Badge,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  Overline,
-  Separator,
-  TreeView,
-} from '@munaxa/ui';
+import { Badge, Overline, Separator, TreeView } from '@munaxa/ui';
 // `Folder` is also a contract type in this file — the icon is aliased so the names cannot collide.
-import { ChevronDown, Clock, Folder as FolderIcon, Star } from '@munaxa/icons';
+import { Clock, Folder as FolderIcon, Library as LibraryIcon, Star } from '@munaxa/icons';
 
 import type { Folder, Library } from '@edms/contracts';
 
 import { useTranslate } from '../../app/providers';
 import type { DocumentsView } from './documents-view';
 import { folderTrail } from './folder-trail';
+import { readExpanded, writeExpanded, writeLastLocation } from './last-location';
 
 /**
  * One labelled group of the rail — Docs v2.
@@ -52,45 +44,53 @@ const RAIL_ROW =
   'flex items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-[current]:bg-accent aria-[current]:font-semibold aria-[current]:text-foreground aria-[current]:shadow-[inset_2px_0_0_var(--primary)] rtl:aria-[current]:shadow-[inset_-2px_0_0_var(--primary)]';
 
 /**
- * A folder as `TreeView` needs it: the row it already had, plus the name under the key the tree
- * reads.
+ * One row of the libraries tree: a library or a folder, as `TreeView` needs it.
  *
- * Spread rather than mapped into a second model, so `renderItem` still receives the `Folder` this
- * product's code already knows — `childCount`, `isRoot`, `libraryName` and the rest are all still
- * there if a later slice needs them.
+ * Libraries and folders share one tree now (asked for 26 Nov 2026: "the library as a tree, not a
+ * dropdown"). A library is a top-level node and the selected library's folders hang beneath it, so
+ * the reader sees where they are as one hierarchy instead of a menu above a separate folder list.
+ *
+ * `folderId` is the folder the row opens. For a library that is its root folder: the root folder is
+ * the library's top, it is created with it and named after it by default, so drawing it as a second
+ * node under the library would show the same name twice. The library row *is* the root.
  */
-type FolderNode = Folder & { readonly label: string };
+type RailNode = {
+  readonly id: string;
+  readonly label: string;
+  readonly parentId: string | null;
+  readonly kind: 'library' | 'folder';
+  readonly libraryId: string;
+  readonly folderId: string;
+};
+
+/** The node id a library takes in the tree. Prefixed so it cannot collide with a folder id. */
+const libraryNodeId = (libraryId: string): string => `library:${libraryId}`;
 
 /**
  * Library and folder navigation — the left-hand side of the workspace.
  *
- * ## The folders are a tree, and the tree is Platform's
+ * ## Libraries and folders are one tree, and the tree is Platform's
  *
- * They used to be a flat list that *looked* nested: the rows were sorted by materialised path, the
- * depth was `path.split('.').length - 1`, and the indentation was a `paddingInlineStart` computed
- * from it. That drew a hierarchy without being one. Nothing collapsed, every folder in the page was
- * always on screen, and a keyboard user tabbed through all of them one stop at a time — a hundred
- * tab stops in a library with a hundred folders, none of them announcing a level, a position or a
- * parent.
- *
- * `TreeView` is the APG `tree` pattern, and it owns everything structural now: the hierarchy from
+ * `TreeView` is the APG `tree` pattern, and it owns everything structural: the hierarchy from
  * `parentId`, the depth, the indentation, the disclosure controls, one tab stop with roving focus,
  * the arrow keys, Home and End, typeahead, and the direction mirroring that makes the horizontal
- * keys mean "outward" and "inward" rather than left and right. None of that is reimplemented here;
- * Slice 5 extracted it into the platform precisely so it would not have to be.
+ * keys mean "outward" and "inward" rather than left and right. None of that is reimplemented here.
+ *
+ * Every library is a top-level node. The page reads the folders of the selected library only, so
+ * that library is the one with children; any other library is a single row whose link opens it,
+ * and once open its folders appear beneath it. Fetching every library's folders on every page load
+ * would cost one request per library for branches the reader mostly never opens.
  *
  * ## What stays here
  *
- * The navigation. Every folder is still a real `<Link>` to the URL it always had, and the link
- * *is* the treeitem — `treeItemProps` goes onto the anchor rather than onto a wrapper around it,
- * which is what keeps one tab stop per row and lets a middle click, a context menu and the status
- * bar all behave as they do for any other link.
+ * The navigation. Every row is still a real `<Link>` to the URL it always had, and the link *is*
+ * the treeitem — `treeItemProps` goes onto the anchor rather than onto a wrapper around it, which
+ * is what keeps one tab stop per row and lets a middle click, a context menu and the status bar
+ * all behave as they do for any other link.
  *
  * **No `onActivate`.** `TreeView` cancels Enter only when something is listening for it
  * (`@munaxa/platform@1.6.1`), so an anchor keeps its own activation — Enter follows the href
- * through Next's router exactly as a click does. Passing a handler here would mean building the
- * same URL a second time and navigating by a different mechanism than the click, which is two
- * definitions of one destination.
+ * through Next's router exactly as a click does.
  *
  * **No `selectedId`.** That would emit `aria-selected`, which describes a selection *control* — a
  * listbox's value. This rail is navigation: `aria-current` is the right answer, it is this
@@ -115,10 +115,6 @@ export function FolderTree({
   /**
    * How much of the library's structure this is — Slice 7.
    *
-   * The rail draws the folders it was handed and, until this existed, said nothing about the ones
-   * it was not: `/documents` fetches a page of a hundred and the API's `meta.hasMore` went straight
-   * in the bin. A library of a thousand folders showed a hundred and looked complete.
-   *
    * Optional, so the component still renders from a fixture that has nothing to say about paging —
    * an absent value means "no claim", which is the only honest default.
    */
@@ -132,73 +128,95 @@ export function FolderTree({
   /**
    * Which question the page is answering — the same value the header reads.
    *
-   * The rail took none of this, so it answered "which folder is current" from `selectedFolderId`
-   * alone. That identifier is the library's root on a filtered view, which is how the page came to
-   * say "Favourites" at the top while the rail marked the root folder as where the reader was.
-   *
-   * Passed in rather than re-derived from the filters here. Two components inferring the same thing
-   * from the same URL is exactly how the Slice 2 defect happened, one layer up.
+   * On a filtered view `selectedFolderId` is the library's root, so the rail must not mark it (or
+   * the library) as where the reader is. Passed in rather than re-derived from the filters here.
    */
   readonly view: DocumentsView;
 }): ReactNode {
   const translate = useTranslate();
 
-  /**
-   * Whether a folder is the reader's current location at all.
-   *
-   * On a filtered view the list belongs to no folder, so nothing in the two panels above may claim
-   * to be current — not the folder, and not the library either, because "you are in Quality
-   * Management" is the same false statement one level up.
-   */
+  /** On a filtered view the list belongs to no folder and no library, so nothing is current. */
   const inFolderView = view === 'folder';
 
-  /** The adapter, and the whole of it. `parentId` travels untouched; the tree reads it. */
-  const nodes = useMemo<FolderNode[]>(
-    () => folders.map((folder) => ({ ...folder, label: folder.name })),
-    [folders],
+  const selectedLibrary = libraries.find((library) => library.id === selectedLibraryId) ?? null;
+
+  /**
+   * The selected library's root folder, as the folder list knows it.
+   *
+   * The flag first and the library's pointer second: the two agree on a real tenant, and reading
+   * the flag keeps a folder list that disagrees with its library from drawing the root twice.
+   */
+  const rootFolderId =
+    folders.find((folder) => folder.isRoot)?.id ?? selectedLibrary?.rootFolderId ?? null;
+
+  /** A folder id as the tree knows it: the root folder is its library's node. */
+  const nodeIdOf = useMemo(
+    () =>
+      (folderId: string): string =>
+        selectedLibrary !== null && folderId === rootFolderId
+          ? libraryNodeId(selectedLibrary.id)
+          : folderId,
+    [selectedLibrary, rootFolderId],
+  );
+
+  /** The adapter, and the whole of it: libraries at the top, the selected library's folders below. */
+  const nodes = useMemo<RailNode[]>(
+    () => [
+      ...libraries.map((library) => ({
+        id: libraryNodeId(library.id),
+        label: library.name,
+        parentId: null,
+        kind: 'library' as const,
+        libraryId: library.id,
+        folderId:
+          library.id === selectedLibrary?.id && rootFolderId !== null
+            ? rootFolderId
+            : library.rootFolderId,
+      })),
+      ...folders
+        .filter((folder) => folder.id !== rootFolderId)
+        .map((folder) => ({
+          id: folder.id,
+          label: folder.name,
+          parentId: folder.parentId === null ? null : nodeIdOf(folder.parentId),
+          kind: 'folder' as const,
+          libraryId: selectedLibraryId ?? folder.libraryId,
+          folderId: folder.id,
+        })),
+    ],
+    [libraries, folders, selectedLibrary, selectedLibraryId, rootFolderId, nodeIdOf],
   );
 
   /**
-   * The chain from the library's root down to the folder the URL names.
+   * The chain from the library down to the folder the URL names — the selected library's node
+   * first, then every folder on the way.
    *
    * `folderTrail` already walks it for the breadcrumb, so this is the same answer read twice rather
-   * than a second traversal written to a different set of rules — and its cycle guard and its
-   * "stop where the chain breaks" behaviour come along for free. A library beyond the API's
-   * hundred-folder page can genuinely be missing an ancestor; a partial trail expands what it can
-   * establish, which is the same graceful degradation the breadcrumb already shows.
-   *
-   * Derived on *every* view rather than only in `folder`, and deliberately: `selectedFolderId` is
-   * the library's root on a filtered view, so this opens the root and keeps its children on screen.
-   * They are how a reader leaves a filtered view, and hiding them would strand them there.
+   * than a second traversal written to a different set of rules. Derived on *every* view: on a
+   * filtered view the selection is the root, so this opens the library and keeps its folders on
+   * screen — they are how a reader leaves a filtered view.
    */
   const ancestors = useMemo(
-    () => folderTrail(folders, selectedFolderId).map((folder) => folder.id),
-    [folders, selectedFolderId],
+    () => [
+      ...(selectedLibrary === null ? [] : [libraryNodeId(selectedLibrary.id)]),
+      ...folderTrail(folders, selectedFolderId).map((folder) => nodeIdOf(folder.id)),
+    ],
+    [folders, selectedFolderId, selectedLibrary, nodeIdOf],
   );
 
   /**
    * Which branches are open — ancestors of the selection, plus whatever the reader opened.
    *
-   * `TreeView` expands everything when told nothing, which is right for a chart and wrong for a
-   * rail: a library of a hundred folders would arrive fully unfolded, the disclosure controls would
-   * all point down, and the tree would be the flat list it replaced. So the expansion is controlled
-   * here — but only the *set*; the walking, the toggling and the keyboard remain the tree's.
-   *
-   * Seeded from the ancestors and then owned by the reader, so a deep link arrives with its folder
-   * visible and a refresh reconstructs the same chain from the URL alone. Nothing about expansion
-   * is written to the URL: it is where you can see, not where you are, and a shared link should
-   * carry the second without the first.
+   * `TreeView` expands everything when told nothing, which is wrong for a rail. Seeded from the
+   * ancestors and then owned by the reader. Nothing about expansion is written to the URL: it is
+   * where you can see, not where you are.
    */
   const [expanded, setExpanded] = useState<readonly string[]>(ancestors);
 
   /*
-   * Re-seed when the selection moves.
-   *
-   * Navigating between folders re-renders this component rather than remounting it, so
-   * `useState`'s initial value is read once and never again — a deep link followed *within* the
-   * session would otherwise arrive with its ancestors shut. Adjusting state during render is
-   * React's own answer to "a prop changed and some state derives from it", and it is a union rather
-   * than a replacement so a branch the reader opened by hand survives the move.
+   * Re-seed when the selection moves. Navigating re-renders this component rather than remounting
+   * it, so a union with the new ancestors keeps a deep link followed within the session visible and
+   * a branch the reader opened by hand open.
    */
   const trailKey = ancestors.join('>');
   const [seenTrail, setSeenTrail] = useState(trailKey);
@@ -207,14 +225,33 @@ export function FolderTree({
     setExpanded((open) => [...new Set([...open, ...ancestors])]);
   }
 
-  /**
-   * The rail's three groups, assembled before rendering so the rules between them can be placed.
+  /*
+   * Coming back to Documents — asked for 26 Nov 2026.
    *
-   * A list rather than three literals in the markup because the middle group is conditional: with no
-   * library there are no folders, and a separator either side of a group that is not there is two
-   * rules with nothing between them. Interleaving from an array makes "a rule between each pair"
-   * true by construction instead of by three hand-written conditions.
+   * Leaving for another tab unmounts the rail, so the branches the reader opened by hand were lost
+   * and `/documents` reopened the first library. Two small memories fix both halves: the folder the
+   * reader is in goes into a cookie the page reads on a bare `/documents`, and the open branches go
+   * into this browser's storage and are merged back in once on mount. Read in an effect, not during
+   * render, so the server's markup and the first client render still agree.
    */
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    const remembered = readExpanded();
+    if (remembered.length > 0) {
+      setExpanded((open) => [...new Set([...open, ...remembered])]);
+    }
+  }, []);
+  useEffect(() => {
+    if (restored.current) writeExpanded(expanded);
+  }, [expanded]);
+  useEffect(() => {
+    if (inFolderView && selectedLibraryId !== null && selectedFolderId !== null) {
+      writeLastLocation({ libraryId: selectedLibraryId, folderId: selectedFolderId });
+    }
+  }, [inFolderView, selectedLibraryId, selectedFolderId]);
+
   const groups: readonly {
     readonly id: string;
     readonly title: string;
@@ -222,110 +259,77 @@ export function FolderTree({
   }[] = [
     {
       id: 'libraries',
-      title: translate('documents.nav.library'),
+      title: translate('documents.nav.libraries'),
       body:
         libraries.length === 0 ? (
           <p className="px-2 text-sm">{translate('documents.nav.noLibraries')}</p>
         ) : (
-          <LibraryPicker
-            libraries={libraries}
-            selectedLibraryId={selectedLibraryId}
-            current={inFolderView}
-          />
+          <>
+            <TreeView<RailNode>
+              nodes={nodes}
+              expanded={[...expanded]}
+              onExpandedChange={setExpanded}
+              aria-label={translate('documents.nav.libraries')}
+              className="gap-px"
+              renderItem={({ node, treeItemProps, hasChildren, toggle }) => {
+                const isLibrary = node.kind === 'library';
+                const Icon = isLibrary ? LibraryIcon : FolderIcon;
+                const count = documentCounts?.[node.folderId];
+                return (
+                  <Link
+                    href={
+                      `/documents?libraryId=${node.libraryId}&folderId=${node.folderId}` as Route
+                    }
+                    /*
+                     * Spread *before* `aria-current`, so the two cannot fight: `treeItemProps`
+                     * carries the role, the level, the position, the tab stop and the focus handler;
+                     * the line below is this component's own claim about where the reader is.
+                     */
+                    {...treeItemProps}
+                    aria-current={
+                      inFolderView &&
+                      node.libraryId === selectedLibraryId &&
+                      node.folderId === selectedFolderId
+                        ? 'true'
+                        : undefined
+                    }
+                    className={`${RAIL_ROW} min-w-0 flex-1${isLibrary ? ' font-semibold' : ''}`}
+                    /*
+                     * Double-click opens or closes a branch. The single click still navigates; the
+                     * chevron and the arrow keys remain the ways to expand without navigating.
+                     */
+                    {...(hasChildren && {
+                      onDoubleClick: (event: { preventDefault: () => void }) => {
+                        event.preventDefault();
+                        toggle();
+                      },
+                    })}
+                  >
+                    <Icon className="size-3.5 shrink-0 opacity-75" aria-hidden />
+                    <span className="flex-1 truncate">{node.label}</span>
+                    {count !== undefined && <Badge tone="muted">{String(count)}</Badge>}
+                  </Link>
+                );
+              }}
+            />
+            {/*
+              What the tree is not showing — Slice 7. Rendered on `hasMore`, the server's word for
+              "the first page is not all of them"; the `shown < total` guard keeps a recovered chain
+              from reading "101 of 101" as an incompleteness notice.
+            */}
+            {folderPage !== undefined &&
+              folderPage.hasMore &&
+              folderPage.shown < folderPage.total && (
+                <p className="text-muted-foreground px-2 text-xs">
+                  {translate('documents.nav.foldersTruncated', {
+                    count: folderPage.total,
+                    shown: folderPage.shown,
+                  })}
+                </p>
+              )}
+          </>
         ),
     },
-    ...(selectedLibraryId === null
-      ? []
-      : [
-          {
-            id: 'folders',
-            title: translate('documents.nav.folders'),
-            body: (
-              <>
-                <TreeView<FolderNode>
-                  nodes={nodes}
-                  expanded={[...expanded]}
-                  onExpandedChange={setExpanded}
-                  /*
-                   * The tree's own accessible name, reusing the group's word rather than inventing a
-                   * string. `Section` names the region; this names the widget inside it, and a screen
-                   * reader announcing "Folders, tree" is exactly what the rail means.
-                   */
-                  aria-label={translate('documents.nav.folders')}
-                  className="gap-px"
-                  renderItem={({ node, treeItemProps, depth, hasChildren, toggle }) => (
-                    <Link
-                      href={
-                        `/documents?libraryId=${selectedLibraryId}&folderId=${node.id}` as Route
-                      }
-                      /*
-                       * Spread *before* `aria-current`, so the two cannot fight: `treeItemProps`
-                       * carries the role, the level, the position, the tab stop and the focus
-                       * handler, and the line below is this component's own claim about where the
-                       * reader is. `TreeView` never emits `aria-current`, and emits `aria-selected`
-                       * only when given a `selectedId` — which is why one is not passed.
-                       */
-                      {...treeItemProps}
-                      aria-current={
-                        inFolderView && node.id === selectedFolderId ? 'true' : undefined
-                      }
-                      className={`${RAIL_ROW} min-w-0 flex-1${
-                        // The head of the tree, given the weight of one — so the levels below it read
-                        // *from* somewhere. `depth` comes from the tree rather than from a path split
-                        // here; this is typography keyed on Platform's answer, not a second hierarchy.
-                        depth === 0 ? ' font-semibold' : ''
-                      }`}
-                      /*
-                       * Double-click opens or closes a branch — Docs v2, asked for in review. The
-                       * single click still navigates; the browser fires it first, so a double-click
-                       * on a folder lands on that folder *and* flips it, which is what both halves of
-                       * the gesture mean. The chevron and the arrow keys remain the ways to expand
-                       * without navigating.
-                       */
-                      {...(hasChildren && {
-                        onDoubleClick: (event: { preventDefault: () => void }) => {
-                          event.preventDefault();
-                          toggle();
-                        },
-                      })}
-                    >
-                      <FolderIcon className="size-3.5 shrink-0 opacity-75" aria-hidden />
-                      <span className="flex-1 truncate">{node.name}</span>
-                      {documentCounts?.[node.id] !== undefined && (
-                        <Badge tone="muted">{String(documentCounts[node.id])}</Badge>
-                      )}
-                    </Link>
-                  )}
-                />
-                {/*
-                  What the rail is not showing.
-
-                  Rendered on `hasMore` — the server's word for "the first page is not all of
-                  them" — and not on whether the reader's own folder happened to fall outside it,
-                  because the list is incomplete either way. The extra `shown < total` guard is for
-                  the one arithmetic that would otherwise read as a contradiction: recovering a
-                  chain can bring a rail of a hundred up to the library's whole hundred-and-one, and
-                  "101 of 101" is not an incompleteness notice.
-
-                  A plain sentence rather than a control, because there is nothing yet to press:
-                  loading the rest is a lazy-loading problem with its own design, and a button that
-                  did nothing would be a worse claim than the sentence. It sits inside the
-                  `Folders` region, so it is reached with the thing it describes.
-                */}
-                {folderPage !== undefined &&
-                  folderPage.hasMore &&
-                  folderPage.shown < folderPage.total && (
-                    <p className="text-muted-foreground px-2 text-xs">
-                      {translate('documents.nav.foldersTruncated', {
-                        count: folderPage.total,
-                        shown: folderPage.shown,
-                      })}
-                    </p>
-                  )}
-              </>
-            ),
-          },
-        ]),
     {
       id: 'views',
       title: translate('documents.nav.views'),
@@ -375,11 +379,8 @@ export function FolderTree({
       frame, so the rail stays a plain list wherever else it is used) and separated
       from the list by one border, rather than a card floating in the page's padding. Slice 4 had
       already collapsed three cards into one surface; the approved design takes the last step and
-      makes the rail part of the frame. The three groups are still three named regions with `h2`s —
-      see `Group` — so nothing an assistive technology relies on has moved.
-
-      The separator stays between Folders and Views only: Library is a single control, and a rule
-      under one dropdown separates it from nothing.
+      makes the rail part of the frame. The groups (Libraries, Views) are named regions with `h2`s —
+      see `Group` — and a rule separates them.
     */
     <nav aria-label={translate('documents.nav.label')} className="flex flex-col gap-4.5 px-3 py-4">
       {groups.map((group) => (
@@ -389,56 +390,5 @@ export function FolderTree({
         </Fragment>
       ))}
     </nav>
-  );
-}
-
-/**
- * The library picker — Docs v2's dropdown, built so every library is still a link.
- *
- * The design draws a select. A native `<select>` that navigates on change is a context change on
- * input (WCAG 3.2.2), and it would have turned five links a reader could middle-click into a widget
- * they cannot. So it is a menu button that *looks* like the select, whose items are the same links
- * to the same URLs the rail always had — the platform's own recipe for navigation in a menu
- * (`DropdownMenuItem asChild` around a link).
- *
- * The trigger's name says what it is and what is chosen; the current library carries
- * `aria-current` inside the menu as it did in the list.
- */
-function LibraryPicker({
-  libraries,
-  selectedLibraryId,
-  current,
-}: {
-  readonly libraries: readonly Library[];
-  readonly selectedLibraryId: string | null;
-  readonly current: boolean;
-}): ReactNode {
-  const translate = useTranslate();
-  const selected = libraries.find((library) => library.id === selectedLibraryId) ?? null;
-  const name = selected?.name ?? translate('documents.nav.libraries');
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={translate('documents.nav.libraryPicker', { name })}
-        className="border-border bg-card hover:border-primary-200 focus-visible:ring-ring flex h-[34px] w-full items-center gap-2 rounded-lg border px-2.5 text-start text-[13px] font-medium focus-visible:ring-2 focus-visible:outline-none"
-      >
-        <span className="flex-1 truncate">{name}</span>
-        <ChevronDown className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-48">
-        {libraries.map((library) => (
-          <DropdownMenuItem key={library.id} asChild>
-            <Link
-              href={`/documents?libraryId=${library.id}&folderId=${library.rootFolderId}` as Route}
-              aria-current={current && library.id === selectedLibraryId ? 'true' : undefined}
-              className="aria-[current]:font-semibold"
-            >
-              {library.name}
-            </Link>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
