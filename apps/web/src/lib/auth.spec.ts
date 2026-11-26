@@ -158,7 +158,7 @@ describe('sign-in through Munaxa Identity', () => {
     expect(binding?.options).toMatchObject({
       httpOnly: true,
       sameSite: 'lax',
-      path: '/auth/federation',
+      path: '/',
     });
     expect(binding?.value).not.toContain('the-state');
     expect(JSON.parse(binding?.value ?? '{}')).toMatchObject({

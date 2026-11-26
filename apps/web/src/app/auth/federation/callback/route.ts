@@ -1,6 +1,6 @@
-import { NextResponse, type NextRequest } from 'next/server';
+import type { NextRequest } from 'next/server';
 
-import { completeFederatedSignIn } from '../../../../lib/auth';
+import { abandonFederatedSignIn, completeFederatedSignIn } from '../../../../lib/auth';
 import { safeDestination } from '../../../../lib/destination';
 
 /**
@@ -9,19 +9,22 @@ import { safeDestination } from '../../../../lib/destination';
  *
  * A provider error, a missing code or a browser that did not start this flow all end on the
  * company sign-in page with one message; which it was is in the API's log, not in the address bar.
+ * Redirects are relative (`Location: /path`), so they never depend on the request's Host header.
  */
-export async function GET(request: NextRequest): Promise<NextResponse> {
+const seeOther = (path: string): Response =>
+  new Response(null, { status: 303, headers: { Location: path, 'Cache-Control': 'no-store' } });
+
+const FAILED = '/login/company?failed=1';
+
+export async function GET(request: NextRequest): Promise<Response> {
   const params = request.nextUrl.searchParams;
-  const failed = new URL('/login/company?failed=1', request.nextUrl.origin);
   if (params.get('error') !== null) {
-    return NextResponse.redirect(failed, 303);
+    await abandonFederatedSignIn();
+    return seeOther(FAILED);
   }
   const outcome = await completeFederatedSignIn({
     code: params.get('code'),
     state: params.get('state'),
   });
-  if (!outcome.ok) {
-    return NextResponse.redirect(failed, 303);
-  }
-  return NextResponse.redirect(new URL(safeDestination(outcome.next), request.nextUrl.origin), 303);
+  return seeOther(outcome.ok ? safeDestination(outcome.next) : FAILED);
 }

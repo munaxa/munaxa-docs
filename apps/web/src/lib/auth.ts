@@ -162,7 +162,11 @@ async function storeSession(result: AuthenticationResponse, tenant?: string): Pr
  * callback is honoured only when the cookie names the same `state`. `Lax`, because the callback is
  * a top-level navigation back from Identity and a `Strict` cookie is withheld from exactly that.
  */
-export const FEDERATION_COOKIE = 'edms_federation';
+// `__Host-` in production: the browser then accepts it only from this exact host, `Secure`, path `/`
+// and without a domain, so a sibling host under the same parent domain cannot plant a binding and
+// bring login CSRF back. Plain HTTP in development cannot carry a `__Host-` cookie.
+export const FEDERATION_COOKIE =
+  process.env.NODE_ENV === 'production' ? '__Host-edms_federation' : 'edms_federation';
 const FEDERATION_TTL_SECONDS = 600;
 
 interface FederationBinding {
@@ -209,10 +213,15 @@ export async function startFederatedSignIn(input: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
-    path: '/auth/federation',
+    path: '/',
     maxAge: FEDERATION_TTL_SECONDS,
   });
   return { ok: true, authorizationUrl: offer.authorizationUrl };
+}
+
+/** Spends the binding without completing, for a callback that carries the provider's error. */
+export async function abandonFederatedSignIn(): Promise<void> {
+  (await cookies()).delete({ name: FEDERATION_COOKIE, path: '/' });
 }
 
 export type FederatedCompletion =
@@ -230,7 +239,7 @@ export async function completeFederatedSignIn(input: {
 }): Promise<FederatedCompletion> {
   const store = await cookies();
   const raw = store.get(FEDERATION_COOKIE)?.value;
-  store.delete({ name: FEDERATION_COOKIE, path: '/auth/federation' });
+  store.delete({ name: FEDERATION_COOKIE, path: '/' });
 
   let binding: FederationBinding;
   try {
