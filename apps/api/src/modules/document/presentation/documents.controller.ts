@@ -377,7 +377,22 @@ function toSummary(row: DocumentRow): DocumentSummary {
     ownerUserId: row.ownerUserId,
     isFavorite: row.isFavorite,
     file: toFile(row),
+    liveLock: toLock(row),
   };
+}
+
+/** The live lock on the wire, shared by the summary and the record so the two cannot disagree. */
+function toLock(row: DocumentRow): DocumentSummary['liveLock'] {
+  return row.liveLock === null
+    ? null
+    : {
+        id: row.liveLock.id,
+        lockedBy: row.liveLock.lockedBy,
+        lockedByName: row.liveLock.lockedByName,
+        acquiredAt: row.liveLock.acquiredAt.toISOString(),
+        expiresAt: row.liveLock.expiresAt.toISOString(),
+        draftRevisionId: row.liveLock.draftRevisionId,
+      };
 }
 
 /**
@@ -459,17 +474,7 @@ export function toDocument(row: DocumentRow, pendingNumber: string | null = null
     ownerUserId: row.ownerUserId,
     latestRevision: revision === null ? null : toRevision(revision),
     currentRevision: row.currentRevision === null ? null : toRevision(row.currentRevision),
-    liveLock:
-      row.liveLock === null
-        ? null
-        : {
-            id: row.liveLock.id,
-            lockedBy: row.liveLock.lockedBy,
-            lockedByName: row.liveLock.lockedByName,
-            acquiredAt: row.liveLock.acquiredAt.toISOString(),
-            expiresAt: row.liveLock.expiresAt.toISOString(),
-            draftRevisionId: row.liveLock.draftRevisionId,
-          },
+    liveLock: toLock(row),
     metadata: row.metadata.map((entry) => ({
       fieldId: entry.fieldId,
       key: entry.key,

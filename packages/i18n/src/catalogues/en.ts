@@ -1173,6 +1173,11 @@ export const en = {
       heldByYou: 'You have this document checked out until {until}.',
       heldByOther: 'Checked out by {name} until {until}.',
       expired: 'The check-out held by {name} has expired; checking out will take it over.',
+      /** The library row's badge — 26 Nov 2026. Short, because it sits beside the title. */
+      badgeYou: 'Checked out by you',
+      badgeOther: 'Checked out by {name}',
+      badgeSomeone: 'Checked out',
+      checkInRow: 'Check in {title}',
     },
     status: {
       DRAFT: 'Draft',

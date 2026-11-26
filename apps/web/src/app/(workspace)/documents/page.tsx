@@ -374,6 +374,7 @@ export default async function DocumentsPage({
         namesOwners ? Object.fromEntries(users.data.map((user) => [user.id, user.displayName])) : {}
       }
       canCreate={canCreate}
+      canCheckin={access.permissions.includes(Permission.DOCUMENT_CHECKIN)}
       // 16 §5's *"bulk actions gated by `capabilities`"*, resolved on the server from the caller's
       // own grants. The tenant-wide floor only: whether they reach a *particular* document is the
       // API's per-object answer, and the result dialogue is where they learn it.

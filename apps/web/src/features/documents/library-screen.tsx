@@ -6,7 +6,7 @@ import { type ReactNode, useState } from 'react';
 
 import { Badge, Button, type ColumnDef, Switch, useMediaQuery, useToast } from '@munaxa/ui';
 
-import { Plus } from '@munaxa/icons';
+import { Plus, Upload } from '@munaxa/icons';
 
 import type { BulkOperationResult, DocumentSummary, Folder, Library } from '@edms/contracts';
 import { DocumentStatus, type DocumentStatusKey, formatFor } from '@edms/domain';
@@ -32,6 +32,7 @@ import type { DocumentsView } from './documents-view';
 import { FolderTree } from './folder-tree';
 import { FilterChip, type FilterChoice } from './filter-chip';
 import { folderTrail } from './folder-trail';
+import { CheckInDialog } from '../revisions/revision-panel';
 import { DocumentStatusBadge } from './status-badge';
 import { type DocumentTypeChoice, UploadDialog } from './upload-dialog';
 
@@ -66,6 +67,7 @@ export function LibraryScreen({
   filterOptions = NO_FILTER_OPTIONS,
   ownerNames = NO_NAMES,
   canCreate,
+  canCheckin = false,
   canBulk,
   view,
 }: {
@@ -118,6 +120,8 @@ export function LibraryScreen({
    * request arrives; this is what keeps a button that would certainly be refused from being
    * offered at all.
    */
+  /** May check documents in — 26 Nov 2026, for the Check in beside a row the caller holds. */
+  readonly canCheckin?: boolean;
   readonly canBulk: {
     readonly edit: boolean;
     readonly restore: boolean;
@@ -147,6 +151,14 @@ export function LibraryScreen({
    */
   const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
   const [shownId, setShownId] = useState<string | null>(null);
+  // The row whose file is being checked back in from the list, beside its "Checked out" mark.
+  const [checkingIn, setCheckingIn] = useState<string | null>(null);
+  const me = filterOptions.currentUserId;
+  // An expired check-out is one the next person takes over (the record says so), not one to mark.
+  const lockOf = (row: DocumentSummary): DocumentSummary['liveLock'] =>
+    row.liveLock !== null && Date.parse(row.liveLock.expiresAt) > Date.now() ? row.liveLock : null;
+  const mineToCheckIn = (row: DocumentSummary): boolean =>
+    canCheckin && me !== null && lockOf(row)?.lockedBy === me;
   const shown = rows.find((row) => row.id === shownId) ?? rows[0] ?? null;
 
   const includeSubfolders = state.filters.underFolderId !== undefined;
@@ -466,6 +478,30 @@ export function LibraryScreen({
               </span>
               <span className="text-muted-foreground truncate text-[11.5px]">{second}</span>
             </div>
+            <LockBadge lock={lockOf(row)} me={me} />
+            {mineToCheckIn(row) && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                aria-label={translate('revisions.lock.checkInRow', { title: row.title })}
+                // The row's own click shows it in the panel; this button is a different act.
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setCheckingIn(row.id);
+                }}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                }}
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                }}
+              >
+                <Upload className="size-3.5" aria-hidden />
+                {translate('revisions.actions.checkIn')}
+              </Button>
+            )}
           </div>
         );
       },
@@ -613,6 +649,18 @@ export function LibraryScreen({
                         ? null
                         : translate('documents.actions.notReachable'),
                   },
+                  ...(mineToCheckIn(row)
+                    ? [
+                        {
+                          id: 'checkIn',
+                          label: translate('revisions.actions.checkIn'),
+                          onSelect: () => {
+                            setCheckingIn(row.id);
+                          },
+                          disabledReason: null,
+                        },
+                      ]
+                    : []),
                   {
                     id: 'favorite',
                     label: translate(
@@ -695,6 +743,19 @@ export function LibraryScreen({
         />
       )}
 
+      {checkingIn === null ? null : (
+        <CheckInDialog
+          document={{ id: checkingIn }}
+          onClose={() => {
+            setCheckingIn(null);
+          }}
+          onSaved={() => {
+            setCheckingIn(null);
+            refresh();
+          }}
+        />
+      )}
+
       {bulkEditing === null ? null : (
         <BulkMetadataDialog
           ids={bulkEditing}
@@ -723,6 +784,29 @@ export function LibraryScreen({
 }
 
 /** No list the caller may read, so only the Status chip — the one that needs no lookup. */
+/** "Checked out by …" beside a row's title, so a held document is visible before it is opened. */
+function LockBadge({
+  lock,
+  me,
+}: {
+  readonly lock: DocumentSummary['liveLock'];
+  readonly me: string | null;
+}): ReactNode {
+  const translate = useTranslate();
+  if (lock === null) {
+    return null;
+  }
+  return (
+    <Badge tone="warning" className="shrink-0">
+      {me !== null && lock.lockedBy === me
+        ? translate('revisions.lock.badgeYou')
+        : lock.lockedByName === null
+          ? translate('revisions.lock.badgeSomeone')
+          : translate('revisions.lock.badgeOther', { name: lock.lockedByName })}
+    </Badge>
+  );
+}
+
 const NO_FILTER_OPTIONS = { types: null, confidentiality: null, currentUserId: null } as const;
 const NO_NAMES: Readonly<Record<string, string>> = {};
 

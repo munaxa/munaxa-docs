@@ -51,6 +51,7 @@ export function documentSummary(overrides: Partial<DocumentSummary> = {}): Docum
     ownerUserId: '019489f0-0000-7000-8000-00000000000a',
     isFavorite: false,
     file: null,
+    liveLock: null,
     ...overrides,
   };
 }

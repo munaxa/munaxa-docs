@@ -253,6 +253,13 @@ export const documentSummarySchema = administered({
   ownerUserId: uuidSchema,
   isFavorite: z.boolean(),
   file: documentFileSchema.nullable(),
+  /**
+   * The live check-out lock, when one stands — 26 Nov 2026.
+   *
+   * So the library can mark a checked-out row and offer its holder a Check in beside it without a
+   * call per row. The list query already joined the lock for the record page; this carries it.
+   */
+  liveLock: documentLockSchema.nullable(),
 });
 
 export const documentListQuerySchema = adminListQuerySchema([
