@@ -68,6 +68,14 @@ export const en = {
     mfaCodeLabel: 'Authentication code',
     mfaCodeHint: 'Six digits from your authenticator app, or one of your recovery codes.',
     mfaTitle: 'Two-step verification',
+    /** Sign-in through Munaxa Identity (one Munaxa sign-in for every product). */
+    signInWithMunaxa: 'Sign in with your Munaxa or company account',
+    signInWithMunaxaHint: 'Your organisation signs you in with Munaxa, Microsoft or Google.',
+    signInWithPassword: 'Sign in with a Docs password instead',
+    federationContinue: 'Continue',
+    federationNotOffered:
+      'Your organisation has not set up this sign-in for that email address. Use your Docs password.',
+    federationFailed: 'That sign-in could not be completed. Please try again.',
     /**
      * Neither "you are protected" nor "you are not" — Slice 26.
      *

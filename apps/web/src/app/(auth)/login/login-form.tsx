@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+import type { Route } from 'next';
 import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 
@@ -131,6 +133,15 @@ export function LoginForm({
       </Field>
 
       <SubmitButton />
+
+      {/* One Munaxa sign-in for every product (Identity ADR-0008): Munaxa password, Microsoft or
+          Google, with the organisation's MFA, decided at Identity. */}
+      <Link
+        className="text-sm underline"
+        href={`/login/company?next=${encodeURIComponent(next)}` as Route}
+      >
+        {translate('auth.signInWithMunaxa')}
+      </Link>
     </form>
   );
 }

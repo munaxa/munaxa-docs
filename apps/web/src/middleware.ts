@@ -10,7 +10,8 @@ import { ACCESS_TOKEN_COOKIE } from './lib/session';
  * "permission check" that decides what a user may see is a suggestion, and the server is the
  * only place a permission is decided (`docs/architecture/08-permission-model.md` §1).
  */
-const PUBLIC_PATHS = ['/login', '/forgot-password', '/mfa'];
+// `/auth/federation`: the browser returns there from Munaxa Identity before it has a session.
+const PUBLIC_PATHS = ['/login', '/forgot-password', '/mfa', '/auth/federation/'];
 
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
