@@ -301,7 +301,13 @@ export async function startServers(fixture: Fixture, extraEnv: ExtraEnv = {}): P
   const web = spawn('node', [join(WEB, 'server.mjs'), '--port', String(WEB_PORT)], {
     cwd: WEB,
     // `next start` sets its own `NODE_ENV`; forcing one here only risks disagreeing with it.
-    env: { ...process.env, PORT: String(WEB_PORT) },
+    // The web server runs as production, where staff passwords default to off (Munaxa sign-in
+    // only). The API here is not production and accepts passwords, so the page must agree.
+    env: {
+      ...process.env,
+      PORT: String(WEB_PORT),
+      PASSWORD_SIGN_IN: process.env.PASSWORD_SIGN_IN ?? 'enabled',
+    },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
