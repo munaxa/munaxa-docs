@@ -146,3 +146,147 @@ async function storeSession(result: AuthenticationResponse, tenant?: string): Pr
     });
   }
 }
+
+// -------------------------------------------------------------------------------------------------
+// Sign-in through Munaxa Identity (one Munaxa sign-in for every product; Identity ADR-0008)
+// -------------------------------------------------------------------------------------------------
+
+/**
+ * The short-lived cookie that binds the browser finishing a federated sign-in to the browser that
+ * started it.
+ *
+ * The API keeps the flow's `state` server-side, which stops a forged callback but not **login
+ * CSRF**: an attacker starts a flow, signs in as themselves, and hands the callback URL to a victim,
+ * whose browser would then be signed in as the attacker. So starting also writes this `httpOnly`
+ * cookie holding a digest of the `state`, the organisation and where to go afterwards, and the
+ * callback is honoured only when the cookie names the same `state`. `Lax`, because the callback is
+ * a top-level navigation back from Identity and a `Strict` cookie is withheld from exactly that.
+ */
+// `__Host-` in production: the browser then accepts it only from this exact host, `Secure`, path `/`
+// and without a domain, so a sibling host under the same parent domain cannot plant a binding and
+// bring login CSRF back. Plain HTTP in development cannot carry a `__Host-` cookie.
+export const FEDERATION_COOKIE =
+  process.env.NODE_ENV === 'production' ? '__Host-edms_federation' : 'edms_federation';
+const FEDERATION_TTL_SECONDS = 600;
+
+/**
+ * Spends the binding. Written as an expired `set` with the same attributes, because a browser
+ * ignores a `__Host-` cookie update that lacks `Secure`, and `delete` sends none.
+ */
+const spendBinding = (store: Awaited<ReturnType<typeof cookies>>): void => {
+  store.set(FEDERATION_COOKIE, '', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  });
+};
+
+interface FederationBinding {
+  readonly stateDigest: string;
+  readonly tenant: string;
+  readonly next: string;
+}
+
+const digest = async (value: string): Promise<string> => {
+  const { createHash } = await import('node:crypto');
+  return createHash('sha256').update(value, 'utf8').digest('base64url');
+};
+
+export type FederatedStart =
+  | { readonly ok: true; readonly authorizationUrl: string }
+  | { readonly ok: false; readonly reason: 'NOT_OFFERED' | 'UNAVAILABLE' };
+
+export async function startFederatedSignIn(input: {
+  readonly email: string;
+  readonly tenant: string;
+  readonly next: string;
+}): Promise<FederatedStart> {
+  let offer: { federated: boolean; authorizationUrl: string | null };
+  try {
+    const query = new URLSearchParams({ email: input.email, tenant: input.tenant });
+    offer = await apiFetch<{ federated: boolean; authorizationUrl: string | null }>({
+      path: `/auth/federation?${query.toString()}`,
+    });
+  } catch {
+    return { ok: false, reason: 'UNAVAILABLE' };
+  }
+  if (!offer.federated || offer.authorizationUrl === null) {
+    return { ok: false, reason: 'NOT_OFFERED' };
+  }
+  const state = new URL(offer.authorizationUrl).searchParams.get('state');
+  if (state === null || state === '') return { ok: false, reason: 'UNAVAILABLE' };
+
+  const binding: FederationBinding = {
+    stateDigest: await digest(state),
+    tenant: input.tenant,
+    next: input.next,
+  };
+  (await cookies()).set(FEDERATION_COOKIE, JSON.stringify(binding), {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: FEDERATION_TTL_SECONDS,
+  });
+  return { ok: true, authorizationUrl: offer.authorizationUrl };
+}
+
+/** Spends the binding without completing, for a callback that carries the provider's error. */
+export async function abandonFederatedSignIn(): Promise<void> {
+  spendBinding(await cookies());
+}
+
+export type FederatedCompletion =
+  | { readonly ok: true; readonly next: string }
+  | { readonly ok: false; readonly reason: 'REJECTED' | 'UNAVAILABLE' };
+
+/**
+ * The callback's half: only for the browser that started the flow, then the API exchanges the code
+ * and the session is stored exactly as after a password sign-in. The binding cookie is spent either
+ * way.
+ */
+export async function completeFederatedSignIn(input: {
+  readonly code: string | null;
+  readonly state: string | null;
+}): Promise<FederatedCompletion> {
+  const store = await cookies();
+  const raw = store.get(FEDERATION_COOKIE)?.value;
+  spendBinding(store);
+
+  let binding: FederationBinding;
+  try {
+    binding = JSON.parse(raw ?? '') as FederationBinding;
+  } catch {
+    return { ok: false, reason: 'REJECTED' };
+  }
+  if (
+    typeof binding?.stateDigest !== 'string' ||
+    typeof binding.tenant !== 'string' ||
+    typeof binding.next !== 'string' ||
+    input.code === null ||
+    input.state === null ||
+    input.code === '' ||
+    (await digest(input.state)) !== binding.stateDigest
+  ) {
+    return { ok: false, reason: 'REJECTED' };
+  }
+
+  try {
+    const forwardedFor = await clientAddress();
+    const result = await apiFetch<AuthenticationResponse>({
+      path: '/auth/federation/callback',
+      method: 'POST',
+      body: { code: input.code, state: input.state, tenant: binding.tenant },
+      ...(forwardedFor !== undefined && { forwardedFor }),
+    });
+    await storeSession(result, binding.tenant);
+    return { ok: true, next: binding.next };
+  } catch (error) {
+    if (error instanceof DomainError && error.code === ErrorCode.UNAUTHENTICATED) {
+      return { ok: false, reason: 'REJECTED' };
+    }
+    return { ok: false, reason: 'UNAVAILABLE' };
+  }
+}

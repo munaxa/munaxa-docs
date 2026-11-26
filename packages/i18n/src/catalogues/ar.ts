@@ -74,6 +74,12 @@ export const ar: Catalogue = {
     mfaCodeLabel: 'رمز المصادقة',
     mfaCodeHint: 'ستة أرقام من تطبيق المصادقة، أو أحد رموز الاسترداد.',
     mfaTitle: 'التحقق بخطوتين',
+    signInWithMunaxa: 'تسجيل الدخول بحساب مُناخة أو حساب المؤسسة',
+    signInWithMunaxaHint: 'تسجّل مؤسستك دخولك عبر مُناخة أو Microsoft أو Google.',
+    signInWithPassword: 'تسجيل الدخول بكلمة مرور Docs بدلًا من ذلك',
+    federationContinue: 'متابعة',
+    federationNotOffered: 'لم تُعدّ مؤسستك طريقة الدخول هذه لهذا البريد. استخدم كلمة مرور Docs.',
+    federationFailed: 'تعذّر إتمام تسجيل الدخول. يرجى المحاولة مرة أخرى.',
     mfaStatusUnavailable:
       'تعذّر قراءة إعدادات التحقق بخطوتين الآن. أعد التحميل للمحاولة مرة أخرى — لم يتغيّر شيء.',
     mfaNotEnrolledHint: 'أضف تطبيق مصادقة حتى لا تكفي كلمة مرور مسروقة للوصول إلى وثائقك.',

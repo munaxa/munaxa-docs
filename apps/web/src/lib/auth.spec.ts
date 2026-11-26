@@ -23,11 +23,12 @@ const { jar, apiFetch } = vi.hoisted(() => {
   const store = {
     get: (name: string) =>
       values.has(name) ? { name, value: values.get(name)?.value ?? '' } : undefined,
-    set: (name: string, value: string, options: CookieOptions) => {
-      values.set(name, { value, options });
+    set: (name: string, value: string, options: CookieOptions & { maxAge?: number }) => {
+      if (options.maxAge === 0) values.delete(name);
+      else values.set(name, { value, options });
     },
-    delete: (name: string) => {
-      values.delete(name);
+    delete: (name: string | { name: string }) => {
+      values.delete(typeof name === 'string' ? name : name.name);
     },
   };
   return { jar: { values, store }, apiFetch: vi.fn() };
@@ -38,7 +39,8 @@ vi.mock('next/headers', () => ({ cookies: () => Promise.resolve(jar.store) }));
 vi.mock('./api-client', () => ({ apiFetch }));
 vi.mock('./client-address', () => ({ clientAddress: () => Promise.resolve(undefined) }));
 
-const { signIn, signOut } = await import('./auth');
+const { signIn, signOut, startFederatedSignIn, completeFederatedSignIn, FEDERATION_COOKIE } =
+  await import('./auth');
 
 const ACCESS_EXPIRES = '2026-10-01T00:15:00.000Z';
 const REFRESH_EXPIRES = '2026-10-31T00:00:00.000Z';
@@ -136,5 +138,86 @@ describe('web sign-out', () => {
     await signOut();
 
     expect([...jar.values.keys()]).toEqual([]);
+  });
+});
+
+describe('sign-in through Munaxa Identity', () => {
+  const AUTHORIZE =
+    'https://id.example/api/auth/oidc/authorize?client_id=docs-acme&state=the-state&nonce=n';
+
+  const start = async () => {
+    apiFetch.mockResolvedValueOnce({ federated: true, authorizationUrl: AUTHORIZE });
+    return startFederatedSignIn({ email: 'ada@acme.test', tenant: 'acme', next: '/documents' });
+  };
+
+  it('returns the authorization URL and binds the state to this browser without storing it', async () => {
+    expect(await start()).toEqual({ ok: true, authorizationUrl: AUTHORIZE });
+    expect(apiFetch).toHaveBeenCalledWith({
+      path: '/auth/federation?email=ada%40acme.test&tenant=acme',
+    });
+    const binding = jar.values.get(FEDERATION_COOKIE);
+    expect(binding?.options).toMatchObject({
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+    });
+    expect(binding?.value).not.toContain('the-state');
+    expect(JSON.parse(binding?.value ?? '{}')).toMatchObject({
+      tenant: 'acme',
+      next: '/documents',
+    });
+  });
+
+  it('says when the organisation does not offer it, and writes no cookie', async () => {
+    apiFetch.mockResolvedValueOnce({ federated: false, authorizationUrl: null });
+    expect(
+      await startFederatedSignIn({ email: 'ada@acme.test', tenant: 'acme', next: '/' }),
+    ).toEqual({ ok: false, reason: 'NOT_OFFERED' });
+    expect(jar.values.has(FEDERATION_COOKIE)).toBe(false);
+  });
+
+  it('completes for the browser that started, stores the session and spends the binding', async () => {
+    await start();
+    apiFetch.mockResolvedValueOnce(issued());
+
+    expect(await completeFederatedSignIn({ code: 'the-code', state: 'the-state' })).toEqual({
+      ok: true,
+      next: '/documents',
+    });
+    expect(apiFetch).toHaveBeenLastCalledWith({
+      path: '/auth/federation/callback',
+      method: 'POST',
+      body: { code: 'the-code', state: 'the-state', tenant: 'acme' },
+    });
+    expect(jar.values.get('edms_rt')?.value).toBe('refresh-token');
+    expect(jar.values.get('edms_tenant')?.value).toBe('acme');
+    expect(jar.values.has(FEDERATION_COOKIE)).toBe(false);
+  });
+
+  it('refuses a callback whose state this browser did not start (login CSRF)', async () => {
+    await start();
+    apiFetch.mockReset();
+
+    expect(await completeFederatedSignIn({ code: 'the-code', state: 'attacker-state' })).toEqual({
+      ok: false,
+      reason: 'REJECTED',
+    });
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(jar.values.has(FEDERATION_COOKIE)).toBe(false);
+    expect(jar.values.has('edms_rt')).toBe(false);
+  });
+
+  it('refuses a callback with no binding cookie or no code', async () => {
+    expect(await completeFederatedSignIn({ code: 'the-code', state: 'the-state' })).toEqual({
+      ok: false,
+      reason: 'REJECTED',
+    });
+    await start();
+    apiFetch.mockReset();
+    expect(await completeFederatedSignIn({ code: null, state: 'the-state' })).toEqual({
+      ok: false,
+      reason: 'REJECTED',
+    });
+    expect(apiFetch).not.toHaveBeenCalled();
   });
 });
