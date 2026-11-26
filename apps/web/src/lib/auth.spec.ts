@@ -23,8 +23,9 @@ const { jar, apiFetch } = vi.hoisted(() => {
   const store = {
     get: (name: string) =>
       values.has(name) ? { name, value: values.get(name)?.value ?? '' } : undefined,
-    set: (name: string, value: string, options: CookieOptions) => {
-      values.set(name, { value, options });
+    set: (name: string, value: string, options: CookieOptions & { maxAge?: number }) => {
+      if (options.maxAge === 0) values.delete(name);
+      else values.set(name, { value, options });
     },
     delete: (name: string | { name: string }) => {
       values.delete(typeof name === 'string' ? name : name.name);

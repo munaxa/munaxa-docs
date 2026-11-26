@@ -169,6 +169,20 @@ export const FEDERATION_COOKIE =
   process.env.NODE_ENV === 'production' ? '__Host-edms_federation' : 'edms_federation';
 const FEDERATION_TTL_SECONDS = 600;
 
+/**
+ * Spends the binding. Written as an expired `set` with the same attributes, because a browser
+ * ignores a `__Host-` cookie update that lacks `Secure`, and `delete` sends none.
+ */
+const spendBinding = (store: Awaited<ReturnType<typeof cookies>>): void => {
+  store.set(FEDERATION_COOKIE, '', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  });
+};
+
 interface FederationBinding {
   readonly stateDigest: string;
   readonly tenant: string;
@@ -221,7 +235,7 @@ export async function startFederatedSignIn(input: {
 
 /** Spends the binding without completing, for a callback that carries the provider's error. */
 export async function abandonFederatedSignIn(): Promise<void> {
-  (await cookies()).delete({ name: FEDERATION_COOKIE, path: '/' });
+  spendBinding(await cookies());
 }
 
 export type FederatedCompletion =
@@ -239,7 +253,7 @@ export async function completeFederatedSignIn(input: {
 }): Promise<FederatedCompletion> {
   const store = await cookies();
   const raw = store.get(FEDERATION_COOKIE)?.value;
-  store.delete({ name: FEDERATION_COOKIE, path: '/' });
+  spendBinding(store);
 
   let binding: FederationBinding;
   try {
