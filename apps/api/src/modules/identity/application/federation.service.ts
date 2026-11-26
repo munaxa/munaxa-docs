@@ -9,6 +9,7 @@ import {
   AuditOutcome,
   AuditSubjectType,
   DocsFeature,
+  MFA_REQUIRED_ROLES,
   Settings,
   asId,
   domainMatches,
@@ -67,6 +68,19 @@ import {
 } from './ports';
 
 /** One rejection message for every way a callback can fail. The log records which it was. */
+/** The roles whose password sign-in needs a second factor (17 §2) need one when federated too. */
+const MFA_ROLES: ReadonlySet<string> = new Set(MFA_REQUIRED_ROLES);
+
+/** RFC 8176 `amr` values that are a second factor. */
+const SECOND_FACTOR_METHODS: ReadonlySet<string> = new Set([
+  'mfa',
+  'otp',
+  'hwk',
+  'swk',
+  'sms',
+  'fpt',
+]);
+
 const REJECTED = 'That sign-in could not be completed.';
 
 /** How long a browser has to come back from the provider. Ten minutes is generous for a redirect. */
@@ -140,6 +154,18 @@ export class DefaultFederationService implements FederationService {
    * that includes the feature still signs in (and is then read-only), a cancelled one does not.
    * Must run inside the tenant's unit of work, where the entitlement state is read.
    */
+  private async needsSecondFactor(userId: UserId): Promise<boolean> {
+    const credential = await this.credentials.findById(userId);
+    return credential !== null && credential.roleKeys.some((key) => MFA_ROLES.has(key));
+  }
+
+  async requiredFor(tenantId: TenantId): Promise<boolean> {
+    if (!(await this.settings.get(Settings.FEATURE_FEDERATION))) return false;
+    if (!(await this.federationIncluded(tenantId))) return false;
+    const provider = await this.providers.find();
+    return provider !== null && provider.enabled;
+  }
+
   private async federationIncluded(tenantId: TenantId): Promise<boolean> {
     const decision = await this.entitlements.decide(tenantId, OperationKind.READ, [
       DocsFeature.SSO_FEDERATION,
@@ -340,6 +366,16 @@ export class DefaultFederationService implements FederationService {
       await this.recordFailure(tenantId, input, 'INCOMPLETE_CLAIMS');
       throw new UnauthenticatedError(REJECTED);
     }
+    // An address only finds or creates an account when the provider says it checked it. Munaxa
+    // Identity sends `email_verified: true` only for an address shown to belong to the person
+    // (munaxa-identity#34). Without it, only an account already bound to this subject signs in.
+    const emailVerified = outcome.claims['email_verified'] === true;
+    // A second factor, as the provider reports it: Munaxa Identity's `acr: "mfa"`, or an `amr`
+    // that names one (Entra ID sends `mfa`).
+    const amr = outcome.claims['amr'];
+    const secondFactor =
+      outcome.claims['acr'] === 'mfa' ||
+      (Array.isArray(amr) && amr.some((m) => SECOND_FACTOR_METHODS.has(String(m))));
 
     /*
      * The transaction below decides the outcome, and a refusal it decides is carried *out* of it
@@ -356,10 +392,23 @@ export class DefaultFederationService implements FederationService {
     const signIn = await this.within(tenantId, () =>
       this.unitOfWork.run(async () => {
         const now = this.clock.now();
-        const existing = await this.users.findByExternalIdentity(provider.id, externalId, email);
+        const existing = await this.users.findByExternalIdentity(
+          provider.id,
+          externalId,
+          email,
+          emailVerified,
+        );
+        if (!existing && !emailVerified) {
+          return { kind: 'refused', reason: 'EMAIL_NOT_VERIFIED' } as const;
+        }
 
         let userId: UserId;
         if (existing) {
+          // The roles that need a second factor with a password need one here too, every time,
+          // and before anything is linked or changed.
+          if (!secondFactor && (await this.needsSecondFactor(existing))) {
+            return { kind: 'refused', reason: 'MFA_NOT_SATISFIED' } as const;
+          }
           userId = existing;
           // Binds a local account to this provider the first time its holder signs in through it,
           // and refreshes the display name. Deliberately **not** the roles — see the class note.
@@ -373,6 +422,9 @@ export class DefaultFederationService implements FederationService {
           // way; an asserted group nobody mapped contributes nothing, and a mapped role key that
           // does not exist in this tenant is dropped by the repository rather than created.
           const roleKeys = rolesForClaims(groups, provider.roleMappings, provider.defaultRoleKeys);
+          if (!secondFactor && roleKeys.some((key) => MFA_ROLES.has(key))) {
+            return { kind: 'refused', reason: 'MFA_NOT_SATISFIED' } as const;
+          }
           const candidate = asId<UserId>(uuidv7(now.getTime()));
           const provisioned = await this.users.provision({
             id: candidate,
@@ -411,12 +463,21 @@ export class DefaultFederationService implements FederationService {
              * account, no second grant, and no second provisioning event — the account was not
              * created here, so saying it was would file an act that never happened.
              */
-            const winner = await this.users.findByExternalIdentity(provider.id, externalId, email);
+            const winner = await this.users.findByExternalIdentity(
+              provider.id,
+              externalId,
+              email,
+              emailVerified,
+            );
             if (winner === null) {
               // Not this race. The address is already held at this tenant by an account this
               // subject is not, which the sequential path meets as a raw constraint violation.
               // Refusing is what every other "we will not sign you in" on this path does.
               throw new UnauthenticatedError(REJECTED);
+            }
+            // The winner's roles may need a second factor, exactly as on the existing-account path.
+            if (!secondFactor && (await this.needsSecondFactor(winner))) {
+              return { kind: 'refused', reason: 'MFA_NOT_SATISFIED' } as const;
             }
             userId = winner;
             // The same link the existing-account branch above makes, and for the same reason.

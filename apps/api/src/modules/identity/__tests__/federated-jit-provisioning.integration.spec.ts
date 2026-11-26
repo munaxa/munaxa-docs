@@ -132,7 +132,19 @@ function encode(value: unknown): string {
   return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
 }
 
-function idTokenFor(subject: string, email: string, nonce: string): string {
+interface Assertion {
+  /** `email_verified`; true unless a test says otherwise. */
+  readonly verified?: boolean;
+  /** Whether the provider reports a second factor (`amr: ['pwd', 'mfa']`). */
+  readonly mfa?: boolean;
+}
+
+function idTokenFor(
+  subject: string,
+  email: string,
+  nonce: string,
+  assertion: Assertion = {},
+): string {
   const seconds = Math.floor(FIXED_NOW.getTime() / 1000);
   const signed = `${encode({ alg: 'RS256', kid: 'k1' })}.${encode({
     iss: ISSUER,
@@ -140,6 +152,8 @@ function idTokenFor(subject: string, email: string, nonce: string): string {
     sub: subject,
     nonce,
     email,
+    email_verified: assertion.verified ?? true,
+    amr: assertion.mfa === true ? ['pwd', 'mfa'] : ['pwd'],
     name: email,
     iat: seconds - 10,
     exp: seconds + 3_600,
@@ -223,6 +237,7 @@ async function startFlow(
   subject: string,
   email: string,
   forTenant: TenantId = tenantId,
+  assertion: Assertion = {},
 ): Promise<{ code: string; state: string }> {
   const state = uuidv7();
   const nonce = uuidv7();
@@ -234,7 +249,7 @@ async function startFlow(
     createdAt: FIXED_NOW.toISOString(),
   };
   await cache.set(`federation:authorization:${digestOf(state)}`, pending, 600);
-  tokensByCode.set(code, idTokenFor(subject, email, nonce));
+  tokensByCode.set(code, idTokenFor(subject, email, nonce, assertion));
   return { code, state };
 }
 
@@ -781,6 +796,81 @@ describe('a refused federated sign-in leaves evidence', () => {
         data: { jitProvisioning: true },
       });
     }
+  });
+});
+
+describe('only a checked address, and a second factor for administrators', () => {
+  async function refusalsRecorded(reason: string): Promise<readonly unknown[]> {
+    const rows = await owner.auditEvent.findMany({
+      where: { tenantId, action: 'LOGIN_FAILED' },
+      select: { payload: true },
+    });
+    return rows.filter((row) => JSON.stringify(row.payload).includes(reason));
+  }
+
+  it('creates or finds nobody by an address the provider did not check', async () => {
+    const before = (await refusalsRecorded('EMAIL_NOT_VERIFIED')).length;
+    const flow = await startFlow('subject-unchecked', 'unchecked@jit-race.test', tenantId, {
+      verified: false,
+    });
+    await expect(callback(service, flow)).rejects.toThrow();
+    expect(await usersWith('unchecked@jit-race.test')).toBe(0);
+    expect((await refusalsRecorded('EMAIL_NOT_VERIFIED')).length).toBe(before + 1);
+  });
+
+  it('does not link the tenant administrator without a second factor, and does with one', async () => {
+    const email = `root@${SLUG}.test`;
+    const before = (await refusalsRecorded('MFA_NOT_SATISFIED')).length;
+    const withoutFactor = await startFlow('subject-root', email);
+    await expect(callback(service, withoutFactor)).rejects.toThrow();
+    expect((await refusalsRecorded('MFA_NOT_SATISFIED')).length).toBe(before + 1);
+    const unlinked = await owner.user.findFirst({
+      where: { tenantId, emailNormalized: email },
+      select: { externalId: true },
+    });
+    expect(unlinked?.externalId).toBeNull();
+
+    const withFactor = await startFlow('subject-root', email, tenantId, { mfa: true });
+    await expect(callback(service, withFactor)).resolves.toBeTruthy();
+    const linked = await owner.user.findFirst({
+      where: { tenantId, emailNormalized: email },
+      select: { externalId: true },
+    });
+    expect(linked?.externalId).toBe('subject-root');
+  });
+
+  it('asks the winner of a provisioning race for a second factor too', async () => {
+    /*
+     * The race branch signs in whichever account won the insert. Simulated here: the first lookup
+     * answers "absent" and the insert reports a conflict, so the service falls through to the
+     * second lookup, which finds the tenant administrator by its checked address.
+     */
+    class RaceLostRepository extends PrismaFederatedUserRepository {
+      private lookups = 0;
+      override async findByExternalIdentity(
+        ...args: Parameters<PrismaFederatedUserRepository['findByExternalIdentity']>
+      ): ReturnType<PrismaFederatedUserRepository['findByExternalIdentity']> {
+        this.lookups += 1;
+        return this.lookups === 1 ? null : super.findByExternalIdentity(...args);
+      }
+      override provision(): Promise<boolean> {
+        return Promise.resolve(false);
+      }
+    }
+    const email = `root@${SLUG}.test`;
+    await owner.user.updateMany({
+      where: { tenantId, emailNormalized: email },
+      data: { externalId: null, identityProviderId: null },
+    });
+    const before = (await refusalsRecorded('MFA_NOT_SATISFIED')).length;
+    const flow = await startFlow('subject-root-race', email);
+    await expect(callback(buildService(new RaceLostRepository()), flow)).rejects.toThrow();
+    expect((await refusalsRecorded('MFA_NOT_SATISFIED')).length).toBe(before + 1);
+    const unlinked = await owner.user.findFirst({
+      where: { tenantId, emailNormalized: email },
+      select: { externalId: true },
+    });
+    expect(unlinked?.externalId).toBeNull();
   });
 });
 

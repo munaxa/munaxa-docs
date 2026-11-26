@@ -76,6 +76,8 @@ export const ar: Catalogue = {
     mfaTitle: 'التحقق بخطوتين',
     signInWithMunaxa: 'تسجيل الدخول بحساب مُناخة أو حساب المؤسسة',
     signInWithMunaxaHint: 'تسجّل مؤسستك دخولك عبر مُناخة أو Microsoft أو Google.',
+    federatedSignInRequired:
+      'مؤسستك تسجّل الدخول عبر Munaxa. استخدم تسجيل الدخول عبر Munaxa أدناه.',
     signInWithPassword: 'تسجيل الدخول بكلمة مرور Docs بدلًا من ذلك',
     federationContinue: 'متابعة',
     federationNotOffered: 'لم تُعدّ مؤسستك طريقة الدخول هذه لهذا البريد. استخدم كلمة مرور Docs.',
@@ -1857,6 +1859,8 @@ export const ar: Catalogue = {
      */
     SUBSCRIPTION_REQUIRED: 'اشتراك مؤسستك لا يتيح هذا الإجراء حاليًا.',
     MFA_REQUIRED: 'أدخل الرمز من تطبيق المصادقة الخاص بك.',
+    FEDERATED_SIGN_IN_REQUIRED:
+      'هذه المؤسسة تسجّل الدخول عبر Munaxa. استخدم تسجيل الدخول عبر Munaxa.',
     REQUEST_IN_PROGRESS: 'يجري تنفيذ هذا الطلب بالفعل. حاول مرة أخرى بعد قليل لتحصل على نتيجته.',
     DEPENDENCY_UNAVAILABLE: 'إحدى الخدمات اللازمة لهذا الإجراء غير متاحة.',
     INTERNAL: 'حدث خطأ لدينا.',

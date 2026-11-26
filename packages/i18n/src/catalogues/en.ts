@@ -71,6 +71,8 @@ export const en = {
     /** Sign-in through Munaxa Identity (one Munaxa sign-in for every product). */
     signInWithMunaxa: 'Sign in with your Munaxa or company account',
     signInWithMunaxaHint: 'Your organisation signs you in with Munaxa, Microsoft or Google.',
+    federatedSignInRequired:
+      'Your organisation signs in with Munaxa. Use Sign in with Munaxa below.',
     signInWithPassword: 'Sign in with a Docs password instead',
     federationContinue: 'Continue',
     federationNotOffered:
@@ -1920,6 +1922,7 @@ export const en = {
     TENANT_READ_ONLY: 'Your organisation is currently read-only.',
     SUBSCRIPTION_REQUIRED: "Your organisation's subscription does not allow this right now.",
     MFA_REQUIRED: 'Enter the code from your authenticator app.',
+    FEDERATED_SIGN_IN_REQUIRED: 'This organisation signs in with Munaxa. Use Sign in with Munaxa.',
     REQUEST_IN_PROGRESS:
       'This request is already being processed. Try again in a moment to receive its result.',
     DEPENDENCY_UNAVAILABLE: 'A service this action needs is unavailable.',

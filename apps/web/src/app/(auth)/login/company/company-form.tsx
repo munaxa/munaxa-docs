@@ -63,7 +63,10 @@ export function CompanyForm({
 
       <Submit />
 
-      <Link className="text-sm underline" href={`/login?next=${encodeURIComponent(next)}` as Route}>
+      <Link
+        className="text-sm underline"
+        href={`/login?password=1&next=${encodeURIComponent(next)}` as Route}
+      >
         {translate('auth.signInWithPassword')}
       </Link>
     </form>

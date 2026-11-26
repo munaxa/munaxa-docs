@@ -29,6 +29,7 @@ const REASON_MESSAGE: Record<string, MessageKey> = {
   REJECTED: 'auth.signInRejected',
   UNAVAILABLE: 'auth.signInUnavailable',
   MFA_REQUIRED: 'auth.mfaRequired',
+  FEDERATED_SIGN_IN_REQUIRED: 'auth.federatedSignInRequired',
 };
 
 /**

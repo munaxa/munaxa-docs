@@ -7,6 +7,7 @@ import {
   AuditOutcome,
   AuditSubjectType,
   asId,
+  SystemRole,
 } from '@edms/domain';
 import { uuidv7 } from '@edms/utils';
 
@@ -15,7 +16,12 @@ import {
   type AuditActor,
   type AuditWriter,
 } from '../../../core/audit/audit-writer.port';
-import { MfaRequiredError, UnauthenticatedError } from '../../../core/errors/application-errors';
+import { APP_CONFIG, type AppConfig } from '../../../core/config';
+import {
+  FederatedSignInRequiredError,
+  MfaRequiredError,
+  UnauthenticatedError,
+} from '../../../core/errors/application-errors';
 import { LOGGER, type Logger } from '../../../core/observability/logger';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { type RequestContext, runWithContext } from '../../../core/tenancy/tenant-context';
@@ -37,6 +43,7 @@ import {
   TENANT_DIRECTORY,
   type TenantDirectory,
 } from './authentication.ports';
+import { FEDERATION_SERVICE, type FederationService } from './federation.ports';
 import { MFA_SERVICE, type MfaService } from './mfa.ports';
 import {
   CREDENTIAL_REPOSITORY,
@@ -86,6 +93,8 @@ export class DefaultAuthenticationService implements AuthenticationService {
     @Inject(AUDIT_WRITER) private readonly audit: AuditWriter,
     @Inject(LOGGER) private readonly logger: Logger,
     @Inject(MFA_SERVICE) private readonly mfa: MfaService,
+    @Inject(FEDERATION_SERVICE) private readonly federation: FederationService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   async signIn(command: SignInCommand): Promise<AuthenticationResult> {
@@ -110,7 +119,8 @@ export class DefaultAuthenticationService implements AuthenticationService {
       // nothing they could not learn by holding the account. Collapsing the two would mean a client
       // could not distinguish "prompt for a code" from "that code was wrong" — and would prompt
       // with an unexplained failure.
-      if (await this.mfa.isRequired(credential.id)) {
+      const secondFactor = await this.mfa.isRequired(credential.id);
+      if (secondFactor) {
         if (command.mfaCode === undefined || command.mfaCode === '') {
           return { kind: 'mfa-required' } as const;
         }
@@ -120,6 +130,21 @@ export class DefaultAuthenticationService implements AuthenticationService {
           // failed to sign in *and* failed a factor, and an investigation asks both questions.
           return { kind: 'rejected', reason: 'BAD_MFA_CODE' } as const;
         }
+      }
+
+      // **Munaxa sign-in only** (PASSWORD_SIGN_IN). After both factors, so the answer is only ever
+      // given to someone who holds the account. A tenant that has not turned its Munaxa sign-in on
+      // keeps passwords: switching it on is what retires them, and nobody is locked out before.
+      const passwordPolicy = this.config.auth.passwordSignIn;
+      let method: 'PASSWORD' | 'PASSWORD_EMERGENCY' = 'PASSWORD';
+      if (passwordPolicy !== 'enabled' && (await this.federation.requiredFor(tenantId))) {
+        // An emergency sign-in is still two factors: only a tenant administrator with a confirmed
+        // Docs authenticator, which this sign-in has just answered.
+        const administrator = credential.roleKeys.includes(SystemRole.TENANT_ADMIN);
+        if (passwordPolicy !== 'emergency' || !administrator || !secondFactor) {
+          return { kind: 'federated-required' } as const;
+        }
+        method = 'PASSWORD_EMERGENCY';
       }
 
       const now = this.clock.now();
@@ -152,7 +177,7 @@ export class DefaultAuthenticationService implements AuthenticationService {
         subjectType: AuditSubjectType.SESSION,
         subjectId: familyId,
         outcome: AuditOutcome.SUCCESS,
-        payload: { userId: credential.id },
+        payload: { userId: credential.id, method },
       });
 
       return {
@@ -171,9 +196,11 @@ export class DefaultAuthenticationService implements AuthenticationService {
       // that has not been asked for yet is not an attempt.
       throw new MfaRequiredError();
     }
+    const reason =
+      outcome.kind === 'federated-required' ? 'FEDERATED_SIGN_IN_REQUIRED' : outcome.reason;
 
     this.logger.warn('Sign-in rejected', {
-      reason: outcome.reason,
+      reason,
       correlationId: command.correlationId,
     });
 
@@ -189,10 +216,11 @@ export class DefaultAuthenticationService implements AuthenticationService {
         outcome: AuditOutcome.DENIED,
         // The reason code, never the address that was tried: the trail says what happened
         // without becoming a list of who does and does not hold an account.
-        payload: { reason: outcome.reason },
+        payload: { reason },
       });
     });
 
+    if (outcome.kind === 'federated-required') throw new FederatedSignInRequiredError();
     throw new UnauthenticatedError(REJECTED);
   }
 

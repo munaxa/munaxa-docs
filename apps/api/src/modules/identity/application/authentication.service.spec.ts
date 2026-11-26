@@ -12,7 +12,11 @@ import {
 } from '@edms/domain';
 
 import type { AuditActor, AuditEntry, AuditWriter } from '../../../core/audit/audit-writer.port';
-import { UnauthenticatedError } from '../../../core/errors/application-errors';
+import type { AppConfig } from '../../../core/config';
+import {
+  FederatedSignInRequiredError,
+  UnauthenticatedError,
+} from '../../../core/errors/application-errors';
 import type { Logger } from '../../../core/observability/logger';
 import type { UnitOfWork } from '../../../core/prisma/unit-of-work';
 import { FakeClock } from '../../../testing/fake-ports';
@@ -24,6 +28,7 @@ import type {
   SessionContext,
   TenantDirectory,
 } from './authentication.ports';
+import type { FederationService } from './federation.ports';
 import type { MfaService } from './mfa.ports';
 import { DefaultAuthenticationService } from './authentication.service';
 import type {
@@ -82,8 +87,14 @@ describe('DefaultAuthenticationService', () => {
   let issuedFor: AccessTokenRequest[];
   let audited: { action: string; outcome: string }[];
   let audit: AuditWriter;
+  let federationRequired: boolean;
+  let passwordSignIn: 'enabled' | 'disabled' | 'emergency';
+  let enrolled = false;
 
   beforeEach(() => {
+    federationRequired = false;
+    passwordSignIn = 'enabled';
+    enrolled = false;
     revoked = [];
     issuedFor = [];
     audited = [];
@@ -189,7 +200,7 @@ describe('DefaultAuthenticationService', () => {
       begin: () => Promise.reject(new Error('not used')),
       confirm: () => Promise.reject(new Error('not used')),
       challenge: () => Promise.resolve(true),
-      isRequired: () => Promise.resolve(false),
+      isRequired: () => Promise.resolve(enrolled),
       remove: () => Promise.resolve(),
     } as unknown as MfaService;
     service = new DefaultAuthenticationService(
@@ -204,7 +215,69 @@ describe('DefaultAuthenticationService', () => {
       audit,
       logger,
       noMfa,
+      { requiredFor: () => Promise.resolve(federationRequired) } as unknown as FederationService,
+      {
+        auth: {
+          get passwordSignIn() {
+            return passwordSignIn;
+          },
+        },
+      } as unknown as AppConfig,
     );
+  });
+
+  describe('signIn when the tenant signs in with Munaxa (PASSWORD_SIGN_IN)', () => {
+    const reader = aCredential({ roleKeys: ['READER'] });
+
+    it('refuses a correct password, with its own code, and opens nothing', async () => {
+      federationRequired = true;
+      passwordSignIn = 'disabled';
+      vi.mocked(credentials.findByEmail).mockResolvedValue(reader);
+      await expect(
+        service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' }),
+      ).rejects.toBeInstanceOf(FederatedSignInRequiredError);
+      expect(sessions.createFamily).not.toHaveBeenCalled();
+      expect(audited.map((entry) => entry.action)).toContain('LOGIN_FAILED');
+    });
+
+    it('still answers a wrong password as a wrong password', async () => {
+      federationRequired = true;
+      passwordSignIn = 'disabled';
+      vi.mocked(passwords.verify).mockResolvedValue(false);
+      await expect(
+        service.signIn({ ...context, email: 'ada@acme.test', password: 'nope' }),
+      ).rejects.toBeInstanceOf(UnauthenticatedError);
+    });
+
+    it('lets a tenant administrator with an authenticator in during an emergency, and nobody else', async () => {
+      federationRequired = true;
+      passwordSignIn = 'emergency';
+      await expect(
+        service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' }),
+      ).rejects.toBeInstanceOf(FederatedSignInRequiredError);
+
+      enrolled = true;
+      const result = await service.signIn({
+        ...context,
+        email: 'ada@acme.test',
+        password: 'pw',
+        mfaCode: '123456',
+      });
+      expect(result.accessToken).toBe('access-token');
+
+      vi.mocked(credentials.findByEmail).mockResolvedValue(reader);
+      await expect(
+        service.signIn({ ...context, email: 'ada@acme.test', password: 'pw', mfaCode: '123456' }),
+      ).rejects.toBeInstanceOf(FederatedSignInRequiredError);
+    });
+
+    it('keeps passwords at a tenant that has not turned Munaxa sign-in on', async () => {
+      federationRequired = false;
+      passwordSignIn = 'disabled';
+      vi.mocked(credentials.findByEmail).mockResolvedValue(reader);
+      const result = await service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' });
+      expect(result.accessToken).toBe('access-token');
+    });
   });
 
   describe('signIn', () => {

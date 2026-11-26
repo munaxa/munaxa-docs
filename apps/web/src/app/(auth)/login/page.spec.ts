@@ -103,3 +103,34 @@ describe('the sign-in page', () => {
     expect(await render({ ended: '1' })).toMatchObject({ notice: 'SESSION_ENDED' });
   });
 });
+
+describe('Munaxa first (PASSWORD_SIGN_IN)', () => {
+  const saved = process.env['PASSWORD_SIGN_IN'];
+  beforeEach(() => {
+    currentSession.mockResolvedValue(null);
+  });
+
+  it('sends the front door to Sign in with Munaxa unless passwords are fully on', async () => {
+    process.env['PASSWORD_SIGN_IN'] = 'disabled';
+    try {
+      await expect(render({ next: '/documents' })).rejects.toThrow(
+        'NEXT_REDIRECT /login/company?next=%2Fdocuments',
+      );
+      // One link away: an organisation without Munaxa sign-in yet, or an emergency.
+      expect(await render({ password: '1' })).toMatchObject({ notice: null });
+    } finally {
+      if (saved === undefined) delete process.env['PASSWORD_SIGN_IN'];
+      else process.env['PASSWORD_SIGN_IN'] = saved;
+    }
+  });
+
+  it('shows the password form when passwords are on', async () => {
+    process.env['PASSWORD_SIGN_IN'] = 'enabled';
+    try {
+      expect(await render()).toMatchObject({ notice: null });
+    } finally {
+      if (saved === undefined) delete process.env['PASSWORD_SIGN_IN'];
+      else process.env['PASSWORD_SIGN_IN'] = saved;
+    }
+  });
+});
