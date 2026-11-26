@@ -11,11 +11,14 @@ import {
   createRetentionPolicySchema,
   createWorkflowDefinitionSchema,
 } from '@edms/contracts';
+import { SystemRole } from '@edms/domain';
 import type { Page } from '@edms/utils';
 
 import type { ApprovalRoutingService } from '../modules/administration/application/approval-routing.service';
 import type { ConfigurationService } from '../modules/administration/application/configuration.service';
 import type { NumberingAdminService } from '../modules/administration/application/numbering-admin.service';
+import type { RoleAdminService } from '../modules/identity/application/role-admin.service';
+import type { UserAdminService } from '../modules/identity/application/user-admin.service';
 import type { LibraryAdminService } from '../modules/library/application/library-admin.service';
 import type { ScopeAdminService } from '../modules/organization/application/scope-admin.service';
 import type { WorkflowAdminService } from '../modules/workflow/application/workflow-admin.service';
@@ -90,6 +93,8 @@ export interface StarterServices {
     LibraryAdminService,
     'listLibraries' | 'createLibrary' | 'listFolders' | 'createFolder'
   >;
+  readonly roles: Pick<RoleAdminService, 'list'>;
+  readonly users: Pick<UserAdminService, 'get' | 'update'>;
   /** The tenant's current administrators: the starting members of the approval group. */
   readonly administrators: () => Promise<readonly string[]>;
 }
@@ -343,18 +348,17 @@ export class StarterSeeder {
    * which case the controlled types are created without a workflow.
    */
   private async seedWorkflow(): Promise<string | null> {
-    const groups = byIdentity(
-      await everything((page) =>
-        this.services.routing.listGroups({ page, pageSize: PAGE_SIZE, ...listing }),
-      ),
-      (row) => row.key,
+    const groupRows = await everything((page) =>
+      this.services.routing.listGroups({ page, pageSize: PAGE_SIZE, ...listing }),
     );
+    const groups = byIdentity(groupRows, (row) => row.key);
+    let memberIds: readonly string[] = [];
     const groupId = await this.ensure(
       'approval group',
       STARTER_APPROVAL_GROUP.key,
       groups,
       async () => {
-        const memberIds = await this.services.administrators();
+        memberIds = await this.services.administrators();
         const body = createApprovalGroupSchema.parse({ ...STARTER_APPROVAL_GROUP, memberIds });
         return (await this.services.routing.createGroup(body)).id;
       },
@@ -368,6 +372,16 @@ export class StarterSeeder {
       );
       return null;
     }
+
+    // Members of the group as it stands: the administrators it was just created with, or whoever an
+    // administrator has left in an existing one.
+    const existingGroup = groupRows.find((row) => row.id === groupId);
+    if (existingGroup !== undefined) {
+      memberIds = existingGroup.members.map((member) => member.userId);
+    } else if (this.options.dryRun) {
+      memberIds = await this.services.administrators();
+    }
+    await this.seedApproverRole(memberIds);
 
     const definitions = await everything((page) =>
       this.services.workflows.list({ page, pageSize: PAGE_SIZE, ...listing }),
@@ -404,6 +418,70 @@ export class StarterSeeder {
     );
     this.record('workflow', STARTER_WORKFLOW.key, 'created', 'published');
     return published.id;
+  }
+
+  /**
+   * The Approver role, for the administrators the starter approval group routes to.
+   *
+   * The group starts with the tenant's administrators so that one person can try an approval end
+   * to end. But the administrator role deliberately holds neither `document:approve` nor
+   * `document:reject` (08 §6: approval is not conferred by seniority), so a task assigned to them
+   * could be seen and not decided: the API refused the decision with 403. A demo whose only
+   * approver cannot approve is broken, so the seeder grants those members the system Approver
+   * role as well. The administrator role itself is unchanged, and so is every tenant that was not
+   * given the demo configuration.
+   *
+   * Only members of the starter group who are administrators are touched: somebody an
+   * administrator added to the group is theirs to give roles to. Additive like everything else
+   * here: a member who already holds the role is reported as existing, and nothing is removed. A
+   * retired or missing Approver role is respected: nothing is granted, with the reason.
+   */
+  private async seedApproverRole(memberIds: readonly string[]): Promise<void> {
+    const administrators = new Set(await this.services.administrators());
+    const targets = memberIds.filter((id) => administrators.has(id));
+    if (targets.length === 0) {
+      return;
+    }
+
+    const roles = await everything((page) =>
+      this.services.roles.list({ page, pageSize: PAGE_SIZE, ...listing }),
+    );
+    const approver = roles.find((row) => row.key === SystemRole.APPROVER);
+    if (approver === undefined || approver.deletedAt !== null) {
+      for (const userId of targets) {
+        this.record(
+          'approver role',
+          userId,
+          'skipped',
+          approver === undefined
+            ? 'the tenant has no Approver role'
+            : 'retired by an administrator',
+        );
+      }
+      return;
+    }
+
+    for (const userId of targets) {
+      const user = await this.services.users.get(userId);
+      if (user.deletedAt !== null) {
+        this.record('approver role', userId, 'skipped', 'the user was deleted');
+        continue;
+      }
+      if (user.roles.some((role) => role.id === approver.id)) {
+        this.record('approver role', userId, 'exists');
+        continue;
+      }
+      if (this.options.dryRun) {
+        this.record('approver role', userId, 'created', 'dry run: would grant');
+        continue;
+      }
+      await this.services.users.update(
+        userId,
+        { roleIds: [...user.roles.map((role) => role.id), approver.id] },
+        user.version,
+      );
+      this.record('approver role', userId, 'created', 'granted');
+    }
   }
 
   // --- Document types -------------------------------------------------------------------------

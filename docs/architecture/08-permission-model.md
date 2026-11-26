@@ -294,6 +294,13 @@ Four deliberate rows:
 - **Tenant admin cannot approve.** Approval authority comes from being assigned a task, never from
   seniority. An administrator who needs to approve is assigned or delegated the task, and the audit
   says so.
+  How `T` is implemented: the role carries `document:approve` / `document:reject` as keys, because
+  `RbacGuard` gates `POST /approval-tasks/{id}/decision` on them, and `WorkflowEngine.decide` then
+  refuses any task not assigned or delegated to the caller. So `APPROVER` and `LIBRARY_MANAGER` are
+  seeded with both keys, and no other seeded role is. Until 26 Nov 2026 no role was seeded with them
+  and the `T` cells were unreachable (migration `20261126120000_approver_decision_keys`). An
+  administrator who must approve also holds the Approver role (the demo starter grants it to the
+  administrators in its approval group).
 - **Auditor can never mutate.** Read plus export, nothing else, at any scope.
 
 - **The two read keys are the document controller's, and not the auditor's.** Every other `✓` in

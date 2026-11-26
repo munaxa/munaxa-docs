@@ -569,7 +569,18 @@ describe('the seeded roles', () => {
     // scope is the holder's own inbox, and no route under `/notifications` takes a user identifier
     // for it to widen. It confers no reach over anything of the tenant's, which is what this
     // assertion is about.
-    expect(manager?.permissions).toEqual([Permission.NOTIFICATION_MANAGE]);
+    //
+    // `document:approve` and `document:reject` are this column's two `T` cells (26 Nov 2026). They
+    // are held as keys because `RbacGuard` gates the decision route on them, and they reach only a
+    // task assigned or delegated to the holder, which `WorkflowEngine.decide` enforces. No `S` cell
+    // is seeded.
+    expect([...(manager?.permissions ?? [])].sort()).toEqual(
+      [
+        Permission.DOCUMENT_APPROVE,
+        Permission.DOCUMENT_REJECT,
+        Permission.NOTIFICATION_MANAGE,
+      ].sort(),
+    );
   });
 
   it('refuses to name a role a key another role already holds', async () => {

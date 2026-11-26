@@ -19,6 +19,12 @@ import {
 } from './modules/administration/application/administration.ports';
 import type { ConfigurationService } from './modules/administration/application/configuration.service';
 import type { NumberingAdminService } from './modules/administration/application/numbering-admin.service';
+import {
+  ROLE_ADMIN_SERVICE,
+  USER_ADMIN_SERVICE,
+} from './modules/identity/application/administration.ports';
+import type { RoleAdminService } from './modules/identity/application/role-admin.service';
+import type { UserAdminService } from './modules/identity/application/user-admin.service';
 import { LIBRARY_ADMIN_SERVICE } from './modules/library/application/administration.ports';
 import type { LibraryAdminService } from './modules/library/application/library-admin.service';
 import { SCOPE_ADMIN_SERVICE } from './modules/organization/application/ports';
@@ -119,6 +125,8 @@ async function seedDemo(): Promise<void> {
           routing: app.get<ApprovalRoutingService>(APPROVAL_ROUTING_SERVICE),
           workflows: app.get<WorkflowAdminService>(WORKFLOW_ADMIN_SERVICE),
           libraries: app.get<LibraryAdminService>(LIBRARY_ADMIN_SERVICE),
+          roles: app.get<RoleAdminService>(ROLE_ADMIN_SERVICE),
+          users: app.get<UserAdminService>(USER_ADMIN_SERVICE),
           administrators: () => Promise.resolve(administrators.map(String)),
         },
         { dryRun },
