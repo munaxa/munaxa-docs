@@ -1,4 +1,4 @@
-import type { Metadata, Route } from 'next';
+import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
 import { en } from '@edms/i18n';
@@ -17,7 +17,5 @@ export default async function CompanySignInPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }): Promise<ReactNode> {
   const params = await searchParams;
-  return (
-    <CompanyForm next={safeDestination(params.next) as Route} failed={params.failed === '1'} />
-  );
+  return <CompanyForm next={safeDestination(params.next)} failed={params.failed === '1'} />;
 }
