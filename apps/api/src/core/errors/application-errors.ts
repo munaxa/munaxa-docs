@@ -36,6 +36,13 @@ export class MfaRequiredError extends DomainError {
   }
 }
 
+/** The password was accepted, and this tenant signs in through Munaxa: see the error code. */
+export class FederatedSignInRequiredError extends DomainError {
+  constructor() {
+    super(ErrorCode.FEDERATED_SIGN_IN_REQUIRED, 'Sign in with Munaxa.');
+  }
+}
+
 export class UnauthenticatedError extends DomainError {
   constructor(reason = 'Authentication is required.') {
     super(ErrorCode.UNAUTHENTICATED, reason);

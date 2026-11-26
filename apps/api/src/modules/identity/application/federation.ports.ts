@@ -146,6 +146,13 @@ export interface FederationService {
     readonly correlationId: string;
     readonly locale: string;
   }): Promise<AuthenticationResult>;
+
+  /**
+   * Whether this tenant's people sign in through its provider: the feature is on, the plan
+   * includes it and an enabled provider is configured. Read inside the caller's unit of work for
+   * that tenant (password sign-in asks it, to decide whether a password may still be used).
+   */
+  requiredFor(tenantId: TenantId): Promise<boolean>;
 }
 
 /**

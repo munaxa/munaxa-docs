@@ -32,6 +32,12 @@ export const metadata: Metadata = {
  * - not checkable because the API did not answer: the form, with a sentence saying so. Not a
  *   redirect: the workspace would not be able to check it either.
  */
+const passwordSignIn = (): 'enabled' | 'disabled' | 'emergency' => {
+  const value = process.env['PASSWORD_SIGN_IN'];
+  if (value === 'enabled' || value === 'disabled' || value === 'emergency') return value;
+  return process.env.NODE_ENV === 'production' ? 'disabled' : 'enabled';
+};
+
 export default async function LoginPage({
   searchParams,
 }: {
@@ -51,6 +57,14 @@ export default async function LoginPage({
     if (check.state === 'UNAVAILABLE') {
       notice = 'SESSION_UNVERIFIED';
     }
+  }
+
+  // Munaxa first (PASSWORD_SIGN_IN, the API's setting): unless passwords are fully on, the front
+  // door is Sign in with Munaxa. The password form stays one link away for an organisation that has
+  // not turned Munaxa sign-in on yet and for an administrator's emergency sign-in; the API decides
+  // who may actually use it.
+  if (notice === null && params.password !== '1' && passwordSignIn() !== 'enabled') {
+    redirect(`/login/company?next=${encodeURIComponent(next)}` as Route);
   }
 
   return <LoginForm next={next} notice={notice} />;

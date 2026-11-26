@@ -57,7 +57,10 @@ export type SignInOutcome =
    * password has been verified, so it tells the caller nothing they could not learn by holding the
    * account.
    */
-  | { readonly ok: false; readonly reason: 'REJECTED' | 'UNAVAILABLE' | 'MFA_REQUIRED' };
+  | {
+      readonly ok: false;
+      readonly reason: 'REJECTED' | 'UNAVAILABLE' | 'MFA_REQUIRED' | 'FEDERATED_SIGN_IN_REQUIRED';
+    };
 
 export async function signIn(input: SignInInput): Promise<SignInOutcome> {
   try {
@@ -77,6 +80,11 @@ export async function signIn(input: SignInInput): Promise<SignInOutcome> {
       // ask for the code rather than telling somebody their correct password was wrong — which
       // would be untrue and would train people to retype it.
       return { ok: false, reason: 'MFA_REQUIRED' };
+    }
+    if (error instanceof DomainError && error.code === ErrorCode.FEDERATED_SIGN_IN_REQUIRED) {
+      // The password was right, and this organisation signs in with Munaxa: the form says so and
+      // points at Sign in with Munaxa rather than calling a correct password wrong.
+      return { ok: false, reason: 'FEDERATED_SIGN_IN_REQUIRED' };
     }
     if (error instanceof DomainError && error.code === ErrorCode.UNAUTHENTICATED) {
       return { ok: false, reason: 'REJECTED' };

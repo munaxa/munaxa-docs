@@ -155,6 +155,13 @@ export const configSchema = z
      * configured `WEB_BASE_URL` needs nothing further.
      */
     FEDERATION_REDIRECT_URI: z.string().url().optional(),
+    /**
+     * Whether people may sign in with a Docs password at a tenant whose Munaxa (federated) sign-in
+     * is on: `disabled` (production default: only through Munaxa), `emergency` (also tenant
+     * administrators, for an Identity outage) or `enabled` (default elsewhere). A tenant that has
+     * not turned federated sign-in on keeps passwords, so it can never be locked out.
+     */
+    PASSWORD_SIGN_IN: z.enum(['enabled', 'disabled', 'emergency']).optional(),
 
     STORAGE_DRIVER: z.enum(['NONE', 'LOCAL', 'S3', 'AZURE_BLOB', 'R2', 'GCS']).default('NONE'),
     /** The bucket, container or root directory. A tenant's own prefix sits inside it. */
@@ -1192,6 +1199,8 @@ export interface AppConfig {
     readonly refreshTtlSeconds: number;
     /** Where an OIDC provider returns the browser. Configured, never taken from a request. */
     readonly federationRedirectUri: string;
+    /** PASSWORD_SIGN_IN, resolved: `disabled` in production unless set, `enabled` elsewhere. */
+    readonly passwordSignIn: 'enabled' | 'disabled' | 'emergency';
   };
   readonly storage: {
     readonly driver: RawConfig['STORAGE_DRIVER'];
@@ -1429,6 +1438,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       federationRedirectUri:
         raw.FEDERATION_REDIRECT_URI ??
         `${raw.WEB_BASE_URL.replace(/\/+$/, '')}/auth/federation/callback`,
+      passwordSignIn:
+        raw.PASSWORD_SIGN_IN ?? (raw.NODE_ENV === 'production' ? 'disabled' : 'enabled'),
     },
     storage: {
       driver: raw.STORAGE_DRIVER,

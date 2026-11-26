@@ -7,7 +7,8 @@ import { signIn } from '../../../lib/auth';
 import { safeDestination } from '../../../lib/destination';
 
 /** Why the last attempt failed, or null before the first attempt and after a successful one. */
-export type SignInRejection = 'REJECTED' | 'UNAVAILABLE' | 'MFA_REQUIRED';
+export type SignInRejection =
+  'REJECTED' | 'UNAVAILABLE' | 'MFA_REQUIRED' | 'FEDERATED_SIGN_IN_REQUIRED';
 
 export interface SignInFormState {
   readonly reason: SignInRejection | null;

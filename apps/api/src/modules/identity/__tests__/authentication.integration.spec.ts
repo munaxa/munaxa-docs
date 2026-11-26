@@ -9,6 +9,7 @@ import { ActorChannel, type TenantId, type UserId, Permission, asId } from '@edm
 import { uuidv7 } from '@edms/utils';
 
 import type { AppConfig } from '../../../core/config/configuration';
+import type { FederationService } from '../application/federation.ports';
 import type { Logger } from '../../../core/observability/logger';
 
 import { PrismaUnitOfWork } from '../../../core/prisma/unit-of-work';
@@ -116,6 +117,8 @@ const service = new DefaultAuthenticationService(
   auditWriter,
   logger,
   noMfa,
+  { requiredFor: () => Promise.resolve(false) } as unknown as FederationService,
+  { auth: { passwordSignIn: 'enabled' } } as unknown as AppConfig,
 );
 
 /** The person each tenant was seeded with, so the guard cases below can name a real row. */

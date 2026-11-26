@@ -122,6 +122,7 @@ export class PrismaFederatedUserRepository implements FederatedUserRepository {
     providerId: AnyId,
     externalId: string,
     emailNormalized: string,
+    matchByEmail = true,
   ): Promise<UserId | null> {
     const transaction = requireTransaction();
     // **The subject first.** It is the identity: somebody who changes their address at the
@@ -132,6 +133,10 @@ export class PrismaFederatedUserRepository implements FederatedUserRepository {
     });
     if (byExternal) {
       return asId<UserId>(byExternal.id);
+    }
+    // Only an address the provider checked may find an account (`email_verified`).
+    if (!matchByEmail) {
+      return null;
     }
     // The address second, and only for an account not already bound to some *other* provider
     // subject. That condition is what stops a second person at the same provider claiming an

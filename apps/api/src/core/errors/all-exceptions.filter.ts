@@ -58,6 +58,7 @@ export const STATUS_BY_CODE: Readonly<Record<ErrorCodeKey, number>> = {
   // `401`, like every other authentication outcome: the caller is not authenticated yet, and the
   // code in the body is what tells the client it is halfway rather than back at the start.
   [ErrorCode.MFA_REQUIRED]: HttpStatus.UNAUTHORIZED,
+  [ErrorCode.FEDERATED_SIGN_IN_REQUIRED]: HttpStatus.UNAUTHORIZED,
   // `409`, the status the IETF Idempotency-Key draft gives a request whose key is still in use.
   [ErrorCode.REQUEST_IN_PROGRESS]: HttpStatus.CONFLICT,
   [ErrorCode.DEPENDENCY_UNAVAILABLE]: HttpStatus.SERVICE_UNAVAILABLE,

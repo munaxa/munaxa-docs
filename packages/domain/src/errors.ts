@@ -37,6 +37,13 @@ export const ErrorCode = {
    */
   MFA_REQUIRED: 'MFA_REQUIRED',
   /**
+   * The password was right, but this tenant signs in through Munaxa (its identity provider) and
+   * password sign-in is off (`PASSWORD_SIGN_IN`). Like `MFA_REQUIRED`, only ever returned after the
+   * password was verified, so it says nothing about which addresses hold accounts; the client
+   * sends the person to the Munaxa sign-in instead.
+   */
+  FEDERATED_SIGN_IN_REQUIRED: 'FEDERATED_SIGN_IN_REQUIRED',
+  /**
    * The same request, under the same `Idempotency-Key`, is still being performed — RC validation,
    * D-20.
    *

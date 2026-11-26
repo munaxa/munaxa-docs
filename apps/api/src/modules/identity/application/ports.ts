@@ -555,6 +555,8 @@ export interface FederatedUserRepository {
     providerId: AnyId,
     externalId: string,
     emailNormalized: string,
+    /** False when the provider did not say it checked the address: subject only. */
+    matchByEmail?: boolean,
   ): Promise<UserId | null>;
 
   /** Binds an existing local account to the provider on its holder's first federated sign-in. */
