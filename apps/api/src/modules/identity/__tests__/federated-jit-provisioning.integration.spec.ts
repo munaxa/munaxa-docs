@@ -853,8 +853,8 @@ describe('only a checked address, and a second factor for administrators', () =>
         this.lookups += 1;
         return this.lookups === 1 ? null : super.findByExternalIdentity(...args);
       }
-      override async provision(): Promise<boolean> {
-        return false;
+      override provision(): Promise<boolean> {
+        return Promise.resolve(false);
       }
     }
     const email = `root@${SLUG}.test`;
