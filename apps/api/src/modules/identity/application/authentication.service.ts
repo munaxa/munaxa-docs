@@ -119,7 +119,8 @@ export class DefaultAuthenticationService implements AuthenticationService {
       // nothing they could not learn by holding the account. Collapsing the two would mean a client
       // could not distinguish "prompt for a code" from "that code was wrong" — and would prompt
       // with an unexplained failure.
-      if (await this.mfa.isRequired(credential.id)) {
+      const secondFactor = await this.mfa.isRequired(credential.id);
+      if (secondFactor) {
         if (command.mfaCode === undefined || command.mfaCode === '') {
           return { kind: 'mfa-required' } as const;
         }
@@ -137,8 +138,10 @@ export class DefaultAuthenticationService implements AuthenticationService {
       const passwordPolicy = this.config.auth.passwordSignIn;
       let method: 'PASSWORD' | 'PASSWORD_EMERGENCY' = 'PASSWORD';
       if (passwordPolicy !== 'enabled' && (await this.federation.requiredFor(tenantId))) {
+        // An emergency sign-in is still two factors: only a tenant administrator with a confirmed
+        // Docs authenticator, which this sign-in has just answered.
         const administrator = credential.roleKeys.includes(SystemRole.TENANT_ADMIN);
-        if (passwordPolicy !== 'emergency' || !administrator) {
+        if (passwordPolicy !== 'emergency' || !administrator || !secondFactor) {
           return { kind: 'federated-required' } as const;
         }
         method = 'PASSWORD_EMERGENCY';

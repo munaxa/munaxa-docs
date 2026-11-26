@@ -12,7 +12,7 @@ Munaxa account (Munaxa Identity, its ADR-0008), not with a Docs password.
 - **Organisations without it** keep passwords, so turning it on is what retires them and nobody is
   locked out before.
 - **`PASSWORD_SIGN_IN`** (API and web): `disabled` (production default), `emergency` (also lets a
-  `TENANT_ADMIN` use their password, audited `LOGIN_SUCCEEDED` with `method: PASSWORD_EMERGENCY`),
+  `TENANT_ADMIN` with a confirmed Docs authenticator use their password and code, audited `LOGIN_SUCCEEDED` with `method: PASSWORD_EMERGENCY`),
   or `enabled` (default elsewhere). The web `/login` sends people to **Sign in with Munaxa**
   unless it is `enabled`; the password form is one link away (`/login?password=1`).
 - **Only a checked address finds an account.** A federated sign-in links an existing Docs user, or
@@ -24,4 +24,6 @@ Munaxa account (Munaxa Identity, its ADR-0008), not with a Docs password.
   sign-in and before anything is linked or created: Identity's `acr: "mfa"`, or an `amr` naming a
   second factor (`MFA_NOT_SATISFIED`).
 
-`emergency` is for an Identity outage: switch it on, sign in, switch it off.
+`emergency` is for an Identity outage: switch it on, sign in, switch it off. It is still two
+factors, so each tenant administrator who may need it enrols a Docs authenticator (profile, two-step
+verification) beforehand; an administrator without one is refused like everyone else.

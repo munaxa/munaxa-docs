@@ -89,10 +89,12 @@ describe('DefaultAuthenticationService', () => {
   let audit: AuditWriter;
   let federationRequired: boolean;
   let passwordSignIn: 'enabled' | 'disabled' | 'emergency';
+  let enrolled = false;
 
   beforeEach(() => {
     federationRequired = false;
     passwordSignIn = 'enabled';
+    enrolled = false;
     revoked = [];
     issuedFor = [];
     audited = [];
@@ -198,7 +200,7 @@ describe('DefaultAuthenticationService', () => {
       begin: () => Promise.reject(new Error('not used')),
       confirm: () => Promise.reject(new Error('not used')),
       challenge: () => Promise.resolve(true),
-      isRequired: () => Promise.resolve(false),
+      isRequired: () => Promise.resolve(enrolled),
       remove: () => Promise.resolve(),
     } as unknown as MfaService;
     service = new DefaultAuthenticationService(
@@ -247,15 +249,25 @@ describe('DefaultAuthenticationService', () => {
       ).rejects.toBeInstanceOf(UnauthenticatedError);
     });
 
-    it('lets a tenant administrator in during an emergency, and nobody else', async () => {
+    it('lets a tenant administrator with an authenticator in during an emergency, and nobody else', async () => {
       federationRequired = true;
       passwordSignIn = 'emergency';
-      const result = await service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' });
+      await expect(
+        service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' }),
+      ).rejects.toBeInstanceOf(FederatedSignInRequiredError);
+
+      enrolled = true;
+      const result = await service.signIn({
+        ...context,
+        email: 'ada@acme.test',
+        password: 'pw',
+        mfaCode: '123456',
+      });
       expect(result.accessToken).toBe('access-token');
 
       vi.mocked(credentials.findByEmail).mockResolvedValue(reader);
       await expect(
-        service.signIn({ ...context, email: 'ada@acme.test', password: 'pw' }),
+        service.signIn({ ...context, email: 'ada@acme.test', password: 'pw', mfaCode: '123456' }),
       ).rejects.toBeInstanceOf(FederatedSignInRequiredError);
     });
 

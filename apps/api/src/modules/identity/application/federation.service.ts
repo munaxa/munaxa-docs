@@ -475,6 +475,10 @@ export class DefaultFederationService implements FederationService {
               // Refusing is what every other "we will not sign you in" on this path does.
               throw new UnauthenticatedError(REJECTED);
             }
+            // The winner's roles may need a second factor, exactly as on the existing-account path.
+            if (!secondFactor && (await this.needsSecondFactor(winner))) {
+              return { kind: 'refused', reason: 'MFA_NOT_SATISFIED' } as const;
+            }
             userId = winner;
             // The same link the existing-account branch above makes, and for the same reason.
             await this.users.linkToProvider(userId, provider.id, externalId, displayName, now);

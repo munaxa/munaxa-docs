@@ -838,6 +838,40 @@ describe('only a checked address, and a second factor for administrators', () =>
     });
     expect(linked?.externalId).toBe('subject-root');
   });
+
+  it('asks the winner of a provisioning race for a second factor too', async () => {
+    /*
+     * The race branch signs in whichever account won the insert. Simulated here: the first lookup
+     * answers "absent" and the insert reports a conflict, so the service falls through to the
+     * second lookup, which finds the tenant administrator by its checked address.
+     */
+    class RaceLostRepository extends PrismaFederatedUserRepository {
+      private lookups = 0;
+      override async findByExternalIdentity(
+        ...args: Parameters<PrismaFederatedUserRepository['findByExternalIdentity']>
+      ): ReturnType<PrismaFederatedUserRepository['findByExternalIdentity']> {
+        this.lookups += 1;
+        return this.lookups === 1 ? null : super.findByExternalIdentity(...args);
+      }
+      override async provision(): Promise<boolean> {
+        return false;
+      }
+    }
+    const email = `root@${SLUG}.test`;
+    await owner.user.updateMany({
+      where: { tenantId, emailNormalized: email },
+      data: { externalId: null, identityProviderId: null },
+    });
+    const before = (await refusalsRecorded('MFA_NOT_SATISFIED')).length;
+    const flow = await startFlow('subject-root-race', email);
+    await expect(callback(buildService(new RaceLostRepository()), flow)).rejects.toThrow();
+    expect((await refusalsRecorded('MFA_NOT_SATISFIED')).length).toBe(before + 1);
+    const unlinked = await owner.user.findFirst({
+      where: { tenantId, emailNormalized: email },
+      select: { externalId: true },
+    });
+    expect(unlinked?.externalId).toBeNull();
+  });
 });
 
 describe('federated sign-in follows the plan, not only its configuration', () => {
