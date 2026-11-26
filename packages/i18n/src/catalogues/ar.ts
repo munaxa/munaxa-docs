@@ -1160,6 +1160,10 @@ export const ar: Catalogue = {
       heldByYou: 'هذا المستند مسحوب لديك حتى {until}.',
       heldByOther: 'مسحوب للتعديل لدى {name} حتى {until}.',
       expired: 'انتهت مدة السحب لدى {name}؛ السحب الآن سيستولي على القفل.',
+      badgeYou: 'مسحوب لديك',
+      badgeOther: 'مسحوب لدى {name}',
+      badgeSomeone: 'مسحوب للتعديل',
+      checkInRow: 'إيداع {title}',
     },
     status: {
       DRAFT: 'مسودة',

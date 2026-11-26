@@ -540,12 +540,18 @@ function TextCompare({ result }: { readonly result: RevisionCompare }): ReactNod
  * Check-in: one file through the same upload handshake as creation — the bytes go straight to
  * storage, the antivirus gate decides, and only a reference crosses the server action.
  */
-function CheckInDialog({
+/**
+ * Checking in the next revision. Exported for the library row's Check in (26 Nov 2026): the same
+ * dialogue from both places, so the two cannot ask for different things. Only the identifier is
+ * read — the document's fields stay as they are, because a check-in is a new revision of the same
+ * document, not a new document.
+ */
+export function CheckInDialog({
   document,
   onClose,
   onSaved,
 }: {
-  readonly document: Document;
+  readonly document: Pick<Document, 'id'>;
   readonly onClose: () => void;
   readonly onSaved: () => void;
 }): ReactNode {
